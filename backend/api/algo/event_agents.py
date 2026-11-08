@@ -251,6 +251,39 @@ def _render_order_failure(rec: dict) -> tuple:
     return f"Order Rejected: {x['symbol']} {x['side']}", tg_body, tg_body, (subject, email_body)
 
 
+def _template_guard_message(*, template_slug, applies_to, reason, parent_order_id, parent_side,
+                            parent_qty, parent_symbol, parent_fill_price, parent_account,
+                            ist_label, agent_id: "int | None" = None) -> str:
+    """Plain-text body of the template guard alert.
+
+    Moved verbatim from `backend.api.algo.template_attach.template_guard_message`
+    (Bracket/Template-GTT removal, T3.1, 2026-11) so this renderer stays
+    structurally complete after that module's deletion — nothing produces
+    a `template_guard` alert_event anymore (its one producer,
+    `template_attach._fire_guard_alert`, was deleted with it), so this
+    renderer is unreachable in practice, but is kept intact rather than
+    stripped to avoid a cascade into `SEEDED_AGENTS`/`ALERT_EVENT_DISPATCH`/
+    `SEED_VERSION`/the golden SHA tests/the frontend fixture test."""
+    from backend.shared.helpers.utils import mask_account
+    from backend.shared.helpers.alert_utils import format_notification_header
+    masked_account = mask_account(parent_account) if parent_account else parent_account
+    origin_header = format_notification_header(None, agent_id, ist_display=ist_label).splitlines()[0]
+    return (
+        f"{origin_header}\n"
+        f"⚠ Template guard fired — {ist_label}\n\n"
+        f"order #{parent_order_id}\n"
+        f"{parent_side} {parent_qty} {parent_symbol}\n"
+        f"@ ₹{parent_fill_price:.2f}  ({masked_account})\n\n"
+        f"template:    {template_slug}\n"
+        f"applies_to:  {applies_to}\n"
+        f"reason:      {reason}\n\n"
+        f"Parent order FILLED. Exits NOT attached.\n"
+        f"Arm exits manually if needed.\n\n"
+        f"Fix: at /admin/templates, change this template's "
+        f"'applies_to' to 'both' or 'buy_option'."
+    )
+
+
 def _render_template_guard(rec: dict) -> tuple:
     """A template exit guard fired (held/released/blocked an exit).
 
@@ -268,11 +301,10 @@ def _render_template_guard(rec: dict) -> tuple:
     the markup — so it wraps the ESCAPED plain text in `<pre>`, preserving
     both the line breaks and content.
     """
-    from backend.api.algo.template_attach import template_guard_message
     x = rec.get("extra") or {}
     keys = ("template_slug", "applies_to", "reason", "parent_order_id", "parent_side", "parent_qty",
             "parent_symbol", "parent_fill_price", "parent_account", "ist_label", "agent_id")
-    tg = template_guard_message(**{k: x.get(k) for k in keys})
+    tg = _template_guard_message(**{k: x.get(k) for k in keys})
     title = "Template guard fired"
     email_subject = f"RamboQuant {title}: {x.get('parent_symbol') or ''}"
     email_body = (
@@ -283,6 +315,46 @@ def _render_template_guard(rec: dict) -> tuple:
     return title, tg, tg, (email_subject, email_body)
 
 
+def _template_attach_fail_message(*, order_id, symbol, account, err_summary, ist_label,
+                                   agent_id: "int | None" = None,
+                                   placed_untracked_ids: "list | None" = None) -> str:
+    """Plain-text body of the template attach failure alert.
+
+    Moved verbatim from
+    `backend.api.algo.template_attach.template_attach_fail_message`
+    (Bracket/Template-GTT removal, T3.1, 2026-11) — see
+    `_template_guard_message`'s docstring above for why this renderer
+    is kept intact (now structurally unreachable, since nothing
+    produces a `template_attach_fail` alert_event anymore) rather than
+    deleted."""
+    from backend.shared.helpers.utils import mask_account, mask_account_in_text
+    from backend.shared.helpers.alert_utils import format_notification_header
+    err_summary_plain = mask_account_in_text(err_summary) or err_summary
+    masked_account = mask_account(account) if account else account
+    origin_header = format_notification_header(None, agent_id, ist_display=ist_label).splitlines()[0]
+    if placed_untracked_ids:
+        ids_plain = ", ".join(str(i) for i in placed_untracked_ids)
+        footer = (
+            f"Exits PLACED at broker (ids {ids_plain}) but NOT recorded — "
+            f"OCO/trailing/cancel-on-close won't track them.\n"
+            f"Do NOT arm manually; reconcile the broker GTT book."
+        )
+    else:
+        footer = (
+            f"Parent order FILLED. Exits NOT attached.\n"
+            f"Arm exits manually if needed."
+        )
+    return (
+        f"{origin_header}\n"
+        f"⚠ Template attach failed — {ist_label}\n\n"
+        f"order #{order_id}\n"
+        f"symbol:   {symbol}\n"
+        f"account:  {masked_account}\n\n"
+        f"errors:   {err_summary_plain}\n\n"
+        f"{footer}"
+    )
+
+
 def _render_attach_fail(rec: dict) -> tuple:
     """A template's exit GTTs/wing failed to attach to the filled parent.
 
@@ -291,15 +363,14 @@ def _render_attach_fail(rec: dict) -> tuple:
     "durable record" promise, same prior gap).
 
     2026-10 plain-text reversal — same shape as `_render_template_guard`:
-    `template_attach_fail_message()` returns plain text, used directly
+    `_template_attach_fail_message()` returns plain text, used directly
     for ntfy/telegram, and the email body wraps the escaped plain text
     in `<pre>` instead of reusing the old `<code>`-tagged HTML string."""
-    from backend.api.algo.template_attach import template_attach_fail_message
     x = rec.get("extra") or {}
-    tg = template_attach_fail_message(order_id=x.get("order_id"), symbol=x.get("symbol"),
-                                      account=x.get("account"), err_summary=x.get("err_summary") or "",
-                                      ist_label=x.get("ist_label"), agent_id=x.get("agent_id"),
-                                      placed_untracked_ids=x.get("placed_untracked_ids"))
+    tg = _template_attach_fail_message(order_id=x.get("order_id"), symbol=x.get("symbol"),
+                                       account=x.get("account"), err_summary=x.get("err_summary") or "",
+                                       ist_label=x.get("ist_label"), agent_id=x.get("agent_id"),
+                                       placed_untracked_ids=x.get("placed_untracked_ids"))
     title = "Template attach failed"
     email_subject = f"RamboQuant {title}: {x.get('symbol') or ''}"
     email_body = (

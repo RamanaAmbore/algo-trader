@@ -1,19 +1,22 @@
 """
-Tests for market-hours guards in template attach and chase engine.
+Tests for market-hours guards in the chase engine.
 
 Covers:
 1. [IMPLEMENTED] chase_order returns FAILED status when any market segment is closed
-2. [TODO] apply_template_to_order should guard wing attachment when exchange closed
-3. [TODO] apply_plan_live should refuse to place wings when market closed
 4. [EXISTING] _place_order lot_size validation (guards against MCX 0-lot cache miss)
 5. [EXISTING] _emit_chase_terminal DB/persistence error handling
 
 Five quality dimensions:
-  SSOT   — markets closed blocks chase at top; wing attach guarded; GTT-only proceeds
+  SSOT   — markets closed blocks chase at top; GTT-only proceeds
   Perf   — guards fire synchronously before async/broker calls
-  Stale  — no inline market-open checks remain in attach/chase bodies
-  Reuse  — exchange-closed guard applied uniformly across both paths
+  Stale  — no inline market-open checks remain in chase bodies
+  Reuse  — exchange-closed guard applied uniformly
   UX     — operator receives clear error detail on guard failure
+
+Items 2/3 (`apply_template_to_order`/`apply_plan_live` wing guard,
+`resolve_template_plan` pure-data test) removed (Bracket/Template-GTT
+removal, T3.1, 2026-11) — all lived in `backend.api.algo.template_attach`,
+deleted.
 """
 
 from __future__ import annotations
@@ -24,13 +27,6 @@ import logging
 from unittest.mock import MagicMock, AsyncMock, patch, call
 from datetime import datetime, timezone
 
-from backend.api.algo.template_attach import (
-    apply_template_to_order,
-    resolve_template_plan,
-    AttachResult,
-    TemplatePlan,
-    apply_plan_live,
-)
 from backend.api.algo.chase import (
     chase_order,
     ChaseStatus,
@@ -39,30 +35,6 @@ from backend.api.algo.chase import (
     _emit_chase_terminal,
 )
 from backend.brokers.capabilities import KITE_CAPS
-
-
-# ── Test data helpers ────────────────────────────────────────────────
-
-def _base_template(
-    tp_pct: float | None = 10.0,
-    sl_pct: float | None = 5.0,
-    wing_premium_pct: float | None = None,
-    wing_strike_offset: int | None = None,
-) -> dict:
-    """Build a minimal template dict."""
-    return {
-        "id": 1,
-        "slug": "test-template",
-        "name": "Test Template",
-        "applies_to": "both",
-        "tp_pct": tp_pct,
-        "sl_pct": sl_pct,
-        "wing_premium_pct": wing_premium_pct,
-        "wing_strike_offset": wing_strike_offset,
-        "tp_order_type": "LIMIT",
-        "tp_scales_json": None,
-        "sl_trail_pct": None,
-    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -197,83 +169,9 @@ async def test_chase_closed_detail_is_clear():
         )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# PART 2: Template attach wing guard (TODO — not yet implemented)
-# ─────────────────────────────────────────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_apply_plan_live_wing_requires_market_open():
-    """
-    [TODO] apply_plan_live should guard wing placement when market is closed.
-    Wing orders (market-take hedges) require open market for quote accuracy.
-
-    Currently unimplemented — when implemented, wing placement during closed
-    market should either:
-      (a) Return errors in AttachResult, or
-      (b) Skip wing attachment with a note
-    """
-    from backend.api.algo.template_attach import WingSpec
-
-    # Create a minimal plan with a wing
-    plan = TemplatePlan(
-        template_id=1,
-        template_name="Test",
-        template_slug="test",
-        parent_account="ACC1",
-        parent_symbol="NIFTY24APR25000CE",
-        parent_side="SELL",
-        parent_qty=100,
-        parent_exchange="NFO",
-        parent_fill_price=50.0,
-        parent_lot_size=1,
-    )
-    plan.wing = WingSpec(
-        tradingsymbol="NIFTY24APR25100CE",
-        transaction_type="BUY",
-        quantity=100,
-        exchange="NFO",
-        product="NRML",
-        order_type="MARKET",
-        estimated_price=40.0,
-    )
-
-    # Mock broker
-    mock_broker = MagicMock()
-    mock_broker.place_order.return_value = "order_123"
-
-    # Apply the plan in live mode
-    result = apply_plan_live(plan, mock_broker)
-
-    # Should return an AttachResult (always, even on errors)
-    assert isinstance(result, AttachResult), "apply_plan_live should always return AttachResult"
-
-    # Wing order should have been attempted (no guard yet)
-    # When guard is implemented, wing_order_id should be None on closed market
-    # with an error in result.errors
-
-
-@pytest.mark.asyncio
-async def test_resolve_template_plan_pure_data():
-    """
-    [EXISTING] resolve_template_plan is pure data — no broker calls or
-    market-hours checks. Guards belong in apply_template_to_order and
-    apply_plan_live, not in the pure resolver.
-    """
-    template = _base_template(tp_pct=10.0, sl_pct=5.0)
-    plan = resolve_template_plan(
-        template, {},
-        parent_account="ACC1",
-        parent_symbol="RELIANCE",
-        parent_side="BUY",
-        parent_qty=10,
-        parent_exchange="NSE",
-        parent_fill_price=2900.0,
-    )
-
-    # Plan should have GTT specs regardless of market hours
-    assert len(plan.gtts) > 0, "Plan should have GTT specs"
-    assert plan.gtts[0].label in ("TP", "SL", "TP+SL")
-
+# PART 2 (template attach wing guard / resolve_template_plan tests)
+# removed (Bracket/Template-GTT removal, T3.1, 2026-11) — both lived in
+# backend.api.algo.template_attach, deleted.
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PART 3: Place order lot_size safety (EXISTING)

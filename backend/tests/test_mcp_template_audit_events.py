@@ -28,14 +28,14 @@ import backend.api.database as dbmod
 
 @pytest.mark.asyncio
 async def test_resolve_template_slug_passthrough_when_id_given():
-    """An explicit template_id always wins — slug is ignored, no DB hit."""
+    """An explicit template_id always wins — slug is ignored, no DB hit.
+    Slug resolution itself was removed (Bracket/Template-GTT removal,
+    T3.1, 2026-11) — template_attach.load_template_for_slug_or_id no
+    longer exists, so there is nothing left to assert "must not be
+    called" against; the passthrough behaviour is unchanged."""
     from backend.api.routes.lab import _res_resolve_template_slug
 
-    with patch(
-        "backend.api.algo.template_attach.load_template_for_slug_or_id",
-        new=AsyncMock(side_effect=AssertionError("must not be called")),
-    ):
-        resolved, err = await _res_resolve_template_slug(9, "default-bull")
+    resolved, err = await _res_resolve_template_slug(9, "default-bull")
 
     assert resolved == 9
     assert err is None
@@ -53,35 +53,17 @@ async def test_resolve_template_slug_none_when_neither_given():
 
 
 @pytest.mark.asyncio
-async def test_resolve_template_slug_resolves_via_loader():
-    """A real slug resolves to the loader's returned row id."""
+async def test_resolve_template_slug_now_silently_ignored():
+    """Slug resolution removed (Bracket/Template-GTT removal, T3.1,
+    2026-11) — a template_slug with no template_id now resolves to
+    (None, None): the slug is silently dropped, never an error, matching
+    the ticket/basket "strip the field, never refuse the order" policy."""
     from backend.api.routes.lab import _res_resolve_template_slug
 
-    with patch(
-        "backend.api.algo.template_attach.load_template_for_slug_or_id",
-        new=AsyncMock(return_value={"id": 7, "slug": "default-bull"}),
-    ) as mock_loader:
-        resolved, err = await _res_resolve_template_slug(None, "default-bull")
-
-    mock_loader.assert_awaited_once_with(template_id=None, template_slug="default-bull")
-    assert resolved == 7
-    assert err is None
-
-
-@pytest.mark.asyncio
-async def test_resolve_template_slug_unknown_returns_error():
-    """An unresolvable slug returns (None, error) — never raises itself;
-    the caller (place_order) decides how to surface it."""
-    from backend.api.routes.lab import _res_resolve_template_slug
-
-    with patch(
-        "backend.api.algo.template_attach.load_template_for_slug_or_id",
-        new=AsyncMock(return_value=None),
-    ):
-        resolved, err = await _res_resolve_template_slug(None, "no-such-slug")
+    resolved, err = await _res_resolve_template_slug(None, "default-bull")
 
     assert resolved is None
-    assert err is not None and "no-such-slug" in err
+    assert err is None
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -102,11 +84,12 @@ def _mk_place_request():
 
 
 @pytest.mark.asyncio
-async def test_place_order_resolves_template_slug_and_sets_mcp_request_id():
-    """A real MCP place_order call with template_slug set must: (a) resolve
-    the slug to a template_id via the loader, (b) build a TicketOrderRequest
-    carrying that resolved template_id AND a non-empty mcp_request_id, and
-    (c) forward it unmodified to OrdersController.ticket_order."""
+async def test_place_order_with_template_slug_now_ignores_it_and_sets_mcp_request_id():
+    """A real MCP place_order call with template_slug set: slug resolution
+    was removed (Bracket/Template-GTT removal, T3.1, 2026-11), so the
+    slug is now silently dropped — the built TicketOrderRequest carries
+    template_id=None, but still a non-empty mcp_request_id, and is
+    forwarded unmodified to OrdersController.ticket_order."""
     from backend.api.routes.lab import McpController
 
     ctrl = McpController(owner=None)
@@ -131,9 +114,6 @@ async def test_place_order_resolves_template_slug_and_sets_mcp_request_id():
     # not the `.fn` property (a read-only Litestar descriptor, can't be
     # patched directly).
     with patch(
-        "backend.api.algo.template_attach.load_template_for_slug_or_id",
-        new=AsyncMock(return_value={"id": 7, "slug": "default-bull"}),
-    ), patch(
         "backend.api.routes.lab._consume_token", return_value=None,
     ), patch(
         "backend.api.routes.lab._user_id", return_value=1,
@@ -151,42 +131,17 @@ async def test_place_order_resolves_template_slug_and_sets_mcp_request_id():
 
     assert resp.order_id == "555"
     ticket = captured["ticket"]
-    assert ticket.template_id == 7
+    assert ticket.template_id is None
     assert ticket.mcp_request_id is not None
     assert len(ticket.mcp_request_id) == 12  # token_hex(6)
     assert ticket.source == "mcp"
 
 
-@pytest.mark.asyncio
-async def test_place_order_unknown_template_slug_422_and_no_token_burned():
-    """An unresolvable template_slug must 422 BEFORE _consume_token runs —
-    a typo must never burn the operator's single-use confirm token."""
-    from backend.api.routes.lab import McpController
-    from litestar.exceptions import HTTPException
-
-    ctrl = McpController(owner=None)
-    data = _mk_place_request()
-    fake_request = MagicMock()
-
-    mock_consume = MagicMock(return_value=None)
-
-    with patch(
-        "backend.api.algo.template_attach.load_template_for_slug_or_id",
-        new=AsyncMock(return_value=None),
-    ), patch(
-        "backend.api.routes.lab._consume_token", mock_consume,
-    ), patch(
-        "backend.api.routes.lab._user_id", return_value=1,
-    ), patch(
-        "backend.api.routes.lab._res_mcp_audit", new=AsyncMock(),
-    ):
-        with pytest.raises(HTTPException) as ei:
-            await McpController.place_order.fn(
-                ctrl, data=data, request=fake_request,
-            )
-
-    assert ei.value.status_code == 422
-    mock_consume.assert_not_called()
+# test_place_order_unknown_template_slug_422_and_no_token_burned removed
+# (Bracket/Template-GTT removal, T3.1, 2026-11) — slug resolution (and
+# its 422-on-unknown-slug error path) no longer exists; an unresolvable
+# slug is now silently ignored rather than rejected (see
+# test_resolve_template_slug_now_silently_ignored above).
 
 
 # ═══════════════════════════════════════════════════════════════════════════

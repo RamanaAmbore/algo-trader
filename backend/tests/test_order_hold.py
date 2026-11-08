@@ -29,7 +29,7 @@ def test_override_beats_global_switch_both_ways():
 
 def test_switch_for_one_category_does_not_affect_another():
     sw = {"expiry_close": True}
-    assert effective_hold(HoldCategory.TEMPLATE_EXIT, None, sw) is True
+    assert effective_hold(HoldCategory.AGENT_ORDER, None, sw) is True
 
 
 def test_cutoff_is_close_minus_lead():
@@ -92,12 +92,9 @@ def test_parse_hold_record_handles_empty_and_bad_input():
     assert parse_hold_record("[1]") is None
 
 
-def test_template_exit_override_beats_global_switch(monkeypatch):
-    from backend.api.algo import order_hold_gate as g
-    monkeypatch.setattr(g, "get_bool", lambda key, default=False: False)
-    assert g.template_exit_held() is True
-    assert g.template_exit_held(False) is False
-    monkeypatch.setattr(g, "get_bool", lambda key, default=False: True)
-    assert g.template_exit_held() is False
-    assert g.template_exit_held(True) is True
-    assert g.template_exit_held(None) is False
+# test_template_exit_override_beats_global_switch removed (Bracket/
+# Template-GTT removal, T3.1, 2026-11) — order_hold_gate.template_exit_held
+# was deleted. held_for()'s own generic override-vs-switch precedence
+# (the behaviour this test exercised through the TEMPLATE_EXIT wrapper)
+# is still covered by test_held_for_queries_the_categorys_own_released_key
+# and friends in test_order_hold_gate.py, against EXPIRY_CLOSE/AGENT_ORDER.

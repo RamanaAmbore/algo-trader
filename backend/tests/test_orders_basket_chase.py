@@ -129,7 +129,6 @@ def _common_patches(mock_broker, positions_df, lot_size_fn,
         patch("backend.api.algo.agent_engine._build_now_ctx", return_value=MagicMock()),
         patch("backend.shared.helpers.utils.is_prod_branch", return_value=True),
         patch("backend.shared.helpers.settings.get_bool", return_value=False),
-        patch("backend.api.routes.orders_basket._attach_basket_leg_template"),
     ]
     if session_factory is not None:
         patches.append(patch("backend.api.database.async_session", session_factory))
@@ -572,7 +571,6 @@ class TestBasketPaperModeChaseAggressiveness:
             # Non-prod branch forces paper mode regardless of DB flags.
             patch("backend.shared.helpers.utils.is_prod_branch", return_value=False),
             patch("backend.shared.helpers.settings.get_bool", return_value=False),
-            patch("backend.api.routes.orders_basket._attach_basket_leg_template"),
             patch("backend.api.database.async_session", session_factory),
             patch("backend.api.algo.paper.get_prod_paper_engine", mock_get_engine),
             patch("backend.api.algo.agent_engine.get_agent_id_by_slug", mock_get_agent_id),

@@ -292,22 +292,6 @@ class TestManualTicketSourceMislabelFixed:
         assert "agent_id" not in captured or captured["agent_id"] is None
 
 
-class TestTemplatePlanParentAgentId:
-    def test_default_is_none(self):
-        from backend.api.algo.template_attach import TemplatePlan
-        plan = TemplatePlan(
-            template_id=1, template_name="default-bull", template_slug="default-bull",
-            parent_account="ZG0790", parent_symbol="NIFTY25OCTFUT", parent_side="BUY",
-            parent_qty=50, parent_exchange="NFO", parent_fill_price=100.0,
-        )
-        assert plan.parent_agent_id is None
-
-    def test_to_dict_includes_parent_agent_id(self):
-        from backend.api.algo.template_attach import TemplatePlan
-        plan = TemplatePlan(
-            template_id=1, template_name="default-bull", template_slug="default-bull",
-            parent_account="ZG0790", parent_symbol="NIFTY25OCTFUT", parent_side="BUY",
-            parent_qty=50, parent_exchange="NFO", parent_fill_price=100.0,
-            parent_agent_id=9,
-        )
-        assert plan.to_dict()["parent_agent_id"] == 9
+# TestTemplatePlanParentAgentId removed (Bracket/Template-GTT removal,
+# T3.1, 2026-11) — TemplatePlan was deleted along with
+# backend.api.algo.template_attach.

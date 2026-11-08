@@ -128,8 +128,7 @@ class TestBasketCloseIntentVerification:
              patch("backend.api.algo.agent_engine._build_now_ctx", return_value=MagicMock()), \
              patch("backend.shared.helpers.utils.is_prod_branch", return_value=True), \
              patch("backend.shared.helpers.settings.get_bool", return_value=False), \
-             patch("backend.api.database.async_session") as mock_session, \
-             patch("backend.api.routes.orders_basket._attach_basket_leg_template"):
+             patch("backend.api.database.async_session") as mock_session:
 
             # Mock DB session for AlgoOrder persistence
             mock_session_inst = AsyncMock()
@@ -196,8 +195,7 @@ class TestBasketCloseIntentVerification:
              patch("backend.api.algo.agent_engine._build_now_ctx", return_value=MagicMock()), \
              patch("backend.shared.helpers.utils.is_prod_branch", return_value=True), \
              patch("backend.shared.helpers.settings.get_bool", return_value=False), \
-             patch("backend.api.database.async_session"), \
-             patch("backend.api.routes.orders_basket._attach_basket_leg_template"):
+             patch("backend.api.database.async_session"):
 
             result = await basket_order_handler(request_data, mock_request)
 
@@ -256,8 +254,7 @@ class TestBasketCloseIntentVerification:
              patch("backend.api.algo.agent_engine._build_now_ctx", return_value=MagicMock()), \
              patch("backend.shared.helpers.utils.is_prod_branch", return_value=True), \
              patch("backend.shared.helpers.settings.get_bool", return_value=False), \
-             patch("backend.api.database.async_session") as mock_session, \
-             patch("backend.api.routes.orders_basket._attach_basket_leg_template"):
+             patch("backend.api.database.async_session") as mock_session:
 
             mock_session_inst = AsyncMock()
             mock_session_inst.__aenter__.return_value = mock_session_inst
@@ -323,8 +320,7 @@ class TestBasketCloseIntentVerification:
              patch("backend.api.algo.agent_engine._build_now_ctx", return_value=MagicMock()), \
              patch("backend.shared.helpers.utils.is_prod_branch", return_value=True), \
              patch("backend.shared.helpers.settings.get_bool", return_value=False), \
-             patch("backend.api.database.async_session"), \
-             patch("backend.api.routes.orders_basket._attach_basket_leg_template"):
+             patch("backend.api.database.async_session"):
 
             result = await basket_order_handler(request_data, mock_request)
 
@@ -383,8 +379,7 @@ class TestBasketCloseIntentVerification:
              patch("backend.api.algo.agent_engine._build_now_ctx", return_value=MagicMock()), \
              patch("backend.shared.helpers.utils.is_prod_branch", return_value=True), \
              patch("backend.shared.helpers.settings.get_bool", return_value=False), \
-             patch("backend.api.database.async_session") as mock_session, \
-             patch("backend.api.routes.orders_basket._attach_basket_leg_template"):
+             patch("backend.api.database.async_session") as mock_session:
 
             mock_session_inst = AsyncMock()
             mock_session_inst.__aenter__.return_value = mock_session_inst
@@ -448,8 +443,7 @@ class TestBasketCloseIntentVerification:
              patch("backend.api.algo.agent_engine._build_now_ctx", return_value=MagicMock()), \
              patch("backend.shared.helpers.utils.is_prod_branch", return_value=True), \
              patch("backend.shared.helpers.settings.get_bool", return_value=False), \
-             patch("backend.api.database.async_session") as mock_session, \
-             patch("backend.api.routes.orders_basket._attach_basket_leg_template"):
+             patch("backend.api.database.async_session") as mock_session:
 
             mock_session_inst = AsyncMock()
             mock_session_inst.__aenter__.return_value = mock_session_inst
@@ -545,8 +539,7 @@ class TestBasketColdInstrumentsCacheErrorHandling:
              patch("backend.api.algo.agent_engine._build_now_ctx", return_value=MagicMock()), \
              patch("backend.shared.helpers.utils.is_prod_branch", return_value=True), \
              patch("backend.shared.helpers.settings.get_bool", return_value=False), \
-             patch("backend.api.database.async_session") as mock_session, \
-             patch("backend.api.routes.orders_basket._attach_basket_leg_template"):
+             patch("backend.api.database.async_session") as mock_session:
 
             mock_session_inst = AsyncMock()
             mock_session_inst.__aenter__.return_value = mock_session_inst
@@ -646,8 +639,7 @@ class TestBasketPreflightBlockerDemotionRemoved:
              patch("backend.api.algo.agent_engine._build_now_ctx", return_value=MagicMock()), \
              patch("backend.shared.helpers.utils.is_prod_branch", return_value=True), \
              patch("backend.shared.helpers.settings.get_bool", return_value=False), \
-             patch("backend.api.database.async_session"), \
-             patch("backend.api.routes.orders_basket._attach_basket_leg_template"):
+             patch("backend.api.database.async_session"):
 
             result = await basket_order_handler(request_data, mock_request)
 
@@ -699,8 +691,7 @@ class TestBasketPreflightBlockerDemotionRemoved:
              patch("backend.api.algo.agent_engine._build_now_ctx", return_value=MagicMock()), \
              patch("backend.shared.helpers.utils.is_prod_branch", return_value=True), \
              patch("backend.shared.helpers.settings.get_bool", return_value=False), \
-             patch("backend.api.database.async_session") as mock_session, \
-             patch("backend.api.routes.orders_basket._attach_basket_leg_template"):
+             patch("backend.api.database.async_session") as mock_session:
 
             mock_session_inst = AsyncMock()
             mock_session_inst.__aenter__.return_value = mock_session_inst

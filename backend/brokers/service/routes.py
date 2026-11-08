@@ -95,7 +95,12 @@ _ALLOWED_BROKER_METHODS = frozenset({
     "basket_order_margins", "get_gtts",
     # write
     "place_order", "modify_order", "cancel_order",
-    "place_gtt", "modify_gtt", "cancel_gtt",
+    # `place_gtt`/`modify_gtt` removed from the whitelist (Bracket/
+    # Template-GTT removal, T3.1, 2026-11) — their adapter methods no
+    # longer exist. `cancel_gtt` is KEPT — `orders_gtt.py` is a
+    # standalone, Bracket-independent "view/cancel any broker GTT"
+    # feature.
+    "cancel_gtt",
     # meta
     "translate_qty", "normalise_qty", "validate_gtt_exchange",
 })

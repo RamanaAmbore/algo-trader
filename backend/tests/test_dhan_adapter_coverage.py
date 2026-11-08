@@ -1174,97 +1174,12 @@ class TestDhanLedgerFunctions:
 # ─────────────────────────────────────────────────────────────────────────
 
 
-class TestDhanGttHelpers:
-    """Test GTT-related helper functions."""
-
-    def test_dhan_gtt_order_id_from_response(self):
-        """_dhan_gtt_order_id extracts orderId from place_forever response."""
-        from backend.brokers.adapters.dhan import _dhan_gtt_order_id
-
-        resp = {"status": "success", "data": {"orderId": "GTT123"}}
-        assert _dhan_gtt_order_id(resp) == "GTT123"
-
-    def test_dhan_gtt_order_id_fallback_order_id_key(self):
-        """_dhan_gtt_order_id falls back to order_id key."""
-        from backend.brokers.adapters.dhan import _dhan_gtt_order_id
-
-        resp = {"status": "success", "data": {"order_id": "GTT456"}}
-        assert _dhan_gtt_order_id(resp) == "GTT456"
-
-    def test_dhan_gtt_order_id_missing_returns_empty_string(self):
-        """_dhan_gtt_order_id returns empty string when ID missing."""
-        from backend.brokers.adapters.dhan import _dhan_gtt_order_id
-
-        resp = {"status": "success", "data": {}}
-        assert _dhan_gtt_order_id(resp) == ""
-
-    def test_dhan_place_forever_kwargs_single_trigger(self):
-        """_dhan_place_forever_kwargs builds single-trigger kwargs."""
-        from backend.brokers.adapters.dhan import _dhan_place_forever_kwargs
-
-        order0 = {"price": 100.0, "quantity": 10}
-        orders = [order0]
-        trigger_values = [95.0]
-
-        kwargs = _dhan_place_forever_kwargs(
-            order0, orders, trigger_values, "single",
-            "SEC123", "NSE_EQ", "RELIANCE", "tag1"
-        )
-
-        assert kwargs["order_flag"] == "SINGLE"
-        assert kwargs["trigger_Price"] == 95.0
-
-    def test_dhan_place_forever_kwargs_oco_trigger(self):
-        """_dhan_place_forever_kwargs builds OCO kwargs with leg-1 fields."""
-        from backend.brokers.adapters.dhan import _dhan_place_forever_kwargs
-
-        order0 = {"price": 100.0, "quantity": 10}
-        order1 = {"price": 110.0, "quantity": 10}
-        orders = [order0, order1]
-        trigger_values = [95.0, 105.0]
-
-        kwargs = _dhan_place_forever_kwargs(
-            order0, orders, trigger_values, "two-leg",
-            "SEC123", "NSE_EQ", "RELIANCE", None
-        )
-
-        assert kwargs["order_flag"] == "OCO"
-        assert kwargs["price1"] == 110.0
-        assert kwargs["trigger_Price1"] == 105.0
-        assert kwargs["quantity1"] == 10
-
-    def test_dhan_modify_forever_leg_entry_leg(self):
-        """_dhan_modify_forever_leg builds ENTRY_LEG modify kwargs."""
-        from backend.brokers.adapters.dhan import _dhan_modify_forever_leg
-
-        order = {"price": 100.0, "quantity": 10, "order_type": "LIMIT"}
-        kwargs = _dhan_modify_forever_leg(order, 95.0, "SINGLE", "ENTRY_LEG")
-
-        assert kwargs["leg_name"] == "ENTRY_LEG"
-        assert kwargs["order_flag"] == "SINGLE"
-        assert kwargs["trigger_price"] == 95.0
-        assert kwargs["quantity"] == 10
-
-    def test_dhan_modify_forever_leg_target_leg(self):
-        """_dhan_modify_forever_leg builds TARGET_LEG kwargs."""
-        from backend.brokers.adapters.dhan import _dhan_modify_forever_leg
-
-        order = {"price": 105.0, "quantity": 5, "order_type": "MARKET"}
-        kwargs = _dhan_modify_forever_leg(order, 110.0, "OCO", "TARGET_LEG")
-
-        assert kwargs["leg_name"] == "TARGET_LEG"
-        assert kwargs["order_flag"] == "OCO"
-        assert kwargs["trigger_price"] == 110.0
-
-    def test_dhan_raise_asymmetric_gtt_sets_sentinels(self):
-        """_dhan_raise_asymmetric_gtt raises with partial-modify sentinels."""
-        from backend.brokers.adapters.dhan import _dhan_raise_asymmetric_gtt
-
-        with pytest.raises(RuntimeError):
-            _dhan_raise_asymmetric_gtt("GTT123", {"error": "rejected"})
+# TestDhanGttHelpers removed (Bracket/Template-GTT removal, T3.1, 2026-11)
+# — _dhan_gtt_order_id, _dhan_place_forever_kwargs, _dhan_modify_forever_leg,
+# _dhan_raise_asymmetric_gtt were all deleted along with
+# DhanBroker.place_gtt/modify_gtt (their only callers).
 
 
-# ─────────────────────────────────────────────────────────────────────────
 # Part G: Line Range 925-960 Tests — basket_order_margins
 # ─────────────────────────────────────────────────────────────────────────
 
@@ -2002,31 +1917,8 @@ class TestNormalisePositionRow:
         assert "CE" in row["tradingsymbol"].upper()
 
 
-class TestPlaceGttMcxNotImplemented:
-    """Test DhanBroker.place_gtt MCX/NCO restriction."""
-
-    def test_place_gtt_mcx_raises_not_implemented(self):
-        """place_gtt raises NotImplementedError for MCX."""
-        # Direct function test without instantiating DhanBroker
-        from backend.brokers.adapters.dhan import DhanBroker
-
-        # Create minimal mock connection
-        conn_mock = MagicMock()
-        conn_mock.account = "test"
-
-        # This will fail at the _resolve_security_id step which is the intent
-        # (we can't test place_gtt fully without a real connection)
-        broker = DhanBroker(conn=conn_mock)
-
-        with pytest.raises(NotImplementedError, match="MCX/NCO"):
-            broker.place_gtt(
-                trigger_type="single",
-                tradingsymbol="CRUDEOIL26JUL8500CE",
-                exchange="MCX",
-                last_price=100.0,
-                orders=[{"price": 100.0}],
-                trigger_values=[95.0],
-            )
+# TestPlaceGttMcxNotImplemented removed (Bracket/Template-GTT removal,
+# T3.1, 2026-11) — DhanBroker.place_gtt was deleted.
 
 
 if __name__ == "__main__":

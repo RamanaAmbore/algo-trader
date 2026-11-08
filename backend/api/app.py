@@ -48,7 +48,6 @@ from backend.api.routes.holdings import HoldingsController
 from backend.api.routes.market import MarketController
 from backend.api.routes.news import NewsController
 from backend.api.routes.grammar import GrammarTokenController
-from backend.api.routes.templates import OrderTemplateController
 from backend.api.routes.instruments import InstrumentsController
 from backend.api.routes.orders import AccountsController, OrdersController
 from backend.api.routes.orders_gtt import GttController
@@ -208,7 +207,6 @@ _route_handlers = [
     MarketController,
     NewsController,
     GrammarTokenController,
-    OrderTemplateController,
     OrdersController,
     GttController,
     HeldOrdersController,

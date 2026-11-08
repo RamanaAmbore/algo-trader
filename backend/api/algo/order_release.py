@@ -479,70 +479,12 @@ async def _resume_chase_after_hold(
         _ch_mark_chase_inactive(row_id)
 
 
-async def release_template_exit(order_id: int, actor: str) -> dict:
-    """Release held template exits: place the exit GTTs for a filled parent.
-
-    CRITICAL FIX (2026-10): `_fire_template_attach_on_fill` re-checks
-    `template_exit_held()` against the SAME still-held global switch /
-    per-order override before doing anything — so calling it here with
-    no way to skip that check meant every release immediately re-held
-    the order again (via `hold_template_exit`), while this function
-    still returned a hardcoded `{"ok": True, "status": "FILLED"}`
-    regardless of what actually happened. The operator was told exits
-    were placed when nothing was ever sent to the broker. Fixed by
-    calling with `bypass_hold=True` — releasing IS the operator's
-    explicit authorization, so the hold must not re-fire on this path —
-    and by inspecting the REAL `AttachResult`: `ok` is only `True` when
-    it actually produced a GTT id or a wing order id. On a non-success,
-    the hold is restored via `hold_template_exit()` so the row stays in
-    HeldOrdersCard and a second Release attempt remains possible,
-    instead of silently falling out of view with nothing armed.
-    """
-    from backend.api.database import async_session
-    from backend.api.models import AlgoOrder
-    from sqlalchemy import select
-    from backend.api.routes.orders_place import _fire_template_attach_on_fill
-
-    async with async_session() as s:
-        row = (await s.execute(select(AlgoOrder).where(AlgoOrder.id == order_id)
-                               .with_for_update())).scalar_one_or_none()
-        if row is None:
-            return {"ok": False, "reason": "order not found", "status": ""}
-        rec = parse_hold_record(row.hold_json) or {}
-        if rec.get("category") != "template_exit":
-            return {"ok": False, "reason": "no held template exits on this order", "status": row.status}
-        if row.attached_gtts_json:
-            row.hold_json = None
-            await s.commit()
-            return {"ok": True, "reason": "exits already attached", "status": row.status}
-        row.hold_json = None
-        await s.commit()
-        row_status = row.status
-        args = dict(parent_row_id=row.id, parent_account=row.account,
-                    parent_symbol=row.symbol, parent_exchange=row.exchange,
-                    parent_side=row.transaction_type, parent_qty=int(row.quantity),
-                    fill_price=float(row.fill_price or 0),
-                    # Sprint 8 fix: was `int(row.template_id or 0)` — passing
-                    # 0 happened to work by accident (no real OrderTemplate
-                    # row ever has id=0, so load_template_for_slug_or_id
-                    # still missed and fell through to the ad-hoc path), but
-                    # relied on that coincidence rather than the explicit
-                    # `template_id=None` contract every other
-                    # `_fire_template_attach_on_fill` caller now uses (see
-                    # orders_postback._pb_dispatch_template_attach, chase.
-                    # _ch_check_and_fire_template_attach, orders_place.
-                    # _maybe_fire_template_attach_for_reconcile, paper.
-                    # _paper_maybe_fire_template_attach).
-                    template_id=(int(row.template_id) if row.template_id else None),
-                    parent_product=row.product or "NRML", mode=row.mode or "live")
-    from backend.api.algo.order_events import write_event
-    await write_event(order_id, "released", f"Template exits released by {actor}", {"actor": actor})
-    result = await _fire_template_attach_on_fill(**args, bypass_hold=True)
-    if result is not None and (result.gtt_ids or result.wing_order_id):
-        return {"ok": True, "reason": "template exits placed", "status": row_status}
-    from backend.api.algo.order_hold_gate import hold_template_exit
-    await hold_template_exit(order_id, args["parent_symbol"])
-    return {"ok": False, "reason": "template exit attach failed — hold restored", "status": row_status}
+# `release_template_exit` removed (Bracket/Template-GTT removal, T3.1,
+# 2026-11) — it called `_fire_template_attach_on_fill`, deleted along
+# with `backend/api/algo/template_attach.py`. Confirmed zero live rows
+# carry `hold_json.category == "template_exit"` on prod or dev (direct
+# DB check), so this release path had no production row to handle at
+# removal time.
 
 
 # ── Release dispatch registry ───────────────────────────────────────────
@@ -559,7 +501,6 @@ async def release_template_exit(order_id: int, actor: str) -> dict:
 # value by name every call, so a patched/mocked handler is always what
 # actually runs.
 _RELEASE_HANDLERS: dict[str | None, Callable] = {
-    HoldCategory.TEMPLATE_EXIT.value: release_template_exit,
     HoldCategory.AGENT_ORDER.value: release_repeated_rejection_hold,
 }
 # expiry_close + agent_close (Sprint 3, auto-close-short-option plan) +

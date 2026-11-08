@@ -10,7 +10,17 @@ slug the operator approved. Covers:
   (c) the mint endpoint accepts and threads template_slug into the hash.
 
 Uses the real in-process token store and real hash function; only the
-template loader, audit writer, Telegram ping and ticket pipeline are patched.
+audit writer, Telegram ping and ticket pipeline are patched.
+
+Bracket/Template-GTT removal (T3.1, 2026-11): `_res_resolve_template_slug`
+(lab.py) no longer resolves a slug via
+`template_attach.load_template_for_slug_or_id` (deleted along with that
+module) — it always returns the caller's `template_id` unchanged, never
+erroring. The 3 tests that used to mock that resolver no longer need to;
+the token-binding security property this file covers (a minted token's
+purpose hash must match the redeeming request's own hash, computed from
+the RAW `template_slug` string) is unaffected by that removal — it never
+depended on the slug actually resolving to a real template.
 """
 from __future__ import annotations
 
@@ -143,10 +153,7 @@ def _mint_token_for(template_slug):
 async def test_token_minted_with_slug_redeems_with_same_slug():
     tok = _mint_token_for("default-bull")
     ctrl = R.McpController(owner=None)
-    with patch(
-        "backend.api.algo.template_attach.load_template_for_slug_or_id",
-        new=AsyncMock(return_value={"id": 7, "slug": "default-bull"}),
-    ), patch("backend.api.routes.lab._user_id", return_value=1), \
+    with patch("backend.api.routes.lab._user_id", return_value=1), \
        patch("backend.api.routes.lab._res_mcp_audit", new=AsyncMock()), \
        patch("backend.api.routes.lab._res_place_telegram_ping"), \
        patch("backend.api.routes.orders_place.ticket_order_handler",
@@ -161,10 +168,7 @@ async def test_token_minted_with_slug_redeems_with_same_slug():
 async def test_token_minted_with_slug_rejected_for_different_slug():
     tok = _mint_token_for("default-bull")
     ctrl = R.McpController(owner=None)
-    with patch(
-        "backend.api.algo.template_attach.load_template_for_slug_or_id",
-        new=AsyncMock(return_value={"id": 9, "slug": "default-bear"}),
-    ), patch("backend.api.routes.lab._user_id", return_value=1), \
+    with patch("backend.api.routes.lab._user_id", return_value=1), \
        patch("backend.api.routes.lab._res_mcp_audit", new=AsyncMock()), \
        patch("backend.api.routes.orders_place.ticket_order_handler",
              new=_fake_ticket_order_handler):
@@ -209,10 +213,7 @@ async def test_token_minted_without_slug_redeems_without_slug():
 async def test_token_minted_without_slug_rejected_when_slug_added():
     tok = _mint_token_for(None)
     ctrl = R.McpController(owner=None)
-    with patch(
-        "backend.api.algo.template_attach.load_template_for_slug_or_id",
-        new=AsyncMock(return_value={"id": 7, "slug": "default-bull"}),
-    ), patch("backend.api.routes.lab._user_id", return_value=1), \
+    with patch("backend.api.routes.lab._user_id", return_value=1), \
        patch("backend.api.routes.lab._res_mcp_audit", new=AsyncMock()), \
        patch("backend.api.routes.orders_place.ticket_order_handler",
              new=_fake_ticket_order_handler):

@@ -488,7 +488,6 @@ class TestPerCardReconcileFunctional:
                 "backend.api.routes.orders_helpers.apply_order_truth",
                 new=AsyncMock(return_value=True),
             ),
-            patch("backend.api.routes.orders._maybe_fire_template_attach_for_reconcile"),
             patch(
                 "backend.api.routes.orders._subscribe_filled_pairs",
                 new=AsyncMock(side_effect=_fake_subscribe),
@@ -547,7 +546,6 @@ class TestPerCardReconcileFunctional:
                 "backend.api.routes.orders_helpers.apply_order_truth",
                 new=AsyncMock(return_value=True),
             ),
-            patch("backend.api.routes.orders._maybe_fire_template_attach_for_reconcile"),
             patch(
                 "backend.api.routes.orders._subscribe_filled_pairs",
                 new=AsyncMock(side_effect=_fake_subscribe),
@@ -615,7 +613,6 @@ class TestAdminSweepFunctional:
                 new=AsyncMock(return_value=True),
             ),
             patch("backend.api.routes.orders.invalidate"),
-            patch("backend.api.routes.orders._maybe_fire_template_attach_for_reconcile"),
             patch(
                 "backend.api.routes.orders._subscribe_filled_pairs",
                 new=AsyncMock(side_effect=_fake_subscribe),
@@ -685,9 +682,6 @@ class TestWatchdogFunctional:
             patch(
                 "backend.api.routes.orders_helpers.apply_order_truth",
                 new=AsyncMock(return_value=True),
-            ),
-            patch(
-                "backend.api.routes.orders_place._maybe_fire_template_attach_for_reconcile",
             ),
             patch(
                 "backend.api.routes.orders._subscribe_filled_pairs",

@@ -173,38 +173,9 @@ def test_broker_apis_uses_shim():
     )
 
 
-# ---------------------------------------------------------------------------
-# Fix 3 — kite.py: get_int hoisted, called once even for multi-leg GTT
-# ---------------------------------------------------------------------------
-
-def test_kite_gtt_get_int_called_once_for_multi_leg():
-    """_check_kite_gtt_qty_ceiling must read get_int once regardless of leg count.
-    get_int is a local import inside the function — patch it at its source module."""
-    from backend.brokers.adapters.kite import _check_kite_gtt_qty_ceiling
-
-    orders = [
-        {"quantity": 1},
-        {"quantity": 2},
-        {"quantity": 3},
-    ]
-    with patch("backend.shared.helpers.settings.get_int", return_value=200) as mock_gi:
-        # MCX with 3 legs all under ceiling — should pass without raising
-        _check_kite_gtt_qty_ceiling("MCX", orders, "CRUDEOIL26JUL7500CE")
-        assert mock_gi.call_count == 1, (
-            f"get_int should be called once (hoisted), got {mock_gi.call_count}"
-        )
-
-
-def test_kite_gtt_ceiling_raises_for_mcx_over_limit():
-    """MCX GTT leg qty > ceiling must raise ValueError."""
-    from backend.brokers.adapters.kite import _check_kite_gtt_qty_ceiling
-
-    with patch("backend.shared.helpers.settings.get_int", return_value=200):
-        with pytest.raises(ValueError, match="absurd-value ceiling"):
-            _check_kite_gtt_qty_ceiling(
-                "MCX", [{"quantity": 201}], "CRUDEOIL26JUL7500CE"
-            )
-
+# Fix 3 (kite.py _check_kite_gtt_qty_ceiling get_int hoisting) removed
+# (Bracket/Template-GTT removal, T3.1, 2026-11) — that function was
+# deleted along with KiteBroker.place_gtt/modify_gtt (its only callers).
 
 # ---------------------------------------------------------------------------
 # Fix 4 — groww.py: _GROWW_MARGINS_LOGGED at module top (not bottom)
@@ -247,98 +218,9 @@ def test_groww_margins_logged_at_module_top():
     )
 
 
-# ---------------------------------------------------------------------------
-# Fix 5 — dhan.py: NFO/BFO GTT qty ceiling
-# ---------------------------------------------------------------------------
-
-def test_dhan_gtt_nfo_qty_over_ceiling_raises():
-    """DhanBroker.place_gtt must raise ValueError when NFO leg qty > 50,000."""
-    from backend.brokers.adapters.dhan import DhanBroker, _DHAN_GTT_MAX_QTY
-
-    # Confirm the constant is set correctly
-    assert _DHAN_GTT_MAX_QTY == 50_000
-
-    # Build a minimal DhanBroker with a mocked connection
-    mock_conn = MagicMock()
-    mock_conn.account = "DH6847"
-
-    broker = DhanBroker.__new__(DhanBroker)
-    broker._conn = mock_conn
-    broker._last_req = {}
-    broker._last_resp = {}
-
-    with pytest.raises(ValueError, match="50000"):
-        broker.place_gtt(
-            trigger_type="single",
-            tradingsymbol="NIFTY26JUL25000CE",
-            exchange="NFO",
-            last_price=100.0,
-            orders=[{"quantity": 50_001, "price": 100.0, "order_type": "LIMIT",
-                     "transaction_type": "BUY", "product": "NRML"}],
-            trigger_values=[100.0],
-        )
-
-
-def test_dhan_gtt_bfo_qty_over_ceiling_raises():
-    """DhanBroker.place_gtt must raise ValueError when BFO leg qty > 50,000."""
-    from backend.brokers.adapters.dhan import DhanBroker
-
-    mock_conn = MagicMock()
-    mock_conn.account = "DH6847"
-    broker = DhanBroker.__new__(DhanBroker)
-    broker._conn = mock_conn
-    broker._last_req = {}
-    broker._last_resp = {}
-
-    with pytest.raises(ValueError, match="50000"):
-        broker.place_gtt(
-            trigger_type="single",
-            tradingsymbol="SENSEX26JUL80000CE",
-            exchange="BFO",
-            last_price=50.0,
-            orders=[{"quantity": 60_000, "price": 50.0, "order_type": "LIMIT",
-                     "transaction_type": "BUY", "product": "NRML"}],
-            trigger_values=[50.0],
-        )
-
-
-def test_dhan_gtt_nfo_qty_under_ceiling_no_raise():
-    """DhanBroker.place_gtt must not raise the ceiling error for NFO qty ≤ 50,000."""
-    from backend.brokers.adapters.dhan import DhanBroker
-
-    mock_conn = MagicMock()
-    mock_conn.account = "DH6847"
-    broker = DhanBroker.__new__(DhanBroker)
-    broker._conn = mock_conn
-    broker._last_req = {}
-    broker._last_resp = {}
-
-    # Patch _resolve_security_id to return a security_id and short-circuit the SDK call
-    with patch("backend.brokers.adapters.dhan._resolve_security_id", return_value="12345"), \
-         patch("backend.brokers.adapters.dhan.DhanBroker._sdk_orders") as mock_sdk, \
-         patch("backend.brokers.adapters.dhan._dhan_place_forever_kwargs", return_value={}), \
-         patch("backend.brokers.adapters.dhan._dhan_gtt_order_id", return_value="ORD001"):
-        mock_sdk_inst = MagicMock()
-        mock_sdk_inst.place_forever.return_value = {"status": "success", "data": {"orderId": "ORD001"}}
-        type(broker)._sdk_orders = property(lambda self: mock_sdk_inst)
-
-        # Should not raise ValueError for qty=100 (well under 50,000)
-        try:
-            broker.place_gtt(
-                trigger_type="single",
-                tradingsymbol="NIFTY26JUL25000CE",
-                exchange="NFO",
-                last_price=100.0,
-                orders=[{"quantity": 100, "price": 100.0, "order_type": "LIMIT",
-                         "transaction_type": "BUY", "product": "NRML"}],
-                trigger_values=[100.0],
-            )
-        except ValueError as e:
-            if "50000" in str(e):
-                pytest.fail(f"Ceiling error should not fire for qty=100: {e}")
-        except Exception:
-            pass  # other errors (SDK mock imperfect) are acceptable
-
+# Fix 5 (dhan.py NFO/BFO GTT qty ceiling) removed (Bracket/Template-GTT
+# removal, T3.1, 2026-11) — DhanBroker.place_gtt and
+# _check_dhan_gtt_qty_ceiling/_DHAN_GTT_MAX_QTY were deleted.
 
 # ---------------------------------------------------------------------------
 # Fix 6 — extract_snapshot_multiplier deleted from positions_helpers.py

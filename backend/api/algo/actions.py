@@ -8,8 +8,8 @@ Empty list means alert-only (no action taken).
 
 Module layout (split from the original 2580-line file):
   actions.py          — coordinator: execute(), _resolve_mode(), gate helpers,
-                        _maybe_attach_template_from_action(), _write_live_order(),
-                        grammar stubs, re-exports of all sub-module symbols.
+                        _write_live_order(), grammar stubs, re-exports of all
+                        sub-module symbols.
   actions_preflight.py — preflight helpers + run_preflight() + diagnose_live_failure()
   actions_sim.py       — sim (mode-1), replay (mode-4), shadow (mode-5) writers
   actions_paper.py     — paper-trade writer + dispatcher (mode-2)
@@ -1104,91 +1104,18 @@ def _build_template_overrides(params: dict) -> dict:
     return overrides
 
 
-async def _al_apply_template(
-    agent, algo_order_id: int, template_id, template_slug,
-    overrides: dict, params: dict,
-    parent_account: str, parent_symbol: str, parent_side: str,
-    parent_qty: int, parent_exchange: str, parent_price: float,
-    apply_path: str,
-) -> "dict | None":
-    """Call apply_template_to_order and return the result dict (or None on error)."""
-    try:
-        from backend.api.algo.template_attach import apply_template_to_order
-        from backend.api.routes.orders_place import _get_template_attach_lock
-        # Same per-row lock _fire_template_attach_on_fill uses — now that
-        # the live apply_plan_live chain runs off the event loop
-        # (asyncio.to_thread), an agent-fired place_order's own template
-        # attach can genuinely interleave with a concurrent postback/chase-
-        # terminal attach on the same row and place a duplicate live GTT
-        # without this.
-        _row_lock = await _get_template_attach_lock(algo_order_id)
-        async with _row_lock:
-            result = await apply_template_to_order(
-                template_id=int(template_id) if template_id is not None else None,
-                template_slug=str(template_slug) if template_slug else None,
-                overrides=overrides,
-                parent_account=parent_account,
-                parent_symbol=parent_symbol,
-                parent_side=parent_side,
-                parent_qty=parent_qty,
-                parent_exchange=parent_exchange,
-                parent_fill_price=parent_price,
-                parent_product=str(params.get("product") or "NRML"),
-                parent_order_id=algo_order_id,
-                parent_agent_id=getattr(agent, "id", None),
-                apply_path=apply_path,
-            )
-    except Exception as e:
-        logger.error(
-            f"[ACTION-TEMPLATE] attach failed for agent={agent.slug} "
-            f"order=#{algo_order_id}: {e}"
-        )
-        return None
-    return result.to_dict() if result is not None else None
-
-
-async def _maybe_attach_template_from_action(
-    agent, action_type: str, params: dict,
-    *, algo_order_id: int | None,
-    parent_account: str, parent_symbol: str, parent_side: str,
-    parent_qty: int, parent_exchange: str, parent_price: float,
-    apply_path: str = "auto",
-) -> dict | None:
-    """Run the unified template-attach pipeline for an agent action.
-    Mirrors the OrderTicket path so OrderTicket-driven and agent-driven
-    placements behave identically.
-
-    Action params can carry:
-      template_id            int  | null
-      template_slug          str  | null    (e.g. "default-bull")
-      tp_pct_override        float | null
-      sl_pct_override        float | null
-      wing_premium_pct_override   float | null
-      wing_strike_offset_override int   | null
-
-    Backward compat: when `target_pct` (legacy v1 fractional) is set and
-    no tp_pct_override is, we map it to tp_pct (% units).
-
-    Returns the AttachResult dict for the agent_events.detail line, or
-    None when neither a template nor an override was supplied.
-    """
-    if algo_order_id is None:
-        return None
-
-    overrides     = _build_template_overrides(params)
-    template_id   = params.get("template_id")
-    template_slug = params.get("template_slug")
-
-    if template_id is None and not template_slug and not any(
-        v is not None for v in overrides.values()
-    ):
-        return None
-
-    return await _al_apply_template(
-        agent, algo_order_id, template_id, template_slug, overrides, params,
-        parent_account, parent_symbol, parent_side, parent_qty,
-        parent_exchange, parent_price, apply_path,
-    )
+# `_al_apply_template`/`_maybe_attach_template_from_action` removed
+# (Bracket/Template-GTT removal, T3.1, 2026-11) — both called
+# `apply_template_to_order`, which was deleted along with
+# `backend/api/algo/template_attach.py`. Confirmed zero active/inactive
+# agents reference `template_id`/`template_slug` in their actions or
+# preamble (prod + dev DB check) before removing this. The generic
+# `template_id`/`template_slug`/override params on `place_order`/`order`
+# actions themselves are left in place (schema/grammar cleanup is a
+# later sub-sprint) — a caller that still supplies them now gets no
+# template attach, silently, same policy as the ticket/basket paths.
+# `_build_template_overrides` above is kept — `actions_live.py` still
+# calls it (its result is simply unused now).
 
 
 async def _write_live_order(agent, action_type: str, resolved: dict,

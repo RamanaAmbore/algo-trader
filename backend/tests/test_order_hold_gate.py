@@ -58,12 +58,11 @@ def test_before_cutoff_true_until_cutoff(monkeypatch):
     assert gate.before_cutoff("NFO", late) is False
 
 
-def test_template_exit_held_by_default(monkeypatch):
-    monkeypatch.setattr(gate, "get_bool", lambda key, default=False: default)
-    assert gate.template_exit_held() is True
+# test_template_exit_held_by_default removed (Bracket/Template-GTT
+# removal, T3.1, 2026-11) — order_hold_gate.template_exit_held was deleted.
 
 
-# ── held_for: generic hold-check, exact parity with the two specific wrappers ──
+# ── held_for: generic hold-check, exact parity with the specific wrapper ──
 
 def test_held_for_expiry_close_matches_specific_wrapper(monkeypatch):
     monkeypatch.setattr(gate, "get_bool", lambda key, default=False: default)
@@ -73,20 +72,18 @@ def test_held_for_expiry_close_matches_specific_wrapper(monkeypatch):
     assert gate.held_for(HoldCategory.EXPIRY_CLOSE) is False
 
 
-def test_held_for_template_exit_matches_specific_wrapper(monkeypatch):
-    monkeypatch.setattr(gate, "get_bool", lambda key, default=False: False)
-    assert gate.held_for(HoldCategory.TEMPLATE_EXIT) is True
-    assert gate.held_for(HoldCategory.TEMPLATE_EXIT, False) is False
-    monkeypatch.setattr(gate, "get_bool", lambda key, default=False: True)
-    assert gate.held_for(HoldCategory.TEMPLATE_EXIT) is False
-    assert gate.held_for(HoldCategory.TEMPLATE_EXIT, True) is True
-    assert gate.held_for(HoldCategory.TEMPLATE_EXIT, None) is False
+# test_held_for_template_exit_matches_specific_wrapper removed (Bracket/
+# Template-GTT removal, T3.1, 2026-11) — order_hold_gate.template_exit_held
+# was deleted; held_for()'s own override-vs-switch precedence is covered
+# generically by test_held_for_expiry_close_matches_specific_wrapper above.
 
 
 def test_held_for_queries_the_categorys_own_released_key(monkeypatch):
     """held_for must build 'hold.<category>_released', not a stringified
     enum repr — regression guard against f-string-ing the Enum member
-    itself instead of `.value`."""
+    itself instead of `.value`. Uses AGENT_ORDER as the second category
+    (TEMPLATE_EXIT no longer exists — Bracket/Template-GTT removal, T3.1,
+    2026-11) — any second HoldCategory member proves the same thing."""
     seen_keys = []
 
     def _get_bool(key, default=False):
@@ -96,8 +93,8 @@ def test_held_for_queries_the_categorys_own_released_key(monkeypatch):
     monkeypatch.setattr(gate, "get_bool", _get_bool)
     gate.held_for(HoldCategory.EXPIRY_CLOSE)
     assert seen_keys[-1] == gate.EXPIRY_CLOSE_RELEASED_KEY
-    gate.held_for(HoldCategory.TEMPLATE_EXIT)
-    assert seen_keys[-1] == gate.TEMPLATE_EXIT_RELEASED_KEY
+    gate.held_for(HoldCategory.AGENT_ORDER)
+    assert seen_keys[-1] == "hold.agent_order_released"
 
 
 # ── record_held_order: generic hold-creation, parameterised by category ──────
@@ -184,31 +181,9 @@ def test_record_held_order_detail_uses_pending_not_held(monkeypatch):
     assert "HELD" not in created.detail
 
 
-def test_hold_template_exit_write_event_message_uses_pending_not_held(monkeypatch):
-    """2026-11 'Pending' rename — `hold_template_exit`'s order_events message
-    (rendered in the order timeline drawer) must say 'pending release', not
-    'held'. The event `kind` itself ('held') is an internal DB taxonomy
-    value and is deliberately left unchanged."""
-    from backend.api.algo import order_hold_gate as gate2
-
-    mock_row = MagicMock()
-    mock_session = AsyncMock()
-    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-    mock_session.__aexit__ = AsyncMock(return_value=False)
-    _scalar = MagicMock()
-    _scalar.scalar_one_or_none.return_value = mock_row
-    mock_session.execute = AsyncMock(return_value=_scalar)
-    mock_session.commit = AsyncMock()
-    monkeypatch.setattr("backend.api.database.async_session", lambda: mock_session)
-
-    with patch("backend.api.algo.order_events.write_event", new_callable=AsyncMock) as mock_write:
-        asyncio.run(gate2.hold_template_exit(1377, "GOLD26OCT142000PE"))
-
-    mock_write.assert_awaited_once()
-    args = mock_write.call_args.args
-    assert args[0] == 1377
-    assert args[1] == "held"  # DB enum/kind value — unchanged by design
-    assert args[2] == "Template exits pending release for GOLD26OCT142000PE"
+# test_hold_template_exit_write_event_message_uses_pending_not_held
+# removed (Bracket/Template-GTT removal, T3.1, 2026-11) —
+# order_hold_gate.hold_template_exit was deleted.
 
 
 def test_record_held_order_dedup_returns_existing_row_id_without_inserting(monkeypatch):

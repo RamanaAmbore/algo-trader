@@ -188,10 +188,6 @@ async def _opo_postprocess(
                     _sel(AlgoOrder).where(AlgoOrder.id == algo_order_id)
                 )).scalar_one_or_none()
             if fresh is not None:
-                from backend.api.routes.orders_place import (
-                    _maybe_fire_template_attach_for_reconcile,
-                )
-                _maybe_fire_template_attach_for_reconcile(fresh)
                 from backend.api.routes.orders import _subscribe_filled_pairs
                 await _subscribe_filled_pairs(
                     [(fresh.symbol, fresh.exchange)]

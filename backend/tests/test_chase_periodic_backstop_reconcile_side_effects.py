@@ -52,10 +52,11 @@ def _db_session(row):
 
 
 @pytest.mark.asyncio
-async def test_periodic_check_fires_template_attach_on_a_caught_fill():
+async def test_periodic_check_fires_ws_resubscribe_on_a_caught_fill():
     """A fill caught by the periodic in-loop broker-truth check must
-    fire template-attach + ws-resubscribe, matching every other
-    automatic corrector."""
+    re-subscribe the ticker, matching every other automatic corrector.
+    (Template-attach dispatch removed — Bracket/Template-GTT removal,
+    T3.1, 2026-11.)"""
     fresh_row = SimpleNamespace(
         id=11, status="FILLED", broker_order_id="OID1",
         account="ZG0790", symbol="NIFTY25JULFUT", exchange="NFO",
@@ -64,7 +65,6 @@ async def test_periodic_check_fires_template_attach_on_a_caught_fill():
     truth = OrderTruth(available=True, algo_status="FILLED",
                        average_price=105.0, raw_broker_status="COMPLETE")
 
-    attach_calls: list = []
     subscribe_calls: list = []
 
     with patch(
@@ -77,9 +77,6 @@ async def test_periodic_check_fires_template_attach_on_a_caught_fill():
         "backend.api.database.async_session",
         return_value=_db_session(fresh_row),
     ), patch(
-        "backend.api.routes.orders_place._maybe_fire_template_attach_for_reconcile",
-        new=MagicMock(side_effect=lambda row: attach_calls.append(row)),
-    ), patch(
         "backend.api.routes.orders._subscribe_filled_pairs",
         new=AsyncMock(side_effect=lambda pairs: subscribe_calls.append(pairs)),
     ), patch("backend.api.algo.order_poll.logger") as mock_log:
@@ -90,11 +87,6 @@ async def test_periodic_check_fires_template_attach_on_a_caught_fill():
         )
 
     assert result == "FILLED"
-    assert attach_calls == [fresh_row], (
-        "a fill caught by the periodic broker-truth check must fire "
-        "template-attach, matching the watchdog/order-poll-sweep "
-        "treatment every other automatic corrector gets."
-    )
     assert subscribe_calls == [[("NIFTY25JULFUT", "NFO")]], (
         "a fill caught by the periodic broker-truth check must "
         "re-subscribe the ticker, matching every other automatic "
@@ -136,8 +128,6 @@ async def test_periodic_check_does_not_shortcircuit_into_a_permanent_noop():
         "backend.api.database.async_session",
         return_value=_db_session(fresh_row),
     ), patch(
-        "backend.api.routes.orders_place._maybe_fire_template_attach_for_reconcile",
-    ), patch(
         "backend.api.routes.orders._subscribe_filled_pairs",
         new=AsyncMock(),
     ), patch("backend.api.algo.order_poll.logger"):
@@ -169,8 +159,6 @@ async def test_periodic_check_no_double_dispatch_when_already_filled_elsewhere()
         "backend.api.routes.orders_helpers.apply_order_truth",
         new=AsyncMock(return_value=False),  # already FILLED -> no-op
     ) as mock_apply, patch(
-        "backend.api.routes.orders_place._maybe_fire_template_attach_for_reconcile",
-    ) as attach_mock, patch(
         "backend.api.routes.orders._subscribe_filled_pairs",
         new=AsyncMock(),
     ) as subscribe_mock, patch("backend.api.algo.order_poll.logger"):
@@ -182,14 +170,14 @@ async def test_periodic_check_no_double_dispatch_when_already_filled_elsewhere()
 
     assert result is None
     mock_apply.assert_awaited_once()
-    attach_mock.assert_not_called()
     subscribe_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_backstop_reconcile_fires_template_attach_on_a_caught_fill():
+async def test_backstop_reconcile_fires_ws_resubscribe_on_a_caught_fill():
     """A fill resolved by the ambiguous-abort backstop reconcile must
-    also fire template-attach + ws-resubscribe."""
+    re-subscribe the ticker. (Template-attach dispatch removed —
+    Bracket/Template-GTT removal, T3.1, 2026-11.)"""
     stuck_row = SimpleNamespace(
         id=22, status="CANCEL_FAILED", broker_order_id="OID4",
         account="ZG0790", symbol="NIFTY25JULFUT", exchange="NFO",
@@ -203,7 +191,6 @@ async def test_backstop_reconcile_fires_template_attach_on_a_caught_fill():
     truth = OrderTruth(available=True, algo_status="FILLED",
                        average_price=210.5, raw_broker_status="COMPLETE")
 
-    attach_calls: list = []
     subscribe_calls: list = []
 
     with patch.object(chase, "_async_session", return_value=_db_session(stuck_row)), \
@@ -217,18 +204,10 @@ async def test_backstop_reconcile_fires_template_attach_on_a_caught_fill():
             "backend.api.database.async_session",
             return_value=_db_session(fresh_row),
          ), patch(
-            "backend.api.routes.orders_place._maybe_fire_template_attach_for_reconcile",
-            new=MagicMock(side_effect=lambda row: attach_calls.append(row)),
-         ), patch(
             "backend.api.routes.orders._subscribe_filled_pairs",
             new=AsyncMock(side_effect=lambda pairs: subscribe_calls.append(pairs)),
          ), patch.object(chase, "logger") as mock_logger:
         await chase._ch_backstop_reconcile_one(22)
 
-    assert attach_calls == [fresh_row], (
-        "a fill resolved by the ambiguous-abort backstop reconcile "
-        "must fire template-attach, same as every other automatic "
-        "corrector."
-    )
     assert subscribe_calls == [[("NIFTY25JULFUT", "NFO")]]
     mock_logger.info.assert_called_once()

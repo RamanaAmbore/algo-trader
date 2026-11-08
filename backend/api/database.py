@@ -1442,17 +1442,12 @@ async def init_db() -> None:
     from backend.api.algo.templates_seed import seed_templates
     await seed_templates()
 
-    # Sprint E (Agent/Bracket/Template unification phase) — mirror every
-    # OrderTemplate row (system AND custom) into its matching
-    # Agent(kind='bracket') row. Runs AFTER seed_agents()'s own prune
-    # (so this boot's kind='bracket' rows are created only after the
-    # kind != "bracket" prune-guard fix is in effect) and AFTER
-    # seed_templates() just above (so a fresh deploy's just-reseeded /
-    # just-rebalanced system OrderTemplate rows are mirrored within the
-    # same boot). `order_templates` stays in place — this is additive
-    # sync only, never a drop.
-    from backend.api.algo.bracket_registry import migrate_order_templates_to_bracket_agents
-    await migrate_order_templates_to_bracket_agents()
+    # Sprint E's OrderTemplate -> Agent(kind='bracket') mirror sync
+    # (`bracket_registry.migrate_order_templates_to_bracket_agents()`) is
+    # removed (Bracket/Template-GTT removal, T3.1, 2026-11) along with
+    # `bracket_registry.py` itself. Existing `kind='bracket'` Agent rows
+    # are left in place (schema drop is a later, deliberately separate
+    # sub-sprint) but are no longer kept in sync with `order_templates`.
 
     # Seed the single shared 'Pinned' watchlist + migrate any per-user
     # Pinned/Default rows into it. Idempotent.

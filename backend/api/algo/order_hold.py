@@ -9,7 +9,17 @@ from enum import Enum
 
 class HoldCategory(str, Enum):
     EXPIRY_CLOSE = "expiry_close"
-    TEMPLATE_EXIT = "template_exit"
+    # TEMPLATE_EXIT removed (Bracket/Template-GTT removal, T3.1,
+    # 2026-11) — its 3 dedicated functions (`template_exit_held`,
+    # `template_exit_override`, `hold_template_exit` in
+    # `order_hold_gate.py`; `release_template_exit` in
+    # `order_release.py`) are deleted alongside this enum member.
+    # Confirmed zero live rows carry `hold_json.category == "template_exit"`
+    # on prod or dev (direct DB check) before removing — a historical
+    # row with this literal string in `hold_json` would fall through
+    # `get_release_handler()`'s dict lookup to the generic
+    # `_DEFAULT_RELEASE_HANDLER` (`release_held_order`), same as any
+    # other unregistered category.
     AGENT_ORDER = "agent_order"
     # Sprint 3 of the auto-close-short-option plan (generic infra, reused
     # by any future `Agent.require_release` agent). Stages a close that

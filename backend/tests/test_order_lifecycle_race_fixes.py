@@ -474,54 +474,13 @@ def test_arm_take_profit_accepts_filled_qty_and_forwards_it():
     assert "filled_qty=filled_qty" in src
 
 
-# ─────────────────────────────────────────────────────────────────────────
-# #6 — chase's template-attach fires the offsetting-position guard
-# ─────────────────────────────────────────────────────────────────────────
+# TestChaseTemplateAttachOffsettingGuard's 3 _ch_check_and_fire_
+# template_attach tests removed (Bracket/Template-GTT removal, T3.1,
+# 2026-11) — that function was deleted along with
+# backend.api.algo.template_attach. The _snap() helper they shared is
+# removed with them.
 
-def _snap(**over) -> dict:
-    base = dict(
-        id=5, target_pct=None, target_abs=None, parent_order_id=None,
-        template_id=3, account="ZG0790", symbol="NIFTY24APR25000CE",
-        exchange="NFO", transaction_type="SELL", product="NRML",
-        mode="live", filled_quantity=50, quantity=50,
-        intent="", is_close_intent=False,
-    )
-    base.update(over)
-    return base
-
-
-class TestChaseTemplateAttachOffsettingGuard:
-    @pytest.mark.asyncio
-    async def test_skips_when_offsetting_position(self):
-        from backend.api.algo import chase as m
-        with patch("backend.api.routes.orders_place._is_offsetting_position",
-                   new=AsyncMock(return_value=True)), \
-             patch("backend.api.routes.orders._fire_template_attach_on_fill",
-                   new=AsyncMock()) as mock_fire:
-            await m._ch_check_and_fire_template_attach(_snap(), 100.0)
-        mock_fire.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_fires_when_not_offsetting(self):
-        from backend.api.algo import chase as m
-        with patch("backend.api.routes.orders_place._is_offsetting_position",
-                   new=AsyncMock(return_value=False)), \
-             patch("backend.api.routes.orders._fire_template_attach_on_fill",
-                   new=AsyncMock()) as mock_fire:
-            await m._ch_check_and_fire_template_attach(_snap(), 100.0)
-        mock_fire.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_skips_on_explicit_close_intent_without_broker_call(self):
-        from backend.api.algo import chase as m
-        with patch("backend.api.routes.orders_place._is_offsetting_position",
-                   new=AsyncMock()) as mock_offset, \
-             patch("backend.api.routes.orders._fire_template_attach_on_fill",
-                   new=AsyncMock()) as mock_fire:
-            await m._ch_check_and_fire_template_attach(_snap(intent="close"), 100.0)
-        mock_offset.assert_not_called()
-        mock_fire.assert_not_called()
-
+class TestChaseSnapshotIntentFields:
     def test_snapshot_captures_intent_fields(self):
         from backend.api.algo.chase import _chase_snapshot_algo_row
         row = SimpleNamespace(
@@ -579,80 +538,10 @@ class TestChaseIsOffsettingSign:
         assert _ch_is_offsetting_sign(0, "SELL") is False
 
 
-class TestChaseTemplateAttachUsesPreFillSnapshot:
-    @pytest.mark.asyncio
-    async def test_full_close_correctly_classified_even_though_post_fill_read_is_flat(self):
-        """THE regression test for Bug 1.
-
-        Pre-fill snapshot shows the account was long 50 (`pre_fill_net_qty
-        =50`) before this SELL fill closed it out. A naive post-fill
-        broker read (mocked here via `_is_offsetting_position`) would see
-        the now-flat position and return False ("not offsetting") — that
-        is exactly the pre-fix bug. Proves the fix by asserting BOTH that
-        exit orders are never armed on the close AND that the post-fill
-        broker call is never even made when a pre-fill snapshot exists —
-        the decision is made from `snap["pre_fill_net_qty"]` alone.
-        """
-        from backend.api.algo import chase as m
-        with patch("backend.api.routes.orders_place._is_offsetting_position",
-                   new=AsyncMock(return_value=False)) as mock_post_fill, \
-             patch("backend.api.routes.orders._fire_template_attach_on_fill",
-                   new=AsyncMock()) as mock_fire:
-            await m._ch_check_and_fire_template_attach(
-                _snap(pre_fill_net_qty=50), 100.0,
-            )
-        mock_fire.assert_not_called()
-        mock_post_fill.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_positive_control_new_open_with_pre_fill_flat_still_fires(self):
-        """Sanity check the other direction: a genuine new open (no prior
-        position, `pre_fill_net_qty=None`) must still correctly fire."""
-        from backend.api.algo import chase as m
-        with patch("backend.api.routes.orders_place._is_offsetting_position",
-                   new=AsyncMock()) as mock_post_fill, \
-             patch("backend.api.routes.orders._fire_template_attach_on_fill",
-                   new=AsyncMock()) as mock_fire:
-            await m._ch_check_and_fire_template_attach(
-                _snap(pre_fill_net_qty=None, transaction_type="BUY"), 100.0,
-            )
-        mock_fire.assert_awaited_once()
-        mock_post_fill.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_partial_close_still_offsetting_via_pre_fill_snapshot(self):
-        """A partial close (still long 20 after partially selling out of
-        50) must also be recognised as offsetting from the pre-fill sign
-        alone — no dependency on the post-fill magnitude at all."""
-        from backend.api.algo import chase as m
-        with patch("backend.api.routes.orders_place._is_offsetting_position",
-                   new=AsyncMock()) as mock_post_fill, \
-             patch("backend.api.routes.orders._fire_template_attach_on_fill",
-                   new=AsyncMock()) as mock_fire:
-            await m._ch_check_and_fire_template_attach(
-                _snap(pre_fill_net_qty=50, transaction_type="SELL",
-                      filled_quantity=30, quantity=30), 100.0,
-            )
-        mock_fire.assert_not_called()
-        mock_post_fill.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_falls_back_to_legacy_post_fill_check_when_no_snapshot_key(self):
-        """Legacy-caller safety net: when `pre_fill_net_qty` was never
-        seeded onto the snapshot (e.g. algo_order_id was None), the guard
-        must still fall back to the original post-fill
-        `_is_offsetting_position` call rather than silently treating it
-        as unknown/never-offsetting — preserves pre-existing behaviour
-        for that edge case and keeps the original #6 tests' contract."""
-        from backend.api.algo import chase as m
-        assert "pre_fill_net_qty" not in _snap()
-        with patch("backend.api.routes.orders_place._is_offsetting_position",
-                   new=AsyncMock(return_value=True)) as mock_post_fill, \
-             patch("backend.api.routes.orders._fire_template_attach_on_fill",
-                   new=AsyncMock()) as mock_fire:
-            await m._ch_check_and_fire_template_attach(_snap(), 100.0)
-        mock_post_fill.assert_awaited_once()
-        mock_fire.assert_not_called()
+# TestChaseTemplateAttachUsesPreFillSnapshot removed (Bracket/
+# Template-GTT removal, T3.1, 2026-11) — it tested
+# _ch_check_and_fire_template_attach, deleted along with
+# backend.api.algo.template_attach.
 
 
 class TestChaseApplyPreFillNetQtyToSnap:
@@ -894,7 +783,6 @@ async def test_admin_reconcile_writes_ledger_for_reconciled_fills():
                new=AsyncMock(return_value=truth)), \
          patch("backend.api.routes.orders._fetch_child_order_ids",
                new=AsyncMock(return_value={})), \
-         patch("backend.api.routes.orders._maybe_fire_template_attach_for_reconcile"), \
          patch("backend.api.routes.orders.is_admin_request", return_value=True), \
          patch.object(pb_mod, "_pb_write_ledger_fills", new=AsyncMock()) as mock_ledger:
         await OrdersController.list_active_chases.fn(controller, request=mock_request)

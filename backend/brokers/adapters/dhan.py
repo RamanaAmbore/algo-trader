@@ -84,36 +84,6 @@ _DHAN_RATE_LIMITER = TokenBucketLimiter({
     "auth":    (1, 300.0),  # 1 call per 5 min for token generation (Dhan v2 published)
 })
 
-# Absurd-qty ceiling for NFO/BFO GTT legs — protects against untranslated
-# lots vs contracts bugs reaching the Dhan Forever Order API.
-_DHAN_GTT_MAX_QTY = 50_000  # contracts
-
-
-def _check_dhan_gtt_qty_ceiling(
-    exchange: str,
-    orders: list[dict],
-    tradingsymbol: str,
-) -> None:
-    """Apply absurd-qty ceiling to each Dhan GTT (Forever Order) leg.
-
-    Shared last-line-defense used by both place_gtt and modify_gtt —
-    catches untranslated lots-vs-contracts bugs before they reach the
-    Dhan API. Dhan Forever Orders don't cover MCX/NCO (see
-    _DHAN_GTT_UNSUPPORTED / validate_gtt_exchange), so only NFO/BFO are
-    checked here, mirroring the ceiling place_gtt already applied inline.
-    """
-    _exch_upper = exchange.upper()
-    if _exch_upper not in ("NFO", "BFO"):
-        return
-    for _leg in orders:
-        _qty = int(_leg.get("quantity") or 0)
-        if _qty > _DHAN_GTT_MAX_QTY:
-            raise ValueError(
-                f"Dhan GTT qty {_qty} exceeds ceiling {_DHAN_GTT_MAX_QTY} "
-                f"for {_exch_upper} — check lots vs contracts "
-                f"(symbol={tradingsymbol!r})"
-            )
-
 from backend.brokers.conn_event_shim import _emit_conn_event
 
 
@@ -732,101 +702,6 @@ def _dhan_exchange(kite_exchange: str) -> str:
 
 
 _DHAN_CORR_MAX = 20  # Dhan's correlationId / tag length cap
-
-
-def _dhan_gtt_base_kwargs(
-    security_id: str,
-    ex_seg: str,
-    tradingsymbol: str,
-    order0: dict,
-    trig0: float,
-    corr: str | None,
-) -> dict:
-    """Build the common place_forever kwargs shared by single + OCO legs."""
-    return {
-        "security_id":      security_id,
-        "exchange_segment": ex_seg,
-        "transaction_type": order0.get("transaction_type", "SELL"),
-        "product_type":     _PRODUCT_TO_DHAN.get(order0.get("product", "NRML"), "MARGIN"),
-        "order_type":       _ORDER_TYPE_TO_DHAN.get(order0.get("order_type", "LIMIT"), "LIMIT"),
-        "quantity":         _dhan_int(order0.get("quantity")),
-        "price":            _dhan_num(order0.get("price")),
-        "trigger_Price":    trig0,
-        "tag":              corr,
-        "symbol":           tradingsymbol,
-    }
-
-
-def _dhan_gtt_order_id(resp: dict) -> str:
-    """Extract the order_id string from a Dhan place_forever response."""
-    data = resp.get("data") or {}
-    if isinstance(data, dict):
-        return str(data.get("orderId") or data.get("order_id") or "")
-    return str(data)
-
-
-def _dhan_raise_asymmetric_gtt(gtt_id: str, resp1: Any) -> None:
-    """Log + raise the asymmetric-GTT error (ENTRY_LEG ok, TARGET_LEG failed).
-
-    Audit fix (M-2): ENTRY_LEG already modified — GTT is now asymmetric
-    (entry trigger updated, target stale). Sentinel attributes let the
-    trail-stop task detect partial state without parsing the error string."""
-    logger.warning(
-        f"Dhan modify_gtt {gtt_id}: ENTRY_LEG succeeded but "
-        f"TARGET_LEG rejected ({resp1}). GTT is ASYMMETRIC — "
-        f"entry trigger updated, target stale."
-    )
-    _err = RuntimeError(
-        f"Dhan modify_gtt rejected (target leg, ENTRY already "
-        f"modified — GTT is asymmetric): {resp1}"
-    )
-    _err.dhan_partial_modify = True        # type: ignore[attr-defined]
-    _err.dhan_modified_leg   = "ENTRY_LEG" # type: ignore[attr-defined]
-    raise _err
-
-
-def _dhan_place_forever_kwargs(
-    order0: dict,
-    orders: list[dict],
-    trigger_values: list[float],
-    trigger_type: str,
-    security_id: str,
-    ex_seg: str,
-    tradingsymbol: str,
-    corr: str | None,
-) -> dict:
-    """Build the complete place_forever kwargs dict for single or OCO."""
-    trig0 = _dhan_num(trigger_values[0]) if trigger_values else 0.0
-    base  = _dhan_gtt_base_kwargs(security_id, ex_seg, tradingsymbol, order0, trig0, corr)
-    if trigger_type == "single":
-        return {**base, "order_flag": "SINGLE"}
-    qty0 = _dhan_int(order0.get("quantity"))
-    return {**base, **_dhan_gtt_oco_extra(orders, trigger_values, qty0)}
-
-
-def _dhan_gtt_oco_extra(orders: list[dict], trigger_values: list[float], qty0: int) -> dict:
-    """Build the OCO-only extra kwargs (leg-1 fields) for place_forever."""
-    order1 = orders[1] if len(orders) > 1 else {}
-    return {
-        "order_flag":     "OCO",
-        "price1":         _dhan_num(order1.get("price")),
-        "trigger_Price1": _dhan_num(trigger_values[1] if len(trigger_values) > 1 else 0),
-        "quantity1":      _dhan_int(order1.get("quantity") or qty0),
-    }
-
-
-def _dhan_modify_forever_leg(order: dict, trigger: float, order_flag: str, leg_name: str) -> dict:
-    """Build kwargs for a single modify_forever call."""
-    return {
-        "order_flag":         order_flag,
-        "order_type":         _ORDER_TYPE_TO_DHAN.get(order.get("order_type", "LIMIT"), "LIMIT"),
-        "leg_name":           leg_name,
-        "quantity":           _dhan_int(order.get("quantity")),
-        "price":              _dhan_num(order.get("price")),
-        "trigger_price":      trigger,
-        "disclosed_quantity": 0,
-        "validity":           "DAY",
-    }
 
 
 def _call_dhan_ledger_raw(sdk_handle: Any, method_name: str, from_date: str, to_date: str) -> Any:
@@ -1505,90 +1380,11 @@ class DhanBroker(Broker):
                 "use a Kite-mirrored account for MCX/NCO templates"
             )
 
-    def place_gtt(
-        self,
-        *,
-        trigger_type: str,
-        tradingsymbol: str,
-        exchange: str,
-        last_price: float,
-        orders: list[dict],
-        trigger_values: list[float],
-        tag: str | None = None,
-    ) -> str:
-        """Place a Dhan Forever Order (GTT). Returns the Dhan order_id."""
-        if exchange in ("MCX", "NCO"):
-            raise NotImplementedError(
-                f"Dhan Forever Order does not cover MCX/NCO — operator "
-                f"should attach the template via the Kite-mirrored "
-                f"account (got exchange={exchange!r}, symbol={tradingsymbol!r})"
-            )
-        # Absurd-qty ceiling for NFO/BFO legs — catches untranslated
-        # lots vs contracts bugs before they reach the Dhan API.
-        _check_dhan_gtt_qty_ceiling(exchange, orders, tradingsymbol)
-        security_id = _resolve_security_id(tradingsymbol, exchange)
-        if not security_id:
-            raise RuntimeError(
-                f"Dhan place_gtt: unknown symbol {tradingsymbol!r} on {exchange!r}"
-            )
-        order0  = orders[0] if orders else {}
-        corr    = str(tag)[:_DHAN_CORR_MAX] if tag else None
-        kw      = _dhan_place_forever_kwargs(
-            order0, orders, trigger_values, trigger_type,
-            security_id, _dhan_exchange(exchange), tradingsymbol, corr,
-        )
-        resp = self._sdk_orders.place_forever(**kw)
-        if not isinstance(resp, dict) or resp.get("status") != "success":
-            raise RuntimeError(f"Dhan place_gtt rejected: {resp}")
-        return _dhan_gtt_order_id(resp)
-
-    def _modify_gtt_target_leg(
-        self, gtt_id: str, orders: list[dict], trigger_values: list[float]
-    ) -> None:
-        """Update the TARGET_LEG of an OCO Forever Order.
-
-        Called only when trigger_type='two-leg' and both lists have ≥2 entries.
-        Raises on rejection via `_dhan_raise_asymmetric_gtt`."""
-        tgt_kw = _dhan_modify_forever_leg(
-            orders[1], _dhan_num(trigger_values[1]), "OCO", "TARGET_LEG"
-        )
-        resp1 = self._sdk_orders.modify_forever(order_id=gtt_id, **tgt_kw)
-        if not isinstance(resp1, dict) or resp1.get("status") != "success":
-            _dhan_raise_asymmetric_gtt(gtt_id, resp1)
-
-    def modify_gtt(
-        self,
-        gtt_id: str,
-        *,
-        trigger_type: str,
-        tradingsymbol: str,
-        exchange: str,
-        last_price: float,
-        orders: list[dict],
-        trigger_values: list[float],
-    ) -> str:
-        """Modify an existing Dhan Forever Order. Returns the (same) order_id.
-
-        For OCO (`trigger_type='two-leg'`) Dhan requires TWO modify calls —
-        one per leg — because `modify_forever` only updates the named leg.
-        Sprint C fix: was hardcoded to ENTRY_LEG only; target TP never landed.
-        """
-        # LAST-LINE DEFENSE (GTT layer) — same ceiling as place_gtt, checked
-        # across ALL legs up front (before either SDK call). Checking only
-        # the entry leg here (or inline inside _modify_gtt_target_leg) would
-        # let an oversized target leg fire AFTER the entry leg was already
-        # modified, leaving an asymmetric OCO on the book.
-        _check_dhan_gtt_qty_ceiling(exchange, orders, tradingsymbol)
-        order_flag = "SINGLE" if trigger_type == "single" else "OCO"
-        order0    = orders[0] if orders else {}
-        trig0     = _dhan_num(trigger_values[0]) if trigger_values else 0.0
-        entry_kw  = _dhan_modify_forever_leg(order0, trig0, order_flag, "ENTRY_LEG")
-        resp = self._sdk_orders.modify_forever(order_id=gtt_id, **entry_kw)
-        if not isinstance(resp, dict) or resp.get("status") != "success":
-            raise RuntimeError(f"Dhan modify_gtt rejected (entry leg): {resp}")
-        if trigger_type == "two-leg" and len(orders) > 1 and len(trigger_values) > 1:
-            self._modify_gtt_target_leg(gtt_id, orders, trigger_values)
-        return gtt_id
+    # `place_gtt`/`modify_gtt` removed (Bracket/Template-GTT removal, T3.1,
+    # 2026-11) — confirmed zero callers outside the deleted
+    # `backend/api/algo/template_attach.py`. `cancel_gtt`/`get_gtts` below
+    # are KEPT — `orders_gtt.py` is a standalone, Bracket-independent
+    # "view/cancel any broker GTT" feature.
 
     def cancel_gtt(self, gtt_id: str, *, exchange: str | None = None) -> str:
         """Cancel a Dhan Forever Order. Returns the cancelled order_id.

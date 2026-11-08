@@ -562,8 +562,10 @@ async def test_sim_expiry_close_no_targets():
 # ─────────────────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_sim_place_or_close_writes_order_and_attaches_template():
-    """Order written, template attached."""
+async def test_sim_place_or_close_writes_order():
+    """Order written. Template-attach dispatch (Bracket/Template-GTT
+    removal, T3.1, 2026-11) was removed from this function — nothing
+    to patch/assert on there anymore."""
     from backend.api.algo.actions_sim import _sim_place_or_close
 
     agent = MagicMock()
@@ -580,9 +582,7 @@ async def test_sim_place_or_close_writes_order_and_attaches_template():
     with patch("backend.api.algo.actions_sim._sim_prices_for",
                return_value=(24500.0, 24498.0, 24502.0, 0)), \
          patch("backend.api.algo.actions_sim._write_sim_order",
-               new=AsyncMock(return_value=999)) as mock_write, \
-         patch("backend.api.algo.actions._maybe_attach_template_from_action",
-               new=AsyncMock()):
+               new=AsyncMock(return_value=999)) as mock_write:
         await _sim_place_or_close(agent, "place_order", params)
 
     mock_write.assert_called_once()

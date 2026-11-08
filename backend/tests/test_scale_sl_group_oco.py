@@ -1,141 +1,30 @@
 """test_scale_sl_group_oco.py
 
-Covers audit finding T14 (2026-10-23 template/bracket audit, cluster 2B):
-a scale-out TP ladder (2+ TP rungs, e.g. "TP+30% × 50") placed alongside
-one SL leg had NO OCO pairing at all. `pair_two_singles`
-(template_attach.py) only ever matched an EXACT `{"TP", "SL"}` label set
-with exactly 2 legs — a scale ladder's rung labels never match "TP"
-literally, so when SL fired and flattened the position, every surviving
-scale-ladder TP GTT stayed live with no sibling-cancel wiring, risking an
-unintended naked position on a later price move through one of them.
+Originally covered audit finding T14 (2026-10-23 template/bracket audit,
+cluster 2B) end-to-end: a scale-out TP ladder's lack of OCO pairing with
+its SL leg, from detection (`_ta_detect_scale_sl_group`,
+`template_attach.py`) through attach-entry construction
+(`_opp_build_attach_entries`, `orders_place.py`) to the background OCO
+watcher (`_task_oco_pair_watcher`'s `_oco_process_group_entry`).
 
-Fix: `_ta_detect_scale_sl_group` detects a scale-ladder-plus-SL shape and
-records `(sl_placed_id, [tp_placed_id, ...])` on `AttachResult.sibling_groups`
-(deliberately asymmetric — SL side only, so TP rungs never cancel each
-other on ordinary sequential scale-out fires). `_opp_build_attach_entries`
-writes this onto the SL leg's `attached_gtts_json` entry as `sibling_ids`.
-`_task_oco_pair_watcher`'s `_oco_process_group_entry` cancels every
-surviving TP rung once SL fires/is gone, and symmetrically cancels the
-now-pointless SL once every TP rung has already fired/gone.
+Bracket/Template-GTT removal (T3.1, 2026-11) deleted the detection and
+attach-entry stages (`template_attach.py`, the `_opp_build_attach_entries`
+tests) — their test coverage was removed with them. The background OCO
+watcher itself is untouched (explicitly out of scope for this
+sub-sprint; its own removal is a later sub-sprint), and its tests below
+are unaffected.
 """
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-
-def _gtt(label, placed_id, trigger_values=None):
-    from backend.api.algo.template_attach import GttSpec
-    spec = GttSpec(
-        trigger_type="single",
-        trigger_values=trigger_values or [100.0],
-        orders=[{"quantity": 50, "transaction_type": "SELL", "product": "NRML"}],
-        label=label,
-    )
-    spec.placed_id = placed_id
-    return spec
-
-
-def _plan(gtts):
-    from backend.api.algo.template_attach import TemplatePlan
-    return TemplatePlan(
-        template_id=1, template_name="t", template_slug="t",
-        parent_account="ZG0790", parent_symbol="NIFTY25JULFUT",
-        parent_side="BUY", parent_qty=150, parent_exchange="NFO",
-        parent_fill_price=100.0, parent_lot_size=1,
-        gtts=gtts, wing=None,
-    )
-
-
-class TestDetectScaleSlGroup:
-    def test_classic_two_leg_tp_sl_pair_returns_none(self):
-        """The exact {"TP","SL"} shape is pair_two_singles's territory —
-        the group detector must stay out of its way."""
-        from backend.api.algo.template_attach import _ta_detect_scale_sl_group
-
-        plan = _plan([_gtt("TP", "G1"), _gtt("SL", "G2")])
-        assert _ta_detect_scale_sl_group(plan) is None
-
-    def test_scale_ladder_plus_sl_forms_a_group(self):
-        """Pre-fix: no mechanism recorded this shape at all — this
-        assertion fails against the pre-fix code (the function/field
-        doesn't exist)."""
-        from backend.api.algo.template_attach import _ta_detect_scale_sl_group
-
-        plan = _plan([
-            _gtt("TP+30% × 50", "TP1"),
-            _gtt("TP+60% × 50", "TP2"),
-            _gtt("SL", "SL1"),
-        ])
-        group = _ta_detect_scale_sl_group(plan)
-        assert group == ("SL1", ["TP1", "TP2"])
-
-    def test_rejected_rung_excluded_from_group(self):
-        """A rung that never got placed_id (rejected) must never be
-        wired as something the watcher tries to cancel."""
-        from backend.api.algo.template_attach import _ta_detect_scale_sl_group
-
-        plan = _plan([
-            _gtt("TP+30% × 50", None),   # rejected
-            _gtt("TP+60% × 50", "TP2"),
-            _gtt("SL", "SL1"),
-        ])
-        group = _ta_detect_scale_sl_group(plan)
-        assert group == ("SL1", ["TP2"])
-
-    def test_single_rung_scale_out_plus_sl_also_forms_a_group(self):
-        """Even a single-rung scale-out (100% close) uses a non-literal
-        TP label ("TP+100% × 150"), so it ALSO misses pair_two_singles's
-        exact label match — the group path must still catch it."""
-        from backend.api.algo.template_attach import _ta_detect_scale_sl_group
-
-        plan = _plan([
-            _gtt("TP+100% × 150", "TP1"),
-            _gtt("SL", "SL1"),
-        ])
-        group = _ta_detect_scale_sl_group(plan)
-        assert group == ("SL1", ["TP1"])
-
-    def test_no_sl_leg_never_forms_a_group(self):
-        """A pure TP-only ladder (no SL at all) must never be grouped —
-        there's nothing to pair rungs against, and rungs must never
-        cancel each other."""
-        from backend.api.algo.template_attach import _ta_detect_scale_sl_group
-
-        plan = _plan([
-            _gtt("TP+30% × 50", "TP1"),
-            _gtt("TP+60% × 50", "TP2"),
-        ])
-        assert _ta_detect_scale_sl_group(plan) is None
-
-
-class TestAttachEntriesCarrySiblingIdsOnSlOnly:
-    def test_sl_entry_gets_sibling_ids_tp_entries_get_nothing(self):
-        from backend.api.routes.orders_place import _opp_build_attach_entries
-        from backend.api.algo.template_attach import AttachResult
-
-        plan = _plan([
-            _gtt("TP+30% × 50", "TP1"),
-            _gtt("TP+60% × 50", "TP2"),
-            _gtt("SL", "SL1"),
-        ])
-        result = AttachResult(plan=plan)
-        result.gtt_ids = ["TP1", "TP2", "SL1"]
-        result.sibling_groups = [("SL1", ["TP1", "TP2"])]
-
-        entries = _opp_build_attach_entries(result, 100.0, "BUY", "NRML")
-        by_id = {e["id"]: e for e in entries}
-
-        assert by_id["TP1"].get("sibling_ids") is None
-        assert by_id["TP1"].get("sibling_id") is None
-        assert by_id["TP2"].get("sibling_ids") is None
-        assert by_id["SL1"]["sibling_ids"] == ["TP1", "TP2"]
-        assert by_id["SL1"]["parent_account"] == "ZG0790"
-        assert by_id["SL1"]["parent_exchange"] == "NFO"
-        assert by_id["SL1"]["parent_symbol"] == "NIFTY25JULFUT", (
-            "the watcher's position-confirmation gate needs the symbol "
-            "to query the real broker position"
-        )
-
+# _gtt/_plan helpers, TestDetectScaleSlGroup and
+# TestAttachEntriesCarrySiblingIdsOnSlOnly removed (Bracket/
+# Template-GTT removal, T3.1, 2026-11) — all covered
+# _ta_detect_scale_sl_group (backend.api.algo.template_attach, deleted)
+# and _opp_build_attach_entries (orders_place.py, deleted). The OCO
+# watcher tests below (background.py) are untouched — that module is
+# explicitly out of scope for this sub-sprint.
 
 class TestOcoGttIsLive:
     def test_missing_id_is_not_live(self):
@@ -436,38 +325,10 @@ class TestOcoGroupPositionGate:
         assert out is None
 
 
-class TestApplyPlanLiveIntegration:
-    """End-to-end through the real `apply_plan_live` + MagicMock broker,
-    not just the unit-level `_ta_detect_scale_sl_group` — proves the
-    group actually gets populated on `AttachResult` for a real scale-out
-    + SL plan, not just on a hand-built plan with pre-set `placed_id`s."""
 
-    def test_scale_out_plus_sl_plan_populates_sibling_groups(self):
-        from backend.api.algo.template_attach import apply_plan_live
-        from unittest.mock import MagicMock as _MM
-
-        plan = _plan([
-            _gtt("TP+30% × 50", None),
-            _gtt("TP+60% × 50", None),
-            _gtt("SL", None),
-        ])
-        broker = _MM()
-        broker.broker_id = "zerodha_kite"
-        broker.capabilities.gtt_single = True
-        broker.validate_gtt_exchange.return_value = None
-        broker.translate_qty.side_effect = lambda exch, qty, ls: qty
-        broker.place_gtt.side_effect = ["G1", "G2", "G3"]
-        broker.get_gtts.return_value = [
-            {"id": "G1", "status": "active"},
-            {"id": "G2", "status": "active"},
-            {"id": "G3", "status": "active"},
-        ]
-
-        result = apply_plan_live(plan, broker, parent_order_id=1)
-
-        assert result.gtt_ids == ["G1", "G2", "G3"]
-        assert result.sibling_groups == [("G3", ["G1", "G2"])]
-        assert result.sibling_pairs == []
+# TestApplyPlanLiveIntegration removed (Bracket/Template-GTT removal,
+# T3.1, 2026-11) — it ran end-to-end through apply_plan_live, deleted
+# along with backend.api.algo.template_attach.
 
 
 class TestOcoParseEntriesPicksUpGroupOnlyRows:

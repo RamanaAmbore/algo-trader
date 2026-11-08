@@ -249,7 +249,6 @@ def test_init_db_real_call_does_not_raise():
          patch("backend.api.algo.template_registry.REGISTRY.reload", new=AsyncMock()), \
          patch("backend.shared.helpers.settings.seed_settings", new=AsyncMock()), \
          patch("backend.api.algo.templates_seed.seed_templates", new=AsyncMock()), \
-         patch("backend.api.algo.bracket_registry.migrate_order_templates_to_bracket_agents", new=AsyncMock()), \
          patch("backend.api.routes.watchlist.seed_global_pinned", new=AsyncMock()), \
          patch("backend.shared.helpers.alert_utils.refresh_alert_recipients", new=AsyncMock()):
 
@@ -324,9 +323,13 @@ def test_al_place_resolve_params_falls_back_when_agent_has_no_id():
 
 
 @pytest.mark.asyncio
-async def test_place_order_set_product_template_applies_both_fields():
-    """_place_order_set_product_template issues an UPDATE carrying both
-    product and template_id for the given row id."""
+async def test_place_order_set_product_template_applies_product_only():
+    """_place_order_set_product_template issues an UPDATE carrying
+    product for the given row id. template_id/template_slug/overrides
+    are accepted on the signature but silently ignored (Bracket/
+    Template-GTT removal, T3.1, 2026-11) — resolving/persisting them
+    served only the now-deleted fill-triggered template-attach
+    pipeline."""
     from backend.api.algo.actions_live import _place_order_set_product_template
 
     captured: dict = {}
@@ -348,10 +351,11 @@ async def test_place_order_set_product_template_applies_both_fields():
         await _place_order_set_product_template(123, "MIS", "9")
 
     assert captured.get("committed") is True
-    # The compiled UPDATE carries both the product and template_id values.
+    # The compiled UPDATE carries only the product value — template_id
+    # is no longer written.
     compiled_params = captured["stmt"].compile().params
     assert compiled_params.get("product") == "MIS"
-    assert compiled_params.get("template_id") == 9  # coerced to int
+    assert "template_id" not in compiled_params
 
 
 @pytest.mark.asyncio

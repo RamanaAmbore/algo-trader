@@ -84,24 +84,11 @@ class TestPbApplyStatusToRowSetsFilledQuantity:
         )
         assert r.fill_price == 105.5
 
-    def test_unblocks_pb_wants_template_attach(self):
-        """Before the fix, filled_quantity stayed 0 forever, so
-        `_pb_wants_template_attach` — the exact function named in the
-        prod log — always saw filled(0) < quantity(100) and refused."""
-        from backend.api.routes.orders_postback import (
-            _pb_apply_status_to_row, _pb_wants_template_attach,
-        )
-        r = _live_row(qty=100, filled=0)
-
-        # Pre-fill: gate correctly refuses (no fill yet at all).
-        assert _pb_wants_template_attach(r) is False
-
-        _pb_apply_status_to_row(r, new_status="FILLED", price=105.5)
-
-        assert _pb_wants_template_attach(r) is True, (
-            "gate must now pass for a genuinely full fill — this was the "
-            "structural block reported in prod (filled=0 of 100)"
-        )
+    # test_unblocks_pb_wants_template_attach removed (Bracket/
+    # Template-GTT removal, T3.1, 2026-11) — _pb_wants_template_attach
+    # was deleted along with backend.api.algo.template_attach. The
+    # filled_quantity-stamping behaviour itself is still covered by
+    # test_full_fill_sets_filled_quantity_to_quantity above.
 
     def test_price_less_filled_still_sets_filled_quantity(self):
         """A price-less COMPLETE postback still flips status to FILLED
@@ -166,48 +153,10 @@ class TestSyncApplyRowStatusSetsFilledQuantity:
 #    already stamps `filled_quantity = quantity` unconditionally on a
 #    FILLED resolution (see `test_order_truth_accessor.py::
 #    test_apply_order_truth_writes_filled_and_records_ledger` for the
-#    direct unit coverage of that). This section keeps the one
-#    genuinely distinct round-trip check: that a FILLED row produced by
-#    `apply_order_truth` actually unblocks
-#    `_maybe_fire_template_attach_for_reconcile`'s full-fill gate.
-
-class TestApplyOrderTruthUnblocksTemplateAttach:
-    @pytest.mark.asyncio
-    async def test_filled_row_unblocks_maybe_fire_template_attach_for_reconcile(self):
-        from unittest.mock import AsyncMock
-        from backend.api.routes.orders_helpers import apply_order_truth, OrderTruth
-        from backend.api.routes.orders_place import (
-            _maybe_fire_template_attach_for_reconcile,
-        )
-
-        r = _live_row(qty=60, filled=0, status="OPEN")
-        r.id = 1
-
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = r
-        mock_session = AsyncMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-        mock_session.execute = AsyncMock(return_value=mock_result)
-        mock_session.commit = AsyncMock()
-
-        with patch("backend.api.database.async_session", return_value=mock_session), \
-             patch(
-                 "backend.api.routes.orders_postback._pb_write_ledger_fills",
-                 new=AsyncMock(),
-             ):
-            mutated = await apply_order_truth(
-                1, OrderTruth(available=True, algo_status="FILLED", average_price=200.0),
-            )
-
-        assert mutated is True
-        assert r.status == "FILLED"
-        assert r.filled_quantity == 60, (
-            "apply_order_truth must stamp filled_quantity = quantity on a "
-            "FILLED resolution — otherwise every migrated reconcile caller "
-            "is stuck at 0 forever, reproducing the original defect class"
-        )
-
-        with patch("backend.api.routes.orders_place.asyncio") as mock_asyncio:
-            _maybe_fire_template_attach_for_reconcile(r)
-            mock_asyncio.create_task.assert_called_once()
+#    direct unit coverage of that).
+#
+# TestApplyOrderTruthUnblocksTemplateAttach removed (Bracket/
+# Template-GTT removal, T3.1, 2026-11) — its one distinct check was
+# that a FILLED row produced by apply_order_truth unblocks
+# _maybe_fire_template_attach_for_reconcile's full-fill gate, which no
+# longer exists.

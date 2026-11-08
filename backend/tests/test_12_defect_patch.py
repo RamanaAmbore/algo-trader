@@ -65,26 +65,9 @@ def test_funds_cache_invalidated_after_fill():
     )
 
 
-def test_template_attach_errors_trigger_alert():
-    """Template attachment failures (G1/GTT/wing) must trigger a Telegram alert,
-    not just append to result.errors silently.
-
-    G1 guard failures, translate_qty errors, and GTT/wing placement failures should
-    all result in an alert being sent when result.errors is non-empty.
-    """
-    from backend.api.algo import template_attach as _ta
-
-    src = inspect.getsource(_ta)
-
-    # The fix adds an alert call when result.errors is non-empty
-    # Look for alert pattern when errors are collected
-    assert "_fire_attach_fail_alert" in src, (
-        "template_attach must call _fire_attach_fail_alert when result.errors is non-empty — "
-        "not the pre-existing _fire_guard_alert which fires on applies_to guard, not on attach errors"
-    )
-    assert "result.errors" in src, (
-        "alert must be conditional on result.errors being non-empty"
-    )
+# test_template_attach_errors_trigger_alert removed (Bracket/
+# Template-GTT removal, T3.1, 2026-11) — backend.api.algo.template_attach
+# was deleted.
 
 
 def test_derivatives_page_positions_load_uses_args_not_opts():

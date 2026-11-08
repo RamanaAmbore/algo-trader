@@ -184,8 +184,7 @@ class TestBasketHandlerHonoursClientSimReplayMode:
              patch("backend.api.algo.agent_engine._build_now_ctx", return_value=MagicMock()), \
              patch("backend.shared.helpers.utils.is_prod_branch", return_value=True), \
              patch("backend.shared.helpers.settings.get_bool", return_value=False), \
-             patch("backend.api.database.async_session"), \
-             patch("backend.api.routes.orders_basket._attach_basket_leg_template"):
+             patch("backend.api.database.async_session"):
             await basket_order_handler(data, mock_request)
 
         mock_broker.place_order.assert_not_called()
@@ -222,8 +221,7 @@ class TestBasketHandlerHonoursClientSimReplayMode:
              patch("backend.api.algo.agent_engine._build_now_ctx", return_value=MagicMock()), \
              patch("backend.shared.helpers.utils.is_prod_branch", return_value=True), \
              patch("backend.shared.helpers.settings.get_bool", return_value=False), \
-             patch("backend.api.database.async_session", side_effect=lambda: _FakeAlgoOrderSession()), \
-             patch("backend.api.routes.orders_basket._attach_basket_leg_template"):
+             patch("backend.api.database.async_session", side_effect=lambda: _FakeAlgoOrderSession()):
             await basket_order_handler(data, mock_request)
 
         mock_broker.place_order.assert_called_once()
@@ -258,8 +256,7 @@ class TestBasketHandlerHonoursClientSimReplayMode:
              patch("backend.api.algo.agent_engine._build_now_ctx", return_value=MagicMock()), \
              patch("backend.shared.helpers.utils.is_prod_branch", return_value=True), \
              patch("backend.shared.helpers.settings.get_bool", return_value=False), \
-             patch("backend.api.database.async_session", side_effect=lambda: _FakeAlgoOrderSession()), \
-             patch("backend.api.routes.orders_basket._attach_basket_leg_template"):
+             patch("backend.api.database.async_session", side_effect=lambda: _FakeAlgoOrderSession()):
             await basket_order_handler(data, mock_request)
 
         mock_broker.place_order.assert_called_once()

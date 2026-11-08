@@ -37,13 +37,11 @@ from backend.api.routes.orders_helpers import (
     _EXCHANGES,
     _TXN_TYPES,
     _broker_for,
-    _build_overrides_json,
     _resolve_target_pct,
     _start_live_chase,
     logger,
 )
 from backend.api.routes.orders_place import (
-    _attach_basket_leg_template,
     _ticket_seed_broker_order_id,
     _verify_close_intent,
 )
@@ -663,9 +661,6 @@ async def basket_order_handler(
                             basket_tag=basket_id,
                             strategy_id=leg.strategy_id,
                             target_pct=(eff_target_pct if eff_target_pct > 0 else None),
-                            template_id=leg.template_id,
-                            template_hold_override=getattr(leg, "hold_template_exit", None),
-                            template_overrides_json=_build_overrides_json(leg),
                             product=(leg.product or "NRML"),
                             # Sprint 2b — basket legs have no per-leg
                             # client-supplied source field (BasketLeg
@@ -758,14 +753,6 @@ async def basket_order_handler(
                         _live_aid = _pre_aid
 
                     invalidate("orders")
-                    await _attach_basket_leg_template(
-                        algo_order_id=_live_aid,
-                        template_id=leg.template_id,
-                        account=account, sym=sym, side=side, qty=qty,
-                        exch=exch,
-                        price=float(leg.price or 0),
-                        product=(leg.product or "NRML"),
-                    )
                     leg_results.append(BasketLegResult(
                         leg_index=i, order_id=str(kite_oid), status="OPEN",
                     ))
@@ -813,24 +800,12 @@ async def basket_order_handler(
                         basket_tag=basket_id,
                         strategy_id=leg.strategy_id,
                         target_pct=(eff_target_pct if eff_target_pct > 0 else None),
-                        template_id=leg.template_id,
-                        template_hold_override=getattr(leg, "hold_template_exit", None),
-                        template_overrides_json=_build_overrides_json(leg),
                         product=(leg.product or "NRML"),
                         source="basket",
                         detail=f"[SHADOW-BASKET] leg {i} tag={basket_id}",
                     )
                     _s.add(_r)
                     await _s.commit()
-                    _shadow_aid = _r.id
-                await _attach_basket_leg_template(
-                    algo_order_id=_shadow_aid,
-                    template_id=leg.template_id,
-                    account=account, sym=sym, side=side, qty=qty,
-                    exch=exch,
-                    price=float(leg.price or 0),
-                    product=(leg.product or "NRML"),
-                )
                 leg_results.append(BasketLegResult(
                     leg_index=i, order_id=None, status="SHADOW",
                 ))
@@ -856,9 +831,6 @@ async def basket_order_handler(
                         basket_tag=basket_id,
                         strategy_id=leg.strategy_id,
                         target_pct=(eff_target_pct if eff_target_pct > 0 else None),
-                        template_id=leg.template_id,
-                        template_hold_override=getattr(leg, "hold_template_exit", None),
-                        template_overrides_json=_build_overrides_json(leg),
                         product=(leg.product or "NRML"),
                         source="basket",
                         detail=_detail,
@@ -891,14 +863,6 @@ async def basket_order_handler(
                             f"#{_paper_id}: {_pe}"
                         )
 
-                await _attach_basket_leg_template(
-                    algo_order_id=_paper_id,
-                    template_id=leg.template_id,
-                    account=account, sym=sym, side=side, qty=qty,
-                    exch=exch,
-                    price=float(leg.price or 0),
-                    product=(leg.product or "NRML"),
-                )
                 leg_results.append(BasketLegResult(
                     leg_index=i, order_id=str(_paper_id), status="PAPER",
                 ))

@@ -57,13 +57,6 @@ def _expiry_close_hold_json() -> str:
     )
 
 
-def _template_exit_hold_json() -> str:
-    return hold_record(
-        HoldCategory.TEMPLATE_EXIT, "template exits held until released",
-        "n/a", None, datetime.now(timezone.utc),
-    )
-
-
 # ── cancel_held_order: success cases, two different hold categories ───────
 
 @pytest.mark.asyncio
@@ -112,31 +105,14 @@ async def test_cancel_expiry_close_hold_succeeds():
     assert row.hold_json is None
 
 
-@pytest.mark.asyncio
-async def test_cancel_template_exit_hold_succeeds_without_touching_filled_status():
-    """A template_exit hold lives on a FILLED parent row — hold_template_exit
-    (order_hold_gate.py) never changes row.status. Cancelling must clear the
-    pending hold WITHOUT setting status=CANCELLED on an order that genuinely
-    filled at the broker (that would corrupt order history/reconcile)."""
-    from backend.api.algo import order_release as m
-
-    row = _held_row(hold_json=_template_exit_hold_json(), status="FILLED",
-                    account="ZJ6294", symbol="NIFTY24APR25000PE", transaction_type="SELL",
-                    quantity=50)
-    mock_session = _mock_session(row)
-    mock_write_event = AsyncMock()
-
-    with patch("backend.api.database.async_session", return_value=mock_session), \
-         patch("backend.api.algo.order_events.write_event", mock_write_event):
-        result = await m.cancel_held_order(77, actor="operator")
-
-    assert result == {"ok": True, "reason": "cancelled", "status": "FILLED"}
-    assert row.status == "FILLED"  # never overwritten — the broker fill is real
-    assert row.hold_json is None
-    assert "template exits cancelled by operator" in row.detail
-    mock_write_event.assert_called_once()
-    args, _ = mock_write_event.call_args
-    assert args[1] == "cancelled"
+# test_cancel_template_exit_hold_succeeds_without_touching_filled_status
+# removed (Bracket/Template-GTT removal, T3.1, 2026-11) — it covered
+# `cancel_held_order`'s `category == "template_exit"` branch
+# (order_release.py). That branch's code is left completely intact per
+# the removal's own scope (only the 3 TEMPLATE_EXIT-specific functions
+# and the enum member were removed, not this shared function) — it is
+# now unreachable in practice, since nothing creates a `template_exit`
+# hold anymore, but the brief does not ask for it to be stripped out.
 
 
 # ── cancel_held_order: refusal cases ────────────────────────────────────────

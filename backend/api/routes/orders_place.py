@@ -215,178 +215,15 @@ async def _enforce_capacity_guard(
         )
 
 
-# ── Template-attach helpers ───────────────────────────────────────────────────
-
-
-def _gtt_direction_errors(label: str, trig_f: float, fill_price: float, parent_side: str, is_tp: bool, is_sl: bool) -> list[str]:
-    """Return direction-check errors for one trigger value."""
-    errs: list[str] = []
-    if is_tp:
-        if parent_side == "BUY" and trig_f <= fill_price:
-            errs.append(f"{label}: TP trigger {trig_f} must be above fill {fill_price} for BUY parent")
-        elif parent_side == "SELL" and trig_f >= fill_price:
-            errs.append(f"{label}: TP trigger {trig_f} must be below fill {fill_price} for SELL parent")
-    if is_sl:
-        if parent_side == "BUY" and trig_f >= fill_price:
-            errs.append(f"{label}: SL trigger {trig_f} must be below fill {fill_price} for BUY parent")
-        elif parent_side == "SELL" and trig_f <= fill_price:
-            errs.append(f"{label}: SL trigger {trig_f} must be above fill {fill_price} for SELL parent")
-    return errs
-
-
-def _gtt_spec_errors(spec, fill_price: float, ltp: float, parent_side: str) -> list[str]:
-    """Return all trigger errors for one GttSpec."""
-    errs: list[str] = []
-    label = spec.label or "?"
-    label_up = label.upper()
-    is_oco = (spec.trigger_type == "two-leg" and "TP" in label_up and "SL" in label_up)
-    for trig_idx, trig in enumerate(spec.trigger_values or []):
-        if trig is None:
-            continue
-        try:
-            trig_f = float(trig)
-        except (TypeError, ValueError):
-            errs.append(f"{label}: trigger value {trig!r} is not a number")
-            continue
-        if trig_f <= 0:
-            errs.append(f"{label}: trigger {trig_f} must be positive")
-            continue
-        if fill_price > 0:
-            is_tp = (trig_idx == 0) if is_oco else ("TP" in label_up)
-            is_sl = (trig_idx == 1) if is_oco else ("SL" in label_up)
-            errs.extend(_gtt_direction_errors(label, trig_f, fill_price, parent_side, is_tp, is_sl))
-        if ltp and ltp > 0:
-            deviation_pct = abs(trig_f - ltp) / ltp * 100.0
-            if deviation_pct > 50.0:
-                errs.append(f"{label}: trigger {trig_f} deviates {deviation_pct:.1f}% from LTP {ltp} — possible misconfiguration (>50% band)")
-    return errs
-
-
-def _validate_gtt_triggers(plan, ltp: float, exchange: str) -> list[str]:
-    """Validate GTT trigger direction vs parent side and circuit band. (#29)
-
-    Returns a list of error strings. Caller raises HTTPException(422) on
-    non-empty list (preview) or logs CRITICAL (apply-at-fill path).
-    """
-    if plan is None:
-        return []
-    parent_side = (plan.parent_side or "BUY").upper()
-    fill_price  = float(plan.parent_fill_price or 0.0)
-    errors: list[str] = []
-    for spec in (plan.gtts or []):
-        errors.extend(_gtt_spec_errors(spec, fill_price, ltp, parent_side))
-    return errors
-
-
-# ── Template-attach machinery ─────────────────────────────────────────────────
-
-# Phase 3D #4 — per-parent-row in-process lock so the postback
-# handler and chase terminal can't both pass the
-# `attached_gtts_json is None` check simultaneously and double-place
-# the GTT at the broker. uvicorn runs with --workers 1 in prod, so
-# in-process locking is sufficient; the meta-lock guards the registry
-# write itself.
-#
-# Audit fix (M-5) — strong dict with TTL replaces the prior
-# WeakValueDictionary. The weakref pattern was "safe in current
-# deployment" (single-worker asyncio + the caller's local strong ref
-# keeps the entry alive across `async with`) but fragile to future
-# call-signature changes: any refactor that introduced an extra
-# `await` between the lock-mint and the `async with` acquisition
-# could let the GC reclaim the lock mid-handoff, allowing two waiters
-# to acquire DIFFERENT lock objects for the same parent_row_id and
-# double-place the GTT. Switching to a strong dict eliminates that
-# class of bug; the TTL sweep keeps memory bounded by retiring entries
-# that haven't been touched in `_TPL_LOCK_TTL_S` seconds (default 4 h
-# — well beyond the worst-case fill-to-attach latency including a
-# slow reconcile sweep).
-_TEMPLATE_ATTACH_LOCKS: dict[int, tuple[asyncio.Lock, float]] = {}
-_TEMPLATE_ATTACH_META_LOCK = asyncio.Lock()
-# 4 h — longest realistic live-chase window is ~30 min (max_attempts ×
-# interval); 4 h gives 8× headroom so a slow overnight reconcile sweep
-# still finds the lock before it expires. Raised from 1 h (M6).
-_TPL_LOCK_TTL_S = 14400
-
-# T16 fix (2026-10-23) — in-process hold for a template attach whose
-# broker placement SUCCEEDED but whose DB write (attached_gtts_json)
-# failed even after retry. Keyed by parent_row_id, value is
-# `{"attached": list, "fill_price": float}` — the exact payload the
-# failed persist attempt was trying to write. Deliberately in-process
-# only, mirroring `chase.py:_CH_PRE_FILL_NET_QTY`'s precedent — a
-# duplicate placement at this exact point can only come from a
-# redelivered postback, a reconcile sweep, or an order-poll pass, all
-# of which run in THIS process and already serialise on
-# `_get_template_attach_lock`'s per-row lock. Writing a DB-persisted
-# marker instead would (a) add a write to the same database that just
-# failed, (b) risk `_retry_precheck_row` permanently refusing a retry
-# if the process crashed between writing the marker and placing at the
-# broker, and (c) require every OTHER reader of `attached_gtts_json`
-# (OCO watcher, trail poller, OrderBook chips) to learn to skip it.
-# Residual: a process restart drops this hold, so a later trigger
-# would place a genuinely duplicate set of exits — the
-# `template_attach_failed` alert has already listed the broker ids by
-# then, so the operator has what they need to reconcile manually.
-_TPL_ATTACH_PERSIST_PENDING: dict[int, dict] = {}
-
-
-async def _get_template_attach_lock(parent_row_id: int) -> "asyncio.Lock":
-    """Lazily mint one asyncio.Lock per parent_row_id. The meta-lock
-    only protects the registry's get-or-create; the per-row lock then
-    serialises the read–decide–write triplet inside the fire fn.
-
-    Lazy TTL sweep: every get-or-create scans the registry for entries
-    older than _TPL_LOCK_TTL_S and drops them. Operator-facing fill
-    flows complete well within the TTL (chase + postback + reconcile
-    all measure in seconds to minutes), so eviction never races a
-    live waiter — by the time an entry's age exceeds the TTL its
-    attach has long since committed `attached_gtts_json`."""
-    async with _TEMPLATE_ATTACH_META_LOCK:
-        now = _time.monotonic()
-        # Lazy sweep — drop stale entries. Inline rather than a
-        # background task so the registry stays bounded without an
-        # extra sweep coroutine.
-        _stale = [k for k, (_, ts) in _TEMPLATE_ATTACH_LOCKS.items()
-                  if now - ts > _TPL_LOCK_TTL_S]
-        for k in _stale:
-            _TEMPLATE_ATTACH_LOCKS.pop(k, None)
-        if _stale:
-            # #19: warning-level so stale-lock evictions appear in the error
-            # log and are visible without toggling debug. Include per-key age.
-            logger.warning(
-                "[TPL-LOCK] evicted %d stale lock(s) (TTL=%ss): ids=%s",
-                len(_stale), _TPL_LOCK_TTL_S, _stale,
-            )
-        entry = _TEMPLATE_ATTACH_LOCKS.get(parent_row_id)
-        if entry is None:
-            lk = asyncio.Lock()
-            _TEMPLATE_ATTACH_LOCKS[parent_row_id] = (lk, now)
-            return lk
-        # Bump the timestamp on every access — entries don't expire
-        # while a row is being actively reconciled.
-        _TEMPLATE_ATTACH_LOCKS[parent_row_id] = (entry[0], now)
-        return entry[0]
-
-
-def _opl_reconcile_attach_eligible(row) -> bool:
-    """Return True when a reconciled row should trigger template attach.
-
-    Guards: must be live mode, must be a parent with EITHER a saved
-    template_id OR ad-hoc override fields (template_overrides_json
-    non-empty — Sprint 8 fix, mirrors the identical fix in
-    orders_postback._pb_wants_template_attach / chase.
-    _ch_maybe_fire_template_attach / paper._paper_maybe_fire_
-    template_attach), and must have a fill_price. Extracted from
-    _maybe_fire_template_attach_for_reconcile to reduce CC there."""
-    # Close-intent or explicit close flag → never attach template
-    if (row.intent or "").lower() == "close":
-        return False
-    if getattr(row, "is_close_intent", False):
-        return False
-    if (row.mode or "").lower() != "live":
-        return False
-    if not ((row.template_id or row.template_overrides_json) and row.parent_order_id is None):
-        return False
-    return bool(row.fill_price)
+# GTT trigger validation (`_gtt_direction_errors`/`_gtt_spec_errors`/
+# `_validate_gtt_triggers`) and the per-row template-attach lock registry
+# (`_TEMPLATE_ATTACH_LOCKS`/`_TEMPLATE_ATTACH_META_LOCK`/`_TPL_LOCK_TTL_S`/
+# `_get_template_attach_lock`), the persist-failure hold
+# (`_TPL_ATTACH_PERSIST_PENDING`), and `_opl_reconcile_attach_eligible`
+# were removed (Bracket/Template-GTT removal, T3.1, 2026-11) — all were
+# Bracket-only, used solely by `/retry-template` and the fill-triggered
+# attach pipeline, both deleted along with
+# `backend/api/algo/template_attach.py`.
 
 
 async def _fetch_net_position_row(
@@ -553,80 +390,13 @@ async def _is_offsetting_position(sym: str, exchange: str, side: str, account: s
     return False
 
 
-async def _ticket_strip_template_on_close(data, sym: str, side: str, account: str):
-    """Close/offset gate — strip ALL template state (saved `template_id`
-    AND every ad-hoc override field) when this order would reduce/close
-    an existing opposite position, verified against the REAL broker
-    position taken BEFORE this order is placed — this runs inside
-    `ticket_order_handler` ahead of any broker call, so it is a
-    genuinely pre-fill read, unlike a post-fill check run after a fill
-    postback/reconcile arrives.
-
-    T15 fix (2026-10-23 template/bracket audit) — this gate used to run
-    ONLY when `data.template_id` was set (2026-09 council audit fix,
-    `_is_offsetting_position` instead of trusting a client `intent`
-    flag). An override-only ticket (no saved template, inline
-    `tp_pct_override`/`sl_pct_override`/`wing_*_override` fields) sailed
-    through un-checked and carried its overrides into the persisted
-    AlgoOrder row. The ONLY defense left for that case was
-    `orders_postback.py:_pb_check_and_fire_template_attach`'s POST-fill
-    `_is_offsetting_position` read — which, for a FULL close, always
-    reads a flat/zero position (indistinguishable from "no prior
-    position at all"), the exact bug class `chase.py`'s 2026-09-30
-    "Bug 1" fix addresses for the chase path (see
-    `_ch_check_and_fire_template_attach`'s docstring). Reusing THIS
-    gate for the override-only case closes the gap at the source:
-    `_pb_wants_template_attach` and `_opl_reconcile_attach_eligible`
-    both already refuse to fire template attach once `template_id` AND
-    `template_overrides_json` are both empty, so a row stripped here
-    never reaches either path's post-fill fallback at all.
-
-    Does NOT set `intent='close'` / `is_close_intent` — those flags
-    bypass the G2 fat-finger cap and the MCX/NCO size cap
-    (`_verify_close_intent`'s whole reason for existing); a sign-only
-    offsetting read must never grant that bypass.
-
-    `orders_basket.py` has no equivalent gate at all (out of scope for
-    this fix — not in T15's file list) — a basket leg's `template_id`
-    is passed straight through with no check.
-    """
-    from backend.api.algo.template_attach import has_any_override
-    from backend.api.routes.orders_helpers import _ticket_overrides_dict
-
-    if not (data.template_id or has_any_override(_ticket_overrides_dict(data))):
-        return data
-    # Cache-freshness fix: invalidate the raw positions cache first (same
-    # pattern as chase.py's `_ch_capture_pre_fill_net_qty`) so a fill
-    # from the last few seconds — e.g. a different leg of the same
-    # basket, or a chase-managed order on the same symbol that just
-    # filled — isn't read through a stale 30s cache entry.
-    try:
-        from backend.brokers.broker_apis import _raw_cache_invalidate
-        _raw_cache_invalidate("positions")
-    except Exception:
-        pass
-    _is_close = await _is_offsetting_position(
-        sym=sym, exchange=str(data.exchange or "NFO"),
-        side=side, account=str(account),
-    )
-    if not _is_close:
-        return data
-    logger.info(
-        "[TPL-ATTACH] clearing template_id + ad-hoc overrides — "
-        "close/offset order for %s %s", account, sym,
-    )
-    import msgspec as _ms
-    return _ms.structs.replace(
-        data,
-        template_id=None,
-        tp_pct_override=None,
-        sl_pct_override=None,
-        wing_premium_pct_override=None,
-        wing_strike_offset_override=None,
-        wing_max_spread_pct_override=None,
-        sl_trail_pct_override=None,
-        tp_scales_json_override=None,
-    )
+# `_ticket_strip_template_on_close` removed (Bracket/Template-GTT
+# removal, T3.1, 2026-11) — it conditionally stripped `template_id` +
+# override fields for a close/offset order before persist. Now that
+# `_ticket_persist_live_algo_order`/`_opp_paper_persist_row` never
+# persist those fields for ANY order (close or not — see their own
+# edits), the close-specific strip is redundant: there is no template
+# state left to strip by the time a row reaches persist.
 
 
 async def _verify_close_intent(
@@ -669,684 +439,18 @@ async def _verify_close_intent(
     return False
 
 
-def _maybe_fire_template_attach_for_reconcile(row) -> None:
-    """Sprint A helper — when the reconcile path flips an AlgoOrder to
-    FILLED, fire the template attach if the row carries a template_id
-    OR ad-hoc override fields (Sprint 8) and is a parent (parent_order_id
-    IS NULL). Same idempotency guard
-    inside `_fire_template_attach_on_fill` ensures duplicate firings
-    (postback arriving after reconcile) are safe.
+# The fill-triggered template-attach pipeline
+# (_maybe_fire_template_attach_for_reconcile, _opp_load_row_for_attach,
+# _opl_build_sibling_map, _opl_build_group_sibling_map,
+# _opp_build_attach_entries, _opp_persist_attached_gtts,
+# _opp_persist_with_retry, _opp_attached_ids, _opp_handle_persist_failure,
+# _opp_flush_pending_persist, _opp_handle_fill_path_exception,
+# _fire_template_attach_on_fill) and the ticket/basket preview-attach
+# shims (_maybe_attach_template_to_ticket, _attach_basket_leg_template)
+# were removed (Bracket/Template-GTT removal, T3.1, 2026-11) — all
+# called apply_template_to_order, which was deleted along with
+# backend/api/algo/template_attach.py.
 
-    M11 (intent tagging) — implemented. AlgoOrder.intent column added via
-    _migrate_algo_orders_intent; live AlgoOrder rows carry intent from the
-    request so recover_live_chases can reinstate intent="close" on restart.
-
-    #2 — only fire template attach when the order is FULLY filled
-    (filled_quantity >= quantity). Partial fills must not trigger the exit
-    GTTs early — the remaining open qty would be left without stops.
-    TODO(#2): when template_attach_deferred column exists on AlgoOrder,
-    set it to True for partial fills so the postback handler retries on
-    subsequent fills.
-    """
-    try:
-        if not _opl_reconcile_attach_eligible(row):
-            return
-        _order_qty = int(row.quantity or 0)
-        _filled_qty = int(row.filled_quantity or 0)
-        # #2: guard — only attach when fully filled.
-        if _order_qty > 0 and _filled_qty < _order_qty:
-            logger.info(
-                "[TPL-ATTACH] skipping partial fill for parent #%s: "
-                "filled=%s of %s (reconcile path)",
-                row.id, _filled_qty, _order_qty,
-            )
-            return
-        _attach_qty = _filled_qty if _filled_qty > 0 else _order_qty
-        asyncio.create_task(_fire_template_attach_on_fill(
-            parent_row_id=int(row.id),
-            parent_account=str(row.account),
-            parent_symbol=str(row.symbol),
-            parent_exchange=str(row.exchange or "NFO"),
-            parent_side=str(row.transaction_type),
-            parent_qty=_attach_qty,
-            fill_price=float(row.fill_price),
-            template_id=(int(row.template_id) if row.template_id else None),
-            parent_product=str(row.product or "NRML"),
-            # _opl_reconcile_attach_eligible() already restricts this path
-            # to mode=='live' rows; thread the row's own mode through as a
-            # second, independent guard at the real chokepoint (see
-            # _fire_template_attach_on_fill's mode gate below).
-            mode=str(row.mode or "live"),
-        ))
-    except Exception as e:
-        logger.warning(f"reconcile template attach failed for #{row.id}: {e}")
-
-
-async def _opp_load_row_for_attach(
-    parent_row_id: int,
-) -> Optional[dict]:
-    """Load the AlgoOrder row for template-attach idempotency check.
-
-    Returns None when: row has vanished, or already has attached_gtts_json
-    (duplicate postback). Otherwise returns {'overrides': dict, 'agent_id':
-    int | None} with parsed template_overrides_json (empty dict when
-    null/unset) and the row's own agent_id (for alert-origin labeling).
-    """
-    import json as _json
-    from sqlalchemy import select as _sel_t
-    from backend.api.database import async_session as _async_s
-    from backend.api.models import AlgoOrder as _AO
-
-    async with _async_s() as _s:
-        _row = (await _s.execute(
-            _sel_t(_AO).where(_AO.id == parent_row_id)
-        )).scalar_one_or_none()
-        if _row is None:
-            logger.warning(
-                f"[TPL-ATTACH] parent row #{parent_row_id} vanished "
-                f"before postback fired"
-            )
-            return None
-        if _row.attached_gtts_json:
-            return None
-        _row_overrides: dict = {}
-        if _row.template_overrides_json:
-            try:
-                _parsed = _json.loads(_row.template_overrides_json)
-                if isinstance(_parsed, dict):
-                    _row_overrides = _parsed
-            except Exception as _e:
-                logger.warning(
-                    f"[TPL-ATTACH] could not parse template_overrides_json "
-                    f"for parent #{parent_row_id}: {_e}"
-                )
-    return {"overrides": _row_overrides, "agent_id": getattr(_row, "agent_id", None)}
-
-
-def _opl_build_sibling_map(sibling_pairs) -> dict[str, str]:
-    """Build a bidirectional sibling-id map from sibling_pairs.
-
-    Extracted from _opp_build_attach_entries to reduce CC there."""
-    sibling_by_id: dict[str, str] = {}
-    for a, b in (sibling_pairs or []):
-        if a and b:
-            sibling_by_id[str(a)] = str(b)
-            sibling_by_id[str(b)] = str(a)
-    return sibling_by_id
-
-
-def _opl_build_group_sibling_map(sibling_groups) -> dict[str, list[str]]:
-    """Build an id -> [other ids in group] map from AttachResult.sibling_groups.
-
-    T14 fix (2026-10-23) — a scale-out TP ladder + SL group is kept
-    deliberately ASYMMETRIC (see `template_attach.py:
-    _ta_detect_scale_sl_group`'s docstring): only the SL leg's id maps
-    to the full list of TP-rung ids; the TP rungs themselves get no
-    entry here (they must never cancel each other on a normal,
-    sequential scale-out fire). Shared by both the fill-triggered path
-    (`_opp_build_attach_entries` below) and the retry-attach path
-    (`orders.py:_retry_build_attached_payload`) so the two can never
-    drift on how a group is represented in `attached_gtts_json`.
-    """
-    group_by_id: dict[str, list[str]] = {}
-    for sl_id, tp_ids in (sibling_groups or []):
-        if sl_id and tp_ids:
-            group_by_id[str(sl_id)] = [str(t) for t in tp_ids if t]
-    return group_by_id
-
-
-def _opp_build_attach_entries(
-    result,
-    fill_price: float,
-    parent_side: str,
-    parent_product: str = "NRML",
-) -> list:
-    """Build the attached-GTTs list from an apply_template_to_order result.
-
-    C6 fix (2026-09) — the trail-stop scaffolding (`parent_qty`,
-    `parent_symbol`, `parent_exchange`, `parent_account`, `parent_product`,
-    `current_trigger`, `trigger_type`, `tp_trigger`) is now populated
-    UNCONDITIONALLY on every entry with `sl_trail_pct` set, mirroring
-    `_retry_build_gtt_entry` (orders.py) field-for-field. Previously
-    `parent_account`/`parent_exchange` were set ONLY inside the
-    OCO-sibling (`if _sib:`) branch, and `parent_qty`/`parent_symbol`/
-    `current_trigger` were never set on any branch — so
-    `background.py:_bg_trail_entry_is_valid` (which requires
-    `parent_symbol`, `parent_qty > 0`, `account`, `trail_pct > 0`) always
-    failed validation for normally-attached (non-retry, non-sibling) GTTs,
-    silently disabling trailing for every fresh fill.
-    """
-    sibling_by_id = _opl_build_sibling_map(result.sibling_pairs)
-    group_by_id = _opl_build_group_sibling_map(getattr(result, "sibling_groups", None))
-    attached = []
-    for spec in (result.plan.gtts or []):
-        if not spec.placed_id:
-            continue
-        entry: dict = {
-            "kind":  "gtt",
-            "label": spec.label,
-            "id":    spec.placed_id,
-        }
-        _sib = sibling_by_id.get(str(spec.placed_id))
-        _group_tps = group_by_id.get(str(spec.placed_id))
-        if _sib:
-            entry["sibling_id"]      = _sib
-            entry["parent_account"]  = str(result.plan.parent_account)
-            entry["parent_exchange"] = str(result.plan.parent_exchange)
-        elif _group_tps:
-            # T14 fix — SL leg of a scale-ladder-plus-SL group; carries
-            # the full list of TP-rung ids it must be mutually watched
-            # against (see _opl_build_group_sibling_map's docstring).
-            # parent_symbol (follow-up fix) — the watcher's position-
-            # confirmation gate (_oco_group_position_is_flat) needs the
-            # symbol to query the real broker position, not just the
-            # account/exchange this branch already carried.
-            entry["sibling_ids"]     = _group_tps
-            entry["parent_account"]  = str(result.plan.parent_account)
-            entry["parent_exchange"] = str(result.plan.parent_exchange)
-            entry["parent_symbol"]   = str(result.plan.parent_symbol)
-        if spec.sl_trail_pct is not None and spec.trigger_values:
-            _trigger_values = list(spec.trigger_values)
-            _is_two_leg = (str(spec.trigger_type) == "two-leg"
-                           and len(_trigger_values) >= 2)
-            entry["sl_trail_pct"]    = float(spec.sl_trail_pct)
-            entry["trigger_values"] = _trigger_values
-            entry["trigger_type"]   = str(spec.trigger_type)
-            entry["current_trigger"] = float(_trigger_values[-1])
-            if _is_two_leg:
-                entry["tp_trigger"] = float(_trigger_values[0])
-            entry["highest_ltp"]    = float(fill_price)
-            entry["lowest_ltp"]     = float(fill_price)
-            entry["parent_side"]    = parent_side
-            # Populated UNCONDITIONALLY — not only inside the OCO-sibling
-            # branch above. The trail-stop poller (`_task_trail_stop` /
-            # `_extract_trail_entry_fields` in background.py) requires
-            # these on every trailing-eligible entry, including
-            # normally-attached fills that never go through `if _sib:`.
-            entry["parent_qty"]      = int(result.plan.parent_qty)
-            entry["parent_symbol"]   = str(result.plan.parent_symbol)
-            entry["parent_exchange"] = str(result.plan.parent_exchange)
-            entry["parent_account"]  = str(result.plan.parent_account)
-            entry["parent_product"]  = str(parent_product or "NRML")
-        attached.append(entry)
-    # Bug fix (2026-09-30) — this loop only ever iterated result.plan.gtts,
-    # dropping the wing leg entirely. For a wing-only plan (or when every
-    # GTT failed but the wing itself placed), `attached` came back empty,
-    # so the caller's `if attached:` guard skipped persisting
-    # attached_gtts_json — it stayed NULL, not even "[]" — which made the
-    # idempotency check in _opp_load_row_for_attach (`if
-    # _row.attached_gtts_json: return None`) treat the row as "never
-    # attached," letting a second trigger (chase + postback racing, or a
-    # manual Re-attach) place a SECOND live wing order. Mirrors
-    # _retry_build_attached_payload's existing wing handling (orders.py)
-    # field-for-field.
-    if result.wing_order_id:
-        # `wing_chased=True` → `result.wing_order_id` is the sentinel
-        # string "chase", NOT a real broker order id (the wing was handed
-        # to chase's cancel-and-replace loop instead of placed directly —
-        # see `_ta_live_place_wing` in template_attach.py). The `chased`
-        # flag lets any downstream reader of this entry (cancel/lookup by
-        # id) tell the two cases apart without guessing from the string
-        # value "chase" alone.
-        attached.append({
-            "kind":   "wing",
-            "label":  "Wing",
-            "id":     result.wing_order_id,
-            "chased": bool(getattr(result, "wing_chased", False)),
-        })
-    return attached
-
-
-async def _opp_persist_attached_gtts(
-    parent_row_id: int,
-    attached: list,
-    fill_price: float,
-) -> None:
-    """Persist the attached-GTTs list back onto AlgoOrder.attached_gtts_json."""
-    import json as _json2
-    from sqlalchemy import select as _sel_t
-    from backend.api.database import async_session as _async_s
-    from backend.api.models import AlgoOrder as _AO
-
-    async with _async_s() as _s2:
-        _upd = (await _s2.execute(
-            _sel_t(_AO).where(_AO.id == parent_row_id)
-        )).scalar_one_or_none()
-        if _upd is not None:
-            _upd.attached_gtts_json = _json2.dumps(attached)
-        await _s2.commit()
-    logger.info(
-        f"[TPL-ATTACH] attached {len(attached)} GTT(s) "
-        f"to parent #{parent_row_id} fill ₹{fill_price}"
-    )
-
-
-_TPL_PERSIST_RETRY_BACKOFFS_S = (0.5, 1.0)
-
-
-async def _opp_persist_with_retry(
-    parent_row_id: int, attached: list, fill_price: float,
-) -> bool:
-    """Call `_opp_persist_attached_gtts` up to `1 + len(backoffs)` times
-    with a short sleep between attempts. Most DB write failures here
-    are transient (connection blip) — a few in-call retries handle the
-    common case without ever needing the persist-pending hold below.
-    Returns True on the first successful attempt, False once every
-    attempt has failed.
-    """
-    _attempts = 1 + len(_TPL_PERSIST_RETRY_BACKOFFS_S)
-    for _i in range(_attempts):
-        try:
-            await _opp_persist_attached_gtts(parent_row_id, attached, fill_price)
-            return True
-        except Exception as _e:
-            _is_last = _i == _attempts - 1
-            logger.warning(
-                f"[TPL-ATTACH] persist attempt {_i + 1}/{_attempts} failed "
-                f"for parent #{parent_row_id}"
-                f"{' (giving up)' if _is_last else ', retrying'}: {_e}"
-            )
-            if not _is_last:
-                await asyncio.sleep(_TPL_PERSIST_RETRY_BACKOFFS_S[_i])
-    return False
-
-
-def _opp_attached_ids(attached: list) -> list:
-    """Extract every broker id (GTT + wing) from an attached-entries
-    list, for the T16 persist-failure alert's `placed_untracked_ids`."""
-    return [e.get("id") for e in attached
-            if isinstance(e, dict) and e.get("id")]
-
-
-async def _opp_handle_persist_failure(
-    parent_row_id: int, attached: list, fill_price: float,
-    parent_symbol: str, parent_account: str, agent_id,
-) -> None:
-    """T16 fix — called once `_opp_persist_with_retry` has exhausted
-    every attempt. The exits named in *attached* are genuinely LIVE at
-    the broker; only the DB record of them failed. Holds the
-    unpersisted payload (see `_TPL_ATTACH_PERSIST_PENDING`'s own
-    docstring) so a later trigger for this row retries the persist
-    instead of placing a duplicate set of exits, and fires the SAME
-    `template_attach_failed` alert path a broker placement failure
-    already uses — with `placed_untracked_ids` set so the rendered
-    footer tells the operator NOT to arm exits manually (they already
-    exist) instead of the default, actively-wrong "Exits NOT attached"
-    text.
-    """
-    _TPL_ATTACH_PERSIST_PENDING[parent_row_id] = {
-        "attached": attached, "fill_price": fill_price,
-    }
-    _ids = _opp_attached_ids(attached)
-    from backend.api.algo.template_attach import _fire_attach_fail_alert
-    _fire_attach_fail_alert(
-        order_id=parent_row_id, symbol=parent_symbol, account=parent_account,
-        errors=[f"exits placed at broker (ids {_ids}) but the DB write "
-                f"recording them (attached_gtts_json) failed after retries"],
-        agent_id=agent_id, placed_untracked_ids=_ids,
-    )
-    try:
-        from backend.api.algo.order_events import write_event
-        await write_event(
-            parent_row_id, "template_attach_failed",
-            f"Exits placed at broker for {parent_symbol} but the DB "
-            f"persist failed after retries — ids={_ids}",
-            {"placed_untracked_ids": _ids},
-        )
-    except Exception as _we:
-        # DB may genuinely be down right now — this write can fail too.
-        # The telegram/ntfy/email alert above already fired independent
-        # of this write, so the operator is still notified.
-        logger.warning(
-            f"[TPL-ATTACH] write_event for persist-failure also failed "
-            f"for parent #{parent_row_id}: {_we}"
-        )
-
-
-async def _opp_flush_pending_persist(parent_row_id: int) -> bool:
-    """Attempt ONE flush of a held, previously-failed persist for
-    *parent_row_id*. Returns True and pops the hold on success; leaves
-    the hold in place and returns False on another failure. A no-op
-    (returns False) when nothing is held for this row.
-    """
-    _pending = _TPL_ATTACH_PERSIST_PENDING.get(parent_row_id)
-    if _pending is None:
-        return False
-    try:
-        await _opp_persist_attached_gtts(
-            parent_row_id, _pending["attached"], _pending["fill_price"],
-        )
-    except Exception as _e:
-        logger.warning(
-            f"[TPL-ATTACH] pending-persist retry flush failed for "
-            f"parent #{parent_row_id}: {_e}"
-        )
-        return False
-    _TPL_ATTACH_PERSIST_PENDING.pop(parent_row_id, None)
-    logger.info(
-        f"[TPL-ATTACH] pending-persist flush succeeded for parent #{parent_row_id}"
-    )
-    return True
-
-
-async def _opp_handle_fill_path_exception(
-    exc: Exception, parent_row_id: int, parent_symbol: str,
-    parent_account: str, agent_id,
-) -> None:
-    """T19 defense-in-depth fix (2026-10-23) — `_fire_template_attach_
-    on_fill`'s generic except block used to swallow EVERY exception
-    (including a config-validation `HTTPException` raised deep inside
-    `apply_template_to_order` / `_parse_template_overrides`, e.g. a
-    `wing_premium_pct<=0` template saved before the T19 CRUD-time
-    validator existed — `templates.py:_validate_wing_premium_pct`) at
-    WARNING with no alert and no `template_attach_failed` event. A fill
-    against an already-saved bad template silently unarmed forever
-    with no operator signal.
-
-    Fires the real `template_attach_failed` alert specifically for an
-    `HTTPException` — every other exception type keeps its existing
-    silent-WARNING-only behaviour (unchanged scope; this function is
-    additive, not a behaviour change for non-HTTPException failures).
-
-    Safe for every fill-triggered caller (chase terminal, postback,
-    reconcile) — they all route through this ONE function, which is
-    NEVER invoked with `apply_path="preview"` (hardcoded to "live"
-    below), so a bad value typed into a ticket/template PREVIEW still
-    surfaces as a plain 422 to the operator, not an urgent alert.
-    """
-    logger.warning(
-        f"[TPL-ATTACH] _fire_template_attach_on_fill failed "
-        f"for parent #{parent_row_id}: {exc}"
-    )
-    from litestar.exceptions import HTTPException as _LitestarHTTPException
-    if isinstance(exc, _LitestarHTTPException):
-        from backend.api.algo.template_attach import _fire_attach_fail_alert
-        _fire_attach_fail_alert(
-            order_id=parent_row_id, symbol=parent_symbol, account=parent_account,
-            errors=[f"invalid template config: {exc.detail}"],
-            agent_id=agent_id,
-        )
-
-
-async def _fire_template_attach_on_fill(
-    *,
-    parent_row_id: int,
-    parent_account: str,
-    parent_symbol: str,
-    parent_exchange: str,
-    parent_side: str,
-    parent_qty: int,
-    fill_price: float,
-    template_id: int | None,
-    parent_product: str = "NRML",
-    mode: str,
-    bypass_hold: bool = False,
-):
-    """Fire apply_plan_live for a templated OR ad-hoc-override parent
-    order that just flipped to FILLED via Kite/Dhan/Groww postback,
-    chase's terminal-fill path, or the paper/sim/replay engine.
-
-    `template_id` is `None` for an ad-hoc order (no saved template —
-    operator supplied inline tp_pct_override/sl_pct_override/wing_*
-    fields on the ticket instead). `apply_template_to_order` already
-    handles `template_id=None` via its `build_adhoc_template` path —
-    see that function's docstring. Every caller of this function must
-    still verify there's SOMETHING to attach (a real template_id OR a
-    non-empty overrides dict) before dispatching — this function does
-    not re-check that itself (Sprint 8 fix, see each caller's own
-    gate: `orders_postback._pb_wants_template_attach`, `chase.
-    _ch_maybe_fire_template_attach`, `paper._paper_maybe_fire_
-    template_attach`).
-
-    Persists the returned gtt_ids back onto AlgoOrder.attached_gtts_json
-    so the operator can cancel them later if they manually close the
-    parent. Errors are logged but never raised — the postback ACK has
-    already returned to the broker.
-
-    Idempotency: if attached_gtts_json is already populated for this
-    parent, skip — postbacks can arrive multiple times for the same
-    fill on Kite (delivery retry) and we don't want duplicate GTTs.
-
-    `parent_product` — exit GTT legs inherit this. NRML for F&O carry,
-    MIS for intraday equity / F&O, CNC for delivery. Defaulted only as
-    a back-compat shim for callers that don't have the row's product
-    in hand; real callers (postback handler, chase terminal) read it
-    off AlgoOrder.product (Phase 3C #2).
-
-    `mode` — the AlgoOrder row's own `mode` field ('live' / 'paper' /
-    'sim' / 'replay' / 'shadow'), REQUIRED (no default) so every caller
-    must state explicitly what kind of fill this is. This is the one
-    function that calls `apply_plan_live`, which resolves a REAL broker
-    via `get_broker()` and places REAL GTT/wing orders — it must never
-    run for a non-live fill. CRITICAL FIX (2026-09-30): this function
-    used to hardcode `apply_path="live"` unconditionally, so a paper-mode
-    fill (e.g. a templated Chain/OrderTicket test with paper_trading_mode
-    on) reached this same broker-placing branch and armed real exit GTTs
-    + a real wing order against a position that only existed in the
-    paper simulator. Do NOT reintroduce a default value for `mode` — a
-    default silently recreates the exact bug for any future caller that
-    forgets to pass it.
-
-    `bypass_hold` — skips the `template_exit_held()` re-check (but NOT
-    the `mode != "live"` gate above it, which always applies). CRITICAL
-    FIX (2026-10): `release_template_exit` (order_release.py) used to
-    call this function with no way to skip the hold re-check, so every
-    release of a held bracket/template-exit order immediately re-hit
-    `template_exit_held()` against the SAME still-held global switch and
-    re-held itself — the operator was told exits were placed
-    (`"status": "FILLED"` was hardcoded unconditionally) while nothing
-    was ever sent to the broker. Only `release_template_exit` passes
-    `bypass_hold=True` — releasing IS the operator's explicit
-    authorization, so the hold must not re-fire on that one path. Every
-    other caller (postback, chase terminal, paper engine, admin
-    reconcile) leaves this at its default `False` and is still subject
-    to the hold exactly as before.
-
-    Returns the `AttachResult` on every path that actually ran the
-    resolver (even when it placed nothing), or `None` on every early
-    return (no fill price, non-live mode, held-and-not-bypassed, no
-    parent row) and on any caught exception. Callers that need to know
-    whether anything was actually armed must check
-    `result is not None and (result.gtt_ids or result.wing_order_id)`
-    — do not infer success from this function merely returning.
-    """
-    if not fill_price or fill_price <= 0:
-        return None
-    if (mode or "").lower() != "live":
-        logger.info(
-            "[TPL-ATTACH] skipping — parent #%s %s is mode=%r, not 'live'; "
-            "template attach only ever places REAL broker GTTs/orders, so "
-            "non-live fills (paper/sim/replay/shadow) never reach the "
-            "broker here. No GTTs armed for this fill.",
-            parent_row_id, parent_symbol, mode,
-        )
-        return None
-    # Phase 3D #4 — serialise concurrent calls for the same parent_row_id
-    # so the postback handler and chase terminal can't both pass the
-    # `attached_gtts_json is None` idempotency check simultaneously
-    # and double-place GTTs at the broker. The lock is per-row +
-    # in-process (uvicorn --workers 1 on prod) so there's zero
-    # contention against unrelated fills.
-    from backend.api.algo.order_hold_gate import template_exit_held, hold_template_exit, template_exit_override
-    if not bypass_hold and template_exit_held(await template_exit_override(parent_row_id)):
-        await hold_template_exit(parent_row_id, parent_symbol)
-        return None
-    _row_lock = await _get_template_attach_lock(parent_row_id)
-    async with _row_lock:
-        # T16 fix — a prior call for this SAME row already placed exits
-        # at the broker but failed to persist them (see
-        # _TPL_ATTACH_PERSIST_PENDING's own docstring). Never place a
-        # second set; just retry the persist and return.
-        if parent_row_id in _TPL_ATTACH_PERSIST_PENDING:
-            await _opp_flush_pending_persist(parent_row_id)
-            return None
-        _row_agent_id = None
-        try:
-            from backend.api.algo.template_attach import apply_template_to_order
-
-            row_info = await _opp_load_row_for_attach(parent_row_id)
-            if row_info is None:
-                return None
-            _row_agent_id = row_info.get("agent_id")
-
-            result = await apply_template_to_order(
-                template_id=template_id,
-                template_slug=None,
-                overrides=row_info["overrides"],
-                parent_account=parent_account,
-                parent_symbol=parent_symbol,
-                parent_side=parent_side,
-                parent_qty=parent_qty,
-                parent_exchange=parent_exchange,
-                parent_fill_price=fill_price,
-                parent_product=parent_product,
-                parent_order_id=parent_row_id,
-                parent_agent_id=row_info.get("agent_id"),
-                apply_path="live",
-            )
-            if result is None:
-                return None
-
-            # #11 — compare placed GTT count vs planned GTT count.
-            # A mismatch means a broker call silently failed for one spec
-            # while others succeeded — the position has partial exits only.
-            _planned_gtt_count = len(result.plan.gtts) if result.plan else 0
-            _placed_gtt_count  = len(result.gtt_ids)
-            if _planned_gtt_count > 0 and _placed_gtt_count < _planned_gtt_count:
-                logger.critical(
-                    "[TPL-ATTACH] PARTIAL GTT placement for parent #%s %s: "
-                    "planned %d GTT(s) but only %d placed. "
-                    "Check errors: %s. Exits may be incomplete — "
-                    "arm remaining exits manually.",
-                    parent_row_id, parent_symbol,
-                    _planned_gtt_count, _placed_gtt_count,
-                    result.errors,
-                    extra={
-                        "tags": ["orders", "gtt", "alert"], "alert_event": "partial_gtt",
-                        "parent_row_id": parent_row_id, "parent_symbol": parent_symbol,
-                        "planned": _planned_gtt_count, "placed": _placed_gtt_count,
-                        "errors": [str(e) for e in result.errors[:2]],
-                        "agent_id": row_info.get("agent_id"),
-                        # 2026-11-06 (operator SSOT instruction) —
-                        # "Source: template attach triggered manually/by
-                        # {agent}" (event_agents.py:_render_partial_gtt).
-                        "source_type": "process", "source_name": "template attach",
-                    },
-                )
-
-            attached = _opp_build_attach_entries(result, fill_price, parent_side, parent_product)
-            if attached:
-                # If placement was partial, flag it in the JSON so the UI
-                # can surface a warning chip on the order card.
-                if _planned_gtt_count > 0 and _placed_gtt_count < _planned_gtt_count:
-                    import json as _json_flag
-                    try:
-                        _attach_list = list(attached)
-                        _attach_list.append({
-                            "kind":    "partial_flag",
-                            "partial": True,
-                            "planned": _planned_gtt_count,
-                            "placed":  _placed_gtt_count,
-                        })
-                        attached = _attach_list
-                    except Exception:
-                        pass
-                _persist_ok = await _opp_persist_with_retry(
-                    parent_row_id, attached, fill_price,
-                )
-                if not _persist_ok:
-                    await _opp_handle_persist_failure(
-                        parent_row_id, attached, fill_price,
-                        parent_symbol, parent_account, row_info.get("agent_id"),
-                    )
-            return result
-
-        except Exception as _e:
-            await _opp_handle_fill_path_exception(
-                _e, parent_row_id, parent_symbol, parent_account, _row_agent_id,
-            )
-            return None
-
-
-async def _maybe_attach_template_to_ticket(
-    data, account: str, sym: str, side: str, qty: int,
-    algo_order_id: int | None,
-) -> dict | None:
-    """Run the template-attach RESOLVER for a paper ticket order and
-    return the planned artefacts WITHOUT placing any broker orders.
-
-    Phase 3C #1 — pre-fix this called apply_template_to_order with
-    `apply_path="auto"`. When SimDriver was inactive (which is
-    almost always for a real paper ticket) "auto" routed to the
-    LIVE path and silently placed real Kite GTTs against the
-    operator's submitted LIMIT price BEFORE the parent ever filled.
-    Two correctness problems compounded:
-      1. The parent might fill at a price OTHER than data.price
-         (MARKET orders, partial slip, IOC) so the exit triggers
-         got computed off the wrong reference.
-      2. The paper engine itself was never told about the template,
-         so its own fill events never fired the attach.
-
-    Fix: always run the resolver in PREVIEW mode here so the API
-    response carries the planned chips for the OrderTicket preview,
-    but no broker order is sent. The paper engine fires the actual
-    attach when its order fills via _fire_template_attach_on_fill
-    using the engine's reported fill_price.
-    """
-    if algo_order_id is None:
-        return None
-    from backend.api.algo.template_attach import apply_template_to_order
-    from backend.api.routes.orders_helpers import _ticket_overrides_dict
-    try:
-        result = await apply_template_to_order(
-            template_id=data.template_id,
-            template_slug=None,
-            overrides=_ticket_overrides_dict(data),
-            parent_account=account,
-            parent_symbol=sym,
-            parent_side=side,
-            parent_qty=qty,
-            parent_exchange=(data.exchange or "NFO"),
-            parent_fill_price=float(data.price or 0.0),
-            parent_product=(data.product or "NRML"),
-            parent_order_id=algo_order_id,
-            apply_path="preview",
-        )
-    except Exception as e:
-        logger.error(f"[TICKET-TEMPLATE] preview failed for #{algo_order_id}: {e}")
-        return None
-    if result is None:
-        return None
-    return result.to_dict()
-
-
-async def _attach_basket_leg_template(
-    *,
-    algo_order_id: int | None,
-    template_id: int | None,
-    account: str,
-    sym: str,
-    side: str,
-    qty: int,
-    exch: str,
-    price: float,
-    product: str,
-) -> None:
-    """Best-effort template ATTACH-AT-FILL plan for one basket leg.
-
-    Sprint A fix (audit finding #7): the previous shape called
-    `apply_template_to_order(apply_path="auto")` at submit time using
-    the operator's limit `price` as a synthetic fill price, which
-    placed broker GTTs at the wrong reference if the parent filled
-    away from the limit. Now we just persist `template_id` on the
-    AlgoOrder row (done at the caller) — the postback handler / chase
-    terminal will fire the real attach via
-    `_fire_template_attach_on_fill` with the actual fill price.
-
-    Kept as a no-op shim for callsite compatibility; future work can
-    inline the persist step here if it makes the basket flow clearer.
-    """
-    return
 
 
 # ── Take-profit arming ────────────────────────────────────────────────────────
@@ -1578,16 +682,12 @@ async def _arm_take_profit(
     """[LEGACY — Phase 2 deprecation marker] Arm a take-profit child
     order on fill via the v1 fractional target_pct path.
 
-    Prefer attaching an OrderTemplate to the parent order (Phase 0+);
-    the template pipeline (apply_template_to_order →
-    _fire_template_attach_on_fill) supports rich TP / SL / Wing /
-    MARKET-TP / wing-by-premium scan, broker-native OCO, and
-    chained chase orders. This helper survives as the back-compat
-    shim for Lab MCP scripts + legacy callers that still pass
-    `data.target_pct`; both the postback handler and chase terminal
-    handler keep firing both shim + template attach so neither path
-    interferes with the other (each is idempotent against double
-    fires).
+    The rich template-attach pipeline (apply_template_to_order →
+    _fire_template_attach_on_fill) that used to also fire alongside this
+    shim was removed (Bracket/Template-GTT removal, T3.1, 2026-11) along
+    with `backend/api/algo/template_attach.py`. This v1 single-target-TP
+    shim is now the ONLY TP-arming path; it survives for Lab MCP scripts +
+    legacy callers that still pass `data.target_pct`.
 
     Called from the postback handler and _emit_chase_terminal when a parent
     order reaches FILLED.  Idempotent: skips if a child row already exists
@@ -2111,9 +1211,7 @@ async def _ticket_persist_live_algo_order(
     proceeds either way — persistence failure is best-effort)."""
     from backend.api.database import async_session
     from backend.api.models import AlgoOrder
-    from backend.api.routes.orders_helpers import (
-        _resolve_target_pct, _build_overrides_json,
-    )
+    from backend.api.routes.orders_helpers import _resolve_target_pct
     try:
         from backend.api.algo.agent_engine import get_agent_id_by_slug as _g_aid
         _live_manual_aid: int | None = None
@@ -2158,9 +1256,12 @@ async def _ticket_persist_live_algo_order(
                 request_id=_req_id,
                 target_pct=(_eff_target_pct
                             if _eff_target_pct > 0 else None),
-                template_id=data.template_id,
-                template_hold_override=getattr(data, "hold_template_exit", None),
-                template_overrides_json=_build_overrides_json(data),
+                # template_id / template_hold_override /
+                # template_overrides_json are no longer persisted
+                # (Bracket/Template-GTT removal, T3.1, 2026-11) — the
+                # frontend may still send these fields until its own
+                # removal sub-sprint lands; silently dropping them (not
+                # refusing the order) is the deliberate policy.
                 product=(data.product or "NRML"),
                 intent=getattr(data, "intent", None),
                 # Sprint 2b — persist the client-supplied origin tag (defaults
@@ -2589,7 +1690,7 @@ async def _opp_paper_persist_row(
     """Persist the paper AlgoOrder row. Returns algo_order_id. Raises 500 on DB failure."""
     from backend.api.database import async_session
     from backend.api.models import AlgoOrder
-    from backend.api.routes.orders_helpers import _resolve_target_pct, _build_overrides_json
+    from backend.api.routes.orders_helpers import _resolve_target_pct
 
     detail = (f"[PAPER-TICKET] manual {side} {qty} {sym} "
               f"@₹{data.price:.2f}" if data.price is not None
@@ -2613,9 +1714,10 @@ async def _opp_paper_persist_row(
                 strategy_id=data.strategy_id,
                 request_id=_req_id,
                 target_pct=(_eff_target_pct if _eff_target_pct > 0 else None),
-                template_id=data.template_id,
-                template_hold_override=getattr(data, "hold_template_exit", None),
-                template_overrides_json=_build_overrides_json(data),
+                # template_id / template_hold_override /
+                # template_overrides_json are no longer persisted
+                # (Bracket/Template-GTT removal, T3.1, 2026-11) — see
+                # the identical note in _ticket_persist_live_algo_order.
                 product=(data.product or "NRML"),
                 source=(data.source or "ticket"),
                 mcp_request_id=getattr(data, "mcp_request_id", None),
@@ -2700,8 +1802,12 @@ def _opp_paper_record_manual_event(
 
 async def _ticket_place_paper(data, request, account: str, sym: str, side: str, qty: int):
     """PAPER branch orchestrator. Persists the AlgoOrder, registers the
-    chase-loop where applicable, records a manual_event, and (finally)
-    attaches any template attachment before returning."""
+    chase-loop where applicable, and records a manual_event before
+    returning.
+
+    `_maybe_attach_template_to_ticket` (the template-attach preview
+    shim) was removed (Bracket/Template-GTT removal, T3.1, 2026-11) —
+    `template_attachment` on the response is now always `None`."""
     from backend.api.schemas import TicketOrderResponse
     from backend.shared.helpers.utils import mask_account
 
@@ -2713,15 +1819,11 @@ async def _ticket_place_paper(data, request, account: str, sym: str, side: str, 
     logger.info(f"Ticket paper order: {algo_order_id} [{masked}] {side} {qty} {sym}")
     _opp_paper_record_manual_event(algo_order_id, account, sym, side, qty, data)
 
-    attachment_dict = await _maybe_attach_template_to_ticket(
-        data, account, sym, side, qty, algo_order_id)
-
     return TicketOrderResponse(
         order_id=str(algo_order_id),
         mode="paper",
         status="OPEN",
         detail=f"Paper order #{algo_order_id} placed — chase loop will fill it on the next bid/ask cross.",
-        template_attachment=attachment_dict,
     )
 
 
@@ -2747,50 +1849,16 @@ async def ticket_order_handler(data, request) -> object:  # type: ignore[return]
     side, sym, qty, lot_size = await _ticket_validate_input(data, request)
     account = _ticket_validate_account(data)
 
-    # #5 — Dhan MCX gate: reject template attachment on MCX/NCO when the
-    # selected broker does not support GTT on commodity exchanges (Dhan,
-    # Groww). Check here before any broker/DB work so the operator sees a
-    # clear 422 at submit time rather than a silent attach-fail alert later.
-    if data.template_id and (data.exchange or "NFO") in ("MCX", "NCO"):
-        from backend.brokers.capabilities import capabilities_for
-        if not capabilities_for(account).gtt_supports_mcx:
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    "Selected broker does not support MCX GTT — "
-                    "remove template or switch broker"
-                ),
-            )
-
-    # #7 — wing_premium_pct=0 guard at ticket boundary (defence-in-depth;
-    # template_attach._parse_template_overrides also raises 422 on this).
-    _wpp = getattr(data, "wing_premium_pct_override", None)
-    if _wpp is not None and _wpp <= 0:
-        raise HTTPException(
-            status_code=422,
-            detail="wing_premium_pct must be > 0",
-        )
-    # wing_max_spread_pct_override=0 guard — same defence-in-depth shape
-    # as wing_premium_pct above. This field is never enforced here (the
-    # live Chain-tab spread gate calls GET /api/orders/spread-check
-    # directly, not the ticket-submit path), just validated so a
-    # persisted template_overrides_json never carries a nonsensical
-    # threshold.
-    _wms = getattr(data, "wing_max_spread_pct_override", None)
-    if _wms is not None and _wms <= 0:
-        raise HTTPException(
-            status_code=422,
-            detail="wing_max_spread_pct must be > 0",
-        )
-
-    # Close/offset gate: strip ALL template state (saved template_id AND
-    # ad-hoc override fields) when this order would reduce an existing
-    # opposite position. See `_ticket_strip_template_on_close`'s own
-    # docstring (T15 fix) for why this is the correct place for this
-    # check — it runs BEFORE the broker call, so it reads a genuinely
-    # pre-fill position.
-    data = await _ticket_strip_template_on_close(data, sym, side, account)
-
+    # The Dhan-MCX-GTT-capability gate and the wing_premium_pct /
+    # wing_max_spread_pct override-value guards were removed (Bracket/
+    # Template-GTT removal, T3.1, 2026-11). All three existed only to
+    # protect a template attach that will now never happen —
+    # `template_id` and every override field are silently dropped before
+    # persist (see `_ticket_persist_live_algo_order`), never persisted
+    # or acted on. Refusing an otherwise-ordinary order because the
+    # frontend still auto-stamps one of these fields (it does, until the
+    # frontend sub-sprint lands) would block a real, valid order for no
+    # reason.
     await _ticket_enforce_lot_and_fat_finger(data, account, sym, qty, lot_size)
 
     if data.strategy_id:

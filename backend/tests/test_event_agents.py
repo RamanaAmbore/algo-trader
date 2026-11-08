@@ -876,32 +876,10 @@ def test_email_channel_sends_only_to_its_configured_recipients(monkeypatch):
     assert sent == ["only@x.com"]
 
 
-def test_gtt_acceptance_accepts_active_and_rejects_refused(monkeypatch):
-    from backend.api.algo import template_attach as ta
-    # "not present" now retries a few times before giving up (see
-    # _GTT_VERIFY_RETRIES) — patch out the real sleep so this still-valid
-    # outcome doesn't add real wall-clock delay to the suite.
-    monkeypatch.setattr(ta.time, "sleep", lambda *_a, **_k: None)
-
-    class _B:
-        def __init__(self, rows):
-            self.rows = rows
-
-        def get_gtts(self):
-            return self.rows
-
-    assert ta._verify_gtt_accepted(_B([{"id": 7, "status": "active"}]), "7") is None
-    assert "rejected" in ta._verify_gtt_accepted(_B([{"id": 7, "status": "rejected"}]), "7")
-    assert "not present" in ta._verify_gtt_accepted(_B([]), "7")
-
-
-def test_gtt_acceptance_reports_a_failed_read():
-    from backend.api.algo import template_attach as ta
-    class _B:
-        def get_gtts(self):
-            raise RuntimeError("down")
-
-    assert "status read failed" in ta._verify_gtt_accepted(_B(), "7")
+# test_gtt_acceptance_accepts_active_and_rejects_refused /
+# test_gtt_acceptance_reports_a_failed_read removed (Bracket/
+# Template-GTT removal, T3.1, 2026-11) — _verify_gtt_accepted lived in
+# backend.api.algo.template_attach, deleted.
 
 
 def test_gtt_not_accepted_agent_is_seeded_and_renders():

@@ -31,44 +31,14 @@ import pytest
 
 from backend.api.algo.spread_check import resolve_max_spread_pct
 from backend.api.routes.orders_helpers import _ticket_overrides_dict, _build_overrides_json
-from backend.api.routes.templates import _to_out
 from backend.api.schemas import TicketOrderRequest, TicketPreviewRequest
 
-
-# ── OrderTemplateOut — template default surfaces to the frontend ──────────
-
-class _FakeOrderTemplateRow:
-    """Minimal stand-in for the OrderTemplate ORM row — only the
-    attributes templates.py's _to_out reads."""
-    def __init__(self, wing_max_spread_pct=None):
-        self.id = 1
-        self.slug = "test-template"
-        self.name = "Test Template"
-        self.description = ""
-        self.applies_to = "both"
-        self.tp_pct = 10.0
-        self.sl_pct = 5.0
-        self.wing_premium_pct = None
-        self.wing_strike_offset = None
-        self.wing_max_spread_pct = wing_max_spread_pct
-        self.tp_order_type = "LIMIT"
-        self.tp_scales_json = None
-        self.sl_trail_pct = None
-        self.is_default = False
-        self.is_system = False
-        self.is_active = True
-
-
-class TestOrderTemplateOutCarriesSpreadDefault:
-    def test_row_value_surfaced_to_schema(self):
-        row = _FakeOrderTemplateRow(wing_max_spread_pct=7.5)
-        out = _to_out(row)
-        assert out.wing_max_spread_pct == 7.5
-
-    def test_row_none_surfaced_as_none_not_dropped(self):
-        row = _FakeOrderTemplateRow(wing_max_spread_pct=None)
-        out = _to_out(row)
-        assert out.wing_max_spread_pct is None
+# TestOrderTemplateOutCarriesSpreadDefault removed (Bracket/Template-GTT
+# removal, T3.1, 2026-11) — it tested `templates.py`'s `_to_out`, which
+# was deleted along with the `OrderTemplateController` route. The
+# surviving tests below (override threading + the resolver's own
+# tiering) are unaffected — none of them depend on `_to_out` or
+# `OrderTemplateOut`.
 
 
 # ── _ticket_overrides_dict — operator override extracted from request ────
@@ -183,9 +153,7 @@ class TestResolveMaxSpreadPctChain:
         """Operator's brief: 'the global setting's current value as the
         DEFAULT' — a template never saved with this field, no override
         supplied, must resolve to the admin setting (10.0 by default)."""
-        row = _FakeOrderTemplateRow(wing_max_spread_pct=None)
-        template_out = _to_out(row)
-        template = {"wing_max_spread_pct": template_out.wing_max_spread_pct}
+        template = {"wing_max_spread_pct": None}
         data = TicketPreviewRequest(
             mode="paper", side="BUY", tradingsymbol="RELIANCE",
             quantity=1, account="ACC1",

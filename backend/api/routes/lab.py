@@ -1063,19 +1063,17 @@ async def _res_resolve_template_slug(
 ) -> tuple[int | None, str | None]:
     """Resolve an optional place_order `template_slug` to a template_id.
 
-    Returns (resolved_template_id, error_detail). `error_detail` is None
-    on success — including the common case where neither id nor slug was
-    supplied (template-less order). A non-None `template_id` always wins
-    (slug is ignored) since the two are mutually-exclusive per the MCP
-    tool's own docstring. Extracted from place_order to keep CC there low.
+    Returns (resolved_template_id, error_detail) — `error_detail` is
+    always None now. Slug resolution was removed (Bracket/Template-GTT
+    removal, T3.1, 2026-11) — it called
+    `template_attach.load_template_for_slug_or_id`, deleted along with
+    `backend/api/algo/template_attach.py`. A `template_slug` the caller
+    supplies is silently dropped (never refused — the order itself is
+    still valid without it), matching the ticket/basket policy. A
+    directly-supplied `template_id` passes through unchanged (it is
+    stripped later, at persist, same as every other path).
     """
-    if template_id is not None or not template_slug:
-        return template_id, None
-    from backend.api.algo.template_attach import load_template_for_slug_or_id
-    tpl = await load_template_for_slug_or_id(template_id=None, template_slug=template_slug)
-    if tpl is None:
-        return None, f"Unknown template_slug: {template_slug!r}"
-    return int(tpl["id"]), None
+    return template_id, None
 
 
 def _res_make_place_ticket(

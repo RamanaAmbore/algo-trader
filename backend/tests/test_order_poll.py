@@ -182,7 +182,6 @@ class TestReconcileRowAndFollowup:
         truth = OrderTruth(available=True, algo_status="FILLED",
                            average_price=101.5, raw_broker_status="COMPLETE")
 
-        attach_calls: list = []
         subscribe_calls: list = []
 
         with patch(
@@ -195,16 +194,12 @@ class TestReconcileRowAndFollowup:
             "backend.api.database.async_session",
             return_value=_db_session(fresh_row),
         ), patch(
-            "backend.api.routes.orders_place._maybe_fire_template_attach_for_reconcile",
-            new=MagicMock(side_effect=lambda row: attach_calls.append(row)),
-        ), patch(
             "backend.api.routes.orders._subscribe_filled_pairs",
             new=AsyncMock(side_effect=lambda pairs: subscribe_calls.append(pairs)),
         ), patch("backend.api.algo.order_poll.logger") as mock_log:
             result = await reconcile_row_and_followup(r, source="order-poll")
 
         assert result is truth
-        assert attach_calls == [fresh_row]
         assert subscribe_calls == [[("NIFTY24APR25000CE", "NFO")]]
         mock_log.warning.assert_called_once()
         extra = mock_log.warning.call_args.kwargs["extra"]
@@ -249,8 +244,6 @@ class TestReconcileRowAndFollowup:
         ), patch(
             "backend.api.database.async_session",
             return_value=_db_session(fresh_row),
-        ), patch(
-            "backend.api.routes.orders_place._maybe_fire_template_attach_for_reconcile",
         ), patch(
             "backend.api.routes.orders._subscribe_filled_pairs",
             new=AsyncMock(),
@@ -298,7 +291,6 @@ class TestReconcileRowAndFollowup:
         r = _row(status="OPEN")
         truth = OrderTruth(available=True, algo_status="CANCELLED", raw_broker_status="CANCELLED")
 
-        attach_mock = MagicMock()
         subscribe_mock = AsyncMock()
 
         with patch(
@@ -308,16 +300,12 @@ class TestReconcileRowAndFollowup:
             "backend.api.routes.orders_helpers.apply_order_truth",
             new=AsyncMock(return_value=True),
         ), patch(
-            "backend.api.routes.orders_place._maybe_fire_template_attach_for_reconcile",
-            new=attach_mock,
-        ), patch(
             "backend.api.routes.orders._subscribe_filled_pairs",
             new=subscribe_mock,
         ), patch("backend.api.algo.order_poll.logger") as mock_log:
             result = await reconcile_row_and_followup(r)
 
         assert result is truth
-        attach_mock.assert_not_called()
         subscribe_mock.assert_not_awaited()
         mock_log.warning.assert_called_once()
         assert mock_log.warning.call_args.kwargs["extra"]["new_status"] == "CANCELLED"
@@ -342,8 +330,6 @@ class TestReconcileRowAndFollowup:
             "backend.api.database.async_session",
             return_value=_db_session(fresh_row),
         ), patch(
-            "backend.api.routes.orders_place._maybe_fire_template_attach_for_reconcile",
-        ) as attach_mock, patch(
             "backend.api.routes.orders._subscribe_filled_pairs",
             new=AsyncMock(),
         ) as subscribe_mock, patch(
@@ -352,7 +338,6 @@ class TestReconcileRowAndFollowup:
             result = await reconcile_row_and_followup(r, fire_alert=False)
 
         assert result is truth
-        attach_mock.assert_called_once_with(fresh_row)
         subscribe_mock.assert_awaited_once()
         mock_log.warning.assert_not_called()
 
@@ -412,7 +397,6 @@ class TestTaskOrderPoll:
                  "backend.api.database.async_session",
                  return_value=_db_session(fresh_row),
              ), \
-             patch("backend.api.routes.orders_place._maybe_fire_template_attach_for_reconcile"), \
              patch("backend.api.routes.orders._subscribe_filled_pairs", new=AsyncMock()), \
              patch.object(op_mod, "logger") as mock_log:
             with pytest.raises(asyncio.CancelledError):

@@ -345,110 +345,27 @@ def _ch_maybe_fire_auto_tp(snap: dict, final_price: float) -> None:
     ))
 
 
-async def _ch_check_and_fire_template_attach(snap: dict, final_price: float) -> None:
-    """Async guard + fire, run as a detached task by _ch_maybe_fire_template_attach.
-
-    2026-09-27 audit fix (finding #6): chase's fill path used to fire
-    template attach (arming exit GTTs) unconditionally once a template_id
-    was present, unlike the Kite postback path
-    (_pb_check_and_fire_template_attach) which runs an offsetting-position
-    check first so a close/reduce order that happens to carry a stale
-    template_id never arms exit GTTs on itself. Mirrors both of that
-    path's guards: explicit close-intent (matching
-    _opl_reconcile_attach_eligible) and the sign-only
-    _is_offsetting_position check.
-
-    2026-09-30 audit fix (Bug 1): the sign-only check used to call
-    `_is_offsetting_position`, which reads the broker position AFTER this
-    fill has already landed — for a full close that read is always flat/
-    zero, indistinguishable from "no prior position", so it misclassified
-    a plain close as a new open regardless of cache freshness. When a
-    genuine PRE-fill snapshot was captured at chase_order() entry (see
-    `_CH_PRE_FILL_NET_QTY` / `_ch_capture_pre_fill_net_qty`), use that
-    instead via the sign-only `_ch_is_offsetting_sign` helper. Falls back
-    to the legacy post-fill `_is_offsetting_position` call only when no
-    pre-fill snapshot is present on `snap` (e.g. a legacy caller that
-    never set `algo_order_id`), preserving prior behaviour for that edge.
-    """
-    if (snap.get("intent") or "").lower() == "close" or snap.get("is_close_intent"):
-        return
-    if "pre_fill_net_qty" in snap:
-        is_offsetting = _ch_is_offsetting_sign(
-            snap["pre_fill_net_qty"], snap["transaction_type"],
-        )
-    else:
-        from backend.api.routes.orders_place import _is_offsetting_position
-        is_offsetting = await _is_offsetting_position(
-            sym=snap["symbol"], exchange=snap["exchange"],
-            side=snap["transaction_type"], account=snap["account"],
-        )
-    if is_offsetting:
-        logger.info(
-            "[CHASE] skipping template attach — order offsets existing "
-            "position for #%s %s", snap["id"], snap["symbol"],
-        )
-        return
-
-    from backend.api.routes.orders import _fire_template_attach_on_fill
-    # Sprint B (#4) — size exit GTTs against the ACTUAL filled qty
-    # when the chase took partials.
-    attach_qty = (
-        snap["filled_quantity"] if snap["filled_quantity"] > 0 else snap["quantity"]
-    )
-    await _fire_template_attach_on_fill(
-        parent_row_id=snap["id"],
-        parent_account=snap["account"],
-        parent_symbol=snap["symbol"],
-        parent_exchange=snap["exchange"],
-        parent_side=snap["transaction_type"],
-        parent_qty=attach_qty,
-        fill_price=float(final_price),
-        template_id=(int(snap["template_id"]) if snap.get("template_id") else None),
-        parent_product=snap["product"],
-        # chase_order() is the real-broker cancel-and-replace engine — only
-        # ever invoked for mode=='live' rows — but thread the row's own
-        # mode through explicitly rather than relying on that invariant
-        # implicitly, matching every other caller of this function.
-        mode=str(snap["mode"]),
-    )
-
-
-def _ch_maybe_fire_template_attach(snap: dict, final_price: float) -> None:
-    """Fire template attach task on chase fill (idempotent via GTT guard).
-
-    Sprint 8 fix: fires when EITHER a saved template_id is set OR the
-    row carries ad-hoc override fields (template_overrides_json
-    non-empty) — mirrors the identical fix in orders_postback.
-    _pb_wants_template_attach and paper._paper_maybe_fire_template_attach.
-    Previously this required template_id truthy, so a chase-filled
-    ticket submitted with only tp_pct_override/sl_pct_override/wing_*
-    override fields (no saved template) never reached
-    apply_template_to_order's ad-hoc path on a real fill.
-    """
-    if not (snap.get("template_id") or snap.get("template_overrides_json")):
-        return
-    if snap.get("parent_order_id") is not None:
-        return
-    asyncio.create_task(_ch_check_and_fire_template_attach(snap, final_price))
-
-
 def _chase_terminal_fire_fill_hooks(
     row_snap: dict,
     outcome: str,
     final_price: float | None,
 ) -> None:
-    """Fire auto-TP shim and/or template attach task on chase_fill.
+    """Fire the legacy auto-TP shim on chase_fill.
 
     Only runs when outcome == 'chase_fill' and a filled row_snap is
-    available. Both hooks are gated on parent_order_id IS NULL to
-    prevent TP-of-TP chains. This function is synchronous — it only
-    calls asyncio.create_task(); no awaits.
+    available. Gated on parent_order_id IS NULL to prevent TP-of-TP
+    chains. This function is synchronous — it only calls
+    asyncio.create_task(); no awaits.
+
+    The Bracket-calling half of this function
+    (`_ch_check_and_fire_template_attach`/`_ch_maybe_fire_template_attach`)
+    was removed (Bracket/Template-GTT removal, T3.1, 2026-11) along with
+    `backend/api/algo/template_attach.py`.
     """
     if outcome != "chase_fill" or not final_price or row_snap is None:
         return
     try:
         _ch_maybe_fire_auto_tp(row_snap, final_price)
-        _ch_maybe_fire_template_attach(row_snap, final_price)
     except Exception as _tp_e:
         logger.warning(f"_emit_chase_terminal TP arm failed: {_tp_e}", exc_info=True)
 

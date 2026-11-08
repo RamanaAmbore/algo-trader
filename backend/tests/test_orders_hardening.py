@@ -206,12 +206,10 @@ class TestLimitPriceValidationBeforeSdk:
             "KiteBroker must have place_order method"
         )
 
-    def test_kite_broker_place_gtt_method_exists(self):
-        """Verify KiteBroker.place_gtt method is defined."""
-        from backend.brokers.adapters.kite import KiteBroker
-        assert hasattr(KiteBroker, "place_gtt"), (
-            "KiteBroker must have place_gtt method"
-        )
+    # test_kite_broker_place_gtt_method_exists removed (Bracket/
+    # Template-GTT removal, T3.1, 2026-11) — KiteBroker.place_gtt was
+    # deleted; confirmed zero callers outside backend.api.algo.
+    # template_attach, also deleted.
 
     def test_place_order_limit_zero_price_raises_before_sdk(self):
         """place_order(order_type="LIMIT", price=0) raises BrokerOrderError before SDK."""
@@ -362,15 +360,10 @@ class TestGttAttachSkipsCloseIntent:
     skip apply_plan_live when intent=="close".
     """
 
-    def test_fire_template_attach_on_fill_exists(self):
-        """Verify _fire_template_attach_on_fill is defined."""
-        from backend.api.routes.orders_place import _fire_template_attach_on_fill
-        assert _fire_template_attach_on_fill is not None
-
-    def test_maybe_fire_template_attach_for_reconcile_exists(self):
-        """Verify _maybe_fire_template_attach_for_reconcile is defined."""
-        from backend.api.routes.orders_place import _maybe_fire_template_attach_for_reconcile
-        assert _maybe_fire_template_attach_for_reconcile is not None
+    # test_fire_template_attach_on_fill_exists /
+    # test_maybe_fire_template_attach_for_reconcile_exists removed
+    # (Bracket/Template-GTT removal, T3.1, 2026-11) — both functions
+    # were deleted along with backend.api.algo.template_attach.
 
     @pytest.mark.asyncio
     async def test_fire_template_attach_skips_on_close_intent(self):

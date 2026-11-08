@@ -9,6 +9,14 @@ from backend.api.algo.order_hold import HoldCategory, effective_hold, hold_recor
 logger = get_logger(__name__)
 
 EXPIRY_CLOSE_RELEASED_KEY = "hold.expiry_close_released"
+# `TEMPLATE_EXIT_RELEASED_KEY` is kept (not in the brief's named-function
+# removal list) — `backend/api/routes/admin.py`'s `/admin/settings`
+# toggle still reads/writes this settings key by name. It is now
+# functionally inert: nothing in this module checks it anymore, since
+# `template_exit_held()` (the only reader) was removed along with
+# `HoldCategory.TEMPLATE_EXIT` (Bracket/Template-GTT removal, T3.1,
+# 2026-11). Removing the admin-settings toggle itself is frontend/admin
+# cleanup, out of scope for this sub-sprint.
 TEMPLATE_EXIT_RELEASED_KEY = "hold.template_exit_released"
 
 
@@ -17,10 +25,10 @@ def held_for(category: HoldCategory, override: bool | None = None) -> bool:
 
     A per-order override wins when given. Otherwise the category's own
     global release switch (`hold.<category>_released`) decides, and the
-    default is held. `expiry_close_held()` and `template_exit_held()` are
-    thin wrappers over this for the two categories that existed before this
-    was generalised — kept so existing callers/tests that monkeypatch those
-    names by name keep working unchanged.
+    default is held. `expiry_close_held()` is a thin wrapper over this
+    for the one category that existed before this was generalised —
+    kept so existing callers/tests that monkeypatch it by name keep
+    working unchanged.
     """
     released = get_bool(f"hold.{category.value}_released", False)
     return effective_hold(category, override, {category.value: released})
@@ -29,16 +37,6 @@ def held_for(category: HoldCategory, override: bool | None = None) -> bool:
 def expiry_close_held() -> bool:
     """True when expiry closes must be held (global default is held)."""
     return held_for(HoldCategory.EXPIRY_CLOSE, None)
-
-
-def template_exit_held(override: bool | None = None) -> bool:
-    """True when template exit GTTs must be held.
-
-    A per-order override (the ticket's Hold switch) wins. Otherwise the global
-    switch decides, and the default is held.
-    """
-    return held_for(HoldCategory.TEMPLATE_EXIT,
-                    None if override is None else bool(override))
 
 
 async def record_held_order(category: HoldCategory, *, account: str, symbol: str,
@@ -130,35 +128,12 @@ async def record_held_order(category: HoldCategory, *, account: str, symbol: str
         return None
 
 
-async def template_exit_override(parent_row_id: int) -> bool | None:
-    """The ticket's per-order template exit hold for a parent row, or None when unset."""
-    from backend.api.database import async_session
-    from backend.api.models import AlgoOrder
-    from sqlalchemy import select
-    async with async_session() as s:
-        return (await s.execute(select(AlgoOrder.template_hold_override)
-                                .where(AlgoOrder.id == parent_row_id))).scalar_one_or_none()
-
-
-async def hold_template_exit(parent_row_id: int, symbol: str) -> None:
-    """Mark a filled parent so its exit GTTs wait for release."""
-    from backend.api.database import async_session
-    from backend.api.models import AlgoOrder
-    from sqlalchemy import select
-
-    held_at = datetime.now(timezone.utc)
-    async with async_session() as s:
-        row = (await s.execute(select(AlgoOrder).where(AlgoOrder.id == parent_row_id)
-                               .with_for_update())).scalar_one_or_none()
-        if row is None:
-            return
-        row.hold_json = hold_record(HoldCategory.TEMPLATE_EXIT,
-                                    "template exits pending release",
-                                    "n/a", None, held_at)
-        await s.commit()
-    from backend.api.algo.order_events import write_event
-    await write_event(parent_row_id, "held", f"Template exits pending release for {symbol}",
-                      {"category": "template_exit"})
+# `template_exit_override`/`hold_template_exit` removed (Bracket/
+# Template-GTT removal, T3.1, 2026-11) — both served only the deleted
+# fill-triggered template-attach pipeline
+# (`backend/api/algo/template_attach.py`) and `order_release.py`'s
+# now-deleted `release_template_exit`. `AlgoOrder.template_hold_override`
+# stays in the DB schema (schema drop is a later sub-sprint).
 
 
 _CLOSE_HM = {"NFO": (15, 30), "BFO": (15, 30), "NSE": (15, 30), "MCX": (23, 30), "NCO": (23, 30)}

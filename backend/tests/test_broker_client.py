@@ -233,13 +233,8 @@ class TestRemoteBrokerMethods:
             mock_call.assert_called_once_with("translate_qty", "MCX", 100, 100)
             assert result == 100, "should return translated value from conn_service"
 
-    def test_place_gtt_calls_place_gtt_method(self):
-        """RemoteBroker.place_gtt() dispatches to conn_service."""
-        broker = RemoteBroker(account="ZG0790", broker_id="zerodha_kite")
-        with patch.object(broker, '_call', return_value="GTT123") as mock_call:
-            result = broker.place_gtt(exchange="NSE", tradingsymbol="RELIANCE")
-            mock_call.assert_called_once()
-            assert result == "GTT123"
+    # test_place_gtt_calls_place_gtt_method removed (Bracket/Template-GTT
+    # removal, T3.1, 2026-11) — RemoteBroker.place_gtt was deleted.
 
     def test_cancel_gtt_forwards_exchange_kwarg(self):
         """RemoteBroker.cancel_gtt() forwards exchange as kwarg."""

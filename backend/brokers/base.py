@@ -349,41 +349,12 @@ class Broker(ABC):
         # Subclasses raise ValueError for unsupported exchanges; default = all allowed.
         pass
 
-    def place_gtt(
-        self,
-        *,
-        trigger_type: str,   # "single" | "two-leg" (OCO)
-        tradingsymbol: str,
-        exchange: str,
-        last_price: float,
-        orders: list[dict],  # one dict per leg: {transaction_type, quantity, price, order_type, product}
-        trigger_values: list[float],  # one float per leg
-        tag: str | None = None,
-    ) -> str:
-        """Place a GTT (broker-native trigger order). Returns the broker
-        GTT id. Default raises so unimplemented adapters surface a
-        clear error instead of silently no-op'ing."""
-        raise NotImplementedError(
-            f"{self.broker_id} adapter has not implemented place_gtt"
-        )
-
-    def modify_gtt(
-        self,
-        gtt_id: str,
-        *,
-        trigger_type: str,
-        tradingsymbol: str,
-        exchange: str,
-        last_price: float,
-        orders: list[dict],
-        trigger_values: list[float],
-    ) -> str:
-        """Modify an existing GTT. Returns the (possibly new) broker GTT
-        id — vendors that cancel+replace under the hood may return a
-        different id; callers must use the return value, not the input."""
-        raise NotImplementedError(
-            f"{self.broker_id} adapter has not implemented modify_gtt"
-        )
+    # `place_gtt`/`modify_gtt` removed (Bracket/Template-GTT removal, T3.1,
+    # 2026-11) — confirmed zero callers outside the deleted
+    # `backend/api/algo/template_attach.py`. `get_gtts`/`cancel_gtt` are
+    # KEPT below — `backend/api/routes/orders_gtt.py` is a standalone
+    # "view/cancel any broker GTT regardless of how it got there" feature,
+    # confirmed independent of Bracket.
 
     def cancel_gtt(self, gtt_id: str, *, exchange: str | None = None) -> str:
         """Cancel a GTT. Returns the cancelled GTT id.

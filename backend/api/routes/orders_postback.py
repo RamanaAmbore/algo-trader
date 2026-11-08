@@ -406,16 +406,12 @@ async def _process_broker_postback(
             price=price, status_message=status_message, qty=qty,
             account=account, symbol=symbol, txn=txn,
         )
-        for _r in _filled_rows:
-            try:
-                from backend.api.routes.orders_place import (
-                    _maybe_fire_template_attach_for_reconcile,
-                )
-                _maybe_fire_template_attach_for_reconcile(_r)
-            except Exception as _te:
-                logger.warning(
-                    f"{broker_id} postback template-attach failed for #{_r.id}: {_te}"
-                )
+        # Template-attach dispatch for this fan-out site
+        # (`_maybe_fire_template_attach_for_reconcile`) was removed
+        # (Bracket/Template-GTT removal, T3.1, 2026-11) along with
+        # `backend/api/algo/template_attach.py`. `_filled_rows` is kept —
+        # nothing else in this function reads it, but removing the
+        # `_sync_algo_order_rows` return value entirely is out of scope here.
     except Exception as e:
         logger.warning(f"{broker_id} postback row sync failed: {e}")
 
@@ -685,52 +681,6 @@ def _pb_wants_take_profit_arm(_r) -> bool:
     )
 
 
-def _pb_wants_template_attach(_r) -> bool:
-    """Live parent fill with a template_id OR ad-hoc override fields
-    (no saved template, but at least one TP/SL/Wing override was
-    supplied — see `template_attach.build_adhoc_template` /
-    `has_any_override`) wants the template attach fan-out dispatched.
-
-    Sprint 8 fix: this used to require `_r.template_id` truthy, so a
-    ticket submitted with ONLY override fields (tp_pct_override /
-    sl_pct_override / wing_*_override) and no template_id/template_slug
-    never reached `apply_template_to_order` on a real fill — the ad-hoc
-    path it already supports (`build_adhoc_template`) was structurally
-    unreachable from every live fill-detection path (postback, chase,
-    paper engine all had this same gate — see chase.py
-    `_ch_maybe_fire_template_attach` and paper.py
-    `_paper_maybe_fire_template_attach`, fixed identically).
-
-    (#2) Only fire when the order is FULLY filled (filled_quantity >= quantity).
-    Partial fills must not trigger the exit GTTs early — the remaining open qty
-    would be left without stops. TODO(#2): when template_attach_deferred column
-    exists on AlgoOrder, set it on partial fills so we retry on the next fill.
-    """
-    # Explicit close flow → skip template
-    if (getattr(_r, "intent", None) or "").lower() == "close":
-        return False
-    if getattr(_r, "is_close_intent", False):
-        return False
-    if not (
-        (_r.template_id or _r.template_overrides_json)
-        and _r.parent_order_id is None
-        and _r.mode == "live"
-        and _r.fill_price
-    ):
-        return False
-    # Full-fill guard (#2)
-    _order_qty  = int(_r.quantity or 0)
-    _filled_qty = int(_r.filled_quantity or 0)
-    if _order_qty > 0 and _filled_qty < _order_qty:
-        logger.info(
-            "[TPL-ATTACH] skipping partial fill for parent #%s: "
-            "filled=%s of %s (postback path)",
-            _r.id, _filled_qty, _order_qty,
-        )
-        return False
-    return True
-
-
 def _pb_dispatch_take_profit_arm(_r) -> None:
     from backend.api.routes.orders_place import _arm_take_profit
     # 2026-09-27 audit fix (finding #5/#1 bundle): pass the parent's real
@@ -752,75 +702,14 @@ def _pb_dispatch_take_profit_arm(_r) -> None:
     ))
 
 
-def _pb_dispatch_template_attach(_r) -> None:
-    """Dispatch template attach for a fully-filled parent order.
-
-    (#2) Caller (_pb_wants_template_attach) already verified full-fill;
-    use filled_quantity as attach_qty when available.
-
-    `template_id` is passed through as `None` (not `int(None)`, which
-    raises) when the row has no saved template — `_fire_template_
-    attach_on_fill` → `apply_template_to_order` already handles
-    `template_id=None` correctly via the ad-hoc-template path as long
-    as `row_info["overrides"]` (parsed from `template_overrides_json`)
-    carries at least one override field, which `_pb_wants_template_attach`
-    already verified before dispatching here.
-    """
-    from backend.api.routes.orders_place import _fire_template_attach_on_fill
-
-    _attach_qty = (
-        int(_r.filled_quantity)
-        if int(_r.filled_quantity or 0) > 0
-        else int(_r.quantity or 0)
-    )
-    asyncio.create_task(
-        _fire_template_attach_on_fill(
-            parent_row_id=int(_r.id),
-            parent_account=str(_r.account or ""),
-            parent_symbol=str(_r.symbol or ""),
-            parent_exchange=str(_r.exchange or "NFO"),
-            parent_side=str(_r.transaction_type or "BUY"),
-            parent_qty=_attach_qty,
-            fill_price=float(_r.fill_price),
-            template_id=(int(_r.template_id) if _r.template_id else None),
-            parent_product=str(_r.product or "NRML"),
-            # _pb_wants_template_attach() already restricts this path to
-            # mode=='live' rows; thread the row's own mode through as a
-            # second, independent guard (mirrors _pb_dispatch_take_profit_arm's
-            # existing parent_mode= pattern above).
-            mode=str(_r.mode or "live"),
-        )
-    )
-
-
-async def _pb_check_and_fire_template_attach(_r) -> None:
-    """Async wrapper: checks position-offset before firing template attach.
-
-    Runs the offsetting-position guard first so close/reduce orders that
-    somehow carry a template_id (e.g. from an older AlgoOrder row that
-    was re-used for a close) never arm exit GTTs on themselves.
-    """
-    from backend.api.routes.orders_place import _is_offsetting_position
-    if await _is_offsetting_position(
-        sym=str(getattr(_r, "symbol", "") or ""),
-        exchange=str(getattr(_r, "exchange", "NFO") or "NFO"),
-        side=str(getattr(_r, "transaction_type", "BUY") or "BUY"),
-        account=str(getattr(_r, "account", "") or ""),
-    ):
-        logger.info(
-            "[TPL-ATTACH] skipping — order offsets existing position for #%s %s",
-            _r.id,
-            getattr(_r, "symbol", ""),
-        )
-        return
-    # delegate to the original attach path
-    _pb_dispatch_template_attach(_r)
-
-
 def _pb_dispatch_take_profit_and_template(filled_rows: list) -> None:
-    """Arm TP on parent fills without a template, else fire template
-    attach. Both fan-outs run as detached tasks so postback ack isn't
-    blocked.
+    """Arm the legacy TP shim on parent fills without a template.
+
+    The Bracket-calling half of this dispatch
+    (`_pb_wants_template_attach`/`_pb_dispatch_template_attach`/
+    `_pb_check_and_fire_template_attach`) was removed (Bracket/
+    Template-GTT removal, T3.1, 2026-11) along with
+    `backend/api/algo/template_attach.py`.
 
     Also emits a ``fill_event`` WebSocket push for each filled row so
     connected clients can re-fetch positions immediately without waiting
@@ -829,10 +718,6 @@ def _pb_dispatch_take_profit_and_template(filled_rows: list) -> None:
     for _r in filled_rows:
         if _pb_wants_take_profit_arm(_r):
             _pb_dispatch_take_profit_arm(_r)
-
-    for _r in filled_rows:
-        if _pb_wants_template_attach(_r):
-            asyncio.create_task(_pb_check_and_fire_template_attach(_r))
 
     # Emit fill_event to all connected WS clients so the frontend
     # can immediately re-fetch positions after a parent order fills.

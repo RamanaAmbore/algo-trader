@@ -284,132 +284,56 @@ def _al_place_resolve_params(
     )
 
 
-async def _place_order_resolve_template_slug(template_slug: str) -> "int | None":
-    """Resolve a `template_slug` to its `OrderTemplate.id`.
-
-    Reuses `template_attach.load_template_for_slug_or_id` — the SAME
-    resolver every other template-attach path (OrderTicket, basket, the
-    sim-mode agent action via `_maybe_attach_template_from_action`)
-    already relies on for id-over-slug priority + the `OrderTemplate.slug
-    == slug` DB lookup. The live place_order path needs its own call
-    site for this (rather than passing `template_slug` straight through
-    like the sim path does) because `AlgoOrder.template_id` is a plain
-    int FK column with no slug column — resolution has to happen before
-    persist, not at fill time inside `apply_template_to_order`.
-
-    Returns None (and logs a warning) when the slug does not resolve to
-    any OrderTemplate row, or when the lookup itself fails — callers
-    treat None the same as "no template requested" rather than guessing.
-    """
-    from backend.api.algo.template_attach import load_template_for_slug_or_id
-
-    try:
-        tmpl = await load_template_for_slug_or_id(
-            template_id=None, template_slug=str(template_slug)
-        )
-    except Exception as e:
-        logger.warning(
-            f"[LIVE] place_order: template_slug={template_slug!r} lookup failed: {e}"
-        )
-        return None
-    if tmpl is None:
-        logger.warning(
-            f"[LIVE] place_order: template_slug={template_slug!r} did not resolve "
-            f"to any OrderTemplate — no template will be attached on fill"
-        )
-        return None
-    return int(tmpl["id"])
-
-
-def _place_order_overrides_json(overrides: "dict | None") -> "str | None":
-    """Serialize place_order per-leg template overrides to a JSON string
-    for `AlgoOrder.template_overrides_json`.
-
-    Keys/shape mirror `orders_helpers._build_overrides_json` exactly
-    (tp_pct / sl_pct / wing_premium_pct / wing_strike_offset) — the same
-    shape `_opp_load_row_for_attach` (orders_place.py) parses back out of
-    this column and feeds to `apply_template_to_order` at fill time.
-    Returns None when `overrides` is empty/None or every value is None,
-    so the DB column is left NULL rather than storing an empty object.
-    """
-    if not overrides:
-        return None
-    payload = {k: v for k, v in overrides.items() if v is not None}
-    if not payload:
-        return None
-    import json
-    return json.dumps(payload)
+# `_place_order_resolve_template_slug`/`_place_order_overrides_json`
+# removed (Bracket/Template-GTT removal, T3.1, 2026-11) — the former
+# called `template_attach.load_template_for_slug_or_id`, deleted along
+# with `backend/api/algo/template_attach.py`; the latter served only
+# `_place_order_set_product_template`'s now-removed `template_overrides_json`
+# write (below). Confirmed zero active/inactive agents reference
+# `template_id`/`template_slug` in their actions or preamble (prod + dev
+# DB check).
 
 
 async def _place_order_set_product_template(
     row_id: int, product: str, template_id,
     template_slug=None, overrides: "dict | None" = None,
 ) -> None:
-    """Set product/template_id/template_overrides_json on a freshly-written
-    place_order AlgoOrder row.
+    """Set `product` on a freshly-written place_order AlgoOrder row.
 
     Sprint 1a (docs/proposals/ORDER_LIFECYCLE_DATA_MODEL.md §2.2): the
     shared `_write_live_order` constructor (actions.py) is also used by
     `close_position` and `chase_close_positions` — neither of which sets
-    these fields today — so this is deliberately NOT added there.
-    Instead it's a narrow, place_order-only follow-up UPDATE scoped to
-    the single row just created, run immediately after
-    `_write_live_order` returns so the postback / chase-terminal
-    template-auto-attach path (which reads `AlgoOrder.template_id`,
-    e.g. `orders_postback.py`, `chase.py:184`) sees the value the agent
-    action requested on fill.
+    this field today — so this is deliberately NOT added there. Instead
+    it's a narrow, place_order-only follow-up UPDATE scoped to the
+    single row just created, run immediately after `_write_live_order`
+    returns.
 
-    Behavioral note: this is the first time a live agent-placed
-    `place_order` action can carry a non-NULL `template_id` through to
-    its AlgoOrder row — until now that auto-attach path only ever fired
-    for OrderTicket/basket-submitted orders. An agent action that
-    specifies `params.template_id` (OR `params.template_slug` — resolved
-    here via `_place_order_resolve_template_slug`, 2026-10 fix) will now
-    have real exit GTTs (and possibly a wing order) armed on fill, exactly
-    like a manually ticketed templated order. The four `*_override`
-    params (tp_pct / sl_pct / wing_premium_pct / wing_strike_offset) are
-    now persisted too, via `template_overrides_json` — the SAME column
-    `_opp_load_row_for_attach` already reads back for OrderTicket/basket
-    fills, so no change was needed on the fill-time consumer side.
-    Swallows all exceptions (logs + returns) so a failure here can never
-    take down the caller's `intent_id`.
+    `template_id`/`template_slug`/`overrides` writes were removed
+    (Bracket/Template-GTT removal, T3.1, 2026-11) — resolving/persisting
+    them served only the now-deleted fill-triggered template-attach
+    pipeline (`backend/api/algo/template_attach.py`). The three params
+    are kept on this function's signature (schema/grammar cleanup for
+    the generic `place_order`/`order` action params is a later
+    sub-sprint) but are now silently ignored. Swallows all exceptions
+    (logs + returns) so a failure here can never take down the caller's
+    `intent_id`.
     """
-    resolved_template_id = template_id
-    if resolved_template_id is None and template_slug:
-        resolved_template_id = await _place_order_resolve_template_slug(template_slug)
-
-    overrides_json = _place_order_overrides_json(overrides)
-
-    if not product and resolved_template_id is None and overrides_json is None:
+    if not product:
         return
     from backend.api.database import async_session
     from backend.api.models import AlgoOrder
     from sqlalchemy import update as sa_update
 
-    values: dict = {}
-    if product:
-        values["product"] = str(product)
-    if resolved_template_id is not None:
-        try:
-            values["template_id"] = int(resolved_template_id)
-        except (TypeError, ValueError):
-            logger.warning(
-                f"[LIVE] place_order ignoring non-numeric "
-                f"template_id={resolved_template_id!r}"
-            )
-    if overrides_json is not None:
-        values["template_overrides_json"] = overrides_json
-    if not values:
-        return
     try:
         async with async_session() as s:
             await s.execute(
-                sa_update(AlgoOrder).where(AlgoOrder.id == row_id).values(**values)
+                sa_update(AlgoOrder).where(AlgoOrder.id == row_id)
+                .values(product=str(product))
             )
             await s.commit()
     except Exception as e:
         logger.warning(
-            f"[LIVE] place_order product/template_id update failed for row {row_id}: {e}"
+            f"[LIVE] place_order product update failed for row {row_id}: {e}"
         )
 
 

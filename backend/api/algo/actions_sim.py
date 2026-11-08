@@ -1,9 +1,7 @@
 """
 Simulator (mode-1) and replay (mode-4) paper-trade writers for agent actions.
 
-Extracted from actions.py. `_maybe_attach_template_from_action` lives in
-actions.py (called from both sim and paper paths) and is imported lazily
-here to avoid a circular import.
+Extracted from actions.py.
 """
 
 from backend.shared.helpers.ramboq_logger import get_logger
@@ -366,20 +364,13 @@ async def _sim_place_or_close(agent, action_type: str, params: dict) -> None:
         "price":    price,
         "exchange": str(params.get("exchange") or "NFO"),
     })
-    # Template attach — when the action's params carry template_id /
-    # template_slug / *_override fields, fan out TP/SL GTTs + wing
-    # into SimGttBook + SimDriver._paper. Mirrors the OrderTicket flow.
-    # Lazy import to avoid circular dependency (actions.py imports us).
-    from backend.api.algo.actions import _maybe_attach_template_from_action
-    await _maybe_attach_template_from_action(
-        agent, action_type, params,
-        algo_order_id=algo_order_id,
-        parent_account=account, parent_symbol=symbol,
-        parent_side=side, parent_qty=qty,
-        parent_exchange=str(params.get("exchange") or "NFO"),
-        parent_price=float(price) if price is not None else 0.0,
-        apply_path="sim",
-    )
+    # Template attach for sim-mode action fires (fanning TP/SL GTTs +
+    # wing into SimGttBook) was removed (Bracket/Template-GTT removal,
+    # T3.1, 2026-11) — `_maybe_attach_template_from_action` called
+    # `apply_template_to_order`, deleted along with
+    # `backend/api/algo/template_attach.py`. `sim/gtt_book.py` itself is
+    # untouched (its own removal is a later sub-sprint); it simply has
+    # no remaining populator reached from this path.
 
 
 async def _sim_paper_trade(agent, action_type: str, params: dict, context: dict):

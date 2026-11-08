@@ -681,16 +681,6 @@ class PaperTradeEngine:
                 "initial_price": init_price,
                 "agent_slug":    "(recovered)",
                 "action_type":   "recovered",
-                # Re-hydrate the bracket-attach context — template_id +
-                # product + mode + parent_order_id let the fill path
-                # know whether to fire `_fire_template_attach_on_fill`
-                # for this row, and what product to inherit on the
-                # exit GTT legs. Sprint A fix for the recover_from_db
-                # gap (templates auditor #13).
-                "template_id":     r.template_id,
-                "product":         r.product,
-                "mode":            r.mode,
-                "parent_order_id": r.parent_order_id,
             })
         if rows:
             logger.info(
@@ -841,64 +831,10 @@ class PaperTradeEngine:
                 f"(kind={kind}, id={order.get('algo_order_id')}): {e}"
             )
 
-    def _paper_maybe_fire_template_attach(
-        self,
-        order: dict,
-        template_id: int | None,
-        parent_order_id: int | None,
-        account: str,
-        symbol: str,
-        exchange: str,
-        side: str,
-        qty: int,
-        product: str | None,
-        mode: str,
-        template_overrides_json: str | None = None,
-    ) -> None:
-        """Schedule template-attach task on a paper/sim/replay fill, if
-        applicable.
-
-        Fires only when: kind==fill, EITHER template_id is set OR the row
-        carries ad-hoc override fields (template_overrides_json non-empty
-        — Sprint 8 fix, see orders_postback._pb_wants_template_attach's
-        docstring for the full incident this closes across all three
-        fill-dispatch call sites), parent_order_id is None (i.e. this is
-        a parent row, not a child), and fill_price is present.
-
-        CRITICAL (2026-09-30): this engine is shared by ALL of `paper`,
-        `sim`, and `replay` (self._label is literally the AlgoOrder.mode
-        value — see recover_from_db above). `_fire_template_attach_on_fill`
-        is the one function that places REAL broker GTTs/wing orders, so
-        `mode` (the row's own AlgoOrder.mode, snapshotted in
-        `_update_algo_order` BEFORE this is called) must always be threaded
-        through explicitly — never assume this engine instance is live,
-        because it never is. `_fire_template_attach_on_fill` refuses to do
-        anything real unless `mode == 'live'`.
-        """
-        if (not template_id and not template_overrides_json) or parent_order_id is not None:
-            return
-        fill_price = order.get("fill_price")
-        if fill_price is None:
-            return
-        try:
-            from backend.api.routes.orders import _fire_template_attach_on_fill
-            asyncio.create_task(_fire_template_attach_on_fill(
-                parent_row_id=order["algo_order_id"],
-                parent_account=str(account),
-                parent_symbol=str(symbol),
-                parent_exchange=str(exchange or "NFO"),
-                parent_side=str(side),
-                parent_qty=qty,
-                fill_price=float(fill_price),
-                template_id=(int(template_id) if template_id else None),
-                parent_product=str(product or "NRML"),
-                mode=str(mode or self._label),
-            ))
-        except Exception as _e:
-            logger.warning(
-                f"PaperTradeEngine[{self._label}] template attach failed for "
-                f"#{order['algo_order_id']}: {_e}"
-            )
+    # `_paper_maybe_fire_template_attach` removed (Bracket/Template-GTT
+    # removal, T3.1, 2026-11) — it only ever called
+    # `_fire_template_attach_on_fill`, which was deleted along with
+    # `backend/api/algo/template_attach.py`.
 
     async def _update_algo_order(self, order: dict, kind: str) -> None:
         from backend.api.database import async_session
@@ -918,37 +854,15 @@ class PaperTradeEngine:
 
             _paper_update_row_fields(row, kind, order, tag)
 
-            # Snapshot row fields used downstream for the template-attach
-            # fire — captured BEFORE leaving the session so SQLAlchemy
+            # Snapshot row fields used downstream for the terminal-event
+            # fanout — captured BEFORE leaving the session so SQLAlchemy
             # doesn't lazy-load post-commit.
-            _row_template_id     = row.template_id
-            _row_template_overrides_json = row.template_overrides_json
-            _row_parent_order_id = row.parent_order_id
-            _row_product         = row.product
             _row_account         = row.account
             _row_symbol          = row.symbol
             _row_exchange        = row.exchange
             _row_side            = row.transaction_type
             _row_qty             = int(row.quantity or 0)
-            _row_mode            = row.mode
             await s.commit()
-
-        # Sprint A fix — paper-engine fills fire the SAME template-attach
-        # dispatch function live-mode postbacks use, but `_row_mode` (this
-        # engine instance's own label — 'paper' / 'sim' / 'replay', never
-        # 'live') is threaded through explicitly so
-        # `_fire_template_attach_on_fill` skips the real-broker-placing
-        # branch entirely for these fills (2026-09-30 fix — see that
-        # function's docstring for the incident this closes).
-        if kind == "fill":
-            self._paper_maybe_fire_template_attach(
-                order,
-                _row_template_id, _row_parent_order_id,
-                str(_row_account), str(_row_symbol),
-                str(_row_exchange or "NFO"), str(_row_side),
-                _row_qty, _row_product, str(_row_mode or self._label),
-                template_overrides_json=_row_template_overrides_json,
-            )
 
         row_snap = {
             "_row_account":  _row_account,

@@ -1,10 +1,9 @@
 """
 Mode-2 paper-trade writer and dispatcher for agent actions.
 
-Extracted from actions.py. Imports `_maybe_attach_template_from_action`
-lazily from actions.py to avoid a circular import. Imports
-`_basket_margin_validate` and `_live_positions_in_scope` from
-actions_preflight.py at module top (no cycle).
+Extracted from actions.py. Imports `_basket_margin_validate` and
+`_live_positions_in_scope` from actions_preflight.py at module top (no
+cycle).
 """
 
 from backend.shared.helpers.ramboq_logger import get_logger

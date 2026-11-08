@@ -286,58 +286,32 @@ async def test_route_dispatches_agent_order_category_to_repeated_rejection_relea
     mock_release_repeated = AsyncMock(
         return_value={"ok": True, "reason": "released; chasing resumed", "status": "OPEN"})
     mock_release_held = AsyncMock()
-    mock_release_template = AsyncMock()
 
     ctrl = HeldOrdersController(owner=None)
 
     with patch("backend.api.database.async_session", return_value=mock_session), \
          patch("backend.api.algo.order_release.release_repeated_rejection_hold",
                mock_release_repeated), \
-         patch("backend.api.algo.order_release.release_held_order", mock_release_held), \
-         patch("backend.api.algo.order_release.release_template_exit", mock_release_template):
+         patch("backend.api.algo.order_release.release_held_order", mock_release_held):
         result = await HeldOrdersController.release.fn(ctrl, order_id=77)
 
     assert result["ok"] is True
     mock_release_repeated.assert_called_once_with(77, actor="operator")
     mock_release_held.assert_not_called()
-    mock_release_template.assert_not_called()
 
 
-@pytest.mark.asyncio
-async def test_route_dispatches_template_exit_category_to_template_release():
-    from backend.api.routes.orders_held import HeldOrdersController
-    from datetime import datetime, timezone
-    from backend.api.algo.order_hold import HoldCategory, hold_record
-
-    row = _held_row(hold_json=hold_record(
-        HoldCategory.TEMPLATE_EXIT, "template exits held until released", "n/a", None,
-        datetime.now(timezone.utc),
-    ))
-    mock_session = _mock_session(row)
-    mock_release_repeated = AsyncMock()
-    mock_release_held = AsyncMock()
-    mock_release_template = AsyncMock(
-        return_value={"ok": True, "reason": "template exits placed", "status": "FILLED"})
-
-    ctrl = HeldOrdersController(owner=None)
-
-    with patch("backend.api.database.async_session", return_value=mock_session), \
-         patch("backend.api.algo.order_release.release_repeated_rejection_hold",
-               mock_release_repeated), \
-         patch("backend.api.algo.order_release.release_held_order", mock_release_held), \
-         patch("backend.api.algo.order_release.release_template_exit", mock_release_template):
-        result = await HeldOrdersController.release.fn(ctrl, order_id=77)
-
-    assert result["ok"] is True
-    mock_release_template.assert_called_once_with(77, actor="operator")
-    mock_release_held.assert_not_called()
-    mock_release_repeated.assert_not_called()
+# test_route_dispatches_template_exit_category_to_template_release removed
+# (Bracket/Template-GTT removal, T3.1, 2026-11) — order_release.
+# release_template_exit was deleted along with its _RELEASE_HANDLERS
+# registration.
 
 
-def test_get_release_handler_resolves_all_three_categories_and_default():
+def test_get_release_handler_resolves_both_categories_and_default():
+    """TEMPLATE_EXIT's entry removed (Bracket/Template-GTT removal, T3.1,
+    2026-11) — release_template_exit was deleted along with its
+    _RELEASE_HANDLERS registration."""
     from backend.api.algo import order_release as m
 
-    assert m.get_release_handler("template_exit") is m.release_template_exit
     assert m.get_release_handler("agent_order") is m.release_repeated_rejection_hold
     assert m.get_release_handler("expiry_close") is m.release_held_order
     assert m.get_release_handler(None) is m.release_held_order
@@ -348,12 +322,15 @@ def test_get_release_handler_reflects_monkeypatched_handler():
     """The registry must re-resolve by name at call time, not freeze the
     function reference captured at import time — otherwise tests (and any
     future caller) that patch a handler by module attribute would silently
-    get the real function instead of the patch."""
+    get the real function instead of the patch. Uses
+    release_repeated_rejection_hold/"agent_order" (TEMPLATE_EXIT/
+    release_template_exit no longer exist — Bracket/Template-GTT removal,
+    T3.1, 2026-11) — any registered handler proves the same thing."""
     from backend.api.algo import order_release as m
 
     sentinel = AsyncMock()
-    with patch("backend.api.algo.order_release.release_template_exit", sentinel):
-        assert m.get_release_handler("template_exit") is sentinel
+    with patch("backend.api.algo.order_release.release_repeated_rejection_hold", sentinel):
+        assert m.get_release_handler("agent_order") is sentinel
 
 
 @pytest.mark.asyncio
@@ -370,18 +347,15 @@ async def test_route_dispatches_other_categories_to_generic_release_held_order()
     mock_release_repeated = AsyncMock()
     mock_release_held = AsyncMock(
         return_value={"ok": True, "reason": "released; chasing", "status": "OPEN"})
-    mock_release_template = AsyncMock()
 
     ctrl = HeldOrdersController(owner=None)
 
     with patch("backend.api.database.async_session", return_value=mock_session), \
          patch("backend.api.algo.order_release.release_repeated_rejection_hold",
                mock_release_repeated), \
-         patch("backend.api.algo.order_release.release_held_order", mock_release_held), \
-         patch("backend.api.algo.order_release.release_template_exit", mock_release_template):
+         patch("backend.api.algo.order_release.release_held_order", mock_release_held):
         result = await HeldOrdersController.release.fn(ctrl, order_id=77)
 
     assert result["ok"] is True
     mock_release_held.assert_called_once_with(77, actor="operator")
     mock_release_repeated.assert_not_called()
-    mock_release_template.assert_not_called()

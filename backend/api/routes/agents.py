@@ -112,18 +112,13 @@ class AgentInfo(msgspec.Struct):
     # operator authored this agent with, if created via console/CLI.
     # Display/audit-only. None for UI-created or legacy agents.
     cli_source:            str | None = None
-    # Sprint E (Agent/Bracket/Template unification phase) — populated
-    # ONLY for kind='bracket' rows. `legacy_template_id` is the real,
-    # canonical `OrderTemplate.id` this row mirrors — NEVER confuse
-    # with `id` above, this row's own unrelated Agent primary key (the
-    # exact direction the council-risk review blocked dispatch on —
-    # see `backend.api.algo.bracket_registry`'s module doc).
-    # `bracket_config` is the mirrored TP/SL/Wing payload. The frontend
-    # adapter (`automationKinds.js`) reconstructs an `OrderTemplateOut`-
-    # shaped row from these two fields, using `legacy_template_id` as
-    # that reconstructed row's `id` — never `id` above.
-    legacy_template_id:    int | None = None
-    bracket_config:        dict | None = None
+    # `legacy_template_id`/`bracket_config` field exposure removed
+    # (Bracket/Template-GTT removal, T3.1, 2026-11) — `AgentInfo` no
+    # longer serialises these two columns. `Agent.legacy_template_id`/
+    # `Agent.bracket_config` stay on the ORM model (schema drop is a
+    # later sub-sprint); the frontend adapter that reconstructs an
+    # `OrderTemplateOut`-shaped row from them is frontend cleanup, out
+    # of scope here.
     # RamboQL Part 2 (2026-10) — server-evaluated GIVEN bindings, a list
     # of `{"name","expr"}` dicts for every OPERATOR-BASED GIVEN the CLI
     # compiler emitted (pure-alias bindings never reach here — see
@@ -206,16 +201,15 @@ class AgentCreateRequest(msgspec.Struct):
     # a reusable $ref-able condition/notify sub-tree. Never independently
     # evaluated by run_cycle()/event_agents.py (both filter on a positive
     # kind=='cycle'/kind=='event' allowlist). See template_registry.py.
-    # 'bracket' (Sprint E, Agent/Bracket/Template unification phase) —
-    # a TP/SL/Wing exit-rule preset, synchronously mirrored from an
-    # OrderTemplate row by backend.api.algo.bracket_registry. NEVER
-    # independently evaluated either (same allowlist exclusion as
-    # 'template'). Accepted here ONLY so msgspec doesn't 400 a client
-    # that round-trips a bracket row's kind — create_agent itself
-    # REJECTS an attempt to actually CREATE a kind='bracket' row via
-    # this endpoint (brackets are created via POST /api/admin/
-    # templates/, which mirrors into Agent automatically).
-    kind:                  Literal["cycle", "threshold", "event", "template", "bracket"] = "cycle"
+    # 'bracket' removed from this Literal (Bracket/Template-GTT removal,
+    # T3.1, 2026-11) — `create_agent` already refused to CREATE a
+    # kind='bracket' row via this endpoint (brackets were only ever
+    # created via the now-deleted `POST /api/admin/templates/`), so
+    # excluding it here just moves that refusal to deserialization.
+    # Pre-existing `kind='bracket'` rows (schema drop is a later
+    # sub-sprint) are unaffected — `AgentInfo.kind` on the GET/list
+    # response is a plain `str`, not this Literal.
+    kind:                  Literal["cycle", "threshold", "event", "template"] = "cycle"
     # Alert hierarchy / noise-reduction — see Agent.tier / .topic.
     # None lets the model defaults ("medium" / "general") apply.
     tier:                   str | None = None
@@ -272,7 +266,17 @@ class AgentUpdateRequest(msgspec.Struct):
     # still rejects any attempt to actually CHANGE kind (see below); this
     # only keeps msgspec decode from rejecting a client that round-trips
     # the row's current kind value in a full-form update payload.
-    kind:                  Literal["cycle", "threshold", "event", "template", "bracket"] | None = None
+    # 'bracket' removed from this Literal (Bracket/Template-GTT removal,
+    # T3.1, 2026-11) per explicit operator instruction — KNOWN RISK,
+    # stated plainly rather than silently assumed safe: if a frontend
+    # edit flow round-trips an EXISTING kind='bracket' row's `kind`
+    # value in a PUT body (this struct's own comment above documents
+    # that exact round-trip as the reason 'bracket' was ever added),
+    # that request now 400s at decode time, before update_agent's own
+    # kind-change-refusal logic ever runs. Not verified against the
+    # actual frontend code (out of scope for this backend sub-sprint) —
+    # flagged for the frontend removal sub-sprint (T3.3/T3.4) to check.
+    kind:                  Literal["cycle", "threshold", "event", "template"] | None = None
     tier:                  str | None = None
     topic:                 str | None = None
     # Sprint 4 (CLI grammar authoring) — None means unchanged, same
@@ -346,12 +350,17 @@ _VALID_TRADE_MODES = {"paper", "live"}
 # must NEVER be written to the DB column as-is: run_cycle()'s query
 # filters `Agent.kind == "cycle"` and would silently skip any row stored
 # with kind="threshold" forever.
-_VALID_KINDS_INPUT = {"cycle", "threshold", "event", "template", "bracket"}
+# "bracket" removed (Bracket/Template-GTT removal, T3.1, 2026-11) —
+# `_VALID_KINDS_INPUT` is now also the complete msgspec-level allowlist
+# (see `AgentCreateRequest.kind`/`AgentUpdateRequest.kind` Literals
+# above), so a POST/PUT carrying `kind="bracket"` 400s at deserialization
+# before this function is even reached.
+_VALID_KINDS_INPUT = {"cycle", "threshold", "event", "template"}
 
 
 def _age_normalize_kind(raw: str | None) -> str:
     """Normalise an incoming `kind` value to the Agent model's real
-    vocabulary ('cycle', 'event', 'template', or 'bracket'). Raises 400
+    vocabulary ('cycle', 'event', or 'template'). Raises 400
     on anything else."""
     k = (raw or "cycle").strip().lower()
     if k not in _VALID_KINDS_INPUT:
@@ -1041,8 +1050,6 @@ def _agent_to_info(a: Agent) -> AgentInfo:
         topic=getattr(a, "topic", "general") or "general",
         group=getattr(a, "group_name", None),
         cli_source=getattr(a, "cli_source", None),
-        legacy_template_id=getattr(a, "legacy_template_id", None),
-        bracket_config=getattr(a, "bracket_config", None),
         given=list(getattr(a, "given", None) or []),
         preamble=list(getattr(a, "preamble", None) or []),
         has_explicit_alert=bool(getattr(a, "has_explicit_alert", False)),
@@ -1426,22 +1433,11 @@ class AgentController(Controller):
                 raise HTTPException(status_code=400,
                     detail=f"lifespan_type must be one of {sorted(_LIFESPAN_TYPES)}")
             kind = _age_normalize_kind(data.kind)
-            if kind == "bracket":
-                # Sprint E — brackets are created via POST
-                # /api/admin/templates/, which mirrors into Agent
-                # automatically (backend.api.algo.bracket_registry).
-                # A bracket Agent row created through THIS endpoint
-                # would have no legacy_template_id and no
-                # bracket_config — an orphan the live order-fill
-                # resolver (template_attach.load_template_for_slug_
-                # or_id) would never be able to use, and the retry-
-                # same-slug derivation in bracket_registry assumes
-                # every bracket slug traces back to a real
-                # OrderTemplate row. Refuse outright rather than let
-                # a broken row exist.
-                raise HTTPException(status_code=400,
-                    detail="brackets are created via POST /api/admin/templates/, "
-                           "not /api/agents/")
+            # The "bracket" create-time refusal block was removed
+            # (Bracket/Template-GTT removal, T3.1, 2026-11) — it is now
+            # unreachable: `_age_normalize_kind` already raises 400 for
+            # any `kind` not in `_VALID_KINDS_INPUT`, which no longer
+            # contains "bracket".
             if kind == "event":
                 _age_validate_event_spec(data.slug, data.conditions, data.events, data.actions)
             elif kind == "template":
@@ -1540,25 +1536,17 @@ class AgentController(Controller):
                     detail="System templates can only toggle status "
                            "(activate/deactivate); body + description "
                            "are owned by code seeds.")
-        # Sprint E — a bracket Agent row's content (name, description,
-        # bracket_config) is a synchronous MIRROR of its owning
-        # OrderTemplate row, written exclusively by bracket_registry.
-        # mirror_bracket_upsert. Letting this endpoint touch any of
-        # those fields would let the mirror drift from the row
-        # template_attach.load_template_for_slug_or_id actually reads
-        # at live-fill time — refuse, same "edit via the owning CRUD
-        # surface instead" contract the is_system template guard above
-        # already enforces. group/tags ARE allowed through — they're
-        # organisational metadata, not bracket content, and aren't
-        # mirrored.
-        if agent.kind == "bracket":
-            if (data.name is not None or data.description is not None
-                    or data.conditions is not None or data.events is not None
-                    or data.actions is not None):
-                raise HTTPException(status_code=400,
-                    detail="bracket content (name/description/TP/SL/wing) is "
-                           "edited via PATCH /api/admin/templates/{id}, not "
-                           "/api/agents/ — this row is a read-only mirror")
+        # The `kind == "bracket"` update-time read-only guard was removed
+        # (Bracket/Template-GTT removal, T3.1, 2026-11) — it protected a
+        # bracket row's mirror sync (`bracket_registry.mirror_bracket_
+        # upsert`), which no longer runs, and its error message pointed
+        # at the now-deleted `PATCH /api/admin/templates/{id}` route.
+        # Existing `kind='bracket'` rows (schema drop is a later
+        # sub-sprint) can now have their display fields edited through
+        # this endpoint like any other agent — harmless, since
+        # `kind='bracket'` rows are still excluded from `run_cycle()`'s
+        # evaluation (the `Agent.kind != "bracket"` filter in
+        # `agent_engine.py` is unchanged).
 
     @put("/{slug:str}", guards=[cap_guard("manage_own_agents")])
     async def update_agent(self, slug: str, data: AgentUpdateRequest) -> dict:

@@ -303,11 +303,11 @@ class RemoteBroker(Broker):
         except BrokerError as e:
             raise ValueError(str(e)) from e
 
-    def place_gtt(self, **kwargs: Any) -> str:
-        return self._call("place_gtt", **kwargs)
-
-    def modify_gtt(self, gtt_id: str, **kwargs: Any) -> str:
-        return self._call("modify_gtt", gtt_id, **kwargs)
+    # `place_gtt`/`modify_gtt` forwarders removed (Bracket/Template-GTT
+    # removal, T3.1, 2026-11) — confirmed zero callers outside the deleted
+    # `backend/api/algo/template_attach.py`. `cancel_gtt`/`get_gtts` below
+    # are KEPT — `orders_gtt.py` is a standalone, Bracket-independent
+    # "view/cancel any broker GTT" feature.
 
     def cancel_gtt(self, gtt_id: str, *, exchange: str | None = None) -> str:
         return self._call("cancel_gtt", gtt_id, exchange=exchange)

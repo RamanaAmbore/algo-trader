@@ -35,7 +35,6 @@ from backend.brokers.adapters.groww import (
     _normalise_groww_gtt_row,
     _normalise_quote_row,
     # GTT helpers
-    _groww_gtt_order_body,
     _groww_build_gtt_order_leg,
     # Adapter class
     GrowwBroker,
@@ -674,24 +673,10 @@ class TestNormaliseQuoteRow:
 # PART C: GTT Helpers
 # ============================================================================
 
-class TestGrowwGttOrderBody:
-    """Test GTT order body construction."""
-
-    def test_gtt_order_body_limit(self):
-        result = _groww_gtt_order_body("SELL", "LIMIT", 2600.0)
-        assert result["transaction_type"] == "SELL"
-        assert result["order_type"] == "LIMIT"
-        assert result["price"] == 2600.0
-
-    def test_gtt_order_body_market(self):
-        result = _groww_gtt_order_body("BUY", "MARKET", 0.0)
-        assert result["transaction_type"] == "BUY"
-        assert result["order_type"] == "MARKET"
-        assert "price" not in result
-
-    def test_gtt_order_body_limit_zero_price(self):
-        result = _groww_gtt_order_body("BUY", "LIMIT", 0.0)
-        assert "price" not in result  # LIMIT with 0 price omitted
+# TestGrowwGttOrderBody removed (Bracket/Template-GTT removal, T3.1,
+# 2026-11) — `_groww_gtt_order_body` (the function it covered) was
+# deleted along with `GrowwBroker.place_gtt`/`modify_gtt`, its only
+# callers.
 
 
 class TestGrowwBuildGttOrderLeg:
@@ -1069,72 +1054,8 @@ class TestGrowwBrokerGetGtts:
         assert len(result) >= 50
 
 
-class TestGrowwBrokerPlaceGtt:
-    """Test broker.place_gtt() method."""
-
-    @pytest.fixture
-    def broker(self):
-        conn = MagicMock()
-        conn.account = "test_account"
-        conn.get_groww_conn = MagicMock()
-        return GrowwBroker(conn)
-
-    def test_place_gtt_single_leg(self, broker):
-        broker.groww.create_smart_order = MagicMock(return_value={
-            "data": {
-                "smart_order_id": "gtt_new_123",
-            }
-        })
-        result = broker.place_gtt(
-            trigger_type="single",
-            tradingsymbol="RELIANCE",
-            exchange="NSE",
-            last_price=2500.0,
-            orders=[{"transaction_type": "SELL", "order_type": "LIMIT", "price": 2600.0}],
-            trigger_values=[2600.0],
-        )
-        assert result == "gtt_new_123"
-
-    def test_place_gtt_oco_returns_compound_id(self, broker):
-        broker.groww.create_smart_order = MagicMock(side_effect=[
-            {"data": {"smart_order_id": "gtt_tp"}},
-            {"data": {"smart_order_id": "gtt_sl"}},
-        ])
-        result = broker.place_gtt(
-            trigger_type="two-leg",
-            tradingsymbol="RELIANCE",
-            exchange="NSE",
-            last_price=2500.0,
-            orders=[
-                {"transaction_type": "SELL", "order_type": "LIMIT", "price": 2600.0},
-                {"transaction_type": "BUY", "order_type": "LIMIT", "price": 2400.0},
-            ],
-            trigger_values=[2600.0, 2400.0],
-        )
-        assert result.startswith("oco:")
-        assert "+" in result
-
-    def test_place_gtt_oco_rollback_on_second_leg_failure(self, broker):
-        broker.groww.create_smart_order = MagicMock(side_effect=[
-            {"data": {"smart_order_id": "gtt_tp"}},
-            Exception("Network error"),
-        ])
-        broker.groww.cancel_smart_order = MagicMock()
-
-        with pytest.raises(RuntimeError):
-            broker.place_gtt(
-                trigger_type="two-leg",
-                tradingsymbol="RELIANCE",
-                exchange="NSE",
-                last_price=2500.0,
-                orders=[
-                    {"transaction_type": "SELL", "order_type": "LIMIT", "price": 2600.0},
-                    {"transaction_type": "BUY", "order_type": "LIMIT", "price": 2400.0},
-                ],
-                trigger_values=[2600.0, 2400.0],
-            )
-        # Verify rollback was attempted
-        broker.groww.cancel_smart_order.assert_called()
+# TestGrowwBrokerPlaceGtt removed (Bracket/Template-GTT removal, T3.1,
+# 2026-11) — GrowwBroker.place_gtt was deleted.
 
 
 class TestGrowwBrokerCancelGtt:
@@ -1893,44 +1814,5 @@ class TestGrowwBrokerMarketStatus:
         assert result is None
 
 
-class TestGrowwBrokerModifyGtt:
-    """Test broker.modify_gtt() method."""
-
-    @pytest.fixture
-    def broker(self):
-        conn = MagicMock()
-        conn.account = "GRW123"
-        conn.get_groww_conn = MagicMock()
-        return GrowwBroker(conn)
-
-    def test_modify_gtt_single_leg_updates_order(self, broker):
-        """Test modify_gtt() with single leg updates the order."""
-        broker.groww.modify_smart_order = MagicMock(return_value={
-            "status": "success"
-        })
-        result = broker.modify_gtt(
-            "gtt_123",
-            trigger_type="single",
-            tradingsymbol="RELIANCE",
-            exchange="NSE",
-            last_price=2500.0,
-            orders=[{"transaction_type": "SELL", "order_type": "LIMIT", "price": 2600.0}],
-            trigger_values=[2600.0],
-        )
-        assert result == "gtt_123"
-
-    def test_modify_gtt_two_leg_without_oco_id_raises(self, broker):
-        """Test modify_gtt() raises when two-leg requested with non-OCO id."""
-        with pytest.raises(RuntimeError):
-            broker.modify_gtt(
-                "gtt_123",  # Not an OCO id
-                trigger_type="two-leg",
-                tradingsymbol="RELIANCE",
-                exchange="NSE",
-                last_price=2500.0,
-                orders=[
-                    {"transaction_type": "SELL", "order_type": "LIMIT", "price": 2600.0},
-                    {"transaction_type": "BUY", "order_type": "LIMIT", "price": 2400.0},
-                ],
-                trigger_values=[2600.0, 2400.0],
-            )
+# TestGrowwBrokerModifyGtt removed (Bracket/Template-GTT removal, T3.1,
+# 2026-11) — GrowwBroker.modify_gtt was deleted.

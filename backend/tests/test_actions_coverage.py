@@ -301,78 +301,11 @@ def test_build_template_overrides_empty():
     assert all(v is None for v in overrides.values())
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# _maybe_attach_template_from_action tests
-# ─────────────────────────────────────────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_maybe_attach_template_no_algo_order_id():
-    """When algo_order_id is None, return None (template attach skipped)."""
-    from backend.api.algo.actions import _maybe_attach_template_from_action
-
-    result = await _maybe_attach_template_from_action(
-        MagicMock(),
-        "place_order",
-        {},
-        algo_order_id=None,
-        parent_account="ZG0790",
-        parent_symbol="NIFTY25JULFUT",
-        parent_side="BUY",
-        parent_qty=1,
-        parent_exchange="NFO",
-        parent_price=24500.0,
-    )
-    assert result is None
-
-
-@pytest.mark.asyncio
-async def test_maybe_attach_template_no_template_no_override():
-    """When neither template nor override supplied, return None."""
-    from backend.api.algo.actions import _maybe_attach_template_from_action
-
-    result = await _maybe_attach_template_from_action(
-        MagicMock(),
-        "place_order",
-        {},  # no params
-        algo_order_id=42,
-        parent_account="ZG0790",
-        parent_symbol="NIFTY25JULFUT",
-        parent_side="BUY",
-        parent_qty=1,
-        parent_exchange="NFO",
-        parent_price=24500.0,
-    )
-    assert result is None
-
-
-@pytest.mark.asyncio
-async def test_maybe_attach_template_with_tp_pct_override():
-    """When tp_pct_override supplied, call _al_apply_template."""
-    from backend.api.algo.actions import _maybe_attach_template_from_action
-
-    agent = MagicMock()
-    agent.slug = "test-agent"
-    agent.id = 1
-
-    params = {"tp_pct_override": 5.0}
-
-    mock_result = MagicMock()
-    mock_result.to_dict.return_value = {"status": "attached"}
-
-    with patch("backend.api.algo.actions._al_apply_template", new=AsyncMock(return_value={"status": "attached"})):
-        result = await _maybe_attach_template_from_action(
-            agent,
-            "place_order",
-            params,
-            algo_order_id=42,
-            parent_account="ZG0790",
-            parent_symbol="NIFTY25JULFUT",
-            parent_side="BUY",
-            parent_qty=1,
-            parent_exchange="NFO",
-            parent_price=24500.0,
-        )
-    assert result == {"status": "attached"}
+# _maybe_attach_template_from_action tests removed (Bracket/
+# Template-GTT removal, T3.1, 2026-11) — _maybe_attach_template_from_action
+# and _al_apply_template (actions.py) were deleted; both called
+# apply_template_to_order, deleted along with
+# backend.api.algo.template_attach.
 
 
 # ─────────────────────────────────────────────────────────────────────────────
