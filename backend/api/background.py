@@ -6953,6 +6953,123 @@ async def _task_order_poll() -> None:
     await _real_task_order_poll()
 
 
+async def _task_agent_close_auto_release() -> None:
+    """Sprint 3 (auto-close-short-option plan), piece 6 — auto-release
+    scan for `HoldCategory.AGENT_CLOSE` holds past their snapshotted
+    `auto_release_at` deadline. Generic infra, reused by any future
+    `Agent.require_release` agent. Same 30s-loop scheduling convention
+    as `_task_oco_pair_watcher`/`_task_trail_stop` above.
+
+    Each HELD row's `auto_release_at` was snapshotted onto `hold_json`
+    at STAGE time (`order_hold.hold_record`/`order_hold_gate.record_
+    held_order`) — this scan never re-reads a live `Agent.release_
+    timeout_minutes`, so a later edit to that setting can never
+    retroactively move an already-staged hold's deadline.
+
+    Dispatches through `get_release_handler("agent_close")` — the
+    IDENTICAL function the manual `/api/orders/held/{id}/release` route
+    already calls. No new release logic, no new row-level claim, no new
+    lock: `release_held_order`'s own `.with_for_update()` lock +
+    `status != "HELD"` guard already makes a concurrent manual-click-
+    vs-scan race resolve safely on its own.
+
+    KILL SWITCH — deliberate deviation from a literal `agent.status ==
+    'active'` check, documented here rather than shipped silently: a
+    PERSISTENT agent's status transitions to `'cooldown'` immediately
+    after every fire (`_cycle_compute_post_fire_status`, agent_engine.py)
+    — by the time any plausible `release_timeout_minutes` deadline
+    passes, the firing agent would almost always already be in
+    `'cooldown'`, not `'active'`. A literal `== 'active'` check would
+    therefore make auto-release essentially never fire for a normal
+    persistent agent, defeating the whole feature. The kill switch this
+    scan actually implements is `agent.status != 'inactive'` — the one
+    status an operator reaches by an explicit, deliberate deactivation
+    (`routes/agents.py:_age_set_status`). `'cooldown'` and `'completed'`
+    are both ordinary engine-driven states, not operator intervention,
+    and must not block a release the agent already decided to make when
+    it fired. A missing agent row (deleted, or `agent_id` somehow unset)
+    also blocks release — fail closed, no agent to check means no
+    release.
+    """
+    import asyncio as _asyncio
+    from datetime import datetime, timezone
+    from sqlalchemy import select as _sel
+    from backend.shared.helpers.settings import get_int
+
+    while True:
+        try:
+            interval = max(30, get_int("hold.agent_close_auto_release_poll_seconds", 30))
+        except Exception:
+            interval = 30
+        await _asyncio.sleep(interval)
+        try:
+            from backend.api.database import async_session
+            from backend.api.models import AlgoOrder, Agent
+            from backend.api.algo.order_hold import parse_hold_record
+            from backend.api.algo.order_release import get_release_handler
+
+            async with async_session() as s:
+                rows = (await s.execute(
+                    _sel(AlgoOrder).where(AlgoOrder.status == "HELD").limit(500)
+                )).scalars().all()
+            if not rows:
+                continue
+            now = datetime.now(timezone.utc)
+            released = 0
+            for row in rows:
+                rec = parse_hold_record(row.hold_json) or {}
+                if rec.get("category") != "agent_close":
+                    continue
+                raw_deadline = rec.get("auto_release_at")
+                if not raw_deadline:
+                    continue
+                try:
+                    deadline = datetime.fromisoformat(raw_deadline)
+                except (TypeError, ValueError):
+                    continue
+                if deadline.tzinfo is None:
+                    deadline = deadline.replace(tzinfo=timezone.utc)
+                if now < deadline:
+                    continue
+
+                agent_id = getattr(row, "agent_id", None)
+                if agent_id is None:
+                    logger.warning(
+                        "[AUTO-RELEASE] HELD order %s has no agent_id — "
+                        "skipping (kill switch needs a real agent to check)",
+                        row.id,
+                    )
+                    continue
+                async with async_session() as s2:
+                    agent = (await s2.execute(
+                        _sel(Agent).where(Agent.id == agent_id)
+                    )).scalar_one_or_none()
+                if agent is None:
+                    logger.warning(
+                        "[AUTO-RELEASE] HELD order %s: agent %s not found — "
+                        "skipping auto-release", row.id, agent_id,
+                    )
+                    continue
+                if agent.status == "inactive":
+                    logger.info(
+                        "[AUTO-RELEASE] HELD order %s: agent %s is inactive — "
+                        "kill switch blocks auto-release", row.id, agent_id,
+                    )
+                    continue
+
+                handler = get_release_handler("agent_close")
+                result = await handler(row.id, actor="auto-release")
+                released += 1
+                logger.info(
+                    "[AUTO-RELEASE] HELD order %s released by auto-release "
+                    "(agent=%s): %s", row.id, agent_id, result,
+                )
+            if released:
+                logger.info("[AUTO-RELEASE] sweep released=%s", released)
+        except Exception as exc:
+            logger.warning("[AUTO-RELEASE] sweep iteration failed: %s", exc)
+
+
 async def _snapshot_book_symbols(days: int = 7) -> list[tuple[str, str]]:
     """Return (tradingsymbol, exchange) pairs from recent daily_book rows.
 
@@ -10459,6 +10576,10 @@ async def on_startup(app) -> None:
         # order, not just chase-driven ones. See
         # backend/api/algo/order_poll.py's module docstring.
         asyncio.create_task(_supervised(_task_order_poll,                      name="bg-order-poll"),      name="bg-order-poll"),
+        # Sprint 3 (auto-close-short-option plan) — generic AGENT_CLOSE
+        # hold auto-release scan. See _task_agent_close_auto_release's
+        # own docstring for the kill-switch semantics.
+        asyncio.create_task(_supervised(_task_agent_close_auto_release,       name="bg-agent-close-auto-release"), name="bg-agent-close-auto-release"),
         # _task_post_market_cron consolidates: close summary, NAV snapshot,
         # strategy snapshot, monthly statement, and late-night app_messages
         # cleanup — all in one poll-and-debounce loop (30 s cadence).
