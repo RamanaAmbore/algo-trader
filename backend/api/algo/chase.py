@@ -3403,6 +3403,127 @@ async def _ch_loop_guards(
     return None
 
 
+# ── Per-(account, symbol, exchange) position-resolution lock ───────────
+# 2026-11 fix — two fully independent call sites can each start a
+# `chase_order()` cycle for the SAME held position with zero shared code
+# between them: `actions_live.py:_action_live_close_position` (resolves
+# the real position via `_al_close_resolve_position` and persists its
+# own AlgoOrder row) and `order_release.py:release_held_order` /
+# `_chase_released` (resolves qty from the already-held AlgoOrder row).
+# Neither waits on the other. If both fire for the same
+# (account, symbol, exchange) in the same narrow window — e.g. an
+# operator releases a HELD row the instant an agent's own close action
+# also decides to close the same leg — each one independently reads the
+# broker position (or an already-stale persisted qty) and each places
+# its OWN full-size chase, doubling the intended close/open.
+#
+# This lock narrows (does NOT fully close — see `chase_order()`'s own
+# docstring) that race: it serialises the "read the pre-fill position,
+# then place the FIRST order" portion of `chase_order()` itself across
+# any two CONCURRENT calls for the same key. It does not, and cannot,
+# protect the callers' OWN qty-resolution reads that happen BEFORE
+# `chase_order()` is ever invoked — closing that fully would require a
+# shared lock held by the callers themselves, out of scope here.
+#
+# Mirrors `orders_place.py:_get_template_attach_lock`'s exact registry
+# shape (meta-lock guarding a lazily-minted per-key `asyncio.Lock`, with
+# a TTL sweep so the dict doesn't grow unbounded) — EXCEPT this lock is
+# a try-lock (fail closed on contention), not a blocking `async with`:
+# `_get_template_attach_lock`'s callers are idempotent once the lock is
+# held (a second waiter finds the idempotency marker and no-ops), but a
+# second `chase_order()` call for the same key is NOT idempotent — it
+# would resolve its own fresh position read and place its own fresh
+# order, which is exactly the duplicate-order risk this lock exists to
+# prevent. Waiting would just delay the collision, not prevent it.
+_CHASE_POSITION_LOCKS: dict[tuple[str, str, str], tuple[asyncio.Lock, float]] = {}
+_CHASE_POSITION_LOCKS_META_LOCK = asyncio.Lock()
+# Held time per call is always short (position read + one order
+# placement — seconds, not the multi-minute cancel-and-replace retry
+# loop), so a modest TTL is plenty; kept well above any realistic
+# hold time to avoid evicting a live entry out from under a waiter.
+_CHASE_POSITION_LOCK_TTL_S = 1800
+
+
+def _chase_position_lock_key(account: str, exchange: str, symbol: str) -> tuple[str, str, str]:
+    """Normalise the (account, exchange, symbol) lock key. Exchange and
+    symbol are uppercased (observed call sites are already canonical,
+    but this guards against a stray lower-case caller silently missing
+    a real collision); account is left as-is — broker account codes are
+    case-sensitive identifiers, not free text."""
+    return (str(account or ""), str(exchange or "").upper(), str(symbol or "").upper())
+
+
+async def _get_chase_position_lock(key: tuple[str, str, str]) -> asyncio.Lock:
+    """Lazily mint one asyncio.Lock per (account, exchange, symbol) key.
+    See `orders_place.py:_get_template_attach_lock` for the identical
+    registry shape this mirrors."""
+    async with _CHASE_POSITION_LOCKS_META_LOCK:
+        now = _time.monotonic()
+        _stale = [k for k, (_, ts) in _CHASE_POSITION_LOCKS.items()
+                  if now - ts > _CHASE_POSITION_LOCK_TTL_S]
+        for k in _stale:
+            _CHASE_POSITION_LOCKS.pop(k, None)
+        if _stale:
+            logger.warning(
+                "[CHASE-LOCK] evicted %d stale position lock(s) (TTL=%ss): keys=%s",
+                len(_stale), _CHASE_POSITION_LOCK_TTL_S, _stale,
+            )
+        entry = _CHASE_POSITION_LOCKS.get(key)
+        if entry is None:
+            lk = asyncio.Lock()
+            _CHASE_POSITION_LOCKS[key] = (lk, now)
+            return lk
+        _CHASE_POSITION_LOCKS[key] = (entry[0], now)
+        return entry[0]
+
+
+async def _chase_position_lock_contended_result(
+    account: str, exchange: str, symbol: str, transaction_type: str,
+    quantity: int, agent_id: "int | None",
+) -> "ChaseResult":
+    """Build the fail-closed response + CRITICAL log + alert for a
+    SECOND concurrent `chase_order()` call for a key whose lock is
+    already held by another in-flight call's position-resolution +
+    first-order-placement window. Never silently proceeds and never
+    silently drops the call without a trace."""
+    from backend.shared.helpers.utils import mask_account
+    _masked_acct = mask_account(account)
+    _detail = (
+        f"Chase REFUSED — another chase_order() call is already resolving "
+        f"the position for {_masked_acct} {exchange}/{symbol}. Two "
+        f"concurrent close/order triggers on the same position were "
+        f"detected; this call was refused rather than risk placing a "
+        f"duplicate order. Retry once the in-flight chase has placed its "
+        f"first order."
+    )
+    logger.critical(
+        "[CHASE] %s", _detail,
+        extra={
+            "tags": ["chase", "alert"], "alert_event": "concurrent_chase_refused",
+            "transaction_type": transaction_type, "symbol": symbol,
+            "account": account, "quantity": quantity, "agent_id": agent_id,
+            "source_type": "process", "source_name": "chase",
+        },
+    )
+    try:
+        from backend.shared.helpers.alert_utils import send_order_failure_alert
+        send_order_failure_alert(
+            account=account, symbol=symbol, exchange=exchange,
+            side=transaction_type, qty=quantity, mode="live", source="chase",
+            agent_id=agent_id, error=_detail,
+            # A concurrent-chase collision is exactly the class of
+            # reconciliation-worthy event the other abandonment-class
+            # alerts in this module bypass dedup/market-hours gates for.
+            bypass_gates=True,
+        )
+    except Exception:
+        pass
+    return ChaseResult(
+        account=account, symbol=symbol, transaction_type=transaction_type,
+        quantity=quantity, status=ChaseStatus.FAILED, detail=_detail,
+    )
+
+
 async def chase_order(
     account: str,
     symbol: str,
@@ -3436,16 +3557,57 @@ async def chase_order(
     `alert_utils._classify_order_origin_label`. Callers with no agent
     context (ticket/basket placement, template-wing chase) omit it,
     correctly defaulting to None.
+
+    Per-(account, symbol, exchange) position-resolution lock (2026-11
+    fix) — acquired (try-lock, non-blocking) HERE, at the very top,
+    BEFORE anything else runs for this call, including before
+    `_ch_mark_chase_active`. A second, concurrent call for the same key
+    fails closed immediately (CRITICAL log + alert + a FAILED
+    `ChaseResult`) rather than racing the first call's own position
+    read + first order placement — see `_CHASE_POSITION_LOCKS`'s own
+    module-level docstring for the full rationale and its known,
+    accepted limitation (callers' own pre-call position reads are not
+    covered). The lock is released as soon as `_chase_order_impl` has
+    EITHER placed+synced its first order OR decided there is nothing to
+    place (see `_release_position_lock` threaded into that function) —
+    well before the multi-minute cancel-and-replace retry loop runs.
+    The `finally` below is a release-once backstop for every path that
+    returns/raises before reaching that point inside the impl (e.g. the
+    non-prod-branch / market-closed early returns), so the lock can
+    never leak held.
     """
+    _exchange = cfg.exchange if cfg is not None else ChaseConfig().exchange
+    _lock_key = _chase_position_lock_key(account, _exchange, symbol)
+    _position_lock = await _get_chase_position_lock(_lock_key)
+    if _position_lock.locked():
+        return await _chase_position_lock_contended_result(
+            account, _exchange, symbol, transaction_type, quantity, agent_id,
+        )
+    # Not locked, and nothing `await`s between the check above and the
+    # acquire below — this process is single-threaded/single-worker
+    # (confirmed via `ps aux` against the live prod systemd unit, not
+    # the checked-in .service file's own worker count), so no other
+    # coroutine can slip in and acquire the lock in between. The
+    # free-lock fast path inside `asyncio.Lock.acquire()` itself never
+    # suspends either, closing the only other theoretical gap.
+    await _position_lock.acquire()
+    _lock_released = {"done": False}
+
+    def _release_position_lock() -> None:
+        if not _lock_released["done"]:
+            _lock_released["done"] = True
+            _position_lock.release()
+
     _ch_mark_chase_active(algo_order_id)
     try:
         return await _chase_order_impl(
             account, symbol, transaction_type, quantity,
             cfg=cfg, on_event=on_event, algo_order_id=algo_order_id,
             already_filled=already_filled, already_filled_price=already_filled_price,
-            agent_id=agent_id,
+            agent_id=agent_id, _release_position_lock=_release_position_lock,
         )
     finally:
+        _release_position_lock()
         _ch_mark_chase_inactive(algo_order_id)
         # 2026-10-23 chase robustness (fix #8b) — immediately after an
         # ambiguous abort (cancel-unconfirmed / consecutive-errors /
@@ -3472,6 +3634,17 @@ async def chase_order(
                 )
 
 
+def _ch_release_position_lock_if_set(release_cb: "Callable[[], None] | None") -> None:
+    """Call `release_cb()` when set, no-op otherwise. Extracted so each
+    of `_chase_order_impl`'s two call sites is a single statement
+    rather than an `if`, keeping that function's cyclomatic complexity
+    within the project's radon gate (same convention as
+    `_ch_loop_guards`'s own docstring elsewhere in this module) — no
+    behavior change versus an inline guard."""
+    if release_cb is not None:
+        release_cb()
+
+
 async def _chase_order_impl(
     account: str,
     symbol: str,
@@ -3483,6 +3656,7 @@ async def _chase_order_impl(
     already_filled: int = 0,
     already_filled_price: float = 0.0,
     agent_id: int | None = None,
+    _release_position_lock: "Callable[[], None] | None" = None,
 ) -> ChaseResult:
     """
     Chase a limit order until filled.
@@ -3503,6 +3677,19 @@ async def _chase_order_impl(
                        _emit_chase_terminal calls. Required for any
                        chased order that has a template attached
                        (Phase 0.5).
+        _release_position_lock: 2026-11 fix — release-once callback for
+                       the per-(account, symbol, exchange) lock the
+                       `chase_order()` wrapper acquired before calling
+                       this function. Called as soon as this function
+                       either (a) places and syncs its FIRST order, or
+                       (b) decides there's nothing to place at all
+                       (already fully filled at start) — i.e. once the
+                       "position-resolution + order-placement" window
+                       this lock protects is over. `None` for direct
+                       callers/tests that bypass the public
+                       `chase_order()` wrapper entirely (no lock was
+                       ever acquired for them, so there's nothing to
+                       release).
         already_filled: C4 — quantity already filled by a PRIOR chase
                        cycle before this call started (service-restart
                        recovery). Seeds the chase-wide cumulative-fill
@@ -3620,6 +3807,9 @@ async def _chase_order_impl(
         already_filled_price,
     )
     if _already_done is not None:
+        # 2026-11 fix — nothing will ever be placed this cycle; the
+        # position-resolution window the lock protects is already over.
+        _ch_release_position_lock_if_set(_release_position_lock)
         return _already_done
 
     # 2026-10-23 chase robustness (fix #3B) — "real progress" = a fill
@@ -3753,6 +3943,14 @@ async def _chase_order_impl(
                     result, account, current_order_id, cfg,
                     algo_order_id, symbol, transaction_type, quantity, emit,
                 )
+            # 2026-11 fix — the first order of this chase cycle is now
+            # placed AND synced to the AlgoOrder row: the
+            # "position-resolution + order-placement" window the
+            # per-(account, symbol, exchange) lock protects is over.
+            # Release here (idempotent — a no-op on attempt 2+) so the
+            # lock is never held across the sleep/poll/cancel-and-replace
+            # portion of the loop below.
+            _ch_release_position_lock_if_set(_release_position_lock)
             # Sprint 1b-i — chase_modify timeline event, mirroring
             # paper.py's write_event pattern. No-op for attempt 1 (the
             # initial placement) and for a None algo_order_id.
