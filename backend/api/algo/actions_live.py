@@ -1961,3 +1961,257 @@ async def _action_live_expiry_auto_close(agent, context: dict, params: dict):
     logger.info(f"[LIVE] expiry_auto_close: agent {agent.slug} done — "
                 f"closed={len(engine.state.closed)} failed={len(engine.state.failed)} "
                 f"slippage=₹{engine.state.total_slippage:.2f}")
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  Sprint 3 (auto-close-short-option plan) — require_release hold check
+# ═══════════════════════════════════════════════════════════════════════
+#
+# Generic infrastructure: reusable by ANY future agent with
+# `Agent.require_release = True`, not only the specific exit-rule agent
+# this plan eventually seeds. Called from `actions._dispatch_live_action`'s
+# single chokepoint — see that function's own comment for why the check
+# must stay there (mode=='live' only) and never be hoisted earlier.
+
+async def _al_find_held_agent_close(
+    account: str, symbol: str, exchange: str, side: str,
+) -> "int | None":
+    """Existing non-terminal `AGENT_CLOSE` HELD row for this exact
+    identity, if any. Queried BEFORE staging a new hold so a re-firing
+    agent (e.g. escalation past cooldown, or a stale-latch re-match on
+    the next engine tick) never produces a SECOND action-required alert
+    for the same still-pending close. `record_held_order`'s own internal
+    dedup guard (identical identity match, inside a `.with_for_update()`
+    locked SELECT) still protects against the genuine DB-level race —
+    this is a cheaper, unlocked pre-check purely to decide whether to
+    alert again, not a correctness-critical lock."""
+    from sqlalchemy import select
+    from backend.api.database import async_session
+    from backend.api.models import AlgoOrder
+    try:
+        async with async_session() as s:
+            return (await s.execute(
+                select(AlgoOrder.id).where(
+                    AlgoOrder.account == account,
+                    AlgoOrder.symbol == symbol,
+                    AlgoOrder.exchange == exchange,
+                    AlgoOrder.transaction_type == side,
+                    AlgoOrder.status == "HELD",
+                )
+            )).scalars().first()
+    except Exception as e:
+        logger.warning(f"[AGENT-CLOSE-HOLD] existing-hold lookup failed: {e}")
+        return None
+
+
+async def _al_agent_close_recently_cancelled_this_session(
+    agent_id: "int | None", account: str, symbol: str, exchange: str, side: str,
+) -> bool:
+    """True when the most recent `AGENT_CLOSE` hold for this exact
+    identity was explicitly cancelled by the operator earlier in the
+    CURRENT trading session (see `expiry_freeze.session_date_of`).
+
+    `cancel_held_order()` clears `hold_json` on cancel, so the category
+    can't be read back from it after the fact — the discriminator here
+    is `status == 'CANCELLED'` + `broker_order_id == ''` (a hold that was
+    staged but NEVER placed at the broker; `record_held_order` always
+    writes an empty string there, and nothing else in this codebase
+    writes a CANCELLED row with an empty broker_order_id) + the matching
+    identity fields + `agent_id`.
+
+    Approximation, stated explicitly (not silently): this checks ONLY
+    the session boundary, not "until the position is closed some other
+    way" — re-verifying the live position here would require a broker
+    call on every mere condition-match, which conflicts with this whole
+    gate's own "zero broker calls while staging a hold" invariant. A
+    position closed by another path during the suppression window is
+    not separately detected by this check.
+
+    On any lookup failure, fails TOWARD STAGING (returns False) — a
+    hold places nothing at the broker, so continuing to offer it for
+    operator review is the safer failure mode, not silently suppressing
+    it forever because of a transient DB error.
+    """
+    from datetime import datetime, timezone
+    from sqlalchemy import select
+    from backend.api.database import async_session
+    from backend.api.models import AlgoOrder
+    from backend.api.algo.expiry_freeze import session_date_of
+    try:
+        async with async_session() as s:
+            row = (await s.execute(
+                select(AlgoOrder).where(
+                    AlgoOrder.account == account,
+                    AlgoOrder.symbol == symbol,
+                    AlgoOrder.exchange == exchange,
+                    AlgoOrder.transaction_type == side,
+                    AlgoOrder.agent_id == agent_id,
+                    AlgoOrder.status == "CANCELLED",
+                    AlgoOrder.broker_order_id == "",
+                ).order_by(AlgoOrder.created_at.desc()).limit(1)
+            )).scalars().first()
+        if row is None:
+            return False
+        now = datetime.now(timezone.utc)
+        return session_date_of(row.created_at) == session_date_of(now)
+    except Exception as e:
+        logger.warning(f"[AGENT-CLOSE-HOLD] cancel-suppression lookup failed: {e}")
+        return False
+
+
+def _al_agent_close_hold_message(
+    agent, account: str, symbol: str, exchange: str, side: str, qty: int, reason: str,
+) -> str:
+    """Build the action-required alert body. The account is masked
+    explicitly here — `_AccountMaskFilter` (log_store.py) masks only
+    `record.msg`/`exc_text`, never an `extra` dict's own values, and
+    this body is passed through `extra['body']`, not the logged message
+    string. `mask_account` is called exactly once (it is not
+    idempotent — a double-mask of an already-masked value is wrong)."""
+    from backend.shared.helpers.alert_utils import format_notification_header
+    from backend.shared.helpers.utils import mask_account
+    origin_header = format_notification_header(
+        getattr(agent, "name", None), getattr(agent, "id", None),
+    ).splitlines()[0]
+    masked_account = mask_account(account)
+    return (
+        f"{origin_header}\n"
+        f"{masked_account} {side} {qty} {symbol} ({exchange}) staged for "
+        f"release, not placed — {reason}"
+    )
+
+
+async def _al_send_agent_close_hold_alert(
+    agent, held_order_id: int, account: str, symbol: str, exchange: str,
+    side: str, qty: int, reason: str,
+) -> None:
+    """Fire one action-required alert for a newly-staged AGENT_CLOSE
+    hold. Reuses the SAME log-then-dispatch mechanism `_al_maybe_notify_
+    action` already uses (`_DISPATCH_LOGGER`, `alert_event=
+    "action_notify"`, routed through the existing `ACTION_NOTIFY_AGENT`
+    — no new seeded event agent for this), with `action_required=True`
+    so the existing binary gate
+    (`event_agents._apply_action_required_ntfy_gate`/`_apply_action_
+    required_email_gate`) forces urgent ntfy plus a forced email entry.
+    Never raises — a failed alert must not prevent the hold itself from
+    having been staged."""
+    try:
+        from backend.shared.helpers.alert_utils import _DISPATCH_LOGGER
+        agent_key = getattr(agent, "slug", None) or getattr(agent, "id", None) or "unknown"
+        message = _al_agent_close_hold_message(
+            agent, account, symbol, exchange, side, qty, reason,
+        )
+        _DISPATCH_LOGGER.warning(
+            f"[AGENT-CLOSE-HOLD] {message}",
+            extra={
+                "tags": ["agent", "alert"], "alert_event": "action_notify",
+                "title": f"Agent close held — {agent_key}", "body": message,
+                "channels": [
+                    {"channel": "telegram", "enabled": True},
+                    {"channel": "ntfy", "enabled": True},
+                ],
+                "action_required": True,
+                "agent_id": getattr(agent, "id", None),
+                "agent_name": getattr(agent, "name", None),
+                "held_order_id": held_order_id,
+            },
+        )
+    except Exception as log_e:
+        logger.error(
+            f"[AGENT-CLOSE-HOLD] alert log record failed for held order "
+            f"{held_order_id}: {log_e}"
+        )
+
+
+def _al_resolve_release_timeout_minutes(agent) -> "int | None":
+    """`agent.release_timeout_minutes` only if it is a genuine positive
+    int — never a bare truthiness check (a MagicMock test double would
+    auto-vivify a truthy, non-int attribute). `0` and any non-positive
+    value resolve to `None` ("never auto-releases"), matching `hold_
+    record`'s own "else None" convention — there is no meaningful
+    "auto-release after 0 minutes"."""
+    v = getattr(agent, "release_timeout_minutes", None)
+    return v if isinstance(v, int) and v > 0 else None
+
+
+async def _al_maybe_stage_agent_close_hold(agent, params: dict, context: dict) -> None:
+    """The `require_release` hold check itself (piece 4 of Sprint 3).
+
+    Called from `actions._dispatch_live_action`'s chokepoint whenever
+    `agent.require_release is True` AND `action_type == "close_position"`
+    — this function is ALWAYS the terminal step on that path; the caller
+    never falls through to the real broker handler regardless of what
+    happens here (a verification failure, a suppressed re-stage, or a
+    DB failure while staging all fail CLOSED — the close is refused, not
+    placed live).
+
+    Resolves the close the EXACT SAME way `_action_live_close_position`
+    does — `_al_close_resolve_params` + `_al_close_resolve_position`,
+    reused verbatim, not duplicated with drift. A `ValueError` from
+    `_al_close_resolve_params` (missing account/symbol, negative qty) is
+    allowed to propagate, exactly as it already does for the real
+    close_position path.
+    """
+    account, symbol, exchange, qty_param, side_param, product_param = (
+        _al_close_resolve_params(params)
+    )
+    resolved = await _al_close_resolve_position(
+        account, symbol, exchange, side_param, qty_param, product_param,
+    )
+    if resolved is None:
+        logger.info(
+            f"[AGENT-CLOSE-HOLD] agent {getattr(agent, 'slug', '?')}: close "
+            f"could not be verified against the real position for "
+            f"{exchange}/{symbol} — nothing staged, nothing placed"
+        )
+        return
+    side, qty, product = resolved
+    agent_id = getattr(agent, "id", None)
+
+    if await _al_agent_close_recently_cancelled_this_session(
+        agent_id, account, symbol, exchange, side,
+    ):
+        logger.info(
+            f"[AGENT-CLOSE-HOLD] agent {getattr(agent, 'slug', '?')}: "
+            f"{side} {symbol} ({exchange}) was explicitly cancelled earlier "
+            f"this session — suppressing re-stage"
+        )
+        return
+
+    existing_id = await _al_find_held_agent_close(account, symbol, exchange, side)
+    if existing_id is not None:
+        logger.info(
+            f"[AGENT-CLOSE-HOLD] agent {getattr(agent, 'slug', '?')}: "
+            f"{side} {symbol} ({exchange}) already has a HELD row "
+            f"id={existing_id} — not re-alerting"
+        )
+        return
+
+    from datetime import datetime, timedelta, timezone
+    timeout_minutes = _al_resolve_release_timeout_minutes(agent)
+    held_at_for_deadline = datetime.now(timezone.utc)
+    auto_release_at = (
+        held_at_for_deadline + timedelta(minutes=timeout_minutes)
+        if timeout_minutes is not None else None
+    )
+
+    from backend.api.algo.order_hold import HoldCategory
+    from backend.api.algo.order_hold_gate import record_held_order
+    reason = f"require_release agent '{getattr(agent, 'slug', '?')}' close_position"
+    row_id = await record_held_order(
+        HoldCategory.AGENT_CLOSE,
+        account=account, symbol=symbol, exchange=exchange, side=side,
+        qty=qty, product=product, reason=reason, agent_id=agent_id,
+        auto_release_at=auto_release_at,
+    )
+    if row_id is None:
+        logger.error(
+            f"[AGENT-CLOSE-HOLD] agent {getattr(agent, 'slug', '?')}: failed "
+            f"to stage hold for {side} {symbol} ({exchange}) — the close is "
+            f"REFUSED, not placed live"
+        )
+        return
+
+    await _al_send_agent_close_hold_alert(
+        agent, row_id, account, symbol, exchange, side, qty, reason,
+    )

@@ -266,7 +266,25 @@ async def _dispatch_live_action(agent, action_type: str, params: dict, context: 
     `_resolve_handler`), preserving the original lazy-import-per-call
     semantics. Exceptions bubble to the caller (execute's outer
     try/except).
+
+    Sprint 3 (auto-close-short-option plan) `require_release` hold check
+    — generic infra, reusable by any future agent, not only the one
+    this plan eventually seeds. Deliberately lives INSIDE this function,
+    never hoisted into a mode-agnostic part of `execute()`'s loop: this
+    function is reached ONLY when `mode == 'live'` (decided one level up
+    by `_resolve_mode()`, via `_al_dispatch_by_mode`) — every other mode
+    (sim/replay/shadow/paper) never calls this at all. Putting the check
+    anywhere else risks the exact bug class the 2026-10-31
+    `expiry-day-itm-auto-close` incident was: a safety gate that
+    silently never engaged because the code reached it only in the
+    wrong mode. `getattr(..., False) is True` (never bare truthiness) —
+    a MagicMock test double auto-vivifies a truthy, non-`True` attribute
+    on bare access, which this guard must not treat as an opt-in.
     """
+    if action_type == "close_position" and getattr(agent, "require_release", False) is True:
+        from backend.api.algo.actions_live import _al_maybe_stage_agent_close_hold
+        await _al_maybe_stage_agent_close_hold(agent, params, context)
+        return
     ref = _LIVE_ACTION_HANDLERS.get(action_type)
     if ref is None:
         logger.warning(f"Agent [{agent.slug}]: live action '{action_type}' has no wired handler")

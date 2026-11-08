@@ -245,4 +245,355 @@ class TestRequireReleaseFieldsExcludedFromWriteAllowlists:
         assert "release_timeout_minutes" not in _AI_REFINE_WRITABLE_FIELDS
 
 
-# Remaining pieces (4-6) are appended by later commits in this same file.
+# ═══════════════════════════════════════════════════════════════════════
+#  Piece 4 — require_release hold check inside _dispatch_live_action
+# ═══════════════════════════════════════════════════════════════════════
+
+def _make_agent(**kw) -> SimpleNamespace:
+    base = dict(id=1, slug="x-agent", name="X Agent",
+               require_release=True, release_timeout_minutes=None,
+               trade_mode="live")
+    base.update(kw)
+    return SimpleNamespace(**base)
+
+
+_CLOSE_PARAMS = {
+    "account": "ZG0790", "symbol": "NIFTY24800CE", "exchange": "NFO", "side": "BUY",
+}
+
+
+class TestHoldCheckModeGating:
+    """The exact invariant class the 2026-10-31 expiry-day-itm-auto-close
+    incident violated: a safety gate must never silently fail to engage
+    because the code reached it in the wrong mode. Covers every mode
+    `_al_dispatch_by_mode` can resolve to."""
+
+    @pytest.mark.asyncio
+    async def test_hold_check_never_reached_in_sim_replay_shadow_paper(self):
+        from backend.api.algo.actions import _al_dispatch_by_mode
+        agent = _make_agent()
+        context: dict = {}
+
+        mock_hold = AsyncMock()
+        with patch("backend.api.algo.actions_live._al_maybe_stage_agent_close_hold", mock_hold), \
+             patch("backend.api.algo.actions_sim._sim_paper_trade", new=AsyncMock()), \
+             patch("backend.api.algo.actions_sim._replay_paper_trade", new=AsyncMock()), \
+             patch("backend.api.algo.actions_sim._shadow_trade", new=AsyncMock()), \
+             patch("backend.api.algo.actions_paper._paper_trade", new=AsyncMock()):
+            for mode in ("sim", "replay", "shadow", "paper"):
+                await _al_dispatch_by_mode(
+                    agent, mode, "close_position", dict(_CLOSE_PARAMS), context,
+                )
+        mock_hold.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_hold_check_reached_in_live_mode_only(self):
+        from backend.api.algo.actions import _al_dispatch_by_mode
+        agent = _make_agent()
+        context: dict = {}
+
+        mock_hold = AsyncMock()
+        with patch("backend.api.algo.actions_live._al_maybe_stage_agent_close_hold", mock_hold):
+            await _al_dispatch_by_mode(
+                agent, "live", "close_position", dict(_CLOSE_PARAMS), context,
+            )
+        mock_hold.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_hold_check_not_reached_for_non_close_position_live_action(self):
+        """`require_release` only intercepts `close_position` — any other
+        live action_type must reach its own ordinary handler."""
+        from backend.api.algo.actions import _dispatch_live_action
+        agent = _make_agent()
+        context: dict = {}
+
+        mock_hold = AsyncMock()
+        mock_real_handler = AsyncMock()
+        with patch("backend.api.algo.actions_live._al_maybe_stage_agent_close_hold", mock_hold), \
+             patch("backend.api.algo.actions_live._action_live_cancel_order", mock_real_handler):
+            await _dispatch_live_action(agent, "cancel_order", {}, context)
+        mock_hold.assert_not_called()
+        mock_real_handler.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_hold_check_not_reached_when_require_release_false(self):
+        from backend.api.algo.actions import _dispatch_live_action
+        agent = _make_agent(require_release=False)
+        context: dict = {}
+
+        mock_hold = AsyncMock()
+        mock_real_close = AsyncMock()
+        with patch("backend.api.algo.actions_live._al_maybe_stage_agent_close_hold", mock_hold), \
+             patch("backend.api.algo.actions_live._action_live_close_position", mock_real_close):
+            await _dispatch_live_action(agent, "close_position", dict(_CLOSE_PARAMS), context)
+        mock_hold.assert_not_called()
+        mock_real_close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_magicmock_agent_require_release_is_not_auto_vivified_as_true(self):
+        """A bare MagicMock's auto-vivified `.require_release` attribute
+        is a MagicMock object, not the literal `True` — `is True` must
+        reject it. This is the exact class of bug `has_explicit_alert
+        is True`/`isinstance(preamble, list)` already guard against
+        elsewhere in this codebase."""
+        from backend.api.algo.actions import _dispatch_live_action
+        agent = MagicMock()
+        agent.slug = "mock-agent"
+        context: dict = {}
+
+        mock_hold = AsyncMock()
+        mock_real_close = AsyncMock()
+        with patch("backend.api.algo.actions_live._al_maybe_stage_agent_close_hold", mock_hold), \
+             patch("backend.api.algo.actions_live._action_live_close_position", mock_real_close):
+            await _dispatch_live_action(agent, "close_position", dict(_CLOSE_PARAMS), context)
+        mock_hold.assert_not_called()
+        mock_real_close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_execute_through_real_resolve_mode_paper_default_never_stages_hold(self):
+        """The exact prior-incident shape, exercised through the REAL
+        `_resolve_mode` (only the dev-branch check is mocked, not
+        `_resolve_mode` itself): an agent with the default dev-branch
+        routing resolves to 'paper' -> the hold check must never run."""
+        from backend.api.algo.actions import execute
+        agent = _make_agent(trade_mode="paper")
+        actions = [{"type": "close_position", "params": dict(_CLOSE_PARAMS)}]
+        context = {"sim_mode": False}
+
+        mock_hold = AsyncMock()
+        mock_paper_trade = AsyncMock()
+        with patch("backend.api.algo.actions_live._al_maybe_stage_agent_close_hold", mock_hold), \
+             patch("backend.api.algo.actions_paper._paper_trade", mock_paper_trade), \
+             patch("backend.api.algo.actions._exchange_gate_passes", return_value=(True, "")), \
+             patch("backend.api.algo.actions.resolve_action_params",
+                   side_effect=lambda a, p, c: p), \
+             patch("backend.shared.helpers.utils.is_prod_branch", return_value=False):
+            await execute(agent, actions, context)
+
+        mock_hold.assert_not_called()
+        mock_paper_trade.assert_called_once()
+
+
+class TestHoldCheckStagesHoldWithZeroBrokerCalls:
+    @pytest.mark.asyncio
+    async def test_matching_close_stages_hold_and_alerts_with_no_broker_call(self):
+        from backend.api.algo.actions_live import _al_maybe_stage_agent_close_hold
+        from backend.api.algo.order_hold import HoldCategory
+
+        agent = _make_agent(id=42, release_timeout_minutes=None)
+        params = dict(_CLOSE_PARAMS)
+        context: dict = {}
+
+        mock_chase = AsyncMock()
+        mock_write_live_order = AsyncMock()
+        mock_record_held = AsyncMock(return_value=901)
+        mock_alert = AsyncMock()
+
+        with patch("backend.api.algo.actions_live._al_close_resolve_position",
+                   new=AsyncMock(return_value=("BUY", 50, "NRML"))), \
+             patch("backend.api.algo.actions_live._al_agent_close_recently_cancelled_this_session",
+                   new=AsyncMock(return_value=False)), \
+             patch("backend.api.algo.actions_live._al_find_held_agent_close",
+                   new=AsyncMock(return_value=None)), \
+             patch("backend.api.algo.order_hold_gate.record_held_order", mock_record_held), \
+             patch("backend.api.algo.actions_live._al_send_agent_close_hold_alert", mock_alert), \
+             patch("backend.api.algo.chase.chase_order", mock_chase), \
+             patch("backend.api.algo.actions._write_live_order", mock_write_live_order):
+            await _al_maybe_stage_agent_close_hold(agent, params, context)
+
+        mock_chase.assert_not_called()
+        mock_write_live_order.assert_not_called()
+        mock_record_held.assert_called_once()
+        call_kwargs = mock_record_held.call_args.kwargs
+        assert mock_record_held.call_args.args[0] == HoldCategory.AGENT_CLOSE
+        assert call_kwargs["account"] == "ZG0790"
+        assert call_kwargs["side"] == "BUY"
+        assert call_kwargs["qty"] == 50
+        assert call_kwargs["agent_id"] == 42
+        assert call_kwargs["auto_release_at"] is None
+        mock_alert.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_auto_release_at_computed_from_release_timeout_minutes(self):
+        from backend.api.algo.actions_live import _al_maybe_stage_agent_close_hold
+
+        agent = _make_agent(id=42, release_timeout_minutes=30)
+        params = dict(_CLOSE_PARAMS)
+        context: dict = {}
+
+        mock_record_held = AsyncMock(return_value=902)
+
+        with patch("backend.api.algo.actions_live._al_close_resolve_position",
+                   new=AsyncMock(return_value=("BUY", 50, "NRML"))), \
+             patch("backend.api.algo.actions_live._al_agent_close_recently_cancelled_this_session",
+                   new=AsyncMock(return_value=False)), \
+             patch("backend.api.algo.actions_live._al_find_held_agent_close",
+                   new=AsyncMock(return_value=None)), \
+             patch("backend.api.algo.order_hold_gate.record_held_order", mock_record_held), \
+             patch("backend.api.algo.actions_live._al_send_agent_close_hold_alert",
+                   new=AsyncMock()):
+            await _al_maybe_stage_agent_close_hold(agent, params, context)
+
+        deadline = mock_record_held.call_args.kwargs["auto_release_at"]
+        assert deadline is not None
+        # Later editing agent.release_timeout_minutes must not retroactively
+        # change this already-computed value.
+        agent.release_timeout_minutes = 999
+        assert deadline.minute is not None  # the baked value is untouched
+
+    @pytest.mark.asyncio
+    async def test_unverifiable_close_stages_nothing(self):
+        """`_al_close_resolve_position` returning None means there is
+        nothing real to hold — neither a hold row nor an alert, and the
+        real handler is never reached either (the caller's chokepoint
+        already decided to intercept)."""
+        from backend.api.algo.actions_live import _al_maybe_stage_agent_close_hold
+
+        agent = _make_agent()
+        mock_record_held = AsyncMock()
+        mock_alert = AsyncMock()
+        with patch("backend.api.algo.actions_live._al_close_resolve_position",
+                   new=AsyncMock(return_value=None)), \
+             patch("backend.api.algo.order_hold_gate.record_held_order", mock_record_held), \
+             patch("backend.api.algo.actions_live._al_send_agent_close_hold_alert", mock_alert):
+            await _al_maybe_stage_agent_close_hold(agent, dict(_CLOSE_PARAMS), {})
+        mock_record_held.assert_not_called()
+        mock_alert.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_existing_held_row_skips_re_alert(self):
+        from backend.api.algo.actions_live import _al_maybe_stage_agent_close_hold
+
+        agent = _make_agent()
+        mock_record_held = AsyncMock()
+        mock_alert = AsyncMock()
+        with patch("backend.api.algo.actions_live._al_close_resolve_position",
+                   new=AsyncMock(return_value=("BUY", 50, "NRML"))), \
+             patch("backend.api.algo.actions_live._al_agent_close_recently_cancelled_this_session",
+                   new=AsyncMock(return_value=False)), \
+             patch("backend.api.algo.actions_live._al_find_held_agent_close",
+                   new=AsyncMock(return_value=555)), \
+             patch("backend.api.algo.order_hold_gate.record_held_order", mock_record_held), \
+             patch("backend.api.algo.actions_live._al_send_agent_close_hold_alert", mock_alert):
+            await _al_maybe_stage_agent_close_hold(agent, dict(_CLOSE_PARAMS), {})
+        mock_record_held.assert_not_called()
+        mock_alert.assert_not_called()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  Piece 5 — operator-cancel suppression
+# ═══════════════════════════════════════════════════════════════════════
+
+def _cancelled_held_row(created_at: datetime, **extra) -> SimpleNamespace:
+    base = dict(
+        id=1, status="CANCELLED", broker_order_id="", agent_id=42,
+        account="ZG0790", symbol="NIFTY24800CE", exchange="NFO",
+        transaction_type="BUY", created_at=created_at,
+    )
+    base.update(extra)
+    return SimpleNamespace(**base)
+
+
+def _mock_session_scalar_first(value):
+    result = MagicMock()
+    result.scalars.return_value.first.return_value = value
+    session = AsyncMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    session.execute = AsyncMock(return_value=result)
+    return session
+
+
+class TestCancelSuppressionWithinSameSession:
+    @pytest.mark.asyncio
+    async def test_cancelled_this_session_suppresses(self):
+        """Real wall-clock `now` (the function's own `datetime.now()` is
+        a local import, not module-patchable) — a cancel recorded "just
+        now" is trivially in the SAME session as "now", regardless of
+        what the real current time happens to be."""
+        from backend.api.algo.actions_live import (
+            _al_agent_close_recently_cancelled_this_session,
+        )
+        row = _cancelled_held_row(created_at=datetime.now(timezone.utc))
+        session = _mock_session_scalar_first(row)
+
+        with patch("backend.api.database.async_session", return_value=session):
+            suppressed = await _al_agent_close_recently_cancelled_this_session(
+                42, "ZG0790", "NIFTY24800CE", "NFO", "BUY",
+            )
+        assert suppressed is True
+
+    @pytest.mark.asyncio
+    async def test_cancelled_in_a_new_session_does_not_suppress(self):
+        """A cancel recorded 2 days ago is trivially in a DIFFERENT
+        session from "now", regardless of what the real current time
+        happens to be (session boundaries are daily)."""
+        from backend.api.algo.actions_live import (
+            _al_agent_close_recently_cancelled_this_session,
+        )
+        from backend.api.algo.expiry_freeze import session_date_of
+        prior_session_cancel = datetime.now(timezone.utc) - timedelta(days=2)
+        row = _cancelled_held_row(created_at=prior_session_cancel)
+        session = _mock_session_scalar_first(row)
+        assert session_date_of(prior_session_cancel) != session_date_of(datetime.now(timezone.utc))
+
+        with patch("backend.api.database.async_session", return_value=session):
+            suppressed = await _al_agent_close_recently_cancelled_this_session(
+                42, "ZG0790", "NIFTY24800CE", "NFO", "BUY",
+            )
+        assert suppressed is False
+
+    @pytest.mark.asyncio
+    async def test_no_cancelled_row_at_all_does_not_suppress(self):
+        from backend.api.algo.actions_live import (
+            _al_agent_close_recently_cancelled_this_session,
+        )
+        session = _mock_session_scalar_first(None)
+        with patch("backend.api.database.async_session", return_value=session):
+            suppressed = await _al_agent_close_recently_cancelled_this_session(
+                42, "ZG0790", "NIFTY24800CE", "NFO", "BUY",
+            )
+        assert suppressed is False
+
+    @pytest.mark.asyncio
+    async def test_lookup_failure_fails_toward_staging_not_suppression(self):
+        """A hold places nothing at the broker -- the safer failure mode
+        on a transient DB error is to keep offering it for review, not
+        to silently suppress forever."""
+        from backend.api.algo.actions_live import (
+            _al_agent_close_recently_cancelled_this_session,
+        )
+
+        class _Boom:
+            def __call__(self):
+                raise RuntimeError("db down")
+
+        with patch("backend.api.database.async_session", _Boom()):
+            suppressed = await _al_agent_close_recently_cancelled_this_session(
+                42, "ZG0790", "NIFTY24800CE", "NFO", "BUY",
+            )
+        assert suppressed is False
+
+    @pytest.mark.asyncio
+    async def test_full_gate_skips_staging_when_suppressed(self):
+        """End-to-end through _al_maybe_stage_agent_close_hold: a
+        suppressed re-stage calls neither record_held_order nor the
+        alert."""
+        from backend.api.algo.actions_live import _al_maybe_stage_agent_close_hold
+        agent = _make_agent()
+        mock_record_held = AsyncMock()
+        mock_alert = AsyncMock()
+        with patch("backend.api.algo.actions_live._al_close_resolve_position",
+                   new=AsyncMock(return_value=("BUY", 50, "NRML"))), \
+             patch("backend.api.algo.actions_live._al_agent_close_recently_cancelled_this_session",
+                   new=AsyncMock(return_value=True)), \
+             patch("backend.api.algo.order_hold_gate.record_held_order", mock_record_held), \
+             patch("backend.api.algo.actions_live._al_send_agent_close_hold_alert", mock_alert):
+            await _al_maybe_stage_agent_close_hold(agent, dict(_CLOSE_PARAMS), {})
+        mock_record_held.assert_not_called()
+        mock_alert.assert_not_called()
+
+
+# Remaining piece (6 — auto-release scan) is appended by a later commit in
+# its own test file (test_agent_close_auto_release.py), since it lives in
+# background.py rather than actions_live.py.
