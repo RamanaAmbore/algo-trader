@@ -2509,6 +2509,108 @@ Rule: these buttons must always live inside the shared card button-group slot. N
 
 ## Critical math guards
 
+**Auto-close a short option at 90% of premium captured — one real agent, staged through a generic
+hold/release/auto-release mechanism, 4 sprints (2026-11-08; commits `5583e869`, `4aea966a`,
+`e7563522`, `6c426e1a`, `d17a93be`, `bd0d2a9f`, `2421034e`, plus this sprint's own
+`_ae_build_agent_row`/`_ae_sync_existing_builtin` fix and the `exit-tp-short-option-90` seed, both
+in `agent_engine.py`)** — Flow: a short option position captures 90% of its premium →
+`short_option_gain_from_entry_pct >= 90` matches → `close_position` fires → because the agent carries
+`require_release=True`, `_dispatch_live_action` (`actions.py`) intercepts it BEFORE the real broker
+handler and stages a HELD `AlgoOrder` (`HoldCategory.AGENT_CLOSE`) instead, with an action-required
+alert. The hold auto-releases after `release_timeout_minutes` (5) unless the operator cancels it from
+Held Orders first; release re-verifies the live position before resuming the chase.
+- **Sprint 1** (`5583e869`) — `positions.any_symbol`, a true per-row fan-out scope (distinct from
+  `positions.any_underlying`'s per-underlying aggregate and `positions.worst_symbol`'s single-row
+  collapse); `gain_from_entry_pct`; `_latch_key` gained a `tradingsymbol` dimension (alongside
+  account/underlying, not a fallback) so two different legs in one account never share a latch.
+  **Confirmed blocking finding, left unfixed by design**: `agent_evaluator._eval_all`'s cross-row join
+  over a fan-out scope recognises only `'acct'`/`'und'` join keys — an `all[]` of two separate leaves
+  (`qty < 0` AND `gain >= 90`) over `positions.any_symbol` wrongly carries a leg through on ACCOUNT
+  alone, even when that leg only satisfied one leaf. `TestSpikeAAndCrossJoinBlindSpot`
+  (`test_sprint1_autoclose_foundation.py`) pins the actual (buggy) behaviour as a documented, confirmed
+  gap — fixing `_eval_all` itself was explicitly out of scope (shared engine code, wider blast radius).
+- **Sprint 2** (`4aea966a`) — a non-blocking try-lock inside `chase_order()` itself, keyed on
+  `(account, exchange, symbol)`. It had to live there, not at either call site: Spike A proved
+  `_action_live_close_position` and `release_held_order`/`_chase_released` are two fully independent
+  code paths with zero shared code before `chase_order()`. Released as soon as the first order is
+  placed+synced, not held across the multi-minute cancel-and-replace retry loop — a genuinely later,
+  non-concurrent close for the same key is never blocked by this lock.
+- **Sprint 3** — `short_option_gain_from_entry_pct` (`e7563522`) avoids Sprint 1's cross-join gap
+  entirely: it folds the `qty < 0` direction check and the digit-anchored CE/PE instrument-type check
+  INSIDE itself, so the eventual agent's whole condition is a SINGLE leaf, never an `all[]`. Generic
+  hold infra (`6c426e1a`, `d17a93be`): `HoldCategory.AGENT_CLOSE` falls through to the default release
+  handler; `hold_record()` snapshots `auto_release_at` at stage time (a later edit to
+  `release_timeout_minutes` can never retroactively move an already-staged deadline); `Agent.
+  require_release`/`release_timeout_minutes` are deliberately absent from `update_agent`'s PUT
+  allow-list and `_AI_REFINE_WRITABLE_FIELDS` — only agent-creation time or a direct DB/admin action
+  can set them. The hold check itself (`bd0d2a9f`): `_dispatch_live_action` intercepts `close_position`
+  for any `agent.require_release is True` agent (checked `is True`, never bare truthiness — a
+  MagicMock test double auto-vivifies a truthy non-`True` attribute), BEFORE resolving the real broker
+  handler, reached only on the live branch (mirrors the privilege boundary of the `trade_mode` fix
+  below). Operator-cancel suppression: `_al_agent_close_recently_cancelled_this_session` discriminates
+  a cancelled-but-never-placed hold via `status == 'CANCELLED' AND broker_order_id == ''` (not a
+  `hold_json` category read — cancel clears `hold_json`) matched against `(agent_id, account, symbol,
+  exchange, side)`, scoped to the current trading session (`expiry_freeze.session_date_of`); any
+  lookup failure fails TOWARD staging, never toward silent suppression. The auto-release scan
+  (`2421034e`, `background.py:_task_agent_close_auto_release`) dispatches through the real
+  `get_release_handler("agent_close")` → `release_held_order` — no new release logic, no new lock;
+  that function's own `.with_for_update()` + `status != "HELD"` guard already makes a concurrent
+  manual-release-vs-scan race resolve safely. **Kill switch is `agent.status != 'inactive'`, NOT a
+  literal `== 'active'` check** — a persistent agent moves to `'cooldown'` immediately after every fire
+  (`_cycle_compute_post_fire_status`), so a literal active-only check would make auto-release
+  essentially never fire for this exact agent shape; `'cooldown'` and `'completed'` are ordinary
+  engine-driven states and must not block a release the agent already decided to make.
+- **Sprint 4 (this entry) seeds the one real agent, `exit-tp-short-option-90`.** Three gaps found and
+  fixed before seeding, all in `agent_engine.py`:
+  - **`_ae_build_agent_row` never read `require_release`/`release_timeout_minutes` from a spec at
+    all** — the exact bug class the 2026-10-31 `expiry-day-itm-auto-close` incident was (that one was
+    `trade_mode`), but worse here: combined with `trade_mode: "live"`, a `close_position` action would
+    have reached the real broker immediately, with no staged hold and no operator review — the entire
+    point of this agent silently defeated. Fixed with the same `if "key" in agent_def:` passthrough
+    pattern already used for `trade_mode`.
+  - **`_ae_sync_existing_builtin` restart-sync for `require_release` is ONE-DIRECTIONAL** — mirrors the
+    "Ships INACTIVE" status pattern: False → True only, via the extracted `_ae_sync_require_release_
+    fail_safe`, never True → False. The model column's own docstring documents that an admin may
+    deliberately flip this OFF via a direct DB action; restart must never silently undo that.
+  - **Agent-level cooldown blocks evaluation of every leg, not just the firing one** — confirmed by
+    reading `_cycle_in_cooldown`/`_ae_cycle_eval_and_buffer`: a persistent agent's status moves to
+    `'cooldown'` after ANY fire, and `_ae_cycle_eval_and_buffer` returns BEFORE buffering a new fire
+    while `_cycle_in_cooldown(agent)` is true — that gate is AGENT-LEVEL, not per-leaf. A non-zero
+    `cooldown_minutes` here would have silently blocked a SECOND, different short leg from ever being
+    evaluated while the agent was still cooling down from the FIRST leg's fire. Fixed by seeding
+    `cooldown_minutes: 0` — `_cycle_in_cooldown`'s `elapsed < agent.cooldown_minutes` is then always
+    False. Per-leg dedup still applies independently: `_v2_apply_escalation_gate` falls back to
+    `cfg['cooldown_min']` (`alerts.cooldown_minutes`, default 30) whenever `agent.cooldown_minutes` is
+    falsy (`0 or cfg[...]`), and the hold-staging path's own dedup (`_al_find_held_agent_close`,
+    cancel-suppression) covers the rest.
+  - **`trade_mode: "live"` is set explicitly** — triple-checked, the single highest-leverage line in
+    this whole plan, confirmed via a real `_resolve_mode()` call forced onto the main branch with the
+    paper kill-switch off.
+  - **The "Ships INACTIVE" guard (`_ae_guard_seed_status`) does not catch this agent** — it triggers
+    only on the literal phrase "Ships INACTIVE" appearing in a seed's own `description`; this agent's
+    description does not contain it, confirmed by driving the real guard function against the real spec.
+  - **The rich-alert enrichment is additive, not a replacement** — `_v2_exit_tp_short_option_enrichment`
+    is appended to the generic kind/threshold table (never replacing it — that table carries the leg's
+    real gain% against the 90% threshold), slug-gated the same way `expiry-day-preclose-alert`'s own
+    enrichment is. Its deadline/cancel text is DELIBERATELY CONDITIONAL ("if staged...") — this agent's
+    own alert fires on every breach, before it can know whether the hold-staging path actually staged
+    anything (staging can be suppressed by an earlier cancel, an already-HELD row, or a failed
+    verification) — a concrete "auto-releases at HH:MM" claim would be a lie in those cases. Sibling
+    legs on the same underlying are listed via the identical grouping key (`row.get('underlying')`)
+    `scope_positions_any_underlying` uses, masked once. One real fire therefore produces TWO alerts:
+    this agent's own medium-tier rich alert, and the hold's separate, pre-existing `action_required=True`
+    urgent alert (`_al_send_agent_close_hold_alert`, Sprint 3, left unmodified) — accepted by design.
+  - **`$row` binding is a genuine first** — `test_agent_action_fanout.py`'s own regression test
+    previously asserted NO builtin agent uses `{"$row": ...}`; this agent is the one documented
+    exception (scoped by slug, not loosened blanket), because its fan-out condition matches a different
+    leg per fire and `close_position` must bind that leg's own `account_id`/`symbol`/`exchange`
+    (`resolve_row_ref_params`, actions.py — Sprint 16's pre-existing bare-NAME mechanism, unmodified).
+- Invariant: a `close_position` fired by a `require_release=True` agent never reaches the broker
+  without first being staged as a HELD row for operator review; the hold auto-releases on its own
+  schedule, re-verifying the live position, unless explicitly cancelled first. Across all 4 sprints,
+  zero changes touched `template_attach.py` or any Bracket/GTT code path (confirmed via
+  `git diff --name-only <pre-plan-base>..HEAD`).
+
 **Positions loss guard — `day_val` floor raised, rate leaves gated on drawdown-from-peak, co-firing
 leaves grouped, guard-alert `extra` masked (2026-11-06; commits `b4972fd0`, `f38db207`, `dc9969c7`)** —
 `loss-positions-total` (critical tier, `_LOSS_AGENTS`,
@@ -3801,6 +3903,8 @@ now caches + returns a `stale` flag; `/api/nav/by-account` masks `errors` for no
 | Toggle agent default status | `backend/api/algo/agent_engine.py` |
 | Expiry pre-close alert + auto-close (one agent each, both exchanges) | `backend/api/algo/agent_engine.py` (`expiry-day-preclose-alert`/`expiry-day-itm-auto-close`, `_v2_expiry_position_breakdown`) + `backend/api/algo/actions_live.py:_action_live_expiry_auto_close` + `backend/api/algo/grammar_tokens/metric_is_expiry_preclose_{alert,close}_window.py` |
 | Expiry close hold/release | `/admin/settings` → `expiry_close_hold_enabled` (inverted: `true`=held, default) |
+| Auto-close short option at 90% profit (`exit-tp-short-option-90`) | `backend/api/algo/agent_engine.py` (seed spec + `_v2_exit_tp_short_option_enrichment`) + `backend/api/algo/grammar_tokens/metric_short_option_gain_from_entry_pct.py` + `backend/api/algo/actions_live.py:_al_maybe_stage_agent_close_hold` |
+| Generic agent-close hold/release/auto-release infra (`require_release`) | `backend/api/algo/actions.py:_dispatch_live_action` + `backend/api/algo/actions_live.py` (`_al_maybe_stage_agent_close_hold`, `_al_agent_close_recently_cancelled_this_session`) + `backend/api/background.py:_task_agent_close_auto_release` |
 | Dhan/Groww margin enforce | `/admin/settings` → `preflight.enforce_margin_{dhan,groww}` |
 | Execution mode reset to LIVE on admin/designated prod login | `backend/api/routes/execution.py:reset_to_live_mode` (called from `auth.py:login`) |
 | Add MCP tool | `backend/mcp/kite_server.py` @app.tool() |
