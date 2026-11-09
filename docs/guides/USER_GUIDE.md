@@ -385,7 +385,7 @@ that you don't edit directly; see "Notification channels" below):
 - `expiry-nfo-risk-alert` — Any NFO position expiring today that's ITM or an open future
 - `expiry-mcx-risk-alert` — Any MCX position expiring today that's unhedged or an open future
 - `expiry-day-preclose-alert` — 30 minutes before that exchange's own close, lists which affected roots are genuinely unnetted (MCX) or ITM/NTM (NFO) and need closing
-- `expiry-day-itm-auto-close` — 25 minutes before close (5 minutes after the alert above), stages the actual closing orders for those same positions — held pending release unless you've turned on auto-release (see "Order templates" below for the hold/release pattern; the setting here is `expiry_close_hold_enabled`)
+- `expiry-day-itm-auto-close` — 25 minutes before close (5 minutes after the alert above), stages the actual closing orders for those same positions — held pending release unless you've turned on auto-release (the setting here is `expiry_close_hold_enabled`)
 
 **Market schedule:**
 - `market-open-nse` — NSE open notification
@@ -396,6 +396,10 @@ that you don't edit directly; see "Notification channels" below):
 Edit them from `/automation` — change a threshold, pick notification channels, or attach an action like `chase_close_positions` that auto-cuts losses. You can read and edit each one either through the form UI or as DSL text in the Console tab (see "The agent DSL" above); both produce the identical compiled rule.
 
 **Notification channels** — an alert resolves to one or more delivery channels (Telegram, email, ntfy, in-app, WebSocket, or log). Most built-in agents don't hardcode their channel list — a routing tree picks it: a specific per-agent rule if one exists, otherwise a default keyed on the agent's tier (critical/high/medium/low), falling back to a catch-all if nothing else matches. This is why two agents at the same tier usually notify the same way without anyone having typed that twice — and why changing an agent's tier can change where it notifies, not just how urgent it reads.
+
+### Adding your own agent
+
+Easiest path: copy an existing rule that's close to what you want, change the threshold or the action. The platform validates your edits before saving — you'll see a green check or a red error before the save button works.
 
 ---
 
@@ -422,121 +426,6 @@ chase section.
   with a "draft" source badge
 - Your payoff curve updates instantly when you add a draft leg
 - The Greeks recalculate across all checked draft + live legs
-
----
-
-## Order templates — per-position exit rules
-
-Think of a template as "my standard exit playbook for selling options: auto-place a TP exit at +0.50% and an SL at −1%." When you place an option-chain basket order on the **Chain tab**, a compact toggle controls whether a template attaches. Once the order fills, the platform automatically places the exit orders on the broker.
-
-Every exit rule (TP / SL / scaled close / trailing stop / hedge wing) is independent. You can mix and match: TP + SL, or just TP, or SL with a trailing stop that chases the price higher.
-
-### Three ways to use templates
-
-**Templates are available only when placing option-chain basket orders (Chain tab).** The Ticket tab (single-order placement) does not use templates — orders placed there go out with no template/exit-rule attachment.
-
-**Use the default (most common)** — A toggle labeled "o.template" sits
-at the end of the Expiry-dropdown row. Flip it ON. This attaches your
-side-aware default template automatically (the platform picks which
-saved template applies based on your current BUY/SELL side and whether
-it's an option). You don't need to change anything — the default is
-ready to use.
-
-**Pick a specific named template** — With the toggle ON, click the small chevron button next to it to expand the template params panel. Inside the expanded view, you'll see a "Specific tmpl" dropdown (alongside the TP% / SL% / Wing override inputs). Pick any template by name from the dropdown. This overrides the automatic default for this trade without changing your default setting.
-
-**No template** — Flip the toggle OFF. The control shows "None" and no template/exit-rule attachment fires when the order fills. You'll close it manually or with an agent.
-
-### Exit mechanics (plain English)
-
-**Take-Profit (TP)** — auto-sell at a higher price (long) or auto-buy at a lower price (short). Pick % above your entry or ₹ per contract. When the market touches your target, the platform executes it. Type: LIMIT (exact price, may miss in fast markets) or MARKET (fills fast, no price guarantee).
-On a Kite account, a MARKET take-profit cannot attach (see the warning under the broker table
-below). Choose LIMIT for Kite.
-
-**Stop-Loss (SL)** — auto-sell (long) or auto-buy (short) if the market moves against you. Same per-entry or per-₹ choices. Always LIMIT to cap your slippage.
-
-**Trailing Stop** — SL that chases profit. Start at −1%, but if the position goes +2%, the stop rises to lock in +1% of gain. Platform checks every 30 seconds and moves the stop higher (long) or lower (short) as price improves. Useful for letting winners run while protecting downside.
-
-**Hedge Wing** — for option sellers. Sell 1 call → auto-buy 1 put at a nearby strike to hedge gamma. Platform scans the option chain, picks a reasonable wing candidate, and buys it when your parent fills.
-
-**Scaled Close** — multi-target TP. Instead of exiting all at once, exit 30% at +50%, 40% at +100%, 30% at +150%. Locks in incremental gains on the way up.
-
-### Seeded templates
-
-Platform ships with two:
-
-| Template | Use for | What happens at fill |
-|---|---|---|
-| **default-long-option** | Buying calls or puts | TP at +80% MARKET. No SL, no wing, no scale. |
-| **default-short-vol** | Selling puts / calls | TP at +10% LIMIT, SL at −20%, buys a hedge wing 1 strike away. |
-
-**Note for Kite accounts (2026-10-23):** `default-long-option`'s take-profit is a MARKET order. Kite
-refuses any exit order that contains a MARKET leg. On a Kite account, the warning appears on the
-order ticket, and the take-profit will not attach after the buy fills. Before you rely on this
-template with Kite, change its take-profit to LIMIT, or set LIMIT on the order ticket for that trade.
-
-You can edit these, create new ones, and mark any template as your default so it auto-fills in the Chain tab.
-
-### Off-market-hours behaviour
-
-When a postback arrives while the exchange is closed:
-
-- **GTT-only templates** (TP + SL legs only): GTT orders are accepted by Kite 24×7 and will be placed normally. The template attaches as usual.
-- **Templates with a wing leg** (a MARKET order placed immediately on fill): The wing MARKET order cannot be placed while the exchange is closed. RamboQuant will skip the wing and fire a Telegram alert. The TP + SL GTTs are still placed. If you need the wing, you must place it manually once the market opens.
-  - **Correction (2026-10-23):** the sentence above is wrong about the TP and SL. When the exchange
-    is closed and a template has a wing leg, the platform REFUSES the whole attach. The TP, the SL
-    and the wing are all skipped, and nothing retries them later. Once the market opens, place all
-    of your exits by hand. Check the alert you received for the list of skipped legs.
-
-### Template `applies_to` gate
-
-Each template has an `applies_to` field that gates which orders it can attach to:
-
-| Value | Description |
-|---|---|
-| `both` | Attaches to any BUY or SELL order |
-| `buy_any` | Only attaches to BUY orders |
-| `sell_any` | Only attaches to SELL orders |
-| `buy_option` | Only attaches to BUY orders on option contracts (CE/PE) |
-| `sell_option` | Only attaches to SELL orders on option contracts |
-| `none` | Template is disabled — never auto-attaches |
-
-If a template is auto-selected and the order side doesn't match `applies_to`, the attach is refused silently and a Telegram alert is fired. Set the correct `applies_to` when creating templates to avoid spurious alerts.
-
-### Multi-broker support — what works where
-
-Templates now work on **all three brokers**, with a small caveat on Groww. The Chain tab shows an inline warning chip (amber) below the template summary when the selected template asks for a feature the selected broker can't provide natively — you see the gap at submit time, not at fill time.
-
-On Kite, the warning "GTT rejects MARKET legs" appears when the take-profit is set to MARKET. Kite
-will not place an exit order that contains a MARKET leg, and a take-profit and stop-loss go in as one
-pair, so the stop-loss fails too. Change the take-profit to LIMIT before you submit. The warning
-follows the MKT toggle on the order ticket, even when the saved template is LIMIT. (2026-10-23)
-
-| Broker | TP only | SL only | TP + SL (OCO) | Trailing stop | Notes |
-|---|---|---|---|---|---|
-| **Zerodha Kite** | ✅ | ✅ | ✅ native | ✅ native | Full coverage. |
-| **Dhan** | ✅ | ✅ | ✅ native | ✅ native | Forever Order maps 1:1. **MCX / commodity not supported** — use a Kite-mirrored account for MCX templates. |
-| **Groww** | ✅ | ✅ | ✅ emulated | ⚠ no trail | OCO is emulated by placing two single GTTs + a background "pair-watcher" that cancels the sibling when one side fires. There's a ~15-second race window between the fire and the sibling cancel — under fast moves, both legs can occasionally fill. The warning chip flags this. |
-
-If the broker can't natively do what your template asks, you'll see one of these chips:
-- **"Groww OCO emulated — ~15s race window"** — TP+SL template on a Groww account; both legs may fill on a fast move.
-- **"Dhan can't trail — SL stays fixed"** (only on future broker that lacks `modify_gtt`)
-- **"{broker} has no GTT — scale-out won't attach"** — scale-out ladder on a broker without GTT support.
-
-### Troubleshooting
-
-**My TP/SL didn't attach** — after the order fills, check the order's row on the `/orders` page. You should see a chip `tmpl:#N ✓` once the exit orders are live. If you see `tmpl:#N …` (dots), they're still placing. If there's no chip, the template didn't attach — check the `/api/admin/logs` for errors.
-
-**My trailing stop isn't advancing** — check `/admin/settings` → `templates.trail_poll_interval_seconds` (default 30s). Stop advances on each poll. If the setting is very high, the lag increases. Two-leg OCO trails ratchet the SL slot while the TP slot rides through unchanged.
-
-**Groww OCO: both legs filled** — the ~15s pair-watcher window let a fast move take both sides. There's no current mitigation other than using a tighter `templates.oco_pair_poll_seconds` setting (default 15s) — but lower cadence means more broker polling. Native-OCO brokers (Kite, Dhan) avoid this entirely.
-
-**Dhan template rejected with "Forever Order does not cover MCX/NCO"** — Dhan's Forever Order doesn't support commodity. Place the parent on your Kite-mirrored MCX account and the template attaches there instead.
-
-**Can I use templates with agents?** — yes, independently. An agent can place an order (with a template attached); a separate template can handle the exit. They don't conflict — agents manage _when_ to trade, templates manage _how_ to exit.
-
-### Adding your own agent
-
-Easiest path: copy an existing rule that's close to what you want, change the threshold or the action. The platform validates your edits before saving — you'll see a green check or a red error before the save button works.
 
 ---
 
@@ -640,15 +529,6 @@ popup means the chase is mid-replacement, so press Kill again in a few seconds. 
 the broker, or the order had already ended without a fill. If the order had already filled or
 been rejected, Kill reports that there is nothing to kill.
 
-**Bracket exits held for release (2026-11-03)** — if your Bracket's exit orders (TP/SL/wing)
-are configured to wait for your explicit release (an admin setting, held by default), a
-filled bracket order shows **Pending** in this same drawer instead of **Kill** — there's
-nothing live to cancel yet, since the exits were deliberately never placed. Press Pending to
-release the hold: the exits are placed, and if the bracket has a chased hedge leg, it then
-appears in this drawer as a normal live chase with Kill available. This is the same release
-action as the "Tmpl Hold" pill on an order card or the Held Orders card's Release button —
-whichever surface you use, it's the same action.
-
 ### "Order corrected" alerts
 
 Occasionally the platform finds an order whose local record disagreed with what the
@@ -660,7 +540,6 @@ This is a diagnostic signal, not a trading decision. It means the normal fill or
 cancel path missed the event and a backup check caught it. Two things to look at:
 
 - Confirm the order's position matches what you expect at your broker.
-- If the order had a template attached, its exit orders were placed at the moment of correction. Check them at your broker too.
 
 ---
 

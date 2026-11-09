@@ -1,7 +1,8 @@
 # RamboQuant Order Lifecycle Reference
 
 **Audit date:** 2026-08-09  
-**Scope:** ticket orders, basket orders, agent-driven orders, templates/GTT, broker sync, reconciliation
+**Scope:** ticket orders, basket orders, agent-driven orders, broker sync, reconciliation.
+Bracket/Template/GTT attach was removed (T3.1–T3.4, 2026-11), so it is not documented here.
 
 ---
 
@@ -13,7 +14,6 @@
 | Basket | `POST /api/orders/basket` | `orders_basket.py:206` |
 | Agent-driven | `actions.execute()` after condition match | `actions.py:336` |
 | Chase (TP/SL) | `_arm_take_profit()` on parent FILLED | `orders_place.py:761` |
-| Template attach | `_fire_template_attach_on_fill()` on FILLED | `orders_place.py:561` |
 
 ---
 
@@ -53,10 +53,10 @@ In sequence — first failure returns immediately:
 RamboQuant does not use an "ADE" (Add/Delete/Execute) vocabulary. The equivalent is the
 **`intent` field** on `AlgoOrder` and the ticket request:
 
-| Intent value | Meaning | G2? | MCX cap? | Capacity check? | Template attach? | 50-lot Kite ceiling? |
-|---|---|---|---|---|---|---|
-| `None` / `"open"` | New position | Yes | Yes | Yes | Yes | Yes |
-| `"close"` | Close/reduce existing position | **Bypassed** | **Exempt** | **Skipped** | **Never** | **Bypassed** |
+| Intent value | Meaning | G2? | MCX cap? | Capacity check? | 50-lot Kite ceiling? |
+|---|---|---|---|---|---|
+| `None` / `"open"` | New position | Yes | Yes | Yes | Yes |
+| `"close"` | Close/reduce existing position | **Bypassed** | **Exempt** | **Skipped** | **Bypassed** |
 
 **Where intent is set:**
 
@@ -86,8 +86,7 @@ real order (submits with `mode='paper'` or `mode='live'`).
 3. Register with `PaperTradeEngine.register_open_order()`.
 4. Write `AlgoOrderEvent(kind="placed")`.
 5. Call `record_manual_event()` (async).
-6. Preview template attachment (no broker call yet) → populate response with planned GTT info.
-7. Return `TicketOrderResponse(status=OPEN)`.
+6. Return `TicketOrderResponse(status=OPEN)`.
 
 ### LIVE mode (`orders_place.py:1713`)
 1. Check mode gates: prod branch, paper_trading_mode master kill-switch, circuit breaker.
@@ -121,51 +120,12 @@ real order (submits with `mode='paper'` or `mode='live'`).
 
 ---
 
-## 6. Template / GTT Lifecycle
-
-### Trigger: parent order FILLED
-Both paper fills (paper engine detect bid/ask cross) and live fills (broker postback) call
-`_fire_template_attach_on_fill()` (`orders_place.py:561`).
-
-### Attach sequence
-1. **Per-row asyncio.Lock** (`orders_place.py:310`) — 4h TTL, strong dict. Prevents double
-   placement from concurrent postback + chase terminal signals.
-2. **Idempotency gate** — skip if `attached_gtts_json` already populated.
-3. **Load parent row** — return None if row vanished or already attached.
-4. **Resolve template** → `apply_template_to_order()` (`template_attach.py`) with
-   `apply_path="live"`.
-5. **Place GTT orders** — one per spec (TP, SL, OCO). For each: call `broker.place_gtt()`.
-6. **Wing order** (if configured) — scan chain for protective option leg, place MARKET order.
-7. **Persist `attached_gtts_json`** — list of `{kind, label, id, sibling_id, sl_trail_pct}`.
-8. **Partial GTT alert** — if placed count < planned count: log CRITICAL + send ntfy with
-   priority="urgent" (`orders_place.py:625`).
-
-### Template attach guards
-
-| Guard | Location | Action |
-|---|---|---|
-| Off-hours wing gate | `template_attach.py:229` | Defer wing; GTT-only plans allowed 24×7 |
-| applies_to mismatch | `template_attach.py:154` | Alert + no-attach |
-| GTT trigger direction | `orders_place.py:228` | Warn if TP/SL deviate > 50% from fill |
-
-### GTT background tracking
-
-| Task | Cycle | File |
-|---|---|---|
-| OCO watcher (`_task_oco_pair_watcher`) | Every 15s | `background.py:2920` |
-| Trailing stop updater (`_task_trail_stop_updater`) | Every 30s | `background.py:2148` |
-
-Both poll `broker.get_gtts()`. **No webhook for GTT fire** (Kite SDK limitation) — detection
-lag is up to 30s.
-
----
-
 ## 7. Order State Machine
 
 ```
                ┌──────────────────────────────────────────────────────┐
                │                                                      │
-   Submit ───► OPEN ──► FILLED ──► (template_attach fires GTTs) ──► done
+   Submit ───► OPEN ──► FILLED ──► done
                │ │
                │ └──► CANCEL_FAILED  (kill attempt failed — retry)
                │
@@ -212,9 +172,6 @@ _postback_broadcast_fanout (orders.py:529)
     ├─ Always:          invalidate("orders")
     ├─ Terminal:        invalidate(positions, holdings, margins) + broadcast book_changed
     └─ FILLED:          broadcast position_filled + _positions_refresh_after_fill (5s poll)
-    │
-    ▼ (async, post-commit)
-_fire_template_attach_on_fill (orders_place.py:561)  ← See §6
 ```
 
 **Broker status maps:**
@@ -236,8 +193,6 @@ _fire_template_attach_on_fill (orders_place.py:561)  ← See §6
 | Chase inline reconcile | End of each active chase cycle | Automatic | `orders.py:646` |
 | Single-order reconcile | `POST /api/orders/{id}/reconcile` | Manual | `orders.py:1350` |
 | Bulk account reconcile | `POST /api/orders/algo/reconcile` | Manual | `orders.py:1289` |
-| GTT OCO detection | Every 15s | Automatic | `background.py:2920` |
-| GTT trail update | Every 30s | Automatic | `background.py:2148` |
 
 **No scheduled background reconciliation** for OPEN orders without an active chase. If a
 postback is lost and no chase is running, the row stays OPEN indefinitely until the operator
@@ -251,7 +206,6 @@ hits the reconcile endpoint.
 |---|---|---|
 | Order failure | Telegram + SMTP | Broker rejects; `orders_place.py:1554` |
 | Sustained rejections | Rate-limited ntfy | Circuit-breaker trip; `orders_helpers.py:90` |
-| Partial GTT placement | ntfy priority=urgent | placed < planned; `orders_place.py:625` |
 | Agent condition met | WS broadcast + AgentEvent | `agent_engine.py` |
 
 **No alert on:** order cancellation, silent HTTP timeout before broker response, paper engine
@@ -284,13 +238,6 @@ for stale OPEN+live rows.
 
 ---
 
-### GAP-2 ✅ Fixed — GTT fire detection lag
-
-**Status:** OCO pair-watcher default interval changed from 15s to 5s
-(`templates.oco_pair_poll_seconds`).
-
----
-
 ### GAP-3 ✅ Fixed — Alert on order cancellation
 
 **Status:** `_postback_broadcast_fanout` in `orders.py` now fires `_opp_send_cancel_alert`
@@ -316,10 +263,3 @@ task when status=CANCELLED.
 
 **Status:** `write_event("agent_trigger", ...)` added in `_write_live_order` (`actions.py`);
 `"agent_trigger"` added to `VALID_KINDS` in `order_events.py`.
-
----
-
-### GAP-7 ⏸ Deferred — GTT cancellation on manual position close
-
-**Status:** `cancel_gtt` call site not found in order placement path; only appears in
-`_oco_cancel_survivor` (OCO sibling path); under investigation.

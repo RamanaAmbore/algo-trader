@@ -2245,6 +2245,10 @@ added to the broker ack path (async dispatch via `asyncio.create_task`).
 
 ## 8. The order/chase/template tripod
 
+> **REMOVED — Bracket/Template/GTT (T3.1–T3.4, 2026-11).** Historical record only; do not
+> reintroduce without a new design decision. Retired: the template-attach subsystem (§8.1 row,
+> §8.2 template bullets). Still live: the chase loop and the mode pivot (§8.3).
+
 This is the most complex part of the codebase. Three subsystems with overlapping responsibilities:
 
 ### 8.1 What each one owns
@@ -2273,7 +2277,14 @@ History: the chase loop existed first (single ticket → place + chase to fill).
 
 # Part III — Templates + exits
 
+> **REMOVED — Bracket/Template/GTT (T3.1–T3.4, 2026-11).** Historical record only; do not
+> reintroduce without a new design decision. Every section in this Part (§9–§11) describes
+> retired code.
+
 ## 9. Template attach pipeline
+
+> **REMOVED — Bracket/Template/GTT (T3.1–T3.4, 2026-11).** Historical record only; do not
+> reintroduce without a new design decision.
 
 ```mermaid
 flowchart TD
@@ -2326,6 +2337,9 @@ flowchart TD
 
 ## 10. 4-default template matrix
 
+> **REMOVED — Bracket/Template/GTT (T3.1–T3.4, 2026-11).** Historical record only; do not
+> reintroduce without a new design decision.
+
 ```mermaid
 flowchart LR
     Op([Operator picks symbol + side]) --> SC{_appliesToFor}
@@ -2350,6 +2364,9 @@ flowchart LR
 ---
 
 ## 11. Template override merge
+
+> **REMOVED — Bracket/Template/GTT (T3.1–T3.4, 2026-11).** Historical record only; do not
+> reintroduce without a new design decision.
 
 Operator overrides flow through multiple layers; understanding the merge order saves hours of debugging.
 
@@ -2536,6 +2553,9 @@ template wing child orders. No operator action sets it. Two behaviours depend on
   retry (see the gates in `orders_postback.py` and `orders_place.py`).
 
 ### Deferred: dual-leg template placement on paired positions
+
+> **REMOVED — Bracket/Template/GTT (T3.1–T3.4, 2026-11).** Historical record only; do not
+> reintroduce without a new design decision.
 
 No decision to build this. The original sketch placed a hedged GTT on both legs of a paired
 position. It depended on operator-persisted pairs, which were removed on 2026-10-17, so it is
@@ -5657,7 +5677,6 @@ complement `CLAUDE.md` (which describes how to build) with what each surface doe
 | DASHBOARD_SPEC | Dashboard — hero metrics, grids, agent log |
 | DERIVATIVES_SPEC | Derivatives analytics — Greeks, payoff, strategy |
 | EXECUTION_SPEC | Execution modes 1–5 (sim/paper/live/replay/shadow) |
-| GTT_SPEC | GTT book + template attach pipeline |
 | HEDGE_SPEC | Proxy hedges + beta regression |
 | LAB_SPEC | MCP server + research lab |
 | NAV_SPEC | NAV formula v4 + investor portal |
@@ -5756,6 +5775,9 @@ NameError in 3.11+.
 ---
 
 ## 22.23. Template attach — parent_lot_size NFO/BFO/CDS support
+
+> **REMOVED — Bracket/Template/GTT (T3.1–T3.4, 2026-11).** Historical record only; do not
+> reintroduce without a new design decision.
 
 `backend/api/algo/template_attach.py::apply_plan_live` now resolves `parent_lot_size` for all
 F&O exchanges: `("MCX", "NCO", "NFO", "BFO", "CDS")`. Previously, lot-size resolution was limited
@@ -6302,6 +6324,9 @@ action never calls `reactor.stop()`.
 
 ## 23. How to add a new template field
 
+> **REMOVED — Bracket/Template/GTT (T3.1–T3.4, 2026-11).** Historical record only; do not
+> reintroduce without a new design decision.
+
 Templates have grown organically. The current schema is wide (5 mandatory + 7 optional fields). To add a new one:
 
 ### Backend
@@ -6732,6 +6757,9 @@ given underlying. This is a broker-hitting (live) action.
 
 ## 35. Recipe: add a new template field (worked example)
 
+> **REMOVED — Bracket/Template/GTT (T3.1–T3.4, 2026-11).** Historical record only; do not
+> reintroduce without a new design decision.
+
 **Scenario:** add `tp_breakeven_lock: bool` — when true, after TP1 fires, modify SL to entry price (free trade).
 
 ### Steps
@@ -6875,6 +6903,9 @@ given underlying. This is a broker-hitting (live) action.
 ---
 
 ## 39. Recipe: change an existing default template
+
+> **REMOVED — Bracket/Template/GTT (T3.1–T3.4, 2026-11).** Historical record only; do not
+> reintroduce without a new design decision.
 
 **Scenario:** operator wants `default-long-option` to have SL −40% instead of no SL.
 

@@ -1802,12 +1802,18 @@ the row's own 08:00-IST session boundary (same convention as
 
 **Account pre-selector freeze — reactive stale-read in order modal (2026-09-28, commit ed3938db, CRITICAL)** — Order modal's account dropdown (`PageHeaderActions.svelte:_effectiveAccount`) was `$derived(resolveAccount(...))`, where `resolveAccount()` (`frontend/src/lib/data/accounts.js`) reads `localStorage` directly — a plain, non-reactive read. `$derived` only re-runs when a TRACKED reactive dependency changes, so `_effectiveAccount` computed once (the first time the accounts list loaded) and never updated again for the session; every later modal open silently reseeded from that frozen value regardless of which account the operator had since picked via `setRecentAccount()`. Live root-cause verified: operator picked account ZJ6294, modal reopened showing ZG0790. Fix: read the reactive `recentAccountStore`/`defaultAccountStore` (the same Svelte `writable` stores `setRecentAccount()`/`loadAccounts()` actually write to) directly inside the `$derived` instead of calling `resolveAccount()`. Invariant: never call a function that reads `localStorage`/a non-store singleton from inside `$derived`/`$effect` — bridge through a real Svelte store (or `$state`) so the dependency is tracked.
 
+> **REMOVED — Bracket/Template/GTT (T3.1–T3.4, 2026-11).** Historical record only; do not
+> reintroduce without a new design decision.
+
 **Order Ticket / Bracket-template re-wire — 4th and final decision, reverses a deliberate severance (2026-10-16, commits `abc3851f`→`78392599` series)** — On 2026-09-29 (commit `00f194d8`) the operator made a deliberate, explicit decision — after 3 prior reversals — to sever the Ticket tab from the Bracket/template system entirely ("make sure order ticket is not wired to template"): `SymbolPanel.svelte` stopped binding `templateId`/overrides into `<OrderTicket>`, `OrderTicket.svelte` dropped its `loadOrderTemplates()` fetch, and the real broker-submission payload (`placeCtx.templateId`, feeding `template_id` in the `/api/orders/ticket` POST body) was hardcoded to `null` UNCONDITIONALLY — Chain kept full functionality via its own binding, untouched. On 2026-10-16 the operator reported "what happened to bracket option in order ticket. it no longer shows" — initially treated as a regression and partially "fixed" by restoring just the visual toggle (shell-level render) — but since the underlying `templateId`/override bindings were still severed, that toggle had **zero effect on real orders**: picking a Bracket on the Ticket tab never actually attached anything. Once the full history was surfaced, the operator made their 4th and final call: "fully re-wire it," **and** "keep bracket before draft on the same row" with Bracket/Draft mutually exclusive (auto-switch the other off). Final design:
 - `SymbolPanel.svelte` → `<OrderTicket>`: `bind:templateId={_sharedTemplateId}` + the 4 override binds restored (mirrors Chase/ChaseAgg's existing binding pattern); `onSelectDefault`/`onSelectNone`/`onSelectTemplate` callback props wired to the shell's `_onTemplSelectDefault`/etc. (same handlers Chain already uses — extracted so Chain's and Ticket's copies can never drift independently).
 - `OrderTicket.svelte`: restored the `loadOrderTemplates()` fetch on mount (needed for `_selectedTemplate`/`_defaultTemplate`/`_nonNoneTemplates` to resolve) but deliberately did **not** restore the old `_autoSelectTemplate()` call — when embedded, the shell's own side/scope-tracking `$effect` is the single owner of auto-selecting a default; running both would be two competing writers to the same bound value. Submit payload reverted to `templateId: _isCloseOrder ? null : templateId` (was the unconditional `null`).
 - The Bracket toggle (`<TemplateBar>`) now renders *inside* `OrderTicket.svelte` itself, on the same `.ot-chase-row` as CHASE/DRAFT, instead of at shell level — `_onBracketSelectDefault`/`_onBracketSelectNone`/`_onDraftToggleChange`/`_onBracketSelectTemplate` implement the mutual exclusion (Bracket ON turns Draft off and vice versa; both OFF is the normal rest state).
 - **Critical gotcha, same architecture class as the account-freeze bug above**: `OrderTicket` stays mounted with `display:none` (not `{#if}`-unmounted) while Chain is active, specifically so its margin-preflight effect keeps running. Once `templateId` became a real shared binding again, OrderTicket's own pre-existing side/symbol template re-validation effect (the 2026-06-22 incident fix — `$effect` watching `_side`/`_resolvedSymbol`, resetting a stale `templateId` on scope mismatch) and its close-order-clears-template effect were *also* still running while hidden behind the Chain tab — silently resetting the SHARED `_sharedTemplateId` out from under Chain's own auto-selection logic on every Chain-tab side/symbol change. Fixed by gating both effects on `if (suspended) return;` (the same convention the pre-existing margin-preflight effect already uses) — only the visually active tab may touch shared template state. The `<TemplateBar>` markup itself is also gated with `{#if !suspended && ...}` (not left to the ancestor's CSS `display:none` alone) — otherwise a second, invisible `.oes-tpl-button` existed in the DOM at all times whenever Chain was active, and any selector's `.first()` (tests, future code) could resolve to the wrong one.
 Invariant: when a component is kept mounted-but-hidden for background-effect reasons, every effect inside it that writes to *shared/bound* state must be gated on the same visibility flag — an effect reading only local state is safe to leave ungated, but one that writes to a value another visible component also owns is not. Tests: `e2e/order_ticket_template_toggle_regression.spec.js` (includes a network-interception test asserting a real `template_id` reaches `/api/orders/ticket` — confirmed to fail against the pre-fix severed code, the strongest guard for this exact class of bug).
+
+> **REMOVED — Bracket/Template/GTT (T3.1–T3.4, 2026-11).** Historical record only; do not
+> reintroduce without a new design decision.
 
 **Bracket default scope resolved one way on the Ticket tab; side-flip flash no longer claims a
 re-arm (2026-11-01; commit `68f889a1`)** — Three places decided which scope the Bracket default
@@ -1850,6 +1856,10 @@ explicit click.
 **Known gap —** the same 2026-11-01 bracket audit (backend bracket execution, frontend bracket UI, and
 the DSL where-filter) left further findings open and untriaged. This entry does not claim them fixed.
 
+> **REMOVED — Bracket/Template/GTT (T3.1–T3.4, 2026-11).** Historical record only; do not
+> reintroduce without a new design decision. Retired: the template resolve behind the
+> preview (`ticket_preview` is now a stub). Still live: `InstrumentsCacheMissError` typing.
+
 **Ticket preview degrades instead of returning a 500 — Bracket preview survives a cold MCX
 instruments cache (2026-11-02; commit `99bcf08b`)** — `POST /api/orders/ticket/preview`
 ([`orders.py:2730`](backend/api/routes/orders.py#L2730)) fires on every Chain-tab field change while a
@@ -1869,6 +1879,9 @@ loop in `ramboq_conn` ("ReactorNotRestartable"), which kept the cache cold for s
   partial write behind.
 - Invariant: a read-only preview never returns a raw 500 for a transient resolver failure. A real
   validation outcome still does.
+
+> **REMOVED — Bracket/Template/GTT (T3.1–T3.4, 2026-11).** Historical record only; do not
+> reintroduce without a new design decision. Still live: `InstrumentsCacheMissError` typing.
 
 **Decision record — a retry wrapper around the Ticket preview's template resolve was built, found
 unreachable, and removed; the degraded message now says "Recovering" (2026-11-02, uncommitted this
@@ -1893,6 +1906,9 @@ already retries a cache miss once and degrades to `AttachResult.errors` on its e
   bare-`ValueError` catches in the live, basket and chase placement paths still catch the subtype.
 - Invariant: a retry or recovery mechanism must be verified reachable on the real failure path it claims
   to protect before it ships. This one was not. It was removed rather than left as misleading dead code.
+
+> **REMOVED — Bracket/Template/GTT (T3.1–T3.4, 2026-11).** Historical record only; do not
+> reintroduce without a new design decision.
 
 **Chain live-wing confirmation badge — a Bracket wing that fires live shows on its strike cell
 (2026-11-02; commit `6fbbe205`)** — A Bracket wing/hedge leg is placed asynchronously, on parent
@@ -1933,6 +1949,9 @@ Positions. A read-only `chain-leg-badge-live` on the strike cell now shows it.
 - Invariant: a confirmed-live wing is shown read-only and never enters the staging array. The badge
   appears only for a wing row the backend actually created.
 
+> **REMOVED — Bracket/Template/GTT (T3.1–T3.4, 2026-11).** Historical record only; do not
+> reintroduce without a new design decision.
+
 **Chain Bracket scope change carries a Default forward and says so, instead of silently clearing
 (2026-11-02, uncommitted this session)** — The `_lastSideScope` effect in
 [SymbolPanel.svelte:1365](frontend/src/lib/SymbolPanel.svelte#L1365) re-resolves the armed Bracket on
@@ -1957,6 +1976,9 @@ every strike, CE/PE or side change. A Default-slot template that no longer fit t
   live-wing badge spec.
 - Invariant: a Chain-tab scope change never silently drops an armed Default. A named pick is never
   auto-changed.
+
+> **REMOVED — Bracket/Template/GTT (T3.1–T3.4, 2026-11).** Historical record only; do not
+> reintroduce without a new design decision.
 
 **Bracket status pill on the order card — Pending, Tmpl Hold, Active; one click releases a held exit
 (2026-11-02, uncommitted this session)** — A filled order's Bracket exit (TP/SL and wing) was not visible
@@ -2060,6 +2082,10 @@ replace (not merge with) the ATM row's marker when a row is both ATM and active.
   rather than ellipsis-clipping "Rejected/Cancelled".
 - Invariant: header overflow is absorbed by a shrinking child (AlgoTimestamp's scroll), never by
   wrapping the row. Button groups are always pinned and visible.
+
+> **REMOVED — Bracket/Template/GTT (T3.1–T3.4, 2026-11).** Historical record only; do not
+> reintroduce without a new design decision. Only the BRACKET tooltip is retired; the CHASE
+> and DRAFT tooltips remain live.
 
 **Order Ticket Chase/Bracket/Draft click-to-pin tooltips (2026-10-16, commit bd2f0946)** — Added small "(i)" InfoHint chips next to the CHASE/BRACKET/DRAFT labels in `SymbolPanel.svelte`, `TemplateBar.svelte`, and `OrderTicket.svelte`, separate from their own toggles so help-seeking clicks don't flip real order behavior. Chase tooltip displays per-tier wait times from `backend/api/routes/orders_helpers.py:_live_chase_config` (low=30s/30 attempts, med=20s/20 attempts, high=10s/10 attempts). Test: `frontend/e2e/order_ticket_chase_bracket_draft_tooltips.spec.js`.
 
@@ -2214,6 +2240,9 @@ commits `fa70a893`, `d53ad4c9`)** — Three linked defects in the Kill path. The
   terminal status while a chase still owns the row.
 - Deploy coupling: `fa70a893` requires `6ba6936e` (the `mark_order_killed` marker lives in `chase.py`).
   `d53ad4c9` pairs with `fa70a893` (the frontend `ok` contract). Ship them together.
+
+> **REMOVED — Bracket/Template/GTT (T3.1–T3.4, 2026-11).** Historical record only; do not
+> reintroduce without a new design decision.
 
 **Retry-attach holds its per-row lock across placement AND persist (2026-11-01; commit `85618c6b`)** —
 `/retry-template` used to release the per-row template-attach lock the instant
@@ -2900,6 +2929,9 @@ for equity. Applies to `/api/orders/ticket`, `/api/orders/basket`, and preview r
 **Option qty vs lot_size** — Kite ships MCX intraday fields in lots, NSE in contracts. 
 Double-check every multiplication. Has caused multi-lakh P&L distortion + 20× over-orders.
 
+> **REMOVED — Bracket/Template/GTT (T3.1–T3.4, 2026-11).** Historical record only; do not
+> reintroduce without a new design decision.
+
 **GTT layer also enforces translate_qty** — `apply_plan_live` in `template_attach.py` 
 must call `broker.translate_qty(exchange, raw_qty, lot_size)` for EVERY GTT leg AND 
 wing order before calling `broker.place_gtt` / `broker.place_order`. `place_gtt` in 
@@ -2918,6 +2950,9 @@ GTT layer has a synchronous G1 check at the top before any broker call. G2
 AlgoOrder + alert; chase loop uses `continue` so other positions proceed. 50-lot adapter
 ceiling in `kite.py:place_order` is bypassed when `intent="close"` — close orders of any
 size are allowed through; the ceiling only guards new open orders.
+
+> **REMOVED — Bracket/Template/GTT (T3.1–T3.4, 2026-11).** Historical record only; do not
+> reintroduce without a new design decision.
 
 **G1 also fires in `apply_plan_live` (GTT template layer)** — synchronous G1 check at 
 top of `apply_plan_live` verifies every GTT leg qty + wing qty against `plan.parent_lot_size` 
@@ -3051,6 +3086,10 @@ sends LOTS to `/orders/ticket/preview`, and plans bare-underlying templates agai
 contract. `/preflight` still accepts `paired_legs` for read-only API callers; that yields a netted
 informational verdict, never a placement gate. Invariant: a display must never disagree with
 enforcement, and the enforcement path is never loosened to match a display.
+
+> **REMOVED — Bracket/Template/GTT (T3.1–T3.4, 2026-11).** Historical record only; do not
+> reintroduce without a new design decision. Retired: its only caller (`apply_plan_live`) is
+> gone. The broker-layer `validate_gtt_exchange` method remains defined, with no live caller.
 
 **Groww GTT refusal in prod, then a live deploy-coupling regression on dev, fixed same day
 (commits `7183244b`, `0b935935`).** `RemoteBroker.validate_gtt_exchange`
@@ -3192,6 +3231,9 @@ stop ratchet, and order modify paths; all patches deployed together. Key invaria
   (`actions_live.py:_al_modify_resolve_qty`) instead of duplicating it —
   fails closed (400, broker never called) on resolution failure.
 
+> **REMOVED — Bracket/Template/GTT (T3.1–T3.4, 2026-11).** Historical record only; do not
+> reintroduce without a new design decision.
+
 **Template attach mode gate — paper/sim/replay fills never place real broker 
 orders (2026-09-30, commit 05c6f708)** — `_fire_template_attach_on_fill` in 
 `backend/api/routes/orders_place.py` is the ONE function that calls 
@@ -3219,6 +3261,9 @@ terminal (chase.py:243). Test: `backend/tests/test_template_attach_paper_mode_sa
 Invariant: `_fire_template_attach_on_fill` (and anything that could reach 
 `apply_plan_live`) must never run for a non-'live' AlgoOrder — 
 paper/sim/replay/shadow fills never place real broker orders.
+
+> **REMOVED — Bracket/Template/GTT (T3.1–T3.4, 2026-11).** Historical record only; do not
+> reintroduce without a new design decision.
 
 **Template and bracket attach hardening — retry lock, persist-failure hold, scale-out OCO, close gate,
 validation (2026-10-23; commits `df9d3189`, `f626457a`, `8e26a0b3`, `1d8622fb`, `91ba7923`, `7fd3eeba`,
@@ -3309,6 +3354,9 @@ path, grouped by mechanism. Each bullet names its own fix.
   SL. `f626457a` requires `8e26a0b3` (the `getattr` guard on the pending-hold check). `510e0a30` and
   `20ee0815` are independent. Ship the full range together.
 
+> **REMOVED — Bracket/Template/GTT (T3.1–T3.4, 2026-11).** Historical record only; do not
+> reintroduce without a new design decision.
+
 **Template 5's TP order type was MARKET, which Kite's GTT API always rejects — corrected on prod, data
 change only (2026-11-02, live incident)** — Order #1377 (CRUDEOIL26NOV9200PE, template 5 "Default Long
 Option", TP-only at 80%) had its TP exit stuck. The first suspect was the global
@@ -3326,6 +3374,9 @@ template 5's `tp_order_type` was `MARKET`. Kite's `place_gtt` rejects any MARKET
 - Invariant: a template's `tp_order_type` must be checked in both `order_templates` and its mirrored
   `Agent.bracket_config` row. The two can silently diverge if only one is edited directly. The live attach
   path reads only the mirror.
+
+> **REMOVED — Bracket/Template/GTT (T3.1–T3.4, 2026-11).** Historical record only; do not
+> reintroduce without a new design decision.
 
 **Template-exit hold label is "Pending", not "Held" (2026-11-02, uncommitted this session)** — "Held"
 already names the covered-call leg label in this app, and the hold gate's own status word collided with
@@ -3354,6 +3405,9 @@ and the `hold_json` column.
 - Invariant: operator-facing hold text reads "Pending". The DB kind stays `held`. The covered-call "Held"
   label is untouched.
 
+> **REMOVED — Bracket/Template/GTT (T3.1–T3.4, 2026-11).** Historical record only; do not
+> reintroduce without a new design decision.
+
 **Template-exit hold toast — "Pending" instead of "did not attach" for a correctly held exit (2026-11-02,
 uncommitted this session)** — A held exit and a genuinely failed attach used the same "did not attach"
 wording. A held exit is the normal state once an operator is expected to release it, so the wording was
@@ -3373,6 +3427,9 @@ misleading.
   hold state.
 - Invariant: a held-pending-release order never toasts as a failed attach.
 
+> **REMOVED — Bracket/Template/GTT (T3.1–T3.4, 2026-11).** Historical record only; do not
+> reintroduce without a new design decision.
+
 **Basket legs carry the per-order template-exit hold override (2026-11-02, uncommitted this session)** —
 Chain and basket submissions could only use the global `hold.template_exit_released` switch. The ticket
 route already threaded a per-order `hold_template_exit`, so basket was the gap.
@@ -3391,6 +3448,9 @@ route already threaded a per-order `hold_template_exit`, so basket was the gap.
 - Invariant: a basket leg stores its per-order hold value in the same `template_hold_override` column the
   ticket route uses.
 
+> **REMOVED — Bracket/Template/GTT (T3.1–T3.4, 2026-11).** Historical record only; do not
+> reintroduce without a new design decision.
+
 **Held Orders card already lists template-exit holds — a false lead, now pinned by a test (2026-11-02,
 uncommitted this session)** — An investigation suspected that `orders_held.py`'s list query returned only
 `status == 'HELD'` rows. That would miss template-exit holds, which leave the parent at `status='FILLED'`.
@@ -3401,6 +3461,9 @@ Two separate agents confirmed this via `git log -p --follow`.
   correct behaviour.
 - Invariant: before investigating a "held order missing from the card" report, check the list query's
   `or_` clause. The template-exit case already works.
+
+> **REMOVED — Bracket/Template/GTT (T3.1–T3.4, 2026-11).** Historical record only; do not
+> reintroduce without a new design decision.
 
 **Chain template scope and remembered preference (2026-09-30, commit b8bd1b7b)** —
 Two UI defects blocked option-specific template selection on Chain:
@@ -3930,7 +3993,7 @@ now caches + returns a `stale` flag; `/api/nav/by-account` masks `errors` for no
 | Account mask registry incl. numeric Dhan client_id | `backend/shared/helpers/utils.py:register_accounts(accounts, client_ids=)` |
 | Snapshot freshness check config / DSN | `scripts/check_stale_snapshots.py` (`yaml.safe_load`, `_build_dsn` quoting) |
 | Ticker idle state on non-trading days | `backend/api/background.py:_ticker_calendar_refresh_idle_status` + `frontend/src/lib/data/brokerHealthState.js:brokerAccountDisplayState` |
-| Closed-hours broker-call gating (trail-stop, OCO, order-poll sweeps) | `backend/api/background.py:is_any_segment_open_cached` (fails open) + `_resolve_market_status_today` (once-per-IST-day cache); call site `backend/api/algo/order_poll.py:_task_order_poll` |
+| Closed-hours broker-call gating (order-poll sweeps; the trail-stop/OCO tasks the label named were deleted in T3.2, bracket-removal) | `backend/api/background.py:is_any_segment_open_cached` (fails open) + `_resolve_market_status_today` (once-per-IST-day cache); call site `backend/api/algo/order_poll.py:_task_order_poll` |
 | Ticker nightly WS stop/restart, conn_service (DB-calendar driven: MCX close+1 min / next open) | `backend/brokers/service/app.py:_task_daily_ticker_cycle` (+ `_restart_ticker_for_new_day`) + `backend/brokers/service/calendar_gate.py:resolve_mcx_gate_bounds` / `ticker_quiet_window_now` (reads `exchange_schedule`) + `backend/brokers/kite_ticker.py:TickerManager.disconnect_keep_reactor` |
 | Postback fan-out | `backend/api/routes/orders.py:_postback_broadcast_fanout` |
 | Ticket placement | `backend/api/routes/orders_place.py:ticket_order_handler` |
@@ -3939,7 +4002,7 @@ now caches + returns a `stale` flag; `/api/nav/by-account` masks `errors` for no
 | Chart self-heal threshold | `/admin/settings` |
 | Backfill admin endpoint | `POST /api/admin/persistence/backfill` |
 | Backfill CLI | `scripts/persistence_mode.py` + `scripts/backfill_ohlcv.py` |
-| Perf dashboard | `frontend/src/routes/(algo)/admin/perf/+page.svelte` |
+| Perf dashboard | `frontend/src/routes/(algo)/admin/metrics/PerfRuntimeTab.svelte` (moved from `admin/perf/+page.svelte`; row corrected 2026-11, found stale during T3.5 doc cleanup, unrelated to Bracket) |
 | Virtual root display | `backend/api/algo/symbol_resolver.py` + `frontend/src/lib/data/rootOf.js` |
 | Underlying spot resolution | `frontend/src/lib/data/resolveUnderlying.js:resolveUnderlyingTradingsymbol` + `frontend/src/lib/data/underlyingSpotStore.svelte.js:getUnderlyingSpot` (derivatives Snapshot, NavStrip, and Pulse Exp P&L) |
 | MCX lot-size overrides | `backend/api/routes/instruments.py` |
@@ -3953,16 +4016,7 @@ now caches + returns a `stale` flag; `/api/nav/by-account` masks `errors` for no
 | Add audit snapshot | `docs/audits/AUDIT_<TOPIC>.md` |
 | Update ops runbook | `docs/deployment.md` |
 | Chase Kill / CANCEL_FAILED retry | `backend/api/routes/orders.py:kill_chase` + `chase.py:mark_order_killed` |
-| Template persist-failure hold (in-memory) | `orders_place.py:_TPL_ATTACH_PERSIST_PENDING` + `_opp_handle_persist_failure` |
-| Retry-attach per-row lock (placement + persist) | `orders.py:_rco_run_template_attach` (lock from `orders_place.py:_get_template_attach_lock`) |
-| Bracket default scope on Ticket tab | `frontend/src/lib/order/OrderTicket.svelte:_defaultTemplate` + `frontend/src/lib/SymbolPanel.svelte:_currentScope()` |
-| Ticket preview degraded response (no 500 on resolver failure) | `backend/api/routes/orders.py:ticket_preview` + `_rco_preview_degraded_message` |
-| Chain live-wing confirmation badge (Bracket wing fired live) | `frontend/src/lib/data/liveWingBadge.js:computeLiveWingState` + `liveWingTracker.svelte.js` + `OptionChainTab.svelte:_liveWingByKey` + `orderFillPoller.js:latestAlgoOrderRows` |
-| Bracket status pill on order card (Pending / Tmpl Hold / Active) | `frontend/src/lib/order/OrderCard.svelte:_bracketPillState` + `holdRecord.js:parseHold` + `templateAttachToast.js:isHeldPendingReleaseState` |
-| Chain Bracket scope-change carry-forward + flash | `frontend/src/lib/SymbolPanel.svelte` (`_lastSideScope` effect, `_flashBracketScopeChange`) |
-| Template-exit hold label / toast | `backend/api/algo/order_hold_gate.py` (`record_held_order`, `hold_template_exit`) + `OrderCard.svelte` + `templateAttachToast.js:noteHeldPendingRelease` |
 | Alert identity line + email subject ("Alert:" label) | `backend/shared/helpers/alert_utils.py:dispatch_payload` (merged `alert_line`) + `_email_alert_body` |
-| Scale-out ladder OCO pairing | `template_attach.py:_ta_detect_scale_sl_group` + `background.py:_oco_process_group_entry` |
 | MCX real per-contract expiry (live freeze filter) | `expiry_freeze.py:_mcx_future_real_expiry` |
 | generic_notice body (plain text, no origin line — see "Alert message format") | `event_agents.py:_render_deploy_sync` (pass-through) + producer `msg` in `background.py` |
 | Alert channel set for a seeded agent | `backend/api/algo/alert_routing.py` (`_PER_SLUG_OVERRIDES`, `_TIER_DEFAULTS`, `resolve_channels`) — not the agent's spec |
