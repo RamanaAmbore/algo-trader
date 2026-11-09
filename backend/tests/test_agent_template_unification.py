@@ -275,52 +275,6 @@ async def test_seed_agent_templates_inserts_system_rows_directly(sqlite_env):
             assert row.events == []
 
 
-async def test_seed_agent_templates_refreshes_existing_system_row_body(sqlite_env):
-    """Re-seeding must overwrite a system row's body/description from
-    code (operators clone to a custom template for a permanent change)."""
-    factory, _Agent = sqlite_env
-    from sqlalchemy import select
-    from backend.api.algo.template_registry import seed_agent_templates
-
-    await seed_agent_templates()
-
-    async with factory() as s:
-        row = (await s.execute(
-            select(_Agent).where(_Agent.slug == "notify-log-only")
-        )).scalar_one()
-        row.events = [{"channel": "telegram", "enabled": True}]  # operator "edit"
-        await s.commit()
-
-    await seed_agent_templates()   # re-seed — must overwrite back
-
-    async with factory() as s:
-        row = (await s.execute(
-            select(_Agent).where(_Agent.slug == "notify-log-only")
-        )).scalar_one()
-        assert row.events == [{"channel": "log", "enabled": True}]
-
-
-async def test_seed_agent_templates_skips_slug_owned_by_non_template_agent(sqlite_env):
-    factory, _Agent = sqlite_env
-    from sqlalchemy import select
-    from backend.api.algo.template_registry import seed_agent_templates
-
-    async with factory() as s:
-        s.add(_Agent(
-            slug="notify-log-only", name="A real cycle agent", kind="cycle",
-            is_system=False, status="active", conditions={}, events=[], actions=[],
-        ))
-        await s.commit()
-
-    await seed_agent_templates()   # must not raise, must not clobber the cycle row
-
-    async with factory() as s:
-        row = (await s.execute(
-            select(_Agent).where(_Agent.slug == "notify-log-only")
-        )).scalar_one()
-        assert row.kind == "cycle"   # untouched
-
-
 # ═══════════════════════════════════════════════════════════════════════
 # 4 — run_cycle() / event_agents.py loaders exclude kind='template'
 # ═══════════════════════════════════════════════════════════════════════
@@ -617,18 +571,14 @@ async def test_retirement_leaves_table_in_place_on_slug_collision(legacy_fragmen
 
 async def test_retirement_is_idempotent_across_two_calls(legacy_fragments_table):
     """Re-running after a successful drop (table already gone) must not
-    raise, and a row already matched by a prior partial boot (e.g. a
-    system Template `seed_agent_templates()` already seeded directly)
-    must not be re-inserted or duplicated."""
+    raise, and a legacy row already backfilled by the first call must
+    not be re-inserted or duplicated on the second."""
     factory, _Agent, table = legacy_fragments_table
     from sqlalchemy import select
-    from backend.api.algo.template_registry import (
-        migrate_and_retire_agent_fragments, seed_agent_templates,
-    )
+    from backend.api.algo.template_registry import migrate_and_retire_agent_fragments
 
-    await seed_agent_templates()   # seeds system Templates as Agent rows directly
     await _insert_legacy_row(
-        factory, table, kind="notify", name="notify-log-only",   # same slug as a seeded system row
+        factory, table, kind="notify", name="notify-log-only",
         body=[{"channel": "log", "enabled": True}], is_system=True,
     )
 

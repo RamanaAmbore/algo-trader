@@ -52,121 +52,19 @@ logger = get_logger(__name__)
 #  SYSTEM_AGENT_TEMPLATES — seeded on every boot
 # ═══════════════════════════════════════════════════════════════════════════
 #
-# Two notify fragments cover the patterns repeated across BUILTIN_AGENTS:
-#   1. Critical trio  — telegram + email + log. Used by every loss-* and
-#                       expiry-* agent. Editing this row (e.g. to add SMS)
-#                       updates every consumer in one step.
-#   2. Log only       — quietest channel for diagnostic agents that shouldn't
-#                       spam the operator. Reserved for future use.
-#
-# These don't replace `BUILTIN_AGENT.events` (which still carries the
-# legacy inline shape for backward compat); they GIVE OPERATORS a saved
-# reference they can swap in when authoring custom agents via the UI.
+# Empty by operator decision (2026-11, orphaned-agent cleanup) — the
+# original 4 notify + 3 condition fragments (notify-critical-trio,
+# notify-log-only, notify-telegram-only, notify-ntfy-critical,
+# loss-positions-acct-default, loss-positions-total-default,
+# near-market-close-30m) were a reusable `$ref` catalog with zero live
+# agents ever referencing any of them. Removed from both this seed list
+# and the DB (prod + dev) on the operator's explicit call, after
+# confirming the zero-reference count via a live scan of every other
+# agent's conditions/events. `seed_agent_templates()` below is a no-op
+# with this list empty — kept rather than deleted, so a future operator
+# can reintroduce the catalog by simply adding entries back.
 
-SYSTEM_AGENT_TEMPLATES: list[dict] = [
-    {
-        "kind": "notify",
-        "name": "notify-critical-trio",
-        "description": (
-            "Telegram + email + log + in-app popup. The default for any "
-            "critical-tier agent — every channel an operator actually "
-            "monitors. Kept under the historical 'trio' name even though "
-            "it now ships four channels; renaming would orphan every "
-            "agent's $ref. Edit once to add/remove a channel across every "
-            "consumer."
-        ),
-        "body": [
-            {"channel": "telegram", "enabled": True},
-            {"channel": "email",    "enabled": True},
-            {"channel": "log",      "enabled": True},
-            {"channel": "inapp",    "enabled": True},
-        ],
-    },
-    {
-        "kind": "notify",
-        "name": "notify-log-only",
-        "description": (
-            "Just the log file. Use for diagnostic agents that shouldn't "
-            "page the operator (rate-limit probes, status snapshots)."
-        ),
-        "body": [
-            {"channel": "log", "enabled": True},
-        ],
-    },
-    {
-        "kind": "notify",
-        "name": "notify-telegram-only",
-        "description": (
-            "Telegram only. Use when an alert should reach the operator's "
-            "phone but doesn't need to clutter the email thread."
-        ),
-        "body": [
-            {"channel": "telegram", "enabled": True},
-        ],
-    },
-    {
-        "kind": "notify",
-        "name": "notify-ntfy-critical",
-        "description": "Telegram + ntfy + log. For critical alerts that must wake the operator.",
-        "body": [
-            {"channel": "telegram", "enabled": True},
-            {"channel": "ntfy",     "enabled": True},
-            {"channel": "log",      "enabled": True},
-        ],
-    },
-
-    # ── Condition fragments (Stage 2) ────────────────────────────────────
-    # These mirror the building blocks the loss-* and expiry-* agents
-    # use. Seeded so the LLM / operator can compose new agents that
-    # reference proven thresholds rather than re-typing them.
-    {
-        "kind": "condition",
-        "name": "loss-positions-acct-default",
-        "description": (
-            "Per-account positions threshold set used by loss-positions-acct: "
-            "pnl% ≤ -2 OR pnl ≤ -₹30k OR pnl_rate ≤ -₹3k/min OR "
-            "pnl_rate% ≤ -0.25%/min. Reference from a new agent that "
-            "wants the same trigger profile against a different "
-            "notify/action set."
-        ),
-        "body": {"any": [
-            {"metric": "pnl_pct",      "scope": "positions.any_acct", "op": "<=", "value": -2.0},
-            {"metric": "pnl",          "scope": "positions.any_acct", "op": "<=", "value": -30000},
-            {"metric": "pnl_rate_abs", "scope": "positions.any_acct", "op": "<=", "value": -3000},
-            {"metric": "pnl_rate_pct", "scope": "positions.any_acct", "op": "<=", "value": -0.25},
-        ]},
-    },
-    {
-        "kind": "condition",
-        "name": "loss-positions-total-default",
-        "description": (
-            "Book-wide positions threshold set: total pnl% ≤ -2 OR "
-            "pnl ≤ -₹50k OR pnl_rate ≤ -₹6k/min OR rate% ≤ -0.25%/min. "
-            "Same shape as loss-positions-total."
-        ),
-        "body": {"any": [
-            {"metric": "pnl_pct",      "scope": "positions.total", "op": "<=", "value": -2.0},
-            {"metric": "pnl",          "scope": "positions.total", "op": "<=", "value": -50000},
-            {"metric": "pnl_rate_abs", "scope": "positions.total", "op": "<=", "value": -6000},
-            {"metric": "pnl_rate_pct", "scope": "positions.total", "op": "<=", "value": -0.25},
-        ]},
-    },
-    {
-        "kind": "condition",
-        "name": "near-market-close-30m",
-        "description": (
-            "True within the last 30 minutes of the nearest market segment "
-            "close. Useful as a guard on auto-close agents that should "
-            "only fire near close."
-        ),
-        "body": {
-            "metric": "minutes_until_close",
-            "scope":  "positions.total",
-            "op":     "<=",
-            "value":  30,
-        },
-    },
-]
+SYSTEM_AGENT_TEMPLATES: list[dict] = []
 
 
 # ═══════════════════════════════════════════════════════════════════════════
