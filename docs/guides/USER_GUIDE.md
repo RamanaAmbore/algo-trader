@@ -485,7 +485,7 @@ If you submit an order with chase enabled and the exchange is already closed at 
 
 **Behaviour at market close mid-chase**: If a chase is already in progress when the exchange closes (e.g., an order placed at 3:28 PM and still chasing at 3:31 PM), the chase will encounter broker rejections and abort after 3 consecutive errors. The position is left flat; the operator receives an alert.
 
-**Partial fills** — when the broker fills part of your order and you chase the residual, the row's `detail` updates to `PARTIAL 60/100 @ ₹1234.50 (chasing residual 40)`. The exit GTT (TP/SL) sized when the rest fills correctly reflects only the actually-filled portion, not the original ask. (Pre-Sprint-B the chase ignored partial fills entirely; the UNFILLED give-up showed the original quantity even when 60 % had traded.)
+**Partial fills** — when the broker fills part of your order and you chase the residual, the row's `detail` updates to `PARTIAL 60/100 @ ₹1234.50 (chasing residual 40)`. If the order carries a take-profit target, the single take-profit order armed once it fills is sized to the actually-filled portion, not the original ask — there's no stop-loss counterpart. (Pre-Sprint-B the chase ignored partial fills entirely; the UNFILLED give-up showed the original quantity even when 60 % had traded.)
 
 **MCX unit handling** — Kite reports MCX `filled_quantity` in lots while everything else in the chase tracks contracts. The chase converts back automatically; you don't see this — pre-Sprint-D it caused phantom partial-fill loops on every MCX order.
 

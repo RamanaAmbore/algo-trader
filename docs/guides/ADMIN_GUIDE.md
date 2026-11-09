@@ -534,16 +534,15 @@ SHADOW and REPLAY are separate opt-ins on top.
 ### Global Switches — master controls via PATCH
 
 The **Global Switches** panel sits at the top of `/admin/settings` and handles
-six global switches via `PATCH /api/admin/global-switches` (audit-logged,
+five global switches via `PATCH /api/admin/global-switches` (audit-logged,
 transactional with rollback on audit failure). Guards: `view_settings_readonly`
-(read-only access to all six), `manage_settings` (write access).
+(read-only access to all five), `manage_settings` (write access).
 
 | Switch | Type | Purpose | Warn |
 |---|---|---|---|
 | `paper_trading_mode` | BOOL | When True, every broker action (across all accounts) goes to paper instead of live. Identical to the navbar PAPER/LIVE toggle; this is just an alternate UI for the same setting. | Yes — danger-confirm modal with "⚠ Affects every account, prod-wide" |
 | `default_agent_trade_mode` | SELECT (paper / live) | Default trade mode for newly-created agents: when an agent is created with no explicit `trade_mode`, this value is applied once at creation time and frozen. Changing this does NOT retroactively change existing agents. | No |
 | `expiry_close_hold_enabled` | BOOL chip + button | Hold expiry-close orders for review (ON/HELD) or let them fire automatically (OFF/AUTO). ON = safe default. | Yes — only when flipping to AUTO; "Disable expiry-close hold?" dialog with "⚠ Expiry closes will fire automatically with no review" |
-| `template_exit_hold_enabled` | BOOL chip + button | Hold Bracket/template exit GTTs after fill (ON/HELD) or attach them automatically (OFF/AUTO). ON = safe default. | Yes — only when flipping to AUTO; "Disable template exit hold?" dialog with "⚠ Template exits will attach automatically with no review" |
 | `expiry_close_lead_minutes_mcx` | INT (0–180) | Minutes before MCX close at which an expiry-close hold is created. Default: 30. Client validates integers only; invalid/empty reverts with toast. | No |
 | `expiry_close_lead_minutes_nfo` | INT (0–120) | Minutes before NFO close at which an expiry-close hold is created. Default: 15. Client validates integers only; invalid/empty reverts with toast. | No |
 
@@ -554,10 +553,10 @@ DB row; editing either one updates the other. Note: per-agent overrides (the
 nullable `trade_mode` column on each `Agent` row) remain editable on
 `/automation`; the Global Switch controls the default applied at creation time.
 
-The hold gates (`expiry_close_hold_enabled` and `template_exit_hold_enabled`)
-map to underlying storage keys with **inverted** polarity: `hold.expiry_close_released`
-and `hold.template_exit_released` (True = released/not held). When the operator
-sees `expiry_close_hold_enabled=ON` (HELD), the storage row has `released=false`.
+The hold gate (`expiry_close_hold_enabled`) maps to an underlying storage key
+with **inverted** polarity: `hold.expiry_close_released` (True = released/not
+held). When the operator sees `expiry_close_hold_enabled=ON` (HELD), the
+storage row has `released=false`.
 After any Global Switches save, the generic settings grid below is refreshed so
 the two displays never show stale/divergent values.
 
@@ -994,11 +993,12 @@ opens. On a normal day that is 23:31 IST to 08:00 IST. The times come from the e
 not from fixed constants, so an alternate-hours day (for example a DST-shifted MCX close) moves the
 window with it. Two changes apply from 2026-10-28, and neither needs any configuration.
 
-- **Quieter background loops.** The order-reconciliation sweep, the trailing-stop poller, the OCO
-  pair watcher and the funds refresh no longer call the broker overnight. Each one checks the
-  market-status cache first and skips its broker call while every segment is closed. A closed
-  market means no broker traffic from those loops overnight. Funds, positions and order books keep
-  showing the last value fetched before 23:31.
+- **Quieter background loops.** The order-reconciliation sweep and the funds refresh no longer
+  call the broker overnight — each checks the market-status cache first and skips its broker call
+  while every segment is closed. Funds, positions and order books keep showing the last value
+  fetched before 23:31. (The trailing-stop poller and OCO pair watcher named in an earlier version
+  of this note were removed entirely as part of the Bracket/Template/GTT removal, 2026-11 — not
+  merely quieted overnight.)
 - **The ticker is cleanly cycled, not left idle.** The real Kite WebSocket inside the broker
   connection service disconnects just after the MCX close and reconnects at the next session open
   with that day's token. The health badge now goes to its idle state at the same moment, when the
@@ -1874,7 +1874,8 @@ change a row.
   book, cancel any resting order by hand, then let the row resolve.
 - **Late full fill at exhaustion (2026-10-23, commit `3f4392e4`).** If a chase gives up or is
   stuck-aborted and the final read shows the order fully filled, the row is recorded as FILLED. It
-  is not left as UNFILLED. Template exits and auto-TP fire as for any fill.
+  is not left as UNFILLED. The legacy single-target take-profit
+  ([`_arm_take_profit()`](backend/api/routes/orders_place.py#L669)) arms as for any other fill.
 - **Confirm-timeout is not a broker rejection (2026-10-23, commit `d6632590`).** If the ticket's
   15s confirm window expires while the order is still placing, the circuit breaker is not tripped.
   The order is still killed by the abandonment path, so check the order's row.
