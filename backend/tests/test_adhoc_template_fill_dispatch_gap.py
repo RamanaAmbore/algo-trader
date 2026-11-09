@@ -15,9 +15,13 @@ that removal:
     against template_overrides_json.
   - _chase_snapshot_algo_row's snapshot of template_overrides_json
     (feeds the auto-TP shim's exclusion check above).
-  - _build_overrides_json (orders_helpers.py) — the override-JSON
-    serializer, including the tp_order_type-alone-does-not-persist
-    guard.
+
+Bracket/Template-GTT removal, T3.2 (2026-11): _build_overrides_json
+(orders_helpers.py) — the override-JSON serializer this file's own
+TestTpOrderTypeOverridePersistence class used to cover, including the
+tp_order_type-alone-does-not-persist guard — was itself deleted in this
+round, along with the override fields it read from TicketOrderRequest.
+That class is removed below with it.
 """
 from __future__ import annotations
 
@@ -139,45 +143,8 @@ class TestChaseLegacyAutoTpAndSnapshot:
         snap = _chase_snapshot_algo_row(row, "bo-1")
         assert snap["template_overrides_json"] is None
 
-
-class TestTpOrderTypeOverridePersistence:
-    """orders_helpers._build_overrides_json — generic override-JSON
-    serializer, unaffected by the Bracket/Template-GTT removal."""
-
-    @staticmethod
-    def _req(**kw):
-        from backend.api.schemas import TicketOrderRequest
-        base = dict(
-            mode="live", side="BUY", tradingsymbol="RELIANCE",
-            quantity=10, exchange="NSE",
-        )
-        base.update(kw)
-        return TicketOrderRequest(**base)
-
-    def test_tp_order_type_alone_does_not_persist_as_an_override(self):
-        """Regression guard: tp_order_type_override with NO tp_pct_override
-        (and no other TP/SL/wing override) must NOT make
-        template_overrides_json non-empty — tp_order_type only ever
-        MODIFIES an existing TP leg, it never creates one
-        (`has_any_override` deliberately excludes it). Without this
-        guard, a ticket combining the legacy v1 `target_pct` field with
-        only tp_order_type_override would persist a non-empty override
-        JSON that (a) suppresses the legacy single-TP shim and (b) the
-        ad-hoc path still builds nothing for — silently dropping the
-        take-profit that would otherwise have armed at `target_pct`."""
-        from backend.api.routes.orders_helpers import _build_overrides_json
-
-        req = self._req(tp_order_type_override="MARKET")
-        assert _build_overrides_json(req) is None
-
-    def test_tp_order_type_with_tp_pct_does_persist(self):
-        """Sanity complement to the guard above — once a real TP-defining
-        override is present too, tp_order_type DOES persist alongside it."""
-        import json
-        from backend.api.routes.orders_helpers import _build_overrides_json
-
-        req = self._req(tp_pct_override=20.0, tp_order_type_override="MARKET")
-        payload = json.loads(_build_overrides_json(req))
-        assert payload["tp_order_type"] == "MARKET"
-        assert payload["tp_pct"] == 20.0
+# `TestTpOrderTypeOverridePersistence` removed (Bracket/Template-GTT
+# removal, T3.2, 2026-11) — it covered `orders_helpers._build_overrides_
+# json` and `TicketOrderRequest.tp_order_type_override`/`tp_pct_override`,
+# both deleted in this round.
 

@@ -25,15 +25,12 @@ class TestOrderLifecycleGapFixes:
             "agent_trigger must be in VALID_KINDS for order lifecycle gap fix"
         )
 
-    def test_oco_pair_poll_default_is_5s(self):
-        """Test 2: Verify OCO pair watcher uses 5 as default (not 15)."""
-        import backend.api.background as bg
-
-        src = inspect.getsource(bg)
-        # The default must be changed from 15 to 5
-        assert 'get_int("templates.oco_pair_poll_seconds", 5)' in src, (
-            "OCO pair poll default must be 5 seconds, not 15"
-        )
+    # `test_oco_pair_poll_default_is_5s` (Test 2: OCO pair watcher's
+    # own poll-interval default-value bugfix) removed — Bracket/
+    # Template-GTT removal (T3.2, 2026-11) deleted `_task_oco_pair_
+    # watcher` entirely, along with every reader of
+    # `templates.oco_pair_poll_seconds`. There is no remaining
+    # default-value behaviour to verify.
 
     def test_open_order_watchdog_registered(self):
         """Test 3: Verify _task_open_order_watchdog exists and is registered."""

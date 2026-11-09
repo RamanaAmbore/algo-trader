@@ -635,15 +635,6 @@ class SimDriver:
             on_event=self._forward_chase_event,
         )
 
-        # GTT book — tracks template-driven take-profit / stop-loss
-        # triggers. Per-tick crossing check fires the matched leg
-        # through the same PaperTradeEngine above. Reset on every
-        # start() so a new run begins clean. The trigger handler
-        # closes over `self` so it can read positions + dispatch
-        # follow-on orders without round-tripping through globals.
-        from backend.api.algo.sim.gtt_book import SimGttBook
-        self._gtt_book = SimGttBook(on_trigger=self._on_gtt_trigger)
-
         # Recording — flipped on at start() when record_mode=True.
         # Buffer + metadata reset on every start() so a fresh run begins
         # with no inherited events. Stayed Out-of-init means a stop()
@@ -753,7 +744,6 @@ class SimDriver:
             "underlyings":             dict(self._underlyings),
             "inputs":                  list(self.inputs),
             "accounts":                list(self.accounts),
-            "gtt_book":                self._gtt_book.snapshot(),
         }
 
     @staticmethod
@@ -971,24 +961,18 @@ class SimDriver:
         seed_mode: str,
     ) -> None:
         """
-        Initialise per-run recording state and wire the GTT book hook.
+        Initialise per-run recording state.
         Reads self.started_at and self.rate_ms — must be called after
         _start_resolve_run_params.
         """
-        # Recording — fresh buffer for this run. If record_mode is on
-        # we wire SimGttBook's on_record hook to append into _recording_events
-        # for the lifetime of this run; on stop() the buffer flushes to
-        # sim_recordings. Recording is per-run state: it never carries
-        # across stop()→start() boundaries.
+        # Recording — fresh buffer for this run; on stop() the buffer
+        # flushes to sim_recordings. Recording is per-run state: it
+        # never carries across stop()→start() boundaries.
         self._recording_active:    bool = bool(record_mode)
         self._recording_label:     str  = (recording_label or "").strip()[:160]
         self._recording_owner_id:  int | None = recording_owner_user_id
         self._recording_events:    list[dict] = []
         self._recording_started_at = self.started_at if self._recording_active else None
-        # Re-wire the GTT book's on_record to point at our buffer. When
-        # record_mode is off we leave it as a no-op so the book's per-event
-        # callback stays cheap.
-        self._gtt_book._on_record = self._record if self._recording_active else None
         if self._recording_active:
             self._record("sim_start", {
                 "scenario":  scenario_slug,
@@ -1161,8 +1145,6 @@ class SimDriver:
         self.scenario      = scen
         self.seed_mode     = seed_mode
         self._paper.reset()
-        # Wipe the GTT book — a fresh sim run starts with no triggers.
-        self._gtt_book.reset()
 
         # Resolve run params first — recording setup reads self.started_at
         # and self.rate_ms which are set here.
@@ -1903,7 +1885,6 @@ class SimDriver:
                 for c in (changes or [])
             ],
         })
-        self._check_sim_gtts()
         self._paper.step()
         self._check_auto_complete()
 
@@ -2594,9 +2575,7 @@ class SimDriver:
         when not recording so the per-event cost stays at one bool check.
 
         Called from:
-          - SimGttBook lifecycle (placed / triggered / cancelled / expired)
           - SimDriver._apply_next_tick (every tick)
-          - _on_gtt_trigger (when a GTT dispatches a leg)
           - _forward_chase_event (when chase fills / unfills / modifies)
           - external hooks for agent fires + actions (added in Phase 2c)
 
@@ -2613,85 +2592,12 @@ class SimDriver:
             "payload": payload,
         })
 
-    # ── Sim GTT book — template-driven TP / SL triggers ───────────────
-
-    def place_sim_gtt(self, **kwargs) -> dict:
-        """Thin facade over SimGttBook.place — exposed at the SimDriver
-        level so route handlers + the OrderTicket fan-out path don't
-        need to reach into the book directly. Returns the new GTT as
-        a dict (matches the wire shape /api/simulator/gtt/* returns)."""
-        gtt = self._gtt_book.place(**kwargs)
-        return gtt.to_dict()
-
-    def cancel_sim_gtt(self, gtt_id: str, reason: str = "operator") -> dict | None:
-        gtt = self._gtt_book.cancel(gtt_id, reason=reason)
-        return gtt.to_dict() if gtt else None
-
-    def list_sim_gtts(self) -> list[dict]:
-        return [g.to_dict() for g in self._gtt_book.all_()]
-
-    def _check_sim_gtts(self) -> None:
-        """Build the per-tick LTP map and ask the book which GTTs
-        crossed. Called from `_apply_next_tick` AFTER positions
-        re-price but BEFORE the chase loop steps, so a newly-triggered
-        leg enters chase immediately on the same tick."""
-        if not self._gtt_book.all_active():
-            return
-        ltp_by_symbol: dict[tuple[str, str], float] = {}
-        for row in self._positions_rows:
-            acct = str(row.get("account") or "")
-            sym  = str(row.get("tradingsymbol") or "")
-            ltp  = row.get("last_price")
-            if not sym or ltp is None:
-                continue
-            ltp_by_symbol[(acct, sym)] = float(ltp)
-        self._gtt_book.check_triggers(ltp_by_symbol)
-
-    def _on_gtt_trigger(self, gtt, leg_index: int) -> None:
-        """SimGttBook.on_trigger callback — dispatch the matched leg
-        through PaperTradeEngine. The leg dict carries Kite-shape
-        order fields (transaction_type, quantity, price, order_type,
-        product). We wrap it into the AlgoOrder shape `register_open_order`
-        expects + persist a sim AlgoOrder row so the rest of the
-        engine surface (UnifiedLog, chase pills, agents) sees it.
-
-        Errors are logged but never re-raised — a failed dispatch
-        leaves the GTT in 'triggered' status without an associated
-        chase order; the operator can re-fire from the UI by placing
-        a fresh order manually. The book deliberately doesn't
-        re-arm the GTT after a failed dispatch — we don't want a
-        partial fill to silently loop a trigger.
-        """
-        leg = gtt.orders[leg_index]
-        from datetime import datetime as _dt, timezone as _tz
-        # Compose an AlgoOrder dict matching the existing `_sim_paper_trade`
-        # writer's shape. The PaperTradeEngine picks up the chase from here.
-        order_dict = {
-            "account":          gtt.account,
-            "symbol":           gtt.tradingsymbol,
-            "exchange":         gtt.exchange,
-            "transaction_type": str(leg.get("transaction_type") or "BUY"),
-            "quantity":         int(leg.get("quantity") or 0),
-            "initial_price":    float(leg.get("price") or gtt.last_seen_ltp or 0.0),
-            "status":           "OPEN",
-            "mode":             "sim",
-            "engine":           "sim",
-            "detail":           (
-                f"[SIM-GTT] {gtt.gtt_id} → {leg.get('transaction_type')} "
-                f"{leg.get('quantity')} {gtt.tradingsymbol} @ ₹"
-                f"{float(leg.get('price') or gtt.last_seen_ltp):.2f}"
-                + (f" (template #{gtt.template_id})" if gtt.template_id else "")
-            ),
-            "created_at":       _dt.now(_tz.utc),
-            "attempts":         0,
-            "broker_order_id":  gtt.gtt_id,
-        }
-        try:
-            self._paper.register_open_order(order_dict)
-        except Exception as e:
-            logger.error(
-                f"[SIM-GTT] dispatch failed for {gtt.gtt_id} leg={leg_index}: {e}"
-            )
+    # `place_sim_gtt`/`cancel_sim_gtt`/`list_sim_gtts`/`_check_sim_gtts`/
+    # `_on_gtt_trigger` removed (Bracket/Template-GTT removal, T3.2,
+    # 2026-11) — these were the SimDriver-level facade over
+    # `backend.api.algo.sim.gtt_book.SimGttBook`, deleted in the same
+    # sub-sprint. The template-attach fan-out that populated the book
+    # was already removed (T3.1); nothing placed a sim GTT any more.
 
     # ── Paper-trade chase engine (delegated to PaperTradeEngine) ─────
 

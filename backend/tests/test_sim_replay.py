@@ -6,9 +6,10 @@ re-emits each event into the SimDriver's display buffers. Tests fake
 the recording payload to avoid DB writes and exercise:
 
   • snapshot shape (active/cursor/progress/speed/paused)
-  • event projection — gtt_placed/gtt_triggered/gtt_cancelled feed
-    SimGttBook so the operator's UI sees the same arc as the original
   • tick-log entries land in SimDriver._tick_log with the REPLAY: tag
+  • a gtt_* event kind (pre-existing recording from before the Bracket/
+    Template-GTT removal) is tolerated, not projected anywhere, and
+    never crashes the replay loop
   • cursor advances per _emit_one call
   • _run_loop terminates on cursor == total_events
 """
@@ -30,12 +31,11 @@ def replay():
 
 @pytest.fixture
 def sim_clean():
-    """Reset the SimDriver singleton's display buffers + GTT book
-    before each test so projections write into a clean slate."""
+    """Reset the SimDriver singleton's display buffers before each test
+    so projections write into a clean slate."""
     from backend.api.algo.sim.driver import SimDriver
     sim = SimDriver.instance()
     sim._tick_log.clear()
-    sim._gtt_book.reset()
     sim._paper.reset()
     sim._price_history.clear()
     sim._underlying_history.clear()
@@ -60,14 +60,19 @@ def test_pause_resume_no_op_when_inactive(replay):
 
 
 @pytest.mark.asyncio
-async def test_emit_one_projects_gtt_placed(replay, sim_clean):
-    """A gtt_placed event in the recording should land in SimGttBook
-    so the operator's UI shows the GTT row materialise during replay."""
+async def test_emit_one_tolerates_legacy_gtt_event_kinds(replay, sim_clean):
+    """Bracket/Template-GTT removal (T3.2, 2026-11) deleted the GTT-book
+    projection (`_replay_apply_gtt_event` et al.) that used to fire for
+    `gtt_placed`/`gtt_cancelled`/`gtt_triggered` recording events. A
+    `SimRecording` made before this removal that still carries one of
+    these kinds must not crash the replay loop — it is simply not
+    projected anywhere beyond the ordinary tick_log entry every event
+    already gets."""
     replay.active = True
     replay.events = [{
         "t": 0.0, "kind": "gtt_placed",
         "payload": {
-            "gtt_id": "sim-gtt-000001",   # placeholder; book assigns its own
+            "gtt_id": "sim-gtt-000001",
             "account": "ZG0001",
             "tradingsymbol": "NIFTY26JUNFUT",
             "exchange": "NFO",
@@ -81,56 +86,12 @@ async def test_emit_one_projects_gtt_placed(replay, sim_clean):
     replay.recording_id = 1
     replay.recording_label = "test"
 
-    await replay._emit_one()
+    await replay._emit_one()  # must not raise
 
     assert replay.cursor == 1
-    # GTT landed in the book.
-    assert len(sim_clean._gtt_book.all_()) == 1
-    # And a tick-log entry tagged REPLAY:* lands in SimDriver._tick_log
-    # so the Simulator tab shows the replay stream.
     assert sim_clean._tick_log
     assert "REPLAY:" in sim_clean._tick_log[-1]["scenario"]
-
-
-@pytest.mark.asyncio
-async def test_emit_one_projects_gtt_cancelled(replay, sim_clean):
-    # Seed a GTT first so the cancel has something to act on.
-    placed = sim_clean._gtt_book.place(
-        account="A", tradingsymbol="X", exchange="NSE",
-        trigger_type="single", trigger_values=[100.0],
-        orders=[{"transaction_type": "SELL", "quantity": 1, "price": 100.0}],
-        last_price=95.0,
-    )
-    replay.active = True
-    replay.events = [{
-        "t": 0.0, "kind": "gtt_cancelled",
-        "payload": {"gtt_id": placed.gtt_id, "reason": "replay-test"},
-    }]
-    replay.total_events = 1
-    await replay._emit_one()
-    # The book flipped the GTT to cancelled.
-    from backend.api.algo.sim.gtt_book import GTT_STATUS_CANCELLED
-    assert placed.status == GTT_STATUS_CANCELLED
-
-
-@pytest.mark.asyncio
-async def test_emit_one_projects_gtt_triggered(replay, sim_clean):
-    placed = sim_clean._gtt_book.place(
-        account="A", tradingsymbol="X", exchange="NSE",
-        trigger_type="single", trigger_values=[100.0],
-        orders=[{"transaction_type": "SELL", "quantity": 1, "price": 100.0}],
-        last_price=95.0,
-    )
-    replay.active = True
-    replay.events = [{
-        "t": 0.0, "kind": "gtt_triggered",
-        "payload": {"gtt_id": placed.gtt_id, "leg_index": 0},
-    }]
-    replay.total_events = 1
-    await replay._emit_one()
-    from backend.api.algo.sim.gtt_book import GTT_STATUS_TRIGGERED
-    assert placed.status == GTT_STATUS_TRIGGERED
-    assert placed.triggered_leg_index == 0
+    assert sim_clean._tick_log[-1]["kind"] == "gtt_placed"
 
 
 @pytest.mark.asyncio

@@ -28,8 +28,6 @@ def driver():
     d._recording_active = True
     d._recording_started_at = datetime.now()
     d._recording_events = []
-    # Wire the GTT book's recorder too — matches what start() does.
-    d._gtt_book._on_record = d._record
     return d
 
 
@@ -71,25 +69,6 @@ def test_record_payload_is_serialisable(driver):
     payload = driver._recording_events[0]["payload"]
     json.dumps(payload)  # raises if non-serialisable
 
-
-def test_gtt_book_lifecycle_appends_events(driver):
-    """The GTT book's on_record hook is wired to the driver's _record
-    in our fixture. Placing a GTT and triggering it should land at
-    least two events in the buffer (placed + triggered)."""
-    gtt = driver._gtt_book.place(
-        account="A", tradingsymbol="X", exchange="NSE",
-        trigger_type="single", trigger_values=[100.0],
-        orders=[{"transaction_type": "SELL", "quantity": 1, "price": 100.0}],
-        last_price=95.0,
-    )
-    driver._gtt_book.check_triggers({("A", "X"): 105.0})
-    kinds = [e["kind"] for e in driver._recording_events]
-    assert "gtt_placed" in kinds
-    assert "gtt_triggered" in kinds
-    # The triggered event payload includes gtt_id + leg_index.
-    triggered = [e for e in driver._recording_events if e["kind"] == "gtt_triggered"][0]
-    assert triggered["payload"]["gtt_id"] == gtt.gtt_id
-    assert triggered["payload"]["leg_index"] == 0
 
 
 def test_recording_events_preserve_order(driver):

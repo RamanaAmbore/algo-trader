@@ -453,89 +453,13 @@ class GrammarTokenPatch(msgspec.Struct):
     is_active:     bool | None = None
 
 
-# ---------------------------------------------------------------------------
-# OrderTemplate — TP/SL/Wing exit-rule preset attached at order entry
-# ---------------------------------------------------------------------------
-
-class OrderTemplateOut(msgspec.Struct):
-    id:                  int
-    slug:                str | None = None
-    name:                str = ""
-    description:         str = ""
-    applies_to:          str = "both"
-    tp_pct:              float | None = None
-    sl_pct:              float | None = None
-    wing_premium_pct:    float | None = None
-    wing_strike_offset:  int | None = None
-    # Per-template default for the Chain-tab pre-submission spread
-    # gate (backend.api.algo.spread_check). None = fall back to the
-    # global `templates.wing_max_spread_pct` admin setting.
-    wing_max_spread_pct: float | None = None
-    tp_order_type:       str = "LIMIT"   # 'LIMIT' | 'MARKET'
-    # JSON string of [{at_pct, close_pct}] entries; None / empty = no
-    # scale-out (TP behaves as a single trigger via tp_pct).
-    tp_scales_json:      str | None = None
-    sl_trail_pct:        float | None = None
-    is_default:          bool = False
-    is_system:           bool = False
-    is_active:           bool = True
-    # Sprint 8 (CLI grammar authoring, `#group=...` / `#tag=...`) —
-    # mirrors AgentInfo's group/tags shape. `group` maps to the ORM
-    # attribute `group_name` (`group` is a reserved SQL keyword — see
-    # OrderTemplate.group_name in backend/api/models.py). None = ungrouped.
-    group:               str | None = None
-    tags:                list = msgspec.field(default_factory=list)
-
-
-class OrderTemplateCreate(msgspec.Struct):
-    name:                str
-    description:         str = ""
-    applies_to:          str = "both"      # 'buy_any' / 'sell_option' / 'both'
-    tp_pct:              float | None = None
-    sl_pct:              float | None = None
-    wing_premium_pct:    float | None = None
-    wing_strike_offset:  int | None = None
-    wing_max_spread_pct: float | None = None
-    tp_order_type:       str = "LIMIT"
-    tp_scales_json:      str | None = None
-    sl_trail_pct:        float | None = None
-    is_default:          bool = False
-    is_active:           bool = True
-    # Sprint 8 — see OrderTemplateOut.group / .tags above. `group` maps
-    # to ORM attribute `group_name`; `tags` maps directly (same name
-    # on both sides, matching Agent.tags's pattern).
-    group:               str | None = None
-    tags:                list | None = None
-
-
-class OrderTemplatePatch(msgspec.Struct):
-    # All optional — only fields the caller sets are mutated. System
-    # templates accept these same field edits (operator tunes the
-    # numeric defaults from the UI); only `is_system` itself + delete
-    # are off-limits.
-    name:                str | None = None
-    description:         str | None = None
-    applies_to:          str | None = None
-    tp_pct:              float | None = None
-    sl_pct:              float | None = None
-    wing_premium_pct:    float | None = None
-    wing_strike_offset:  int | None = None
-    wing_max_spread_pct: float | None = None
-    tp_order_type:       str | None = None
-    tp_scales_json:      str | None = None
-    sl_trail_pct:        float | None = None
-    is_default:          bool | None = None
-    is_active:           bool | None = None
-    # Sprint 8 — see OrderTemplateOut.group / .tags above. `group` maps
-    # to ORM attribute `group_name` (`group` is a reserved SQL
-    # keyword) — NOT part of the generic `_PATCH_FIELDS` setattr loop
-    # in routes/templates.py since the request field name and ORM
-    # attribute name differ; handled explicitly. `tags` maps directly
-    # and IS part of `_PATCH_FIELDS` (same name both sides). None =
-    # unchanged on both.
-    group:               str | None = None
-    tags:                list | None = None
-
+# `OrderTemplateOut`/`OrderTemplateCreate`/`OrderTemplatePatch` removed
+# (Bracket/Template-GTT removal, T3.2, 2026-11) — these were the
+# `OrderTemplateController` route schemas, deleted along with
+# `backend/api/routes/templates.py` in the prior sub-sprint (T3.1).
+# Confirmed zero remaining importers (grep: only comment references).
+# The underlying `OrderTemplate` DB model stays on `backend/api/models.py`
+# — its own removal is a later sub-sprint.
 
 # ---------------------------------------------------------------------------
 # Post / Insights
@@ -580,12 +504,11 @@ class BasketLeg(msgspec.Struct):
     price: Optional[float] = None
     trigger_price: Optional[float] = None
     variety: str = "regular"
-    # When set, the basket-placement route runs
-    # `apply_template_to_order` on this leg after submit so the
-    # leg's fill attaches TP / SL / Wing GTTs per the template.
-    # Same pipeline TicketOrderRequest uses. Frontend's option-chain
-    # basket builder sets this from the operator's "On fill"
-    # selector in the shell basket bar (SymbolPanel).
+    # `template_id` kept (Bracket/Template-GTT removal, T3.2, 2026-11) —
+    # unlike the override fields below, it is still accepted and silently
+    # dropped before persist (same policy as TicketOrderRequest.template_id
+    # — see that field's own comment), since the still-unmodified frontend
+    # may still send it until its own removal sub-sprint lands.
     template_id: Optional[int] = None
     # Per-leg chase + aggressiveness used by the basket-placement route.
     chase: bool = True
@@ -594,22 +517,14 @@ class BasketLeg(msgspec.Struct):
     # carries these too).
     target_pct: Optional[float] = None
     target_abs: Optional[float] = None
-    # Per-leg template parameter overrides — operator's tweaks to
-    # the selected template's defaults for THIS submit. Persisted on
-    # the AlgoOrder row as `template_overrides_json` so the postback
-    # handler re-applies them when the parent fills. Empty / None on
-    # any field means "use the template's default for that param."
-    tp_pct_override:             Optional[float] = None
-    sl_pct_override:             Optional[float] = None
-    wing_premium_pct_override:   Optional[float] = None
-    wing_strike_offset_override: Optional[int]   = None
-    # Optional carry-through for the trail-stop + scale-out template
-    # fields. Frontend doesn't expose inputs for these today, but the
-    # `_build_overrides_json` serializer reads them so a future per-
-    # ticket override path needs only the UI work. None = inherit the
-    # selected template's value.
-    sl_trail_pct_override:       Optional[float] = None
-    tp_scales_json_override:     Optional[str]   = None
+    # `tp_pct_override`/`sl_pct_override`/`wing_premium_pct_override`/
+    # `wing_strike_offset_override`/`sl_trail_pct_override`/
+    # `tp_scales_json_override`/`hold_template_exit` removed (Bracket/
+    # Template-GTT removal, T3.2, 2026-11) — the template-attach pipeline
+    # they fed (`backend/api/algo/template_attach.py`) was deleted in the
+    # prior sub-sprint (T3.1), and their one remaining reader
+    # (`orders_helpers._ticket_overrides_dict`/`_build_overrides_json`)
+    # was removed in this one.
     # Intent — "open" | "close". Same semantics as TicketOrderRequest.intent
     # (bypasses G2 5-lot cap for close). None → treat as open.
     intent: Optional[str] = None
@@ -617,12 +532,6 @@ class BasketLeg(msgspec.Struct):
     # AlgoOrder row for per-strategy P&L attribution. Same semantics as
     # TicketOrderRequest.strategy_id. None = unattributed.
     strategy_id: Optional[int] = None
-    # Per-leg override of the attached template exit hold. Same semantics
-    # as TicketOrderRequest.hold_template_exit — None = use the global
-    # switch (`hold.template_exit_released`). Added so a Chain/basket
-    # submission can also use a per-order release override, matching the
-    # ticket route (2026-11, item 5 of the bracket-UX plan).
-    hold_template_exit: Optional[bool] = None
 
 
 class BasketGroup(msgspec.Struct):
@@ -715,8 +624,6 @@ class TicketOrderRequest(msgspec.Struct):
     price: Optional[float] = None
     trigger_price: Optional[float] = None
     account: str = ""       # required for PAPER + LIVE; blank → 400
-    # Per-ticket override of the attached template exit hold. None = use the global switch.
-    hold_template_exit: Optional[bool] = None
     # Chase the order to closure — re-quote the limit each tick
     # until filled, capped by `simulator.chase_max_attempts`. PAPER
     # orders honour this via the paper engine's tick loop; the flag
@@ -752,41 +659,20 @@ class TicketOrderRequest(msgspec.Struct):
     # When present and no template is supplied, the handler auto-maps
     # it to tp_pct_override so the same downstream attach pipeline fires.
     target_pct: Optional[float] = None
-    # ── v2 template attachment ────────────────────────────────────────
-    # `template_id` references an OrderTemplate row. When set, the
-    # handler resolves the template + applies its TP/SL/Wing via
-    # backend.api.algo.template_attach. Override fields below let the
-    # operator tune the chosen template for THIS order without saving;
-    # template defaults supply anything left None.
-    template_id:                  Optional[int]   = None
-    tp_pct_override:              Optional[float] = None   # % (30.0 = +30%)
-    sl_pct_override:              Optional[float] = None
-    wing_premium_pct_override:    Optional[float] = None
-    wing_strike_offset_override:  Optional[int]   = None
-    # TP leg order type override — "LIMIT" | "MARKET". None = inherit
-    # the selected template's tp_order_type (or "LIMIT" for an ad-hoc
-    # template with no saved template). The resolver
-    # (`_parse_template_overrides` in template_attach.py) clamps any
-    # other value to "LIMIT", so no separate validator is needed here.
-    # Only takes effect alongside a TP-defining override (tp_pct_override
-    # or legacy target_pct) or a saved template's own tp_pct — it
-    # modifies an existing TP leg, it never creates one on its own.
-    tp_order_type_override:       Optional[str]   = None
-    # Chain-tab Spread% field (backend.api.algo.spread_check). Carried
-    # here purely for persistence/symmetry — `_build_overrides_json`
-    # serializes it onto AlgoOrder.template_overrides_json so a retry-
-    # template replay preserves the operator's chosen threshold, same
-    # as every other override field. The live pre-submission gate
-    # itself calls `GET /api/orders/spread-check?max_spread_pct=...`
-    # directly (see TicketPreviewRequest's own field below) — this
-    # field is never read by the ticket-submit path itself.
-    wing_max_spread_pct_override: Optional[float] = None
-    # Trail-stop + scale-out override carriers. UI doesn't expose inputs
-    # for these yet; `_build_overrides_json` already reads them so they
-    # flow through the postback handler's override-replay path when the
-    # frontend starts sending them.
-    sl_trail_pct_override:        Optional[float] = None
-    tp_scales_json_override:      Optional[str]   = None
+    # `template_id` kept (Bracket/Template-GTT removal, T3.2, 2026-11) —
+    # the still-unmodified frontend may still send it on every ticket
+    # submission until its own removal sub-sprint lands; it is accepted
+    # and silently dropped before persist (see
+    # `orders_place.py:_ticket_persist_live_algo_order`'s own comment),
+    # never acted on. `tp_pct_override`/`sl_pct_override`/
+    # `wing_premium_pct_override`/`wing_strike_offset_override`/
+    # `tp_order_type_override`/`wing_max_spread_pct_override`/
+    # `sl_trail_pct_override`/`tp_scales_json_override` removed — the
+    # template-attach pipeline they fed (`backend/api/algo/
+    # template_attach.py`) was deleted in the prior sub-sprint (T3.1), and
+    # their one remaining reader (`orders_helpers._ticket_overrides_dict`/
+    # `_build_overrides_json`) was removed in this one.
+    template_id: Optional[int] = None
     # Lot-size hint from OrderTicket UI. Frontend already resolved
     # _lotSize from the instruments cache; shipping it here lets the
     # backend cross-check against its own cache lookup and use the
@@ -898,26 +784,16 @@ class TicketPreviewRequest(msgspec.Struct):
     # or the operator's typed limit. Defaults to 0 (preview returns
     # only the structural plan; numeric trigger values come back as 0).
     reference_price: float = 0.0
-    template_id:                  Optional[int]   = None
-    tp_pct_override:              Optional[float] = None
-    sl_pct_override:              Optional[float] = None
-    wing_premium_pct_override:    Optional[float] = None
-    wing_strike_offset_override:  Optional[int]   = None
-    # Mirrors TicketOrderRequest.tp_order_type_override — see that
-    # field's comment for the full rationale. Carried here so the
-    # preview chip shows the correct planned order_type for the TP leg.
-    tp_order_type_override:       Optional[str]   = None
-    # Chain-tab Spread% field (backend.api.algo.spread_check). Carried
-    # here for persistence/symmetry with TicketOrderRequest's own
-    # override field — the live Chain-tab spread gate itself reads
-    # `GET /api/orders/spread-check?max_spread_pct=...` directly
-    # (one lightweight call per leg per poll), not this preview
-    # endpoint, to avoid a template-load + wing-scan round trip (with
-    # its own ntfy-alert-on-failure side effects) on every 4s re-check.
-    wing_max_spread_pct_override: Optional[float] = None
+    # `template_id` kept — see TicketOrderRequest.template_id's own
+    # comment (Bracket/Template-GTT removal, T3.2, 2026-11). Every
+    # override field that used to sit here was removed in the same
+    # round; `ticket_preview` is already stubbed to return an empty
+    # plan regardless (`orders.py:_rco_preview_empty_plan`, reads none
+    # of them).
+    template_id: Optional[int] = None
     # Backward compat — legacy target_pct (fractional) also accepted
     # here so OrderTicket can preview without separating the two paths.
-    target_pct:                   Optional[float] = None
+    target_pct: Optional[float] = None
 
 
 class TicketPreviewResponse(msgspec.Struct):

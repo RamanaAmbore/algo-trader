@@ -12,19 +12,30 @@ incident since, with the resulting alert never sent:
   4. `_watchdog_alert_degraded`          (ticker_degraded)
   5. `_task_visitor_log_daily`'s inner `_run_once` (visitor_report)
 
-All five are now routed through the same log-record + event-agent
+All five were routed through the same log-record + event-agent
 pipeline every other alert in this codebase already uses (new
 GTT_ASYMMETRIC_AGENT / OCO_DOUBLE_FIRE_AGENT / TICKER_RECOVERED_AGENT /
 TICKER_DEGRADED_AGENT / VISITOR_REPORT_AGENT in event_agents.py).
 
-Two of the five (`_watchdog_handle_recovery`, `_watchdog_alert_degraded`)
-previously had NO try/except around the alert call at all — a failure
-there would have propagated straight into the ticker watchdog loop.
-Both are now wrapped.
+Bracket/Template-GTT removal (T3.2, 2026-11) deleted `background.py`'s
+`_send_trail_partial_modify_alert` and `_oco_handle_settled_pair` along
+with the rest of the trail-stop/OCO-watcher helper cluster — their
+dedicated `TestGttAsymmetricAlert`/`TestOcoDoubleFireAlert` coverage
+below is removed with them. The seeded `gtt-asymmetric-alert`/
+`oco-double-fire-alert` specs in `event_agents.py` are left untouched
+(dormant, no producer left to fire them — a separate, deliberately
+deferred cleanup; see the T3.2 sub-sprint report), so
+`TestNewEventAgentsAreSeedable` below still exercises them unchanged.
 
-Two of the five (`_send_trail_partial_modify_alert`'s `row.account`,
-`_oco_handle_settled_pair`'s `entry.get('parent_account')`) embedded the
-real broker account WITHOUT masking — fixed via `mask_account()`.
+Two of the three remaining call sites (`_watchdog_handle_recovery`,
+`_watchdog_alert_degraded`) previously had NO try/except around the
+alert call at all — a failure there would have propagated straight into
+the ticker watchdog loop. Both are now wrapped.
+
+Two of the original five (`_send_trail_partial_modify_alert`'s
+`row.account`, `_oco_handle_settled_pair`'s `entry.get('parent_account')`,
+both since deleted) embedded the real broker account WITHOUT masking —
+fixed via `mask_account()`.
 """
 from __future__ import annotations
 
@@ -54,85 +65,6 @@ def test_alert_route_no_longer_imported_anywhere_in_background():
     assert "from backend.shared.helpers.alert_utils import _alert_route" not in _SRC
     assert "await asyncio.to_thread(_alert_route" not in _SRC
     assert "await asyncio.to_thread(\n            _alert_route" not in _SRC
-
-
-class TestGttAsymmetricAlert:
-    @pytest.mark.asyncio
-    async def test_fires_logged_alert_event_with_masked_account(self, monkeypatch):
-        captured = {}
-
-        def _fake_warning(msg, *args, **kwargs):
-            if kwargs.get("extra", {}).get("alert_event") == "gtt_asymmetric":
-                captured["msg"] = msg % args if args else msg
-                captured["extra"] = kwargs["extra"]
-
-        monkeypatch.setattr(bg.logger, "warning", _fake_warning)
-
-        row = SimpleNamespace(id=55, account="ZG0790")
-        entry: dict = {}
-        await bg._send_trail_partial_modify_alert(
-            entry, row, 112.5, "CRUDEOIL26OCTFUT", RuntimeError("rejected"),
-        )
-
-        assert captured, "gtt_asymmetric alert_event was never logged"
-        assert captured["extra"]["title"] == "GTT asymmetric"
-        assert "ZG0790" not in captured["extra"]["body"], "account must be masked"
-        assert "ZG####" in captured["extra"]["body"]
-        assert "CRUDEOIL26OCTFUT" in captured["extra"]["body"]
-        # 2026-11-06 (operator SSOT instruction) — a literal process
-        # name, not a fake-agent lookup: no known trigger.
-        assert captured["extra"]["source_type"] == "process"
-        assert captured["extra"]["source_name"] == "GTT reconciler"
-        assert "agent_id" not in captured["extra"] and "agent_name" not in captured["extra"]
-
-    @pytest.mark.asyncio
-    async def test_never_raises_even_on_internal_failure(self, monkeypatch):
-        """The whole body is wrapped in try/except — a broken mask_account
-        or logger must never propagate into the trail/GTT modify path."""
-        monkeypatch.setattr(
-            "backend.shared.helpers.utils.mask_account",
-            lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("boom")),
-        )
-        row = SimpleNamespace(id=55, account="ZG0790")
-        # Must not raise.
-        await bg._send_trail_partial_modify_alert(
-            {}, row, 112.5, "CRUDEOIL26OCTFUT", RuntimeError("rejected"),
-        )
-
-
-class TestOcoDoubleFireAlert:
-    @pytest.mark.asyncio
-    async def test_fires_logged_alert_event_with_masked_account(self, monkeypatch):
-        captured = {}
-
-        def _fake_warning(msg, *args, **kwargs):
-            if kwargs.get("extra", {}).get("alert_event") == "oco_double_fire":
-                captured["extra"] = kwargs["extra"]
-
-        monkeypatch.setattr(bg.logger, "warning", _fake_warning)
-
-        entry = {"parent_symbol": "NIFTY26OCTFUT", "parent_account": "ZG0790"}
-        await bg._oco_handle_settled_pair(entry, {}, 1, "O1", "O2")
-
-        assert captured, "oco_double_fire alert_event was never logged"
-        assert captured["extra"]["title"] == "OCO double-fire"
-        assert "ZG0790" not in captured["extra"]["body"]
-        assert "ZG####" in captured["extra"]["body"]
-        # 2026-11-06 (operator SSOT instruction) — a literal process
-        # name, not a fake-agent lookup: no known trigger.
-        assert captured["extra"]["source_type"] == "process"
-        assert captured["extra"]["source_name"] == "OCO watcher"
-        assert "agent_id" not in captured["extra"] and "agent_name" not in captured["extra"]
-
-    @pytest.mark.asyncio
-    async def test_sibling_pointer_cleared_regardless_of_alert_outcome(self, monkeypatch):
-        entry = {"parent_symbol": "NIFTY26OCTFUT", "parent_account": "ZG0790",
-                  "sibling_id": "O2"}
-        sib_entry = {"sibling_id": "O1"}
-        by_id = {"O2": sib_entry}
-        await bg._oco_handle_settled_pair(entry, by_id, 1, "O1", "O2")
-        assert "sibling_id" not in entry
-        assert "sibling_id" not in sib_entry
 
 
 class TestTickerRecoveredAlert:

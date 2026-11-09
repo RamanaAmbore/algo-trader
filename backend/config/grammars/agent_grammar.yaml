@@ -1137,45 +1137,13 @@ system_tokens:
     chase_level:
       $ref: chase_level
       required: false
-    # ── Template attachment (v2.1+) ─────────────────────────────
-    # When set, the unified template-attach pipeline runs after
-    # the parent order persists. TP / SL → broker GTT (or sim
-    # SimGttBook); Wing → spread basket leg for SELL options.
-    # Picking template_slug="none" or leaving everything null
-    # places the entry without any follow-on attachments.
-    template_id:
-      type: number
-      required: false
-      description: OrderTemplate row id. Mutually exclusive with template_slug.
-    template_slug:
-      type: string
-      required: false
-      description: OrderTemplate stable slug (e.g. "default-bull", "default-short-vol", "none").
-    tp_pct_override:
-      type: number
-      required: false
-      description: Per-action TP% override (e.g. 25.0 = +25%). Wins over template default.
-    sl_pct_override:
-      type: number
-      required: false
-      description: Per-action SL% override (e.g. 15.0 = -15%). Wins over template default.
-    wing_premium_pct_override:
-      type: number
-      required: false
-      description: Per-action wing premium % override (sell_option only).
-    wing_strike_offset_override:
-      type: number
-      required: false
-      description: Per-action wing strike offset override (e.g. 500 → wing at +500 strike).
-  # Sprint 17 — token-level (sibling of params_schema, not a per-field key)
-  # declared mutual-exclusion. Served to the frontend from the in-memory
-  # SYSTEM_TOKENS catalog (backend/api/algo/grammar.py:get_action_mutex_groups),
-  # NOT round-tripped through the grammar_tokens DB table/GrammarToken model
-  # (which has no column for this) — same "code-reviewed YAML catalog is
-  # the trust boundary" pattern already used for params_schema's
-  # token_ref_ok (see grammar.py's _ACTION_PARAMS_SCHEMAS comment).
-  mutually_exclusive_groups:
-    - [wing_premium_pct_override, wing_strike_offset_override]
+    # `template_id`/`template_slug`/`tp_pct_override`/`sl_pct_override`/
+    # `wing_premium_pct_override`/`wing_strike_offset_override` params,
+    # and the token-level `mutually_exclusive_groups` declaration that
+    # covered the last two, removed (Bracket/Template-GTT removal, T3.2,
+    # 2026-11) — the template-attach pipeline they fed into
+    # (`backend/api/algo/template_attach.py`) was deleted in the prior
+    # sub-sprint (T3.1); these params had no remaining resolver to feed.
 # order/place_order unification, Phase A (2026-10) — "order" is a NEW
 # catalog row, byte-identical in shape to "place_order" above (same
 # grammar_kind/token_kind/resolver/params_schema/mutually_exclusive_groups),
@@ -1254,32 +1222,9 @@ system_tokens:
     chase_level:
       $ref: chase_level
       required: false
-    template_id:
-      type: number
-      required: false
-      description: OrderTemplate row id. Mutually exclusive with template_slug.
-    template_slug:
-      type: string
-      required: false
-      description: OrderTemplate stable slug (e.g. "default-bull", "default-short-vol", "none").
-    tp_pct_override:
-      type: number
-      required: false
-      description: Per-action TP% override (e.g. 25.0 = +25%). Wins over template default.
-    sl_pct_override:
-      type: number
-      required: false
-      description: Per-action SL% override (e.g. 15.0 = -15%). Wins over template default.
-    wing_premium_pct_override:
-      type: number
-      required: false
-      description: Per-action wing premium % override (sell_option only).
-    wing_strike_offset_override:
-      type: number
-      required: false
-      description: Per-action wing strike offset override (e.g. 500 → wing at +500 strike).
-  mutually_exclusive_groups:
-    - [wing_premium_pct_override, wing_strike_offset_override]
+    # `template_id`/`template_slug`/override params + `mutually_exclusive_
+    # groups` removed (Bracket/Template-GTT removal, T3.2, 2026-11) — see
+    # the identical note on place_order's own params_schema above.
 - grammar_kind: action
   token_kind: action_type
   token: modify_order

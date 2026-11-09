@@ -181,9 +181,7 @@ class TestTicketLivePersistSource:
              patch("backend.api.algo.agent_engine.get_agent_id_by_slug",
                    new=AsyncMock(return_value=1)), \
              patch("backend.api.routes.orders_helpers._resolve_target_pct",
-                   return_value=0.0), \
-             patch("backend.api.routes.orders_helpers._build_overrides_json",
-                   return_value=None):
+                   return_value=0.0):
             row_id = await _ticket_persist_live_algo_order(
                 data, request, "ZG0790", "NIFTY25JUL24000CE", "BUY", 50,
             )
@@ -208,9 +206,7 @@ class TestTicketLivePersistSource:
              patch("backend.api.algo.agent_engine.get_agent_id_by_slug",
                    new=AsyncMock(return_value=1)), \
              patch("backend.api.routes.orders_helpers._resolve_target_pct",
-                   return_value=0.0), \
-             patch("backend.api.routes.orders_helpers._build_overrides_json",
-                   return_value=None):
+                   return_value=0.0):
             await _ticket_persist_live_algo_order(
                 data, request, "ZG0790", "NIFTY25JUL24000CE", "BUY", 50,
             )
@@ -267,9 +263,7 @@ class TestTicketPaperPersistSource:
              patch("backend.api.algo.agent_engine.get_agent_id_by_slug",
                    new=AsyncMock(return_value=1)), \
              patch("backend.api.routes.orders_helpers._resolve_target_pct",
-                   return_value=0.0), \
-             patch("backend.api.routes.orders_helpers._build_overrides_json",
-                   return_value=None):
+                   return_value=0.0):
             row_id = await _opp_paper_persist_row(
                 data, request, "ZG0790", "NIFTY25JUL24000CE", "BUY", 50,
             )
@@ -291,9 +285,7 @@ class TestTicketPaperPersistSource:
              patch("backend.api.algo.agent_engine.get_agent_id_by_slug",
                    new=AsyncMock(return_value=1)), \
              patch("backend.api.routes.orders_helpers._resolve_target_pct",
-                   return_value=0.0), \
-             patch("backend.api.routes.orders_helpers._build_overrides_json",
-                   return_value=None):
+                   return_value=0.0):
             await _opp_paper_persist_row(
                 data, request, "ZG0790", "NIFTY25JUL24000CE", "BUY", 50,
             )

@@ -297,8 +297,6 @@ def _patch_all_bg_tasks():
         "_task_ticker_watchdog",
         "_task_holiday_refresh",
         "_task_hedge_proxy_regression",
-        "_task_trail_stop",
-        "_task_oco_pair_watcher",
         "_task_monthly_statement",
         "_task_nav_compute",
         "_task_purge_persistence_caches",

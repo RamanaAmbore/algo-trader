@@ -8,7 +8,6 @@ This driver consumes that list and replays the events into the same
 surfaces the original run wrote to:
 
   • driver._tick_log              — Simulator tab log
-  • driver._gtt_book              — sim GTT lifecycle
   • driver._paper                 — paper-trade chase orders
   • driver._underlying_history    — chart line data
   • driver._price_history         — chart line data
@@ -47,9 +46,9 @@ PLAYBACK_SPEEDS: list[float] = [0.5, 1.0, 2.0, 5.0, 10.0]
 
 
 class SimReplayDriver:
-    """Singleton replay driver. Reuses SimDriver._tick_log / _gtt_book /
-    _paper so the operator's UI surfaces see identical state during
-    playback as during the original run."""
+    """Singleton replay driver. Reuses SimDriver._tick_log / _paper so
+    the operator's UI surfaces see identical state during playback as
+    during the original run."""
 
     _instance: Optional["SimReplayDriver"] = None
     _initialized: bool = False
@@ -132,7 +131,6 @@ class SimReplayDriver:
         from backend.api.algo.sim.driver import SimDriver
         sim = SimDriver.instance()
         sim._tick_log.clear()
-        sim._gtt_book.reset()
         sim._paper.reset()
         sim._price_history.clear()
         sim._underlying_history.clear()
@@ -212,58 +210,18 @@ class SimReplayDriver:
             "note":       f"replay #{self.recording_id} complete",
         })
 
-    def _replay_place_gtt(self, sim_gtt_book: object, payload: dict) -> None:
-        """Replay a gtt_placed event into *sim_gtt_book*. Errors are logged."""
-        try:
-            sim_gtt_book.place(  # type: ignore[attr-defined]
-                account=payload["account"],
-                tradingsymbol=payload["tradingsymbol"],
-                exchange=payload["exchange"],
-                trigger_type=payload["trigger_type"],
-                trigger_values=list(payload.get("trigger_values") or []),
-                orders=list(payload.get("orders") or []),
-                last_price=float(payload.get("last_price") or 0.0),
-                pair_with=payload.get("pair_with"),
-                template_id=payload.get("template_id"),
-                parent_order_id=payload.get("parent_order_id"),
-                tag=payload.get("tag"),
-            )
-        except Exception as e:
-            logger.warning(f"[REPLAY] gtt_placed replay failed: {e}")
-
-    def _replay_trigger_gtt(self, sim_gtt_book: object, payload: dict) -> None:
-        """Flip a GTT to triggered state in *sim_gtt_book* for a gtt_triggered event.
-
-        Only updates the in-memory status pill; the actual chase order is
-        handled by the chase_placed event, not re-fired here.
-        """
-        gtt_id = payload.get("gtt_id")
-        gtt = sim_gtt_book.get(gtt_id) if gtt_id else None  # type: ignore[attr-defined]
-        if gtt is not None and gtt.is_active():
-            from backend.api.algo.sim.gtt_book import GTT_STATUS_TRIGGERED
-            gtt.status = GTT_STATUS_TRIGGERED
-            gtt.triggered_at = datetime.now()
-            gtt.triggered_leg_index = payload.get("leg_index")
-
-    def _replay_apply_gtt_event(
-        self,
-        sim_gtt_book: object,
-        kind: str,
-        payload: dict,
-    ) -> None:
-        """Dispatch one GTT lifecycle event to the appropriate handler.
-
-        Handles: ``gtt_placed``, ``gtt_cancelled``, ``gtt_triggered``.
-        Other kinds are ignored (tick_log entry already written by _emit_one).
-        """
-        if kind == "gtt_placed":
-            self._replay_place_gtt(sim_gtt_book, payload)
-        elif kind == "gtt_cancelled":
-            gtt_id = payload.get("gtt_id")
-            if gtt_id:
-                sim_gtt_book.cancel(gtt_id, reason=payload.get("reason", "replay"))  # type: ignore[attr-defined]
-        elif kind == "gtt_triggered":
-            self._replay_trigger_gtt(sim_gtt_book, payload)
+    # `_replay_place_gtt`/`_replay_trigger_gtt`/`_replay_apply_gtt_event`
+    # removed (Bracket/Template-GTT removal, T3.2, 2026-11) — these
+    # projected `gtt_placed`/`gtt_cancelled`/`gtt_triggered` recording
+    # events into `backend.api.algo.sim.gtt_book.SimGttBook`, deleted in
+    # the same sub-sprint. A recording made before this removal that
+    # still carries one of these event kinds is NOT a crash risk: the
+    # unconditional tick_log append in `_emit_one` below (which runs for
+    # every event, before this projection used to run) already handles
+    # it — an unrecognised kind is simply not projected anywhere else,
+    # same as any other non-GTT event kind was before this removal. No
+    # `sim_recordings` row carrying a gtt_* event exists on prod or dev
+    # as of this change (checked live).
 
     async def _replay_advance_tick(self, prev_t: float) -> float:
         """Sleep the inter-event delay, emit one event, and return the new prev_t.
@@ -323,10 +281,6 @@ class SimReplayDriver:
             "note":       payload.get("note"),
             "order":      payload.get("order"),
         })
-
-        # Surface-specific projections — replay the GTT book lifecycle
-        # so the GTT strip in the UI shows the same arc as the original.
-        self._replay_apply_gtt_event(sim._gtt_book, kind, payload)
 
 
 # ── Module-level singleton accessor ─────────────────────────────────

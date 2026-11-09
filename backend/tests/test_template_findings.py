@@ -16,6 +16,14 @@ TestValidateGttTriggers, and the reconcile/postback/template-clearing
 tests inside what used to be TestCloseOffsetGate. The surviving
 close-intent-verification coverage below is unaffected by that removal
 — none of it depends on a template or a bracket.
+
+One straggler was missed by that pass: `test_override_only_new_open_
+keeps_overrides` (TestCloseOffsetGate) asserted that
+`TicketOrderRequest.tp_pct_override` survived a non-offsetting open —
+the sanity-check direction of `_ticket_strip_template_on_close`'s
+(already-deleted) stripping behaviour. Bracket/Template-GTT removal,
+T3.2 (2026-11) removed `tp_pct_override` itself from `TicketOrderRequest`
+(`backend/api/schemas.py`), so that test is removed here too.
 """
 from __future__ import annotations
 
@@ -445,63 +453,6 @@ class TestCloseOffsetGate:
         )
 
 
-    @pytest.mark.asyncio
-    async def test_override_only_new_open_keeps_overrides(self):
-        """Sanity check the other direction: a genuine new open (not
-        offsetting) must keep its override fields intact."""
-        from backend.api.schemas import TicketOrderRequest
-
-        data = TicketOrderRequest(
-            mode="live",
-            side="BUY",
-            tradingsymbol="NIFTY25JUL24000CE",
-            quantity=1,
-            exchange="NFO",
-            account="ZG0001",
-            template_id=None,
-            tp_pct_override=30.0,
-        )
-
-        captured = {}
-
-        async def _fake_validate(d, req):
-            return "BUY", "NIFTY25JUL24000CE", 50, 50
-
-        def _fake_account(d):
-            return "ZG0001"
-
-        async def _fake_offsetting(sym, exchange, side, account):
-            return False
-
-        async def _fake_enforce(d, acc, sym, qty, ls):
-            captured["data_at_enforce"] = d
-
-        async def _fake_gate(d, sym):
-            pass
-
-        async def _fake_capacity(*a, **kw):
-            pass
-
-        with patch("backend.api.routes.orders_place._ticket_validate_input",
-                   new=_fake_validate), \
-             patch("backend.api.routes.orders_place._ticket_validate_account",
-                   new=_fake_account), \
-             patch("backend.api.routes.orders_place._is_offsetting_position",
-                   new=_fake_offsetting), \
-             patch("backend.api.routes.orders_place._ticket_enforce_lot_and_fat_finger",
-                   new=_fake_enforce), \
-             patch("backend.api.routes.orders_place._ticket_gate_market_hours_and_align_price",
-                   new=_fake_gate), \
-             patch("backend.api.routes.orders_place._enforce_capacity_guard",
-                   new=_fake_capacity), \
-             patch("backend.shared.helpers.settings.get_bool", return_value=False), \
-             patch("backend.shared.helpers.utils.config",
-                   {"deploy_branch": "dev"}), \
-             patch("backend.api.routes.orders_place._ticket_place_live",
-                   new_callable=AsyncMock, return_value=None), \
-             patch("backend.api.routes.orders_place._ticket_place_paper",
-                   new_callable=AsyncMock, return_value=None):
-            from backend.api.routes.orders_place import ticket_order_handler
-            await ticket_order_handler(data, MagicMock())
-
-        assert captured["data_at_enforce"].tp_pct_override == 30.0
+    # `test_override_only_new_open_keeps_overrides` removed (Bracket/
+    # Template-GTT removal, T3.2, 2026-11) — see the module docstring's
+    # "One straggler" note above.

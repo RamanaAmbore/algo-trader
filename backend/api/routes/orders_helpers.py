@@ -1166,86 +1166,23 @@ def _resolve_target_pct(override: float | None) -> float:
     return max(0.0, float(override))
 
 
-def _ticket_overrides_dict(data) -> dict:
-    """Pack the override fields from a TicketOrderRequest /
-    TicketPreviewRequest into the dict shape apply_template_to_order
-    expects.
+# `_ticket_overrides_dict`/`_build_overrides_json` removed (Bracket/
+# Template-GTT removal, T3.2, 2026-11) — these serialized
+# TicketOrderRequest/TicketPreviewRequest/BasketLeg's override fields
+# (tp_pct_override, sl_pct_override, wing_premium_pct_override,
+# wing_strike_offset_override, wing_max_spread_pct_override,
+# sl_trail_pct_override, tp_scales_json_override, tp_order_type_override)
+# into the dict/JSON shape `apply_template_to_order` expected. That
+# resolver was deleted along with `backend/api/algo/template_attach.py`
+# in the prior sub-sprint (T3.1), and confirmed via grep to have zero
+# remaining production callers even before this removal — only their
+# own dedicated unit tests (`test_wing_max_spread_pct_override.py`,
+# deleted in this round) and one vestigial mock-patch in
+# `test_order_source_persistence.py` (removed, since the function it
+# patched no longer exists) referenced them. The override fields
+# themselves were removed from the three request structs in the same
+# round (`backend/api/schemas.py`). `resolve_max_spread_pct()`
+# (`backend.api.algo.spread_check`) is unaffected — it is a pure
+# override/template/setting resolver that never depended on these two
+# functions, and stays fully covered by `test_spread_check.py`.
 
-    Includes the legacy `target_pct` → `tp_pct` shim:
-      - target_pct is fractional (0.30 = +30%) for v1 callers
-      - tp_pct on the override dict is % units (30.0 = +30%) to match
-        templates_seed / OrderTemplate columns
-      - When both are set, the explicit tp_pct_override wins
-    """
-    overrides: dict = {
-        "tp_pct":             data.tp_pct_override,
-        "sl_pct":             data.sl_pct_override,
-        "wing_premium_pct":   data.wing_premium_pct_override,
-        "wing_strike_offset": data.wing_strike_offset_override,
-        # Chain-tab pre-submission spread gate (backend.api.algo.
-        # spread_check.resolve_max_spread_pct reads this key). Not a
-        # resolve_template_plan field — getattr-guarded since not every
-        # caller of this helper's request struct carries it.
-        "wing_max_spread_pct": getattr(data, "wing_max_spread_pct_override", None),
-        # TP leg order type override (LIMIT | MARKET) — see
-        # TicketOrderRequest.tp_order_type_override. getattr-guarded for
-        # the same reason as wing_max_spread_pct above.
-        "tp_order_type":       getattr(data, "tp_order_type_override", None),
-    }
-    if overrides["tp_pct"] is None and getattr(data, "target_pct", None) is not None:
-        try:
-            overrides["tp_pct"] = float(data.target_pct) * 100.0
-        except (TypeError, ValueError):
-            pass
-    return overrides
-
-
-def _build_overrides_json(leg) -> str | None:
-    """Serialize per-leg template parameter overrides into a JSON string
-    for persistence on AlgoOrder.template_overrides_json. Returns None
-    when no overrides were supplied (caller leaves the DB column null).
-
-    Mirrors the override keys `apply_template_to_order` expects in its
-    `overrides` dict so the postback handler can pass the parsed JSON
-    straight through.
-    """
-    payload = {}
-    # Audit fix — also serialize sl_trail_pct + tp_scales_json so
-    # operator overrides of those fields persist through the postback
-    # handler's override-replay path (the attach pipeline already
-    # honors both fields when present in the overrides dict; the
-    # serializer just wasn't carrying them).
-    for src_key, dst_key in (
-        ("tp_pct_override",             "tp_pct"),
-        ("sl_pct_override",             "sl_pct"),
-        ("wing_premium_pct_override",   "wing_premium_pct"),
-        ("wing_strike_offset_override", "wing_strike_offset"),
-        ("wing_max_spread_pct_override", "wing_max_spread_pct"),
-        ("sl_trail_pct_override",       "sl_trail_pct"),
-        ("tp_scales_json_override",     "tp_scales_json"),
-        ("tp_order_type_override",      "tp_order_type"),
-    ):
-        v = getattr(leg, src_key, None)
-        if v is not None:
-            payload[dst_key] = v
-    if not payload:
-        return None
-    # Guard (tp_order_type_override gap) — tp_order_type only ever
-    # MODIFIES an existing TP leg (see template_attach._parse_template_
-    # overrides), it never CREATES one; it's deliberately excluded from
-    # `template_attach.has_any_override`'s key set for that reason. A
-    # ticket that combines the legacy v1 `target_pct` field with ONLY
-    # tp_order_type_override (no tp_pct_override) would otherwise
-    # persist a non-empty `template_overrides_json` here — which (a)
-    # suppresses the legacy single-TP shim (`_pb_wants_take_profit_arm`
-    # / `_ch_maybe_fire_auto_tp` treat any non-empty override JSON as
-    # "ad-hoc template present") and (b) `has_any_override` still
-    # returns False for a tp_order_type-only dict, so the ad-hoc path
-    # also builds nothing — net result: the take-profit silently
-    # vanishes instead of arming at the legacy target_pct. Treat a
-    # tp_order_type-only payload as "no overrides" so the legacy shim
-    # keeps firing exactly as before this field existed.
-    if set(payload) == {"tp_order_type"}:
-        return None
-    import json as _json
-    return _json.dumps(payload)

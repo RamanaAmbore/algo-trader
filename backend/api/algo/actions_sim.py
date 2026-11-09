@@ -368,9 +368,8 @@ async def _sim_place_or_close(agent, action_type: str, params: dict) -> None:
     # wing into SimGttBook) was removed (Bracket/Template-GTT removal,
     # T3.1, 2026-11) — `_maybe_attach_template_from_action` called
     # `apply_template_to_order`, deleted along with
-    # `backend/api/algo/template_attach.py`. `sim/gtt_book.py` itself is
-    # untouched (its own removal is a later sub-sprint); it simply has
-    # no remaining populator reached from this path.
+    # `backend/api/algo/template_attach.py`. `sim/gtt_book.py` itself was
+    # removed in the following sub-sprint (T3.2, 2026-11).
 
 
 async def _sim_paper_trade(agent, action_type: str, params: dict, context: dict):

@@ -1069,10 +1069,17 @@ class TestRealYamlCatalogResolvesBothTokens:
 
 class TestNoGttOrBracketCodeTouched:
     def test_no_template_attach_or_bracket_files_in_this_plans_diff(self):
+        """Scoped to the 4-sprint auto-close-short-option plan's OWN commit
+        range (base..2d5375d0, its last commit), not an open-ended ..HEAD —
+        Track 3 (a separate, later, deliberate plan) removes Bracket/GTT
+        entirely by design, which would otherwise trip this check forever
+        once that work lands, for a reason unrelated to this plan's own
+        scope discipline."""
         import subprocess
         base = "97dde148"
+        plan_end = "2d5375d0"
         out = subprocess.run(
-            ["git", "diff", "--name-only", f"{base}..HEAD"],
+            ["git", "diff", "--name-only", f"{base}..{plan_end}"],
             cwd=__file__.rsplit("/backend/tests/", 1)[0],
             capture_output=True, text=True, timeout=10,
         )

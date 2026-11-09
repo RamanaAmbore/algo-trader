@@ -1,26 +1,34 @@
 """
-Sprint 17 — conditional parameter requirements (`required_if`) and
-declared mutual-exclusion (`mutually_exclusive_groups`) for place_order's
-grammar catalog entry.
+Sprint 17 — conditional parameter requirements (`required_if`) for
+place_order's grammar catalog entry.
 
 Covers the exact "did the new YAML key actually survive to the wire"
 question the Sprint 17 plan calls out:
   1. agent_grammar.yaml's `price`/`trigger_price` fields carry the
      expected `required_if` spec after `$ref` resolution
      (backend/api/algo/grammar.py:_resolve_param_spec).
-  2. place_order's token-level `mutually_exclusive_groups` key survives
-     into SYSTEM_TOKENS and is exposed via
-     `grammar.get_action_mutex_groups("place_order")`.
-  3. End-to-end: `GET /api/admin/grammar/tokens?grammar=action` (the real
+  2. End-to-end: `GET /api/admin/grammar/tokens?grammar=action` (the real
      route `fetchGrammarTokens('action')` hits — see
      frontend/src/lib/api.js:fetchGrammarTokens and
      backend/api/routes/grammar.py:GrammarTokenController.list_tokens) —
      exercised here via `GrammarTokenController.list_tokens` directly
      (same pattern as test_grammar_catalog_fragment_merge.py) with a fake
      DB row built from the REAL, live-resolved place_order params_schema
-     — returns `required_if` on price/trigger_price and
-     `mutually_exclusive_groups` at the token level in the serialized
+     — returns `required_if` on price/trigger_price in the serialized
      GrammarTokenOut.
+
+Sprint 17 originally ALSO covered place_order's declared mutual-exclusion
+(`mutually_exclusive_groups`, over `wing_premium_pct_override`/
+`wing_strike_offset_override`). Bracket/Template-GTT removal (T3.2,
+2026-11) removed both those params and the mutex declaration from
+agent_grammar.yaml — the template-attach pipeline they fed
+(`backend/api/algo/template_attach.py`) was deleted in the prior
+sub-sprint (T3.1). `TestMutexGroupsResolution` is removed below; the
+surviving tests assert `mutually_exclusive_groups is None` for
+place_order instead of a real group, so the regression this whole
+mechanism protected against (a declared mutex group silently dropped on
+the way to the wire) stays covered for the next action token that
+declares one.
 
 Perf: no DB/network calls (mocked session), pure in-memory assertions.
 """
@@ -75,29 +83,27 @@ class TestRequiredIfResolution:
 
 
 # ── mutually_exclusive_groups (in-memory catalog) ───────────────────────
+# Bracket/Template-GTT removal (T3.2, 2026-11) removed place_order's only
+# declared mutex group along with the two fields it covered. These now
+# assert the negative — no group survives for either action token.
 
 class TestMutexGroupsResolution:
-    def test_place_order_token_level_mutex_groups(self):
+    def test_place_order_token_level_mutex_groups_is_none(self):
         tok = _live_place_order_token()
-        assert tok["mutually_exclusive_groups"] == [
-            ["wing_premium_pct_override", "wing_strike_offset_override"],
-        ]
+        assert tok.get("mutually_exclusive_groups") is None
 
     def test_mutex_groups_not_nested_inside_params_schema(self):
         tok = _live_place_order_token()
         assert "mutually_exclusive_groups" not in tok["params_schema"]
 
-    def test_get_action_mutex_groups_place_order(self):
-        assert grammar.get_action_mutex_groups("place_order") == [
-            ["wing_premium_pct_override", "wing_strike_offset_override"],
-        ]
+    def test_get_action_mutex_groups_place_order_is_none(self):
+        assert grammar.get_action_mutex_groups("place_order") is None
 
     def test_get_action_mutex_groups_unknown_action_is_none(self):
         assert grammar.get_action_mutex_groups("not_a_real_action") is None
 
     def test_get_action_mutex_groups_action_without_groups_is_none(self):
-        """modify_order declares no mutex groups — must not spuriously
-        inherit place_order's."""
+        """modify_order declares no mutex groups."""
         assert grammar.get_action_mutex_groups("modify_order") is None
 
 
@@ -134,13 +140,13 @@ def _session_ctx(rows):
 
 
 class TestToOutSurvival:
-    def test_to_out_populates_mutex_groups_for_place_order(self):
+    def test_to_out_mutex_groups_is_none_for_place_order(self):
+        """Bracket/Template-GTT removal (T3.2, 2026-11) — place_order no
+        longer declares a mutex group."""
         row = _grammar_token_row()
         out = g._to_out(row)
         assert isinstance(out, GrammarTokenOut)
-        assert out.mutually_exclusive_groups == [
-            ["wing_premium_pct_override", "wing_strike_offset_override"],
-        ]
+        assert out.mutually_exclusive_groups is None
 
     def test_to_out_params_schema_price_carries_required_if(self):
         row = _grammar_token_row()
@@ -193,9 +199,9 @@ class TestListTokensRouteSurvival:
         assert len(action_type_rows) == 1
         place_order_out = action_type_rows[0]
         assert place_order_out.token == "place_order"
-        assert place_order_out.mutually_exclusive_groups == [
-            ["wing_premium_pct_override", "wing_strike_offset_override"],
-        ]
+        # Bracket/Template-GTT removal (T3.2, 2026-11) — no mutex group
+        # survives for place_order any more.
+        assert place_order_out.mutually_exclusive_groups is None
         assert place_order_out.params_schema["price"]["required_if"] == {
             "field": "order_type", "in": ["LIMIT", "SL"],
         }

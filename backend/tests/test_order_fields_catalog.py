@@ -169,6 +169,13 @@ class TestRefResolver:
 # place_order's/order's RESOLVED schema now carries these four
 # descriptions while order_fields.yaml stays description-less for them.
 # This fixture was updated on purpose to include that — not loosened.
+#
+# 2026-11 amendment (Bracket/Template-GTT removal, T3.2): `template_id`/
+# `template_slug`/`tp_pct_override`/`sl_pct_override`/
+# `wing_premium_pct_override`/`wing_strike_offset_override` removed from
+# this golden fixture, matching their removal from agent_grammar.yaml's
+# place_order params_schema — the template-attach pipeline they fed was
+# deleted in the prior sub-sprint (T3.1). Deliberate, not loosened.
 _PRE_PHASE2_PLACE_ORDER_PARAMS_SCHEMA = {
     "account": {
         "type": "string", "required": True, "token_ref_ok": True,
@@ -219,30 +226,6 @@ _PRE_PHASE2_PLACE_ORDER_PARAMS_SCHEMA = {
     "tag": {
         "type": "string", "required": False,
         "description": "Free-form tag propagated into the broker order id and AlgoOrder row.",
-    },
-    "template_id": {
-        "type": "number", "required": False,
-        "description": "OrderTemplate row id. Mutually exclusive with template_slug.",
-    },
-    "template_slug": {
-        "type": "string", "required": False,
-        "description": 'OrderTemplate stable slug (e.g. "default-bull", "default-short-vol", "none").',
-    },
-    "tp_pct_override": {
-        "type": "number", "required": False,
-        "description": "Per-action TP% override (e.g. 25.0 = +25%). Wins over template default.",
-    },
-    "sl_pct_override": {
-        "type": "number", "required": False,
-        "description": "Per-action SL% override (e.g. 15.0 = -15%). Wins over template default.",
-    },
-    "wing_premium_pct_override": {
-        "type": "number", "required": False,
-        "description": "Per-action wing premium % override (sell_option only).",
-    },
-    "wing_strike_offset_override": {
-        "type": "number", "required": False,
-        "description": "Per-action wing strike offset override (e.g. 500 → wing at +500 strike).",
     },
 }
 
