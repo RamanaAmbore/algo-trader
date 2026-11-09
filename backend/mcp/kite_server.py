@@ -911,8 +911,7 @@ async def get_order_events(order_id: int) -> dict:
     Wraps the same `GET /api/orders/{order_id}/events` endpoint the
     OrderBook/LogPanel UI uses — read-only, no confirm_token needed.
     Useful to inspect what happened to an order you (or the operator)
-    placed: fills, template-attach attempts, preflight blocks, chase
-    cancel/replace cycles, etc.
+    placed: fills, preflight blocks, chase cancel/replace cycles, etc.
 
     Args:
         order_id: The AlgoOrder.id (integer) — e.g. the `order_id`

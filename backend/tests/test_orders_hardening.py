@@ -227,9 +227,9 @@ class TestLimitPriceValidationBeforeSdk:
         """place_order(order_type="LIMIT", price=150.5) does NOT raise; SDK is called."""
         pytest.skip("Pending M3 implementation + M3 SDK guard integration test")
 
-    def test_place_gtt_limit_zero_price_raises_before_sdk(self):
-        """place_gtt with a leg having order_type="LIMIT", price=0 raises BrokerOrderError before SDK."""
-        pytest.skip("Pending M3 implementation in kite.py:place_gtt")
+    # test_place_gtt_limit_zero_price_raises_before_sdk removed (Bracket/
+    # Template-GTT removal, T3.1, 2026-11) — KiteBroker.place_gtt was
+    # deleted; this placeholder could never be implemented against it.
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

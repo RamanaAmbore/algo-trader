@@ -1,9 +1,11 @@
 <!--
   HeldOrdersCard.svelte — automated orders held for review, with release
-  and cancel actions per order. Lists held expiry closes and held agent
-  orders (chase paused after repeated rejection). The 'template_exit'
-  category (Bracket exits) was removed 2026-11 (Track 3, T3.4,
-  Bracket/Template/GTT removal) — see kindOf()'s own comment.
+  and cancel actions per order. Lists held expiry closes, held agent
+  orders (chase paused after repeated rejection), and held agent-close
+  requests (the exit-tp-short-option-90 agent's require_release hold,
+  2026-11). The 'template_exit' category (Bracket exits) was removed
+  2026-11 (Track 3, T3.4, Bracket/Template/GTT removal) — see kindOf()'s
+  own comment.
 -->
 <script>
   import { onMount } from 'svelte';
@@ -27,6 +29,11 @@
       // longer exists server-side (T3.1), so this category can never
       // occur in a real hold_json payload going forward.
       if (h.category === 'agent_order') return 'Repeated rejection';
+      // `HoldCategory.AGENT_CLOSE` (2026-11, the exit-tp-short-option-90
+      // agent's require_release close) used to silently fall through to
+      // the 'Expiry close' default below — a real, live category, not a
+      // removed one. Give it its own label instead of misreporting it.
+      if (h.category === 'agent_close') return 'Profit-target close';
       return 'Expiry close';
     } catch {
       // Item 3 (2026-11-02, PLAN.md) — "Held" → "Pending": a malformed/
@@ -48,6 +55,7 @@
   function kindClassOf(row) {
     const kind = kindOf(row);
     if (kind === 'Repeated rejection') return 'held-kind-rejection';
+    if (kind === 'Profit-target close') return 'held-kind-agent-close';
     return 'held-kind-expiry';
   }
 
@@ -190,6 +198,7 @@
      ('Bracket exit'/.held-kind-bracket removed 2026-11, see kindOf().) */
   .held-kind-expiry    { color: var(--algo-amber); background: var(--algo-amber-bg-strong); padding: 1px 5px; border-radius: 3px; }
   .held-kind-rejection { color: var(--algo-orange); background: color-mix(in srgb, var(--algo-orange) 22%, transparent); padding: 1px 5px; border-radius: 3px; }
+  .held-kind-agent-close { color: var(--algo-green); background: var(--algo-green-bg-strong); padding: 1px 5px; border-radius: 3px; }
   .held-desc { flex: 1; color: var(--algo-slate); }
   .held-side { font-weight: 700; }
   .held-side-buy  { color: var(--btn-buy); }

@@ -1807,7 +1807,8 @@ async def _ticket_place_paper(data, request, account: str, sym: str, side: str, 
 
     `_maybe_attach_template_to_ticket` (the template-attach preview
     shim) was removed (Bracket/Template-GTT removal, T3.1, 2026-11) —
-    `template_attachment` on the response is now always `None`."""
+    `TicketOrderResponse.template_attachment` was removed with it
+    (T3.6)."""
     from backend.api.schemas import TicketOrderResponse
     from backend.shared.helpers.utils import mask_account
 

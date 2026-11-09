@@ -12,8 +12,17 @@
  * is no separate hidden poller `<div>` anymore; ChaseCard's own polling
  * continues in the background regardless of visibility.
  *
+ * 2026-11 (post-removal audit fix): the status-strip selectors below were
+ * stale — `.oc-filter-card`/`.oc-filter-label`/`.oc-filter-count` never
+ * existed in OrderBook.svelte; the real chip markup is `.ob-sc`/`.ob-sc-l`/
+ * `.ob-sc-n` inside `.ob-status-bar`. This made every test in this file
+ * time out on `.oc-filter-card` before reaching its own assertions.
+ * Updated to the real selectors and the real 5-chip label set (Pending/
+ * Attn, Chase, Open, Filled, Rejected/Cancelled — no GTT chip, confirmed
+ * removed 2026-11, commit 2a923c57).
+ *
  * Invariants:
- *   1. Status strip (.oc-filter-card buttons) shows 5 chips including Open.
+ *   1. Status strip (.ob-sc buttons) shows 5 chips including Open.
  *   2. Exactly one `section.bucket-card-chase` exists, always (no XOR with
  *      a separate hidden-poller container — that container no longer
  *      exists at all).
@@ -44,19 +53,19 @@ test.describe('/orders — Chases section visibility gate', () => {
     await page.goto('/orders', { waitUntil: 'domcontentloaded' });
     // Wait for the status strip's filter cards to appear — these are
     // always rendered regardless of order count.
-    await page.waitForSelector('.oc-filter-card', { timeout: TIMEOUT });
+    await page.waitForSelector('.ob-sc', { timeout: TIMEOUT });
     // Give the hidden ChaseCard poller 5 s to fire its first poll and
     // update _activeChases so we read the settled gate state.
     await page.waitForTimeout(5000);
   });
 
   test('status strip has 5 filter cards including Open', async ({ page }) => {
-    const cards = page.locator('.oc-filter-card');
+    const cards = page.locator('.ob-status-bar .ob-sc');
     await expect(cards).toHaveCount(5);
 
     // Confirm the "Open" label chip is one of them.
     const labels = await cards.evaluateAll(els =>
-      els.map(el => el.querySelector('.oc-filter-label')?.textContent?.trim() ?? '')
+      els.map(el => el.querySelector('.ob-sc-l')?.textContent?.trim() ?? '')
     );
     expect(labels).toContain('Open');
   });
@@ -73,13 +82,13 @@ test.describe('/orders — Chases section visibility gate', () => {
   });
 
   test('gate state (visibility) is consistent with Open order count', async ({ page }) => {
-    // Read the "Open" count from the .oc-filter-count inside the Open card.
+    // Read the "Open" count from the .ob-sc-n inside the Open card.
     const openCount = await page.evaluate(() => {
-      const cards = Array.from(document.querySelectorAll('.oc-filter-card'));
+      const cards = Array.from(document.querySelectorAll('.ob-status-bar .ob-sc'));
       for (const card of cards) {
-        const label = card.querySelector('.oc-filter-label')?.textContent?.trim();
+        const label = card.querySelector('.ob-sc-l')?.textContent?.trim();
         if (label === 'Open') {
-          const count = card.querySelector('.oc-filter-count')?.textContent?.trim();
+          const count = card.querySelector('.ob-sc-n')?.textContent?.trim();
           return count ? parseInt(count, 10) : 0;
         }
       }

@@ -9,12 +9,16 @@ POST /api/orders/gtts/{gtt_id}/cancel — cancel one GTT at the broker
                                          optional — Groww requires it to
                                          resolve its segment).
 
-This is a DIFFERENT concept from the per-filled-order attached-exit-GTT
-bookkeeping surfaced via `AlgoOrder.attached_gtts_json` (see OrderCard.svelte)
-— that tracks GTTs this app itself placed as take-profit/stop legs after a
-fill. This module is a raw, read-mostly mirror of whatever stands resting at
-the broker right now, regardless of how it got there (operator-placed via
-Kite's own app, a template attach, a manual GTT, etc.).
+This was a DIFFERENT concept from the per-filled-order attached-exit-GTT
+bookkeeping that used to be surfaced via `AlgoOrder.attached_gtts_json` —
+that tracked GTTs this app itself placed as take-profit/stop legs after a
+fill, via the Bracket/Template engine. That column and the engine behind
+it were removed (Bracket/Template-GTT removal, T3.1/T3.6, 2026-11). This
+module is unaffected and still live: a raw, read-mostly mirror of
+whatever stands resting at the broker right now, regardless of how it
+got there (operator-placed via Kite's own app, a manual GTT, etc.) — its
+own frontend caller is `LogPanel.svelte`'s independent `'gtt_broker'`
+order-log line, not `OrderCard.svelte`.
 
 Broker-layer support: `Broker.get_gtts()` / `Broker.cancel_gtt()` (base.py),
 implemented by kite.py, dhan.py, groww.py. Each broker's `get_gtts()` row

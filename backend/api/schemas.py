@@ -653,8 +653,10 @@ class TicketOrderRequest(msgspec.Struct):
     # ── Legacy single-TP path ─────────────────────────────────────────
     # `target_pct` is the v1 take-profit field — fractional (0.30 =
     # +30%). Target portfolio allocation percentage for this position.
-    # When present and no template is supplied, the handler auto-maps
-    # it to tp_pct_override so the same downstream attach pipeline fires.
+    # Feeds the legacy, always-on `_arm_take_profit()` single-target TP
+    # shim directly (persisted straight to `AlgoOrder.target_pct`) — the
+    # `tp_pct_override`/template-attach pipeline it used to feed into was
+    # removed (Bracket/Template-GTT removal, T3.1/T3.6, 2026-11).
     target_pct: Optional[float] = None
     # `template_id` removed (Bracket/Template-GTT removal, T3.6, 2026-11)
     # — the still-unmodified-at-the-time frontend sent it on every ticket
@@ -752,11 +754,9 @@ class TicketOrderResponse(msgspec.Struct):
     mode: str
     status: str
     detail: str
-    # When a template was attached, the resolved plan + any placed GTT
-    # ids / wing order id flow back here so the UI can show "TP @ ₹X
-    # placed (gtt #42), Wing @ ₹Y placed (#43)" in the success line.
-    # None when no template was attached.
-    template_attachment: Optional[dict] = None
+    # `template_attachment` (the resolved Bracket/Template plan + any
+    # placed GTT/wing order ids) removed 2026-11 (Track 3, T3.6,
+    # Bracket/Template/GTT removal) — nothing constructed it since T3.1.
 
 
 # `TicketPreviewRequest`/`TicketPreviewResponse` removed (Bracket/
