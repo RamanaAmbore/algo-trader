@@ -290,7 +290,11 @@ account codes reaching logs and notifications despite the `mask_account()` conve
   `template_attach.py` broker-resolution catch and the three `event_agents.py` renderers
   (`_render_partial_gtt`, `_render_template_attach`, `_render_gtt_not_accepted`) scrub free text with
   `mask_account_in_text()`. `connections.py` logs Dhan token-response status and keys only, never the
-  body. Exception text in `chase.py` is masked at source.
+  body. Exception text in `chase.py` is masked at source. (**REMOVED — Bracket/Template/GTT
+  (T3.1–T3.4, 2026-11)**: `template_attach.py` and its broker-resolution catch no longer exist; the
+  three named `event_agents.py` renderers were removed with it. The rest of this entry — the central
+  log filter, CRITICAL/`ERROR_AGENT` matching, and the numeric Dhan `client_id` fix below — is
+  unaffected and still live.)
   - **Double-mask guard.** `mask_account()` is NOT idempotent. Re-masking `Z1####` yields `Z#####`.
     The `actions_live.py` re-raise sites are therefore left unmasked on purpose, because `chase.py`
     already masked the value upstream. Do not add a second mask at those sites.
@@ -886,7 +890,7 @@ must split plain and HTML slots. It must never hand a tagged body to an escape-f
 - **Forced email for action-required records.** `_apply_action_required_email_gate()` ([event_agents.py:854](backend/api/algo/event_agents.py#L854)) mirrors the ntfy gate at [:823](backend/api/algo/event_agents.py#L823). It runs once per record in `_dispatch_record_channels()` ([:685](backend/api/algo/event_agents.py#L685)), before the per-channel ntfy gate. When `extra["action_required"] is True` and the channel list has no `email` entry, it appends `{"channel": "email", "enabled": True, "gate": False}`. It never duplicates an existing entry, and `False` or absent leaves the list untouched.
 - **Alerts tab merges `alert`-tagged `LogEvent` rows.** `GET /api/admin/alerts/history` ([routes/alerts.py:222](backend/api/routes/alerts.py#L222)) also selects `LogEvent` rows whose `tags` overlap `["alert"]` ([`_build_log_alert_stmt`, :161](backend/api/routes/alerts.py#L161)). It maps each row to the `AlertEvent` shape via `_log_event_to_alert()` ([:194](backend/api/routes/alerts.py#L194)), so the frontend needs no change. The merge runs only when no `agent_id`, `agent_slug` or `event_type` filter is set ([:297](backend/api/routes/alerts.py#L297)). `sim_mode` is filtered in Python from JSONB `extra`. The two lists are sorted by the real `ts`, never the display string, and truncated to `limit` ([:315](backend/api/routes/alerts.py#L315)).
   - **Id namespacing.** A merged row gets `id = -event.id` ([:201](backend/api/routes/alerts.py#L201)) and `agent_id = 0` ([`_LOG_ALERT_AGENT_ID_SENTINEL`, :50](backend/api/routes/alerts.py#L50)). Negative ids keep `LogEvent`-sourced rows out of the positive `AgentEvent` id space. Neither the code nor the commit message records this reason. The rationale here is the observable effect, not a stated intent.
-  - **Which records are tagged.** The additive `alert` catalog token ([agent_grammar.yaml:1534](backend/config/grammars/agent_grammar.yaml#L1534)) is on alert-worthy lines in `fill_notify.py` ([:101](backend/api/algo/fill_notify.py#L101)), `order_poll.py` ([:217](backend/api/algo/order_poll.py#L217)), `template_attach.py`, `chase.py` ([:2769](backend/api/algo/chase.py#L2769)), `orders_place.py` ([:1174](backend/api/routes/orders_place.py#L1174)), `lab.py` ([:1144](backend/api/routes/lab.py#L1144)) and `alert_utils.py` ([:1198](backend/shared/helpers/alert_utils.py#L1198)). `rich_alert` and `breach` are deliberately not tagged. Their firings already exist as `AgentEvent` rows, and tagging them would double each one.
+  - **Which records are tagged.** The additive `alert` catalog token ([agent_grammar.yaml:1534](backend/config/grammars/agent_grammar.yaml#L1534)) is on alert-worthy lines in `fill_notify.py` ([:101](backend/api/algo/fill_notify.py#L101)), `order_poll.py` ([:217](backend/api/algo/order_poll.py#L217)), `template_attach.py` (**REMOVED — Bracket/Template/GTT, T3.1–T3.4, 2026-11** — this file no longer exists), `chase.py` ([:2769](backend/api/algo/chase.py#L2769)), `orders_place.py` ([:1174](backend/api/routes/orders_place.py#L1174)), `lab.py` ([:1144](backend/api/routes/lab.py#L1144)) and `alert_utils.py` ([:1198](backend/shared/helpers/alert_utils.py#L1198)). `rich_alert` and `breach` are deliberately not tagged. Their firings already exist as `AgentEvent` rows, and tagging them would double each one.
   - **Fixed same day, commit `492fd988` — this was NOT just an Alerts-tab visibility gap, it was zero channel delivery.** `alert_utils` is in `_SKIP_PREFIXES` ([log_store.py:29](backend/shared/helpers/log_store.py#L29)). `LogStoreHandler.emit()` returns before queueing when `record.name.startswith(_SKIP_PREFIXES)` ([:217](backend/shared/helpers/log_store.py#L217)). `_send_order_failure_messages()` ([alert_utils.py:1193](backend/shared/helpers/alert_utils.py#L1193)) and `send_summary()` ([:918](backend/shared/helpers/alert_utils.py#L918)) both logged through `alert_utils.py`'s own module `logger` — so their records never reached `log_events`, never reached `event_agents.dispatch()`, and `ORDER_FAILURE_AGENT`/the summary agent could never fire. **Confirmed via git history: zero Telegram/ntfy/email delivery for order failures and market-open/close summaries for ~19 days**, since `_SKIP_PREFIXES` gained this entry on 2026-10-06 (`54860caa`) — three months after `5f0a6d5c` (2026-07-23) had already migrated both functions off direct `_send_telegram()`/`send_email()` calls onto this log-and-dispatch model. The two changes, three months apart, silently combined into this gap; neither commit's own test suite caught it because tests mock the dispatch layer directly rather than exercising the real skip-list end-to-end. Fix: both functions now log through a new `_DISPATCH_LOGGER` ([alert_utils.py:93](backend/shared/helpers/alert_utils.py#L93), name `backend.api.algo.events` — the exact same non-skip-listed logger name `event_agents.py`'s own `_EVENTS_LOGGER` already uses for this identical purpose) instead of the skip-listed `logger`. The skip-list itself is untouched — it still correctly protects this module's genuine internal diagnostics (Redis/Telegram/email send status). Regression test in `test_log_store.py::test_order_failure_and_summary_records_reach_the_queue` attaches a real `LogStoreHandler` to the real logger and proves the record survives `emit()` — not a mocked call. Invariant: any log call meant to trigger event-agent dispatch must use a logger name outside `_SKIP_PREFIXES`; `_DISPATCH_LOGGER`/`_EVENTS_LOGGER` is that one, shared convention — never log-and-dispatch through a module's own skip-listed `logger`.
 - Test-only commit `368c98a8` adds [backend/tests/test_alert_agent_dsl_examples.py](backend/tests/test_alert_agent_dsl_examples.py). It is illustrative DSL-to-dispatch fixtures and changes no runtime code.
 - Invariant: an outbound Telegram or ntfy message is plain text with no markup. The origin line is line 1 of every event-renderer message, with the agent-less summary as the one named exception. A deploy-sync notice reaches only `telegram_deploy`. An action-required record always reaches email. An Alerts-tab row never collides with an `AgentEvent` id.
@@ -1158,7 +1162,10 @@ at [template_attach.py:2129](backend/api/algo/template_attach.py#L2129) now carr
 same way its sibling block does. Without it, a GTT that was placed but not yet verified showed no
 action identity. Test:
 `test_template_attach_gtt_unverified_not_discarded.py::test_gtt_unverified_tracked_log_carries_agent_id`.
-This is a mechanical fix. It does not change the identity model.
+This is a mechanical fix. It does not change the identity model. (This test, and the
+`gtt_unverified_tracked` log record it covered, no longer exist — `template_attach.py` was removed
+in the later Bracket/Template/GTT removal, T3.1, 2026-11. The identity-model fix described above is
+otherwise unaffected; only this one producer and its test are gone.)
 
 **Trailing tag — four independent slots, dedup across all four (`_agent_tag_line` /
 `_agent_pill_html`).** The trailing tag line is now built from four slots, in this order:
@@ -1464,7 +1471,9 @@ below. Order placement, template attach, chase, the agent close-all action and
   - Template-attach offhours wing gate — `_check_offhours_wing_gate()` (`algo/template_attach.py`,
     plain `def`). Its only caller, `_apply_template_to_order_impl()` (async), awaits
     `_prewarm_special_sessions_for_exchange(parent_exchange)` immediately before calling it
-    (`59b4c01b`, cleaned up in `634ce8e4`). **Closed via the caller**, not the gate.
+    (`59b4c01b`, cleaned up in `634ce8e4`). **Closed via the caller**, not the gate. (**REMOVED —
+    Bracket/Template/GTT, T3.1–T3.4, 2026-11**: `template_attach.py` and this gate no longer exist;
+    historical record only.)
   - `market_lifecycle.py` `poll()`: **closed**, and the highest-stakes site because it drives
     `close_settled` and `daily_book` snapshot writes. A cold-cache fail-open here would hide a
     DB-confirmed MCX evening closure and fire a spurious `mcx:open` → `close_settled` cycle. Added
@@ -1476,7 +1485,9 @@ below. Order placement, template attach, chase, the agent close-all action and
   - `apply_plan_live` (`algo/template_attach.py`): **never exposed**. It is reached only via
     `asyncio.to_thread(apply_plan_live, ...)` in `_route_apply_path()`. It runs in a worker thread,
     so `run_on_main_loop()`'s self-deadlock guard never applies and its blocking DB read proceeds
-    normally. Earlier docs listing it as exposed were wrong.
+    normally. Earlier docs listing it as exposed were wrong. (**REMOVED — Bracket/Template/GTT,
+    T3.1–T3.4, 2026-11**: `apply_plan_live`/`template_attach.py` no longer exist; historical record
+    only.)
   - `_exchange_open_for_attach` (`routes/orders_place.py`): **deleted** in `b79cfbb0`. It was dead
     code with zero production callers, so it was never a real gate. Earlier docs listed it as a
     live ticket-gate call site, which was wrong.
@@ -2381,14 +2392,16 @@ design decision. The auto-pair display system (`pair_group_key`, `is_orphan`,
 
 `frontend/src/lib/data/positionStateBadge.js:positionStateBadge(row)` remains the SSOT for
 the St-column badge on both MarketPulse's Positions grid and the derivatives Legs grid.
-Priority order is GTT > auto-paired > orphan (three states; orphan glyph deliberately not
-`○`/letter-O — see the function's own docstring). The derivatives Legs grid's data pipeline
+Priority order is auto-paired > orphan (two states — the former GTT branch was removed 2026-11,
+Track 3, T3.4; see the function's own docstring). The derivatives Legs grid's data pipeline
 (`frontend/src/lib/data/expiryPnl.js:buildPositionRowFromBroker()`) passes `has_gtt`,
 `pair_group_key`, and `is_orphan` through; it previously stripped them via an explicit field
 whitelist, which was the root cause of the grid always showing a decorative orphan glyph.
 `pairGroupSort.js` keys on `pair_group_key` only (via `${account}|${pair_group_key}`).
-Invariant, still in force: chase, bracket armature, and `template_attach.py` do not consult
-`pair_group_key` for any execution decision. The two auto-pairing algorithms
+Invariant, still in force for chase: it does not consult `pair_group_key` for any execution
+decision. (The "bracket armature" and `template_attach.py` clauses of this invariant are moot —
+both were removed in the later Bracket/Template/GTT removal, T3.1–T3.4, 2026-11; historical record
+only.) The two auto-pairing algorithms
 (`_auto_pair_positions` quantity-waterfall vs. `_classify_mcx_group` CE/PE-net) disagree in
 principle, and reconciling them is a separate decision. `AlgoOrder.parent_order_id` (set by
 take-profit, template/wing attach, and chase; no longer settable from the UI) remains the only
@@ -2723,11 +2736,15 @@ and invents no new proportional metric.
   - Scoped to this one producer, not a central recursive walk in `_AccountMaskFilter`. `extra` values are
     often structured data that downstream code needs unmasked. `mask_account()` is also not idempotent,
     so a blanket second mask would yield a wrong, plausible-looking value.
+  - (**REMOVED — Bracket/Template/GTT (T3.1–T3.4, 2026-11)**: `template_attach.py` and its
+    `_fire_guard_alert()` function no longer exist; this bullet is historical record only.)
 - Tests: `backend/tests/test_loss_positions_total_drawdown_gate.py` (incl.
   `TestModestPullbackNowFiresPerOperatorPriority`, which uses the real observed −9,199.69/min rate in a
-  rising-day scenario), `backend/tests/test_alert_row_grouping.py`,
-  `backend/tests/test_fire_guard_alert_extra_masking.py` (drives a real `LogStoreHandler` and asserts on
-  `extra`, not only the rendered string).
+  rising-day scenario), `backend/tests/test_alert_row_grouping.py`. (Correction: no test file named
+  `test_fire_guard_alert_extra_masking.py` exists, and no dedicated test currently covers the
+  guard-alert `extra`-masking fix on its own — see the inline fix description in the bullet above.
+  The producer it covered, `template_attach.py:_fire_guard_alert`, was itself removed in the later
+  Bracket/Template/GTT removal, T3.1, 2026-11.)
 - Invariant: a critical loss guard never treats a rate-of-change move as noise unless the book is up and
   has not given back a meaningful amount from its session peak. A grouped alert never shows one merged
   number unless its members agree. A structured `extra` value that carries an account is masked at its
@@ -2945,7 +2962,9 @@ per leg; adapter ceiling in `place_gtt` provides last-line defense.
 is always a valid multiple by construction so the check is redundant at the ticket 
 boundary. Remaining G1 defenses: (1) `_arm_take_profit` live path has an inline G1 
 guard before `broker.place_order` (no `run_preflight` — G2 skipped); (2) `apply_plan_live` 
-GTT layer has a synchronous G1 check at the top before any broker call. G2 
+GTT layer has a synchronous G1 check at the top before any broker call. (**REMOVED —
+Bracket/Template/GTT (T3.1–T3.4, 2026-11)**: `apply_plan_live`/`template_attach.py` no
+longer exist, so this specific GTT-layer defense is gone; historical record only.) G2 
 (FAT_FINGER_5_LOT_CAP) bypassed via `intent="close"`. Blocked close writes REJECTED 
 AlgoOrder + alert; chase loop uses `continue` so other positions proceed. 50-lot adapter
 ceiling in `kite.py:place_order` is bypassed when `intent="close"` — close orders of any
@@ -3005,7 +3024,8 @@ coincidence before this fix, no guard against future drift. Chain orders (`Optio
 ChainTab.svelte`) submit through `placeTicketOrder()` → `/ticket`, so this fix
 covers them too; no separate chain endpoint exists. Template attach path
 (`template_attach.py`) reads no client-supplied intent field at all — nothing to fix
-there.
+there. (`template_attach.py` was itself removed in the later Bracket/Template/GTT
+removal, T3.1, 2026-11 — this note is historical record only.)
 
 **Cross-reference — margin-gate close exemption (2026-10-20, commit `fa0e3a42`)**: the same
 invariant applies to the Dhan/Groww margin exemption. `_preflight_emit_margin_blocker`
@@ -3077,6 +3097,9 @@ product, then `"NRML"`.
 since `bool(float('nan'))` is `True` in Python. The `pd.isna` guard in `3ea29a24` covered only
 `_fetch_net_position_product`; this path used a separate, no-pandas-import `x != x` NaN check
 instead (the file has no other pandas dependency) — same effect, no new import.
+
+> **REMOVED — Bracket/Template/GTT (T3.1–T3.4, 2026-11).** Historical record only; do not
+> reintroduce without a new design decision.
 
 **Preview matches enforcement.** The margin preview is NAKED: it sends no `paired_legs`, matching
 the submit-time check ([`OrderTicket.svelte:2115`](frontend/src/lib/order/OrderTicket.svelte#L2115)).
@@ -3163,7 +3186,8 @@ stop ratchet, and order modify paths; all patches deployed together. Key invaria
   `_check_kite_gtt_qty_ceiling` / `_check_dhan_gtt_qty_ceiling` as a last-line
   defense before SDK call, mirroring `place_gtt`'s existing pattern. Any new
   GTT-modify path must call `broker.translate_qty` before building payload (C6
-  fix).
+  fix). (**REMOVED — Bracket/Template/GTT (T3.1–T3.4, 2026-11)**: `modify_gtt`/
+  `place_gtt` and both qty-ceiling helpers no longer exist; historical record only.)
 - **G1 lot-multiple preflight applies uniformly** — MCX/NCO skip removed from
   `actions_preflight.py`. Positions ARE converted to contracts before reaching
   this check (per `broker_apis.py:_annotate_lot_size`), so G1's `qty % lot_size`
@@ -3478,6 +3502,9 @@ Two UI defects blocked option-specific template selection on Chain:
   order.
 Invariant: template scope resolution must track the actual focused leg symbol,
 not the root, and explicit in-session preference must survive leg additions.
+
+> **REMOVED — Bracket/Template/GTT (T3.1–T3.4, 2026-11).** Historical record only; do not
+> reintroduce without a new design decision.
 
 **Fill bookkeeping completeness — filled_quantity and attached GTT entries
 (2026-09-30, commit b8bd1b7b)** — Three linked postback/reconcile defects
