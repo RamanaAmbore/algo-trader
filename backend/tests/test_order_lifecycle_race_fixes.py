@@ -754,11 +754,6 @@ async def test_admin_reconcile_writes_ledger_for_reconciled_fills():
     _apply_result = MagicMock()
     _apply_result.scalar_one_or_none.return_value = locked_row
 
-    # Bracket-hold query (`held_rows`, 2026-11-03 addition) — runs
-    # unconditionally after the main loop, before the filled_ids refetch.
-    _held_result = MagicMock()
-    _held_result.scalars.return_value.all.return_value = []
-
     _refetch_result = MagicMock()
     _refetch_result.scalars.return_value.all.return_value = [locked_row]
 
@@ -766,7 +761,7 @@ async def test_admin_reconcile_writes_ledger_for_reconciled_fills():
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session.__aexit__ = AsyncMock(return_value=False)
     mock_session.execute = AsyncMock(
-        side_effect=[_scan_result, _apply_result, _held_result, _refetch_result],
+        side_effect=[_scan_result, _apply_result, _refetch_result],
     )
     mock_session.commit = AsyncMock()
 

@@ -108,11 +108,9 @@ async def test_cancel_expiry_close_hold_succeeds():
 # test_cancel_template_exit_hold_succeeds_without_touching_filled_status
 # removed (Bracket/Template-GTT removal, T3.1, 2026-11) — it covered
 # `cancel_held_order`'s `category == "template_exit"` branch
-# (order_release.py). That branch's code is left completely intact per
-# the removal's own scope (only the 3 TEMPLATE_EXIT-specific functions
-# and the enum member were removed, not this shared function) — it is
-# now unreachable in practice, since nothing creates a `template_exit`
-# hold anymore, but the brief does not ask for it to be stripped out.
+# (order_release.py). That branch itself was later deleted outright
+# (Track 3 cleanup, 2026-11) — it had been left unreachable-but-intact
+# since T3.1, since nothing creates a `template_exit` hold anymore.
 
 
 # ── cancel_held_order: refusal cases ────────────────────────────────────────
@@ -130,10 +128,9 @@ async def test_cancel_refuses_when_row_missing():
 
 
 @pytest.mark.asyncio
-async def test_cancel_refuses_when_not_held_and_no_template_exit_hold():
-    """A row that is neither status=HELD nor carrying a pending template_exit
-    hold (e.g. a plain OPEN order with no hold_json at all) is refused —
-    mirroring release_held_order's own analogous refusal shape."""
+async def test_cancel_refuses_when_not_held():
+    """A plain OPEN order with no hold_json at all is refused — mirroring
+    release_held_order's own analogous refusal shape."""
     from backend.api.algo import order_release as m
 
     row = _held_row(status="OPEN", hold_json=None)

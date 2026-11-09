@@ -290,7 +290,8 @@ async def release_held_order(order_id: int, actor: str) -> dict:
 
         row.status = "OPEN"
         # Clear hold_json alongside the status change, matching the sibling
-        # release paths (release_template_exit, release_repeated_rejection_hold).
+        # release path (release_repeated_rejection_hold) — release_template_exit
+        # was removed, T3.1, 2026-11.
         # orders_held.py's list_held query matches `status == "HELD" OR
         # hold_json IS NOT NULL` — leaving hold_json populated here left a
         # released expiry-close row stuck in HeldOrdersCard forever, and both
@@ -531,24 +532,17 @@ async def cancel_held_order(order_id: int, actor: str) -> dict:
     something new on release, none of them resume/cancel an already-resting
     broker order).
 
-    Deliberate deviation from "generic across all hold categories, don't
-    branch by category": `EXPIRY_CLOSE` and `AGENT_ORDER` holds both set
-    `row.status = "HELD"` at hold-time (`order_hold_gate.py:record_held_order`,
-    `chase.py`'s repeated-rejection hold), but `TEMPLATE_EXIT` holds
-    (`order_hold_gate.py:hold_template_exit`) do NOT touch `row.status` —
-    they mark a FILLED parent's pending exit-attach with `hold_json` only,
-    leaving `row.status == "FILLED"`. Branching on hold category (not
-    `row.status`) would mean a template_exit cancel could never succeed
-    (status would always read "FILLED, not HELD"), defeating the feature for
-    one of the three listed categories. Branching on row state instead:
-    - `status == "HELD"` (expiry_close / agent_order): transition to
-      CANCELLED, same as the literal spec.
-    - `status != "HELD"` but a `template_exit` hold is pending: clear the
-      hold only (abandon the pending exit attach), leave `status` untouched.
-      Never overwrite a FILLED parent's status to CANCELLED — that would
-      misstate a real broker fill and corrupt order history/reconcile.
-    - Anything else: refuse, mirroring `release_held_order`'s own refusal
-      shape.
+    Generic across every remaining hold category (`EXPIRY_CLOSE`,
+    `AGENT_ORDER`, `AGENT_CLOSE`) — all three set `row.status = "HELD"` at
+    hold-time, so a single `status == "HELD"` check covers all of them.
+
+    A `TEMPLATE_EXIT`-category branch (which did NOT touch `row.status` —
+    `order_hold_gate.py:hold_template_exit` marked a FILLED parent's pending
+    exit-attach with `hold_json` only) used to sit here as a second,
+    status-agnostic path. Removed 2026-11 (Track 3 cleanup) — the category
+    was permanently unreachable the moment T3.1 deleted `hold_template_exit()`
+    and `HoldCategory.TEMPLATE_EXIT` itself; nothing has created such a row
+    since, and nothing ever will again.
     """
     from backend.api.database import async_session
     from backend.api.models import AlgoOrder
@@ -560,8 +554,6 @@ async def cancel_held_order(order_id: int, actor: str) -> dict:
         if row is None:
             return {"ok": False, "reason": "order not found", "status": ""}
 
-        rec = parse_hold_record(row.hold_json) or {}
-        category = rec.get("category")
         now = datetime.now(timezone.utc).isoformat()
 
         if row.status == "HELD":
@@ -573,14 +565,6 @@ async def cancel_held_order(order_id: int, actor: str) -> dict:
             side, qty, row_id = row.transaction_type, int(row.quantity), row.id
             new_status = "CANCELLED"
             msg = f"Cancelled by {actor}: {side} {qty} {symbol}"
-        elif category == "template_exit" and row.hold_json:
-            row.hold_json = None
-            row.detail = f"{row.detail or ''} · template exits cancelled by {actor} at {now}"
-            await s.commit()
-            account, symbol, exchange = row.account, row.symbol, row.exchange
-            side, qty, row_id = row.transaction_type, int(row.quantity), row.id
-            new_status = row.status
-            msg = f"Template exits cancelled by {actor}: {side} {qty} {symbol}"
         else:
             return {"ok": False, "reason": f"order is {row.status}, not HELD", "status": row.status}
 
