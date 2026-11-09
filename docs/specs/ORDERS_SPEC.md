@@ -88,8 +88,10 @@ across close/reopen on the same page. Switching pages resets to `defaultTab`.
 **Components**:
 1. **Order Entry card** (bucket-card-entry) — embedded SymbolPanel with
    Ticket/Chain/Command tabs, Account selector, Mode pill, Chase controls
-2. **Status strip** — 5-chip counter grid (Chase / Open / Filled /
-   Rejected-Cancelled / GTT) with first-non-zero-count default display
+2. **Status strip** — 4-chip counter grid (Chase / Open / Filled /
+   Rejected-Cancelled) with first-non-zero-count default display (the GTT chip
+   shown here until 2026-11 was removed — see §10 Status Histogram Filter;
+   this line was stale and is corrected to match)
 3. **Chases card** (bucket-card-chase) — active chase orders with Kill button;
    hides when no chases running
 4. **Activity card** (bucket-card-activity) — 6-tab LogPanel (Orders / Agents /
@@ -331,7 +333,8 @@ cache; F&O (lot_size > 1) shows lots field; equity (≤1) shows qty.
 - Removed from ticket boundary (lots × lot_size is always valid by construction)
 - Remaining defenses:
   - `_arm_take_profit` live path has inline G1 before broker.place_order
-  - `apply_plan_live` GTT layer has synchronous G1 check
+  - `apply_plan_live` GTT layer had a synchronous G1 check (REMOVED — Bracket/Template/GTT,
+    T3.1–T3.6, 2026-11; `apply_plan_live` no longer exists)
   - `kite.py` adapter 50-lot ceiling (bypassed for close intent; close orders of any size allowed through)
 
 ### Price (Limit / SL Price)
@@ -392,8 +395,9 @@ instead of a disabled button with a clear reason.
     a distinct gray color scheme (`rgba(148, 163, 184, *)`, the neutral slate
     convention from elsewhere in the app) instead of a dimmed buy/sell color —
     reuses existing precedent from placeholder/not-ready-yet states
-    (e.g., `row-account-stale`). Scope: LIMIT/SL only; GTT exit legs never reach
-    this button.
+    (e.g., `row-account-stale`). Scope: LIMIT/SL only. (The original "GTT exit legs
+    never reach this button" carve-out is moot — REMOVED, Bracket/Template/GTT,
+    T3.1–T3.6, 2026-11 — there is no longer a GTT-exit-leg submission path at all.)
 - **Propagation to host**: `_depthPending` is piped out via the existing
   `onTicketStateChange` callback, adding a `depthPending` field alongside the
   existing `side` / `qty` / `submitting` / `pending` fields.
@@ -470,9 +474,15 @@ multi-lakh P&L distortion and 20× over-orders.
 - Applied in `_ticket_enforce_lot_and_fat_finger()` only when intent ≠ "close"
 - Close intent bypasses G2 (reduces exposure)
 
-**GTT layer**: `apply_plan_live()` in `template_attach.py` must call
-`broker.translate_qty()` for EVERY GTT leg + wing order before calling
-`broker.place_gtt()`. `place_gtt()` does NOT auto-translate.
+> **REMOVED — Bracket/Template/GTT (T3.1–T3.6, 2026-11).** Historical record only; do
+> not reintroduce without a new design decision. `template_attach.py`, `apply_plan_live()`,
+> and `Broker.place_gtt()`/`modify_gtt()` are deleted — there is no longer a GTT-leg or
+> wing-order qty path. `Broker.get_gtts()`/`cancel_gtt()` remain (the unrelated, still-live
+> standalone broker-GTT viewer — see the §10 Status Histogram Filter note).
+>
+> **GTT layer** (historical): `apply_plan_live()` in `template_attach.py` had to call
+> `broker.translate_qty()` for EVERY GTT leg + wing order before calling
+> `broker.place_gtt()`. `place_gtt()` did NOT auto-translate.
 
 **Preflight + Basket**: Both paths respect the lots convention:
 - Basket margin endpoint translates qty for each leg (lots → contracts)
@@ -688,40 +698,50 @@ in a moment" via toast if either is set.
 
 ### Chain-Tab Spread-Threshold Pre-Submission Gate
 
-**Trigger**: Before submitting a multi-leg order in the Chain tab with a
-wing-bearing template attached, the spread-check gate validates bid-ask spread
-on both the primary leg and the computed offset/wing leg against the template's
-`wing_max_spread_pct` threshold (default 0.5%, operator-editable per template or
-global setting).
+**Redesigned (Bracket/Template/GTT removal, T3.3, 2026-11).** The gate is no longer
+conditioned on a wing-bearing template — there is no template to bear one. Before
+submitting a multi-leg order in the Chain tab, EVERY staged CE/PE leg checks its OWN
+bid/ask spread against a single `Spread %` field on the Chain tab (`spreadMaxPctOverride`,
+`OptionChainTab.svelte`). When the operator leaves it blank, the frontend now falls
+back to a hardcoded 0.5% (`_effMaxSpreadPct()`) and ALWAYS sends `max_spread_pct` on
+every spread-check call — it no longer relies on the backend's own fallback to the
+admin `templates.wing_max_spread_pct` setting (`settings.py`, still seeded at 0.5, and
+`GET /api/orders/spread-check`'s `resolve_max_spread_pct()` still falls back to it when
+a caller omits `max_spread_pct` — that setting is not deleted, just effectively unused
+by this gate now that the frontend always supplies a value; the backend's own docstring
+notes it stays reusable by a future declarative-agent-grammar metric). The check runs
+unconditionally, regardless of how many legs are staged or whether any leg is a "wing"
+in any sense — that framing no longer exists.
 
-**Four resolution paths** (operator chooses one; loop bounded by max attempts +
+**Three resolution paths** (operator chooses one; loop bounded by max errors +
 120s timeout):
 
 1. **Spread resolves naturally** — Market conditions improve (bid-ask tightens)
    on a retry poll; gate clears automatically and submission proceeds.
 2. **Operator confirms "Place anyway"** — Acknowledges elevated spread and
    overrides the gate immediately.
-3. **Operator adjusts TP%/SL%/Spread%** — Changing any template parameter
-   triggers immediate re-check; loop continues until spread clears or confirmed.
-4. **Operator disables template** — Turns off wing-attachment for that order,
-   skipping the gate entirely and proceeding without template logic.
+3. **Operator edits the Spread % field, or changes the staged leg set** — Either
+   triggers an immediate re-check; the loop continues until spread clears or the
+   operator confirms/cancels. (The old "disable template" resolution path is gone —
+   there is no template to disable.)
 
 **Failure safety**: On backend quote failure or timeout, the gate offers
 "Retry" / "Place anyway" / "Cancel" choices rather than hanging indefinitely.
 
-**Scope**: Chain-tab only (multi-leg entry via `POST /api/orders/basket`). The
-Order Ticket (`/ticket`) has no equivalent spread-threshold check; template attach
-fires post-fill only (see §13 Postback Fan-Out). (The single-ticket path has a
-separate depth-pending gate on LIMIT/SL orders — see §6 Price (Limit / SL Price);
-the Chain-tab has its own per-leg depth gate — see §9 Chain-Tab Depth-Pending
-Gate for Option Legs.)
+**Scope**: Chain-tab only (multi-leg entry via `POST /api/orders/basket`). The Order
+Ticket (`/ticket`) has no equivalent spread-threshold gate — a single order has no
+second leg to check. (The single-ticket path has a separate depth-pending gate on
+LIMIT/SL orders — see §6 Price (Limit / SL Price); the Chain-tab has its own per-leg
+depth gate — see §9 Chain-Tab Depth-Pending Gate for Option Legs.)
 
 **Implementation**: Backend `GET /api/orders/spread-check` endpoint
 (`backend/api/routes/orders.py`, commit `31c27d6b`) returns structured result
-(`ok`, `spread_pct`, `threshold_pct`, `reason`, `bid`, `ask`); frontend
-`spreadGate.js` module (`frontend/src/lib/data/spreadGate.js`, commit
-`16036f1e`) provides reusable framework-agnostic loop handler for future
-automation/agent use.
+(`ok`, `spread_pct`, `threshold_pct`, `reason`, `bid`, `ask`) for ONE
+tradingsymbol+exchange — deliberately not template-aware; the caller resolves the
+threshold client-side and sends it as `max_spread_pct`. Frontend `spreadGate.js`
+module (`frontend/src/lib/data/spreadGate.js`, commit `16036f1e`) provides a
+reusable framework-agnostic loop handler, called once per staged leg from
+`OptionChainTab.svelte`, for future automation/agent use.
 
 ---
 
@@ -745,7 +765,8 @@ automation/agent use.
 7. **Status** — OPEN | FILLED | REJECTED | CANCELLED | UNFILLED | CANCEL_FAILED
 8. **Slippage** — ↑/↓ indicator (neutral slate color, not side-relative)
 9. **Metadata chips** — exchange, product, order_type, variety, validity,
-   mode, chase attempts, trigger_price, tag, template attach status, etc.
+   mode, chase attempts, trigger_price, tag, agent/origin, parent/child links, etc.
+   ("template attach status" removed — Bracket/Template/GTT removal, T3.1–T3.6, 2026-11.)
 
 ### Status Histogram Filter
 
@@ -860,7 +881,11 @@ Hover: border opacity increases + card lifts 1px. Selected: 2px amber inset ring
 
 ### Metadata Chips
 
-Line 2 onwards: compact `log-chip` format (label:value pairs):
+Line 2 onwards: compact `log-chip` format (label:value pairs). List corrected against
+the live `OrderCard.svelte` chip row (2026-11, Bracket/Template/GTT removal, T3.1–T3.6)
+— the `tmpl:`/`wing:` chips this list used to carry were removed (no `template_id` or
+wing-order concept remains), `parent:`/`child(ren):` are generalized (no longer
+wing-specific), and the previously-undocumented `origin:` chip is added:
 - ex:NFO
 - qty:50 or qty:30/50
 - type:LIMIT
@@ -875,12 +900,16 @@ Line 2 onwards: compact `log-chip` format (label:value pairs):
 - mode:live
 - engine:algo
 - agent:manual | agent:<agent name> (who placed it; always shown, see `agent_origin` under §14)
+- origin:<order.source> (cancel-source label — mcp/operator/sim_stop; distinct from the
+  `agent:` chip above, never collides with it on label text)
 - time:DD-MMM HH:MM:SS IST | EST
 - tag:ramboq-ticket or ramboq-agent-loss (color-coded chips)
 - tp:+30.0% (take-profit %; green background)
-- tmpl:#template_id ✓+w (full attach with wing) | ✓ (full, no wing) | ✓⚠ (partial)
-- parent:#parent_id (link to protective wing parent)
-- wing:#wing_id or wings:#id1 #id2 (child order links)
+- parent:#parent_id (auto-attached leg of the listed parent order — typically a
+  take-profit child; generic link, no longer "protective wing parent" — that concept
+  is REMOVED, Bracket/Template/GTT, T3.1–T3.6, 2026-11)
+- child:#child_id or children:#id1 #id2 (auto-attached children of this order —
+  typically a take-profit child; violet chip)
 - basket:ramboq-basket-uuid (shared basket tag)
 - note:status_message (optional broker message)
 
@@ -895,7 +924,12 @@ fill < limit → favorable for SELL (unfavorable for BUY)
 - Pre-fix used green/red which was misleading for one side
 - Arrow alone reads correctly regardless of direction
 
-### Re-attach Button (Audit H-3)
+> **REMOVED — Bracket/Template/GTT (T3.1–T3.6, 2026-11).** Historical record only; do
+> not reintroduce without a new design decision. `template_id`, `attached_gtts_json`,
+> `retryTemplateAttach()` and the `/retry-template` endpoint are all deleted — there is
+> no Re-attach button on `OrderCard` anymore.
+
+### Re-attach Button (Audit H-3) — historical
 
 **Visible when**:
 - `template_id != null`
@@ -1001,7 +1035,9 @@ mounts `ChaseCard` (live countdown, Kill) instead, so the drawer is forensic his
 2. **Update row** — Set `status`, `fill_price`, `filled_at`, detail
 3. **Commit to DB** — Save status change
 4. **Write event** — `order_events` table: broker_postback (for chase timeline)
-5. **Template attach** — Fire `_fire_template_attach_on_fill` if templated parent
+5. ~~**Template attach** — Fire `_fire_template_attach_on_fill` if templated parent~~
+   (REMOVED — Bracket/Template/GTT, T3.1–T3.6, 2026-11; `_fire_template_attach_on_fill`
+   no longer exists, this step no longer runs)
 6. **Cache invalidate** — Drop `orders` / `positions` / `holdings` from cache (terminal only)
 7. **WS broadcasts**:
    - `order_update` (all statuses)
@@ -1015,7 +1051,17 @@ mounts `ChaseCard` (live countdown, Kill) instead, so the drawer is forensic his
 - Full payload logged: broker_id, order_id, status, account, symbol, qty, price
 - Masked account in all logs (via `mask_account()`)
 
-### Duplicate Postbacks
+> **REMOVED — Bracket/Template/GTT (T3.1–T3.6, 2026-11).** The four subsections below
+> ("Duplicate Postbacks", "Fill Status Recording"'s wing-order bullet, "Chase-Wing
+> Failure Handling", and "Mode Gate (Non-Live Fills)") describe the deleted
+> `template_attach.py` fire-on-fill mechanism, `attached_gtts_json`/`template_id`
+> columns, and wing/GTT child orders. None of this runs anymore. Kept as historical
+> record only; do not reintroduce without a new design decision. The
+> **filled_quantity contract** bullet under "Fill Status Recording" is NOT part of
+> this removal — `filled_quantity` is a general fill-bookkeeping column unrelated to
+> Bracket/Template/GTT and remains fully live.
+
+### Duplicate Postbacks — historical
 
 **Idempotency guard** in `_fire_template_attach_on_fill`:
 - If `attached_gtts_json` already populated → skip (don't double-place GTTs)
@@ -1034,15 +1080,18 @@ them when `attached_gtts_json` is populated).
 
 ### Fill Status Recording
 
-**filled_quantity contract** (2026-09-30):
+**filled_quantity contract** (2026-09-30) — still live, not part of the
+Bracket/Template/GTT removal:
 - Must be written whenever a row transitions to FILLED status
 - Value: the row's own `quantity` field (contracts), never broker's raw filled-qty
 - Note: broker's filled-qty is in lots for MCX/NCO; copying contracts avoids unit mismatch
-- Applies to all 6 fill-detection paths: Kite postback, Dhan/Groww postback, chase terminal,
-  admin reconcile, paper engine, and manual retry
-- Already-terminal FILLED rows do not self-heal; require explicit Retry-attach click
+- Applies to all live fill-detection paths: Kite postback, Dhan/Groww postback, chase
+  terminal, admin reconcile, and paper engine (the "manual retry"/Retry-attach path
+  named in the original 6-path list no longer exists — see the Re-attach Button
+  removal note under §11)
+- Already-terminal FILLED rows do not self-heal
 
-**Wing order recorded in attached_gtts_json** (2026-09-30):
+**Wing order recorded in attached_gtts_json** (2026-09-30) — historical, REMOVED:
 - When a wing order is placed, a `{"kind":"wing",...}` entry must be appended to
   `attached_gtts_json` at the same time as the primary GTT
 - Prevents duplicate live wing orders on retry/race conditions
@@ -1056,7 +1105,7 @@ them when `attached_gtts_json` is populated).
   `parent_order_id` (pointing to the parent fill) and `template_id` (for
   traceability) so it's unambiguously a child order.
 
-### Chase-Wing Failure Handling
+### Chase-Wing Failure Handling — historical
 
 **Fire-and-forget safety** (fixed 2026-10, commit `4ae6a231`):
 When a LIMIT wing is handed to chase via `_start_wing_chase()`, the coroutine
@@ -1074,7 +1123,7 @@ Previously, the Future was discarded with zero error handling, so failure was
 internally marks the Task's exception as retrieved, suppressing asyncio's own
 "exception was never retrieved" warning).
 
-### Mode Gate (Non-Live Fills)
+### Mode Gate (Non-Live Fills) — historical
 
 **Rule**: Template attach only fires for `mode='live'` orders. Paper/sim/replay/shadow 
 fills on templated orders skip broker GTT/wing placement entirely. The non-live resting 
@@ -1374,10 +1423,13 @@ order_id=...&status=COMPLETE&...
 }
 ```
 
-**Status field notes**:
-- For HELD orders (expiry_close, agent_order): returns `"CANCELLED"`
-- For template_exit holds on FILLED orders: returns the unchanged parent
-  status (e.g. `"FILLED"`)
+**Status field notes** (corrected 2026-11, Bracket/Template/GTT removal, T3.1–T3.6):
+- For any HELD order (`expiry_close`, `agent_order`, `agent_close` — all three
+  categories set `status = "HELD"` at hold-time): returns `"CANCELLED"`
+- ~~For template_exit holds on FILLED orders: returns the unchanged parent status
+  (e.g. `"FILLED"`)~~ — REMOVED along with the `template_exit` category itself; the
+  endpoint's own status check (`cancel_held_order()`) now only accepts
+  `status == "HELD"`, so there is no longer a second, FILLED-preserving branch.
 
 **Error codes**:
 - 403 Forbidden — not admin
@@ -1441,9 +1493,11 @@ List concrete things to verify in an audit:
    - Close-intent orders bypass the cap
    - Cap checked against lots, not contracts
 
-2. **`_lots` sent for F&O** in all submission paths (ticket, basket, template attach)
+2. **`_lots` sent for F&O** in all submission paths (ticket, basket)
    - Frontend: `_lots` field populated for lot_size > 1
    - Backend: converts `_lots × lot_size` = contracts
+   - ("template attach" removed from this list — RETIRED, Bracket/Template/GTT removed
+     T3.1–T3.6, 2026-11; that submission path no longer exists)
 
 3. **DRAFT mode never calls broker API**
    - No preflight, no broker place_order
@@ -1474,6 +1528,8 @@ List concrete things to verify in an audit:
    - Stops at `max_attempts` (default 20 for live mode, 5 for paper mode)
 
 10. **Template attach fires only once per parent fill** (via `attached_gtts_json` check)
+    (RETIRED — Bracket/Template/GTT removed T3.1–T3.6, 2026-11; `attached_gtts_json`
+    and template attach no longer exist)
     - Duplicate postbacks don't double-place GTTs
 
 11. **Lots/contracts translation** in capacity guard + basket margin
@@ -1498,6 +1554,8 @@ List concrete things to verify in an audit:
     - Same direction visually regardless of BUY/SELL
 
 16. **Template attach mode-scoped** (paper/sim/replay/shadow never place real GTTs)
+    (RETIRED — Bracket/Template/GTT removed T3.1–T3.6, 2026-11; `template_id`,
+    `attached_gtts_json` and `/retry-template` no longer exist)
     - Paper/sim/replay orders with `template_id` set stay FILLED + `attached_gtts_json` null
     - No real broker GTT/wing orders placed for non-live fills
     - `/retry-template` endpoint refuses non-live rows (403)
@@ -1560,7 +1618,9 @@ List concrete things to verify in an audit:
 - Account color rotation stable across page reloads
 - Slippage arrow neutral (slate color)
 
-**Re-attach button**:
+**Re-attach button** — REMOVED, Bracket/Template/GTT removed T3.1–T3.6, 2026-11; the
+button, `template_id`/`attached_gtts_json`, and the `/retry-template` endpoint it
+called are all deleted. Historical record only:
 - Visible only when template_id + FILLED + no attached_gtts_json
 - Recognizes both broker COMPLETE and algo FILLED status (2026-09-30)
 - Clicking fires request + shows spinner
@@ -1592,7 +1652,8 @@ List concrete things to verify in an audit:
 **Postback fan-out**:
 - Fill update triggers WS emit + audit log + agent action simultaneously
 - Masked account in all audit + log output
-- COMPLETE status fires template-attach (if templated parent)
+- ~~COMPLETE status fires template-attach (if templated parent)~~ (REMOVED —
+  Bracket/Template/GTT, T3.1–T3.6, 2026-11; no longer a real behaviour)
 
 **Basket account grouping**:
 - 5 orders (3× Account A, 2× Account B) group correctly
@@ -1608,7 +1669,8 @@ List concrete things to verify in an audit:
 - Close-intent order skips FAT_FINGER cap
 - Non-close checked against cap
 
-**Template attach**:
+**Template attach** — REMOVED, Bracket/Template/GTT removed T3.1–T3.6, 2026-11.
+Historical record only; no such test coverage area exists anymore:
 - Fires on parent FILL (postback or reconcile)
 - Idempotent: duplicate postbacks don't double-place GTTs
 - Per-row lock (Phase 3D #4) prevents race
@@ -1619,7 +1681,9 @@ List concrete things to verify in an audit:
 - Partial fills tracked in filled_quantity
 
 **Known gaps**:
-- No e2e test for GTT auto-attach after fill (tested at unit + integration level)
+- ~~No e2e test for GTT auto-attach after fill (tested at unit + integration level)~~
+  — moot (RETIRED — Bracket/Template/GTT removed T3.1–T3.6, 2026-11; GTT auto-attach
+  no longer exists, so there is no coverage gap to track)
 - Playwright doesn't cover all basket permutations (tested at unit level)
 
 ---
@@ -1627,6 +1691,21 @@ List concrete things to verify in an audit:
 ## 18. Held Orders
 
 Automated orders that require operator review before placement or release.
+
+> **Corrected (Bracket/Template/GTT removal, T3.1–T3.6, 2026-11).** The `template_exit`
+> hold category (GTT exit-attach blocked by the template hold gate) is REMOVED —
+> `HoldCategory.TEMPLATE_EXIT`, `template_exit_held()`, `template_exit_override`,
+> `hold_template_exit()` (all `order_hold_gate.py`) and `release_template_exit()`
+> (`order_release.py`) are all deleted (T3.1), and the `template_exit_hold_enabled`
+> admin toggle is deleted (T3.6). Confirmed zero live rows carried
+> `hold_json.category == "template_exit"` on prod or dev before removal. A new
+> category, `agent_close`, was added 2026-11 (unrelated to the Bracket/Template/GTT
+> removal — it is the `exit-tp-short-option-90` agent's generic `require_release`
+> hold, Sprint 3 of the auto-close-short-option plan; see CLAUDE.md's "Auto-close a
+> short option at 90% of premium captured" entry). The categories, tables, and
+> frontend behaviour below are corrected to the current three: `expiry_close`,
+> `agent_order`, `agent_close`.
+
 Three hold categories exist, each triggered by a distinct condition; see
 [BROKER_SPEC.md](BROKER_SPEC.md#85-orders-fetching-resilience--chase-timeouts)
 for repeated-rejection hold triggering logic.
@@ -1637,12 +1716,22 @@ for repeated-rejection hold triggering logic.
 |---|---|---|---|
 | `expiry_close` | Position expires at settlement; scheduled close attempt | `HELD` | Place expiry close order |
 | `agent_order` | Chase paused after 2 consecutive price-shaped rejections | `HELD` | Resume chase |
-| `template_exit` | GTT exit attach blocked (template hold gate) | `FILLED` | Place template exit GTTs |
+| `agent_close` | A `require_release=True` agent's `close_position` action is intercepted before it ever reaches the broker (2026-11, `exit-tp-short-option-90`) | `HELD` | Re-verify live position, re-quote, place a new close order (generic `release_held_order` — deliberately unregistered as a dedicated handler) |
 
-**Status distinction**: `expiry_close` and `agent_order` set `status =
-"HELD"` at hold-time. `template_exit` never changes status — the parent
-order remains `status = "FILLED"` while exit-attach is pending in
-`hold_json`.
+All three categories now set `status = "HELD"` at hold-time — a single
+`status == "HELD"` check covers every remaining category (this simplified in
+T3.1–T3.6; the removed `template_exit` category used to be the one exception,
+leaving its parent order at `status = "FILLED"` with the hold recorded only in
+`hold_json`).
+
+`agent_close` has no dedicated admin release-gate toggle (unlike `expiry_close`,
+see Hold Gate Configuration below), and no code path currently checks a
+`hold.agent_close_released` global switch (`record_held_order(HoldCategory.AGENT_CLOSE,
+...)` stages the hold unconditionally, with no `held_for()`/`effective_hold()` check at
+staging time) — it is always held by default, released per-order, or auto-released after
+`release_timeout_minutes` (5 for the one agent that currently sets it,
+`exit-tp-short-option-90`) via `_task_agent_close_auto_release`
+(`backend/api/background.py`) unless the operator cancels it first from Held Orders.
 
 ### List Endpoint
 
@@ -1650,8 +1739,16 @@ order remains `status = "FILLED"` while exit-attach is pending in
 GET /api/orders/held/
 ```
 
-Selects rows matching: `(status = "HELD") OR (hold_json IS NOT NULL)`.
-Returns:
+Selects rows matching: `(status = "HELD") OR (hold_json IS NOT NULL)`. The
+`hold_json IS NOT NULL` half of this predicate now appears vestigial — every
+current category sets `status = "HELD"`, so no category documented in this
+section leaves a row at `status = "FILLED"` with `hold_json` set the way the
+removed `template_exit` category used to (not independently verified against
+every `hold_json =` writer in the codebase; stated as "appears", not confirmed
+absolute). The clause is kept unchanged in code (a regression test,
+`test_held_orders_template_exit_visibility.py`, locks in that the query itself
+was never touched by the removal) in case a future category needs the same
+FILLED-plus-hold_json shape. Returns:
 
 ```json
 {
@@ -1670,18 +1767,20 @@ Returns:
 }
 ```
 
-This predicate is why a FILLED parent-order row with pending template exits
-appears on the held-orders card despite its `status = "FILLED"`.
-
 ### Release vs Cancel
 
 **Release** (existing): Resumes the held workflow per category:
 - `expiry_close` / `agent_order`: Fires the pending action
   (`release_held_order` / `release_repeated_rejection_hold`)
-- `template_exit`: Places exit GTTs
-  (`release_template_exit`)
+- `agent_close`: Falls through to the generic `_DEFAULT_RELEASE_HANDLER`
+  (`release_held_order`) — re-verifies the live position, re-quotes a fresh price,
+  and places a new close order. Deliberately left unregistered as its own handler
+  in `order_release.py`'s `_RELEASE_HANDLERS`; do not add a dedicated handler
+  without a real behavioural reason to diverge from this default.
+- ~~`template_exit`: Places exit GTTs (`release_template_exit`)~~ — REMOVED,
+  T3.1, 2026-11.
 
-**Cancel** (new, commit 475b07e2): Abandons the held order without
+**Cancel** (commit 475b07e2): Abandons the held order without
 releasing. Pure DB state transition — no broker call is made (held orders
 have no live resting broker order by design).
 
@@ -1689,22 +1788,25 @@ have no live resting broker order by design).
 
 | Scenario | Transition | `hold_json` | Event |
 |---|---|---|---|
-| HELD order (expiry_close/agent_order) | `status: "HELD" → "CANCELLED"` | cleared | `"cancelled"` event |
-| FILLED order with template_exit pending | `status: "FILLED" → "FILLED"` (unchanged) | cleared | `"cancelled"` event |
+| HELD order (expiry_close/agent_order/agent_close) | `status: "HELD" → "CANCELLED"` | cleared | `"cancelled"` event |
 | Any other row or state | rejected with 409 | no change | none |
 
-**Why not unify on category?** `template_exit` holds never touch status,
-so checking `status == "HELD"` alone would always reject them (they read
-as FILLED). Branching on row state instead allows all three categories to
-be cancelled.
-
-**Never overwrite FILLED to CANCELLED**: A template_exit hold marks a
-genuinely-filled parent order. Cancelling the exit-attach must not
-misstate that fill in order history or break reconciliation logic.
+**Simplified (T3.1–T3.6, 2026-11)**: `cancel_held_order()` now checks only
+`row.status == "HELD"` — generic across every remaining category (`EXPIRY_CLOSE`,
+`AGENT_ORDER`, `AGENT_CLOSE`), since all three set status at hold-time. The former
+second branch — a status-agnostic path for `template_exit`, which marked a FILLED
+parent's pending exit-attach without touching `row.status` — was removed along with
+the category itself. It was permanently unreachable the moment T3.1 deleted
+`hold_template_exit()`; nothing creates a row shaped that way anymore.
 
 ### Release Implementation Details (2026-10-08 Fixes)
 
-**Commit 5d5ab349** — `release_template_exit` was silently reporting success
+> **Note (2026-11):** The first fix below (`5d5ab349`) concerns the now-removed
+> `template_exit` category and `_fire_template_attach_on_fill`/`template_exit_held()`
+> — kept as historical record only. The other two fixes concern `release_held_order`
+> (expiry-close) and remain fully live.
+
+**Commit 5d5ab349** (historical) — `release_template_exit` was silently reporting success
 (`"ok": true, "reason": "template exits placed"`) even when no GTTs were placed.
 `_fire_template_attach_on_fill` gained a `bypass_hold: bool = False` kwarg that
 skips the `template_exit_held()` re-check only for this release path (every other
@@ -1735,16 +1837,24 @@ closed (refuses release) on stale/circuit-open/fetch-failed data.
 Default labels would read backwards for a destructive cancel (e.g. "OK"
 confirming the destructive action), so explicit labels are required.
 
-**Category display** (`kindOf` function):
+**Category display** (`kindOf` function) — corrected 2026-11 for the current
+category set:
 - `agent_order` → "Repeated rejection" (fixed 2026-10 commit 475b07e2;
   previously defaulted to "Expiry close")
-- `template_exit` → "Template exit"
-- (other / missing) → "Expiry close"
+- `agent_close` → "Profit-target close" (2026-11; previously would have silently
+  fallen through to the "Expiry close" default — given its own label instead,
+  since it is a real, live category, not a removed one)
+- ~~`template_exit` → "Template exit"~~ — REMOVED, T3.4, 2026-11.
+  `HoldCategory.TEMPLATE_EXIT` no longer exists server-side (removed T3.1), so this
+  branch can never match a real `hold_json` payload going forward.
+- (other / missing / unparseable `hold_json`) → "Pending" on parse failure (renamed
+  from "Held", PLAN.md item 3, 2026-11-02 — same "Pending" vocabulary used across
+  every other hold surface), else "Expiry close" for a recognized but unlabeled
+  category
 
 **Frontend never inspects returned status**: The cancel call returns
 `{ok, reason, status}`, but the UI only checks `ok` before refreshing
-the held-orders list. The per-row status value (CANCELLED vs parent
-status) is informational.
+the held-orders list. The per-row status value is informational.
 
 ### Details Audit Trail
 
@@ -1754,17 +1864,31 @@ write an `order_events` record:
 - Release: event kind `"released"`, message shows action + actor
 - Cancel: event kind `"cancelled"`, message shows actor + symbol/qty
 
-### Hold Gate Configuration (Expiry-Close and Template-Exit)
+### Hold Gate Configuration (Expiry-Close)
 
-**Amended 2026-10 (`c7ddcb56`)**: The hold gates for `expiry_close` and `template_exit` 
-categories are now tunable via the Global Switches panel on `/admin/settings`, without 
-requiring code changes or redeploy. Four new fields added to `GlobalSwitchesRequest`/`Response` 
-in `backend/api/routes/admin.py`: `expiry_close_hold_enabled`, `template_exit_hold_enabled` 
-(bool toggles, with bool-field inversion), plus `expiry_close_lead_minutes_mcx` and 
-`expiry_close_lead_minutes_nfo` (int minute fields, 0–180 and 0–120 respectively). See 
-[SETTINGS_SPEC.md](SETTINGS_SPEC.md#hold) for the underlying storage keys, defaults, 
-and validation bounds. New `set_int()` setter function added to `backend/shared/helpers/settings.py` 
-alongside existing `set_bool`/`set_string` helpers.
+**Amended 2026-10 (`c7ddcb56`)**: The hold gate for the `expiry_close` category is
+tunable via the Global Switches panel on `/admin/settings`, without requiring code
+changes or redeploy. Fields on `GlobalSwitchesRequest`/`Response` in
+`backend/api/routes/admin.py`: `expiry_close_hold_enabled` (bool toggle, with
+bool-field inversion — the underlying storage key `hold.expiry_close_released` is
+the inverse: `expiry_close_hold_enabled=True` means closes ARE held, which maps to
+`hold.expiry_close_released=False`), plus `expiry_close_lead_minutes_mcx` and
+`expiry_close_lead_minutes_nfo` (int minute fields, 0–180 and 0–120 respectively).
+See [SETTINGS_SPEC.md](SETTINGS_SPEC.md#hold) for the underlying storage keys,
+defaults, and validation bounds. `set_int()` setter function in
+`backend/shared/helpers/settings.py` alongside existing `set_bool`/`set_string`
+helpers.
+
+> **REMOVED — Bracket/Template/GTT (T3.6, 2026-11).** `template_exit_hold_enabled`
+> (the fourth field this section used to document, under the heading "Expiry-Close
+> and Template-Exit") is deleted — `order_hold_gate.py:template_exit_held()`, the one
+> function that ever read the underlying `hold.template_exit_released` setting, was
+> removed in T3.1, making the toggle functionally inert even before its own deletion.
+> The orphaned `hold.template_exit_released` settings row is auto-pruned by
+> `seed_settings()`'s `_prune_retired_keys()` sweep.
+
+`agent_close` has no equivalent admin toggle — see Hold Categories above for its
+auto-release-timer mechanism instead.
 
 ---
 
@@ -1772,6 +1896,7 @@ alongside existing `set_bool`/`set_string` helpers.
 
 | Date | Change |
 |---|---|
+| 2026-11-09 | Doc correction (no code change): sections describing the deleted Bracket/Template/GTT subsystem (T3.1–T3.6, 2026-11 code removal) corrected throughout — F&O Lot Convention's GTT-layer paragraph, the Chain-Tab Spread-Threshold gate (redesigned to an unconditional per-leg check, not a removal), the Metadata Chips table (`tmpl:`/`wing:` removed, `parent:`/`child(ren):` generalized, `origin:` chip added), the Re-attach Button subsection, Postback Fan-Out's template-attach step/subsections, Audit Cases #2/#10/#16, Test Coverage Map's Re-attach/Template-attach entries, and §18 Held Orders (the `template_exit` category removed, the new `agent_close` category documented, `cancel_held_order()`'s now-single-branch status check). The already-corrected Status Histogram Filter section (GTT chip removal) was left untouched. The dated rows below this one are historical and were not edited. |
 | 2026-10-08 | 5e5ba82e: Order-failure alerts (Telegram/ntfy/email) now labeled with origin: "Manual", "Manual Bracket", "Agent", or "Agent Bracket" (via `_classify_order_origin_label(source, agent_id)` in `alert_utils.py`). `agent_id` threads through `send_order_failure_alert` kwarg and survives log→event-agent replay via new `"agent_id"` key in record `extra` dict. Label appears in Telegram body, ntfy text, email subject, and new "Origin" row in email HTML table. Labeled origin clarifies failure context for operator alerts and chase/template/held-order releases. |
 | 2026-10-08 | dd31a029: `CommandLineTab.svelte` CLI parser now respects typed `chase=HIGH|MED|LOW` token, forwarding it to order submission via new `chase_level` field in `buildOrderPayload`. Previously token was validated by grammar but hardcoded to 'low' during submission. |
 | 2026-10-08 | ad2cebee: Dead-code removals: (1) `_NOOP_ACTION_HANDLERS["chase_close"]` entry + unused `_action_chase_close` (chase_close routes to LIVE handler); (2) `record_held_close()` wrapper (callers now use generic `record_held_order(HoldCategory.EXPIRY_CLOSE, ...)`); (3) `chase_levels_cli_reference` mirror in order_fields.yaml (orders.yaml is the single source). |
