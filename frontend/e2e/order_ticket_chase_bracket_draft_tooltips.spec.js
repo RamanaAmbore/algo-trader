@@ -5,10 +5,9 @@
  * templates, draft it should show a tooltip with help info. for chase,
  * it can show waiting time for each category."
  *
- * CHASE, BRACKET, and DRAFT labels on the Ticket tab's CHASE/BRACKET/
- * DRAFT row each get a click-to-pin InfoHint (the house tooltip
- * component — works on touch, not just mouse hover, unlike a plain
- * `title=` attribute).
+ * CHASE and DRAFT labels on the Ticket tab's CHASE/DRAFT row each get a
+ * click-to-pin InfoHint (the house tooltip component — works on touch,
+ * not just mouse hover, unlike a plain `title=` attribute).
  *
  * 2026-10-17 — general rule (operator): "if label is plain text
  * anywhere, it should work as a tooltip. otherwise, we need to add
@@ -18,15 +17,21 @@
  *     is now the click-to-pin trigger (hideButton + anchor + bind:open
  *     on the SAME InfoHint, same pattern OptionsPayoff.svelte's stat
  *     tooltips already use).
- *   - BRACKET and DRAFT are real toggles — clicking the label already
- *     flips real order behavior (attaches/detaches a bracket, routes
- *     to a draft instead of the broker), so they KEEP their separate
- *     "(i)" chip — a help-seeking click must not ALSO silently change
- *     the order.
+ *   - DRAFT is a real toggle — clicking the label already flips real
+ *     order behavior (routes to a draft instead of the broker), so it
+ *     KEEPS its separate "(i)" chip — a help-seeking click must not
+ *     ALSO silently change the order.
  * Chase's tooltip specifically states the wait time per aggressiveness
  * category (operator's exact ask), sourced from the real backend
  * values in orders_helpers.py:_live_chase_config (low=30s/med=20s/
  * high=10s) — not invented numbers.
+ *
+ * T3.3 (bracket-removal, 2026-11) — BRACKET is gone entirely.
+ * `TemplateBar.svelte` is deleted; every Bracket-specific test here
+ * (the "(i)" chip source check, the live click-without-toggling check,
+ * and the Draft-greys-Bracket assertion) is removed, not rewritten —
+ * there is no surviving Bracket behavior to assert against. The CHASE/
+ * DRAFT coverage that remains is otherwise unchanged.
  */
 
 import { test, expect } from '@playwright/test';
@@ -37,24 +42,21 @@ const BASE = process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:5174';
 const ROOT = '/Users/ramanambore/projects/ramboq/frontend/src/lib';
 
 async function _seedNiftyOnTicket(page) {
+  // Bare index (never expires), not a specific monthly contract — the
+  // previous hardcoded 'NIFTY26OCTFUT' contract expired and made these
+  // live tests fail independent of any Bracket-removal change.
   await page.goto(`${BASE}/orders`, { waitUntil: 'domcontentloaded', timeout: 30000 });
   const symInput = page.locator('.ssi-input').first();
   await expect(symInput).toBeVisible({ timeout: 15_000 });
-  await symInput.fill('NIFTY26OCTFUT');
+  await symInput.fill('NIFTY');
   const sugg = page.locator('.ssi-drop .ssi-row').first();
   await expect(sugg).toBeVisible({ timeout: 45_000 });
   await sugg.click({ force: true });
   await page.waitForTimeout(500);
 }
 
-test.describe('Chase/Bracket/Draft click-to-help tooltips', () => {
-  test('source: Bracket and Draft InfoHints sit as separate chips, never wired into the toggle onclick itself', () => {
-    const templateBar = readFileSync(`${ROOT}/TemplateBar.svelte`, 'utf-8');
-    expect(templateBar).toContain("import InfoHint from '$lib/InfoHint.svelte'");
-    expect(templateBar).toMatch(/<InfoHint popup panel title="Bracket"/);
-
-    // 2026-10-21 shared-row re-wire: the DRAFT chip moved from OrderTicket
-    // to SymbolPanel's single shared CHASE/BRACKET/DRAFT row.
+test.describe('Chase/Draft click-to-help tooltips', () => {
+  test('source: Draft InfoHint sits as a separate chip, never wired into the toggle onclick itself', () => {
     const symbolPanel = readFileSync(`${ROOT}/SymbolPanel.svelte`, 'utf-8');
     expect(symbolPanel).toMatch(/<InfoHint popup panel title="Draft"/);
   });
@@ -69,17 +71,11 @@ test.describe('Chase/Bracket/Draft click-to-help tooltips', () => {
     // is the bind:this anchor target.
     const labelIdx = symbolPanel.indexOf('class="oes-common-chase-label on"');
     expect(labelIdx, 'CHASE label span not found').toBeGreaterThan(-1);
-    // Slice to the span's own closing text, not a fixed char window — the
-    // 2026-10-21 shared-row markup (tabindex/aria-disabled/title) pushed
-    // onclick past any fixed offset.
     const labelEnd = symbolPanel.indexOf('>CHASE</span>', labelIdx);
     expect(labelEnd, 'CHASE label closing tag not found').toBeGreaterThan(labelIdx);
     const labelBlock = symbolPanel.slice(labelIdx, labelEnd);
     expect(labelBlock).toMatch(/bind:this=\{_chaseInfoAnchor\}/);
     expect(labelBlock).toMatch(/onclick=\{.*_chaseInfoOpen = !_chaseInfoOpen.*\}/);
-    // Draft-on guard: the click must not open the tooltip while Chase is
-    // greyed out by Draft (shared-row re-wire, 2026-10-21).
-    expect(labelBlock).toMatch(/if \(!_sharedDraftMode\) _chaseInfoOpen = !_chaseInfoOpen/);
   });
 
   test("source: Chase's tooltip states the real per-tier wait times (30s/20s/10s), not invented numbers", () => {
@@ -94,28 +90,6 @@ test.describe('Chase/Bracket/Draft click-to-help tooltips', () => {
     expect(block).toMatch(/Low.*30s/);
     expect(block).toMatch(/Med.*20s/);
     expect(block).toMatch(/High.*10s/);
-  });
-
-  test('live: clicking the Bracket InfoHint shows help text WITHOUT toggling the bracket', async ({ page }) => {
-    await loginAsAdmin(page);
-    await _seedNiftyOnTicket(page);
-
-    const toggle = page.locator('.oes-tpl-button').first();
-    await expect(toggle).toBeVisible({ timeout: 15_000 });
-    const wasActive = await toggle.evaluate((el) => el.classList.contains('active'));
-
-    const bracketHint = toggle.locator('xpath=following-sibling::*[1]//button');
-    await expect(bracketHint).toBeVisible({ timeout: 5_000 });
-    await bracketHint.click();
-
-    const popup = page.locator('.info-popout, [class*="popout"]').first();
-    await expect(popup).toBeVisible({ timeout: 5_000 });
-    await expect(popup).toContainText(/exit-rule preset/i);
-
-    // The toggle's own active/inactive state must be unchanged by the
-    // help click — this is the whole point of using a separate chip.
-    const stillSameState = await toggle.evaluate((el) => el.classList.contains('active'));
-    expect(stillSameState, 'clicking the Bracket InfoHint must not flip the toggle').toBe(wasActive);
   });
 
   test('live: clicking the Draft InfoHint shows help text WITHOUT toggling draft mode', async ({ page }) => {
@@ -142,46 +116,38 @@ test.describe('Chase/Bracket/Draft click-to-help tooltips', () => {
     expect(stillChecked, 'clicking the Draft InfoHint must not flip the checkbox').toBe(wasChecked);
   });
 
-  test('live: turning DRAFT on greys out CHASE and BRACKET, on both Ticket and Chain tabs', async ({ page }) => {
-    // 2026-10-21 shared-row re-wire: SymbolPanel wraps the CHASE cluster and
-    // the BRACKET cluster in `.oes-ctl-cluster-disabled` while Draft is on
-    // (opacity 0.4 + pointer-events none). Operator: "no brackets in draft mode".
-    // Seed an F&O future: the DRAFT toggle is only offered for non-equity legs,
-    // so a bare index (NIFTY) would hide it and make this test a no-op.
+  test('live: turning DRAFT on hides CHASE entirely (not greyed) on the Ticket tab, and Chain tab keeps its own independent CHASE', async ({ page }) => {
+    // T3.3 (bracket-removal) rewrite — the BRACKET half of this test is
+    // gone (no cluster to grey/hide any more). CHASE's own 2026-10-23
+    // fix hides the cluster entirely while Draft is on (not a grey/
+    // disabled treatment) — this test now asserts that real behavior
+    // instead of the stale `.oes-ctl-cluster-disabled` claim the
+    // original version made.
     await loginAsAdmin(page);
-    await page.goto(`${BASE}/orders`, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    const symInput = page.locator('.ssi-input').first();
-    await expect(symInput).toBeVisible({ timeout: 15_000 });
-    await symInput.fill('NIFTY26OCTFUT');
-    const sugg = page.locator('.ssi-drop .ssi-row').first();
-    await expect(sugg).toBeVisible({ timeout: 45_000 });
-    await sugg.click({ force: true });
+    await _seedNiftyOnTicket(page);
 
     const draftCheckbox = page.locator('.ot-draft-toggle input[type="checkbox"]').first();
     await expect(draftCheckbox).toBeVisible({ timeout: 10_000 });
     const chaseCluster = page.locator('.oes-chase-cluster').first();
-    const bracketCluster = page.locator('.oes-bracket-cluster').first();
 
-    // Ticket tab — Draft OFF: neither cluster greyed out.
+    // Ticket tab — Draft OFF: CHASE cluster visible.
     await expect(chaseCluster).toBeVisible({ timeout: 10_000 });
     if (await draftCheckbox.isChecked()) await draftCheckbox.click();
-    await expect(chaseCluster).not.toHaveClass(/oes-ctl-cluster-disabled/);
-    await expect(bracketCluster).not.toHaveClass(/oes-ctl-cluster-disabled/);
+    await expect(chaseCluster).toBeVisible();
 
-    // Ticket tab — Draft ON: CHASE and BRACKET are both disabled.
+    // Ticket tab — Draft ON: CHASE cluster is removed from the DOM
+    // entirely, not just greyed.
     await draftCheckbox.click();
     await expect(draftCheckbox).toBeChecked();
-    await expect(chaseCluster).toHaveClass(/oes-ctl-cluster-disabled/);
-    await expect(bracketCluster).toHaveClass(/oes-ctl-cluster-disabled/);
-    await expect(chaseCluster).toHaveCSS('pointer-events', 'none');
-    await expect(bracketCluster).toHaveCSS('pointer-events', 'none');
+    await expect(chaseCluster).toHaveCount(0);
 
-    // Chain tab — the same shared row; Draft state carries over and the
-    // same two clusters stay disabled there.
+    // Chain tab — Draft state carries over (shared `_sharedDraftMode`),
+    // and Chain's own CHASE cluster (now inside OptionChainTab's own
+    // Expiry toolbar, independent of the Ticket-tab row) is ALSO hidden
+    // while Draft is on.
     await page.getByRole('tab', { name: /chain/i }).first().click();
     await expect(draftCheckbox).toBeChecked();
-    await expect(chaseCluster).toHaveClass(/oes-ctl-cluster-disabled/);
-    await expect(bracketCluster).toHaveClass(/oes-ctl-cluster-disabled/);
+    await expect(chaseCluster).toHaveCount(0);
   });
 
   test('live: clicking the CHASE label itself (no separate chip) shows the wait-time tooltip', async ({ page }) => {

@@ -4,31 +4,41 @@
  * Chain-tab pre-submission spread gate (operator: "if there is too
  * much spread on the offset limit side, it should warn ... it should
  * be in a loop until the conditions are satisfied before placing the
- * order"). Scope: OptionChainTab.svelte + TemplateBar.svelte +
- * SymbolPanel.svelte's shared Submit button wiring ONLY — the Ticket
- * tab's own submit path (`_modalFireSubmit`) must be untouched.
+ * order"). Scope: OptionChainTab.svelte + SymbolPanel.svelte's shared
+ * Submit button wiring ONLY — the Ticket tab's own submit path
+ * (`_modalFireSubmit`) must be untouched.
  *
- * The full flow (stage a wing-configured leg in a real chain basket,
- * then exercise a live multi-second poll loop against a mocked
- * backend) requires a real IndexedDB instruments cache + live chain
- * quotes + a staged basket — reaching that deterministically in a
- * browser is its own large undertaking independent of this feature.
- * Per this codebase's existing convention for this exact file
- * (`option_chain_order.spec.js` — a source-scan spec, no browser),
- * the scenario-level requirements below are verified as precise code
- * shape assertions instead: every assertion targets the literal
- * function/branch that implements the described behaviour, so a
- * regression that removes or inverts the logic fails the test exactly
- * as a behavioural mock would. The bounded-loop mechanics themselves
- * (never hangs, discards stale responses, bounded errors/timeout) are
- * covered with real fake-timer behavioural tests in
- * `frontend/src/lib/__tests__/data/spreadGate.test.js` (Vitest) —
- * that is the authoritative test for "doesn't hang indefinitely".
+ * T3.3 (bracket-removal, 2026-11) rewrite — the gate used to check a
+ * leg ONLY when a Bracket wing/offset would attach to it. With Bracket
+ * gone, that predicate could never be true again, which would have
+ * made the whole gate a permanent no-op — defeating its stated purpose
+ * rather than preserving it. Redesigned: every CE/PE leg staged in the
+ * basket now checks its OWN bid/ask spread against `spreadMaxPctOverride`
+ * (default 0.5%) unconditionally; futures legs stay out of scope. The
+ * Spread% control itself relocated from the deleted `TemplateBar.svelte`
+ * into OptionChainTab's own Expiry toolbar row, next to the DTE chip —
+ * same state variable (`spreadMaxPctOverride`), same default, same live
+ * gate; only where it renders changed.
+ *
+ * The full flow (stage a leg in a real chain basket, then exercise a
+ * live multi-second poll loop against a mocked backend) requires a real
+ * IndexedDB instruments cache + live chain quotes + a staged basket —
+ * reaching that deterministically in a browser is its own large
+ * undertaking independent of this feature. Per this codebase's existing
+ * convention for this exact file (`option_chain_order.spec.js` — a
+ * source-scan spec, no browser), the scenario-level requirements below
+ * are verified as precise code shape assertions instead: every
+ * assertion targets the literal function/branch that implements the
+ * described behaviour, so a regression that removes or inverts the
+ * logic fails the test exactly as a behavioural mock would. The
+ * bounded-loop mechanics themselves (never hangs, discards stale
+ * responses, bounded errors/timeout) are covered with real fake-timer
+ * behavioural tests in `frontend/src/lib/__tests__/data/spreadGate.test.js`
+ * (Vitest) — that is the authoritative test for "doesn't hang indefinitely".
  *
  * One genuine browser smoke test is included at the bottom to confirm
  * the app still boots with the new wiring in place (no console errors
- * mounting SymbolPanel), mirroring `template_bar_smoke.spec.js`'s
- * already-established soft-smoke pattern.
+ * mounting SymbolPanel).
  *
  * Run:
  *   npx playwright test e2e/chain_spread_gate.spec.js \
@@ -41,108 +51,34 @@ import { loginAsAdmin } from './fixtures/auth.js';
 
 const ROOT = '/Users/ramanambore/projects/ramboq/frontend/src/lib';
 const CHAIN_PATH    = `${ROOT}/order/OptionChainTab.svelte`;
-const TEMPLATE_PATH = `${ROOT}/TemplateBar.svelte`;
 const SHELL_PATH     = `${ROOT}/SymbolPanel.svelte`;
 const GATE_LIB_PATH  = `${ROOT}/data/spreadGate.js`;
 
-const BACKEND_ROOT = '/Users/ramanambore/projects/ramboq/backend';
-const SETTINGS_PATH     = `${BACKEND_ROOT}/shared/helpers/settings.py`;
-const SPREAD_CHECK_PATH = `${BACKEND_ROOT}/api/algo/spread_check.py`;
-const TEMPLATE_ATTACH_PATH = `${BACKEND_ROOT}/api/algo/template_attach.py`;
-
-let chainSrc = '', templateSrc = '', shellSrc = '', gateLibSrc = '';
-let settingsSrc = '', spreadCheckSrc = '', templateAttachSrc = '';
+let chainSrc = '', shellSrc = '', gateLibSrc = '';
 
 test.beforeAll(() => {
   chainSrc    = readFileSync(CHAIN_PATH, 'utf-8');
-  templateSrc = readFileSync(TEMPLATE_PATH, 'utf-8');
   shellSrc    = readFileSync(SHELL_PATH, 'utf-8');
   gateLibSrc  = readFileSync(GATE_LIB_PATH, 'utf-8');
-
-  settingsSrc        = readFileSync(SETTINGS_PATH, 'utf-8');
-  spreadCheckSrc      = readFileSync(SPREAD_CHECK_PATH, 'utf-8');
-  templateAttachSrc   = readFileSync(TEMPLATE_ATTACH_PATH, 'utf-8');
 });
 
-test.describe('Spread% default threshold is 0.5% everywhere (not the old 10.0%)', () => {
-  test('backend admin-settings seed registers templates.wing_max_spread_pct default as 0.5', () => {
-    expect(settingsSrc).toContain(
-      '("templates", "templates.wing_max_spread_pct", "float", 0.5,'
-    );
-    expect(settingsSrc).not.toContain(
-      '("templates", "templates.wing_max_spread_pct", "float", 10.0,'
-    );
-  });
-
-  test('resolve_max_spread_pct() fallback (get_float + except branch) both use 0.5', () => {
-    expect(spreadCheckSrc).toContain(
-      'get_float("templates.wing_max_spread_pct", 0.5)'
-    );
-    expect(spreadCheckSrc).toContain('return 0.5, "setting"');
-    expect(spreadCheckSrc).not.toContain(
-      'get_float("templates.wing_max_spread_pct", 10.0)'
-    );
-  });
-
-  test('_pick_wing_by_premium() fallback (get_float + except branch) both use 0.5', () => {
-    expect(templateAttachSrc).toContain(
-      'get_float("templates.wing_max_spread_pct", 0.5)'
-    );
-    expect(templateAttachSrc).toContain('min_oi, max_spread_pct, chain_radius = 1000, 0.5, 20');
-    expect(templateAttachSrc).not.toContain(
-      'get_float("templates.wing_max_spread_pct", 10.0)'
-    );
-  });
-
-  test('frontend fallbacks (TemplateBar + OptionChainTab) both use 0.5, not 10', () => {
-    expect(templateSrc).toContain('selectedTemplate?.wing_max_spread_pct ?? 0.5');
-    expect(chainSrc).toContain('(tpl.wing_max_spread_pct ?? 0.5)');
-    expect(templateSrc).not.toContain('selectedTemplate?.wing_max_spread_pct ?? 10');
-    expect(chainSrc).not.toContain('(tpl.wing_max_spread_pct ?? 10)');
-  });
-});
-
-test.describe('TP %/SL %/Spread % labels render with a space before the %', () => {
-  test('TemplateBar renders "TP %", "SL %", "Spread %" (space before %, asterisk right after %)', () => {
-    expect(templateSrc).toContain("<span>TP %{_tpAsterisk ? '*' : ''}</span>");
-    expect(templateSrc).toContain("<span>SL %{_slAsterisk ? '*' : ''}</span>");
-    expect(templateSrc).toContain("<span>Spread %{_spreadAsterisk ? '*' : ''}</span>");
-    expect(templateSrc).not.toContain('<span>TP%');
-    expect(templateSrc).not.toContain('<span>SL%');
-    expect(templateSrc).not.toContain('<span>Spread%');
-  });
-
-  test('TemplateBar also spaces the sibling "Trail SL %" label (same fix, same file)', () => {
-    expect(templateSrc).toContain("<span>Trail SL %{_trailAsterisk ? '*' : ''}</span>");
-    expect(templateSrc).not.toContain('Trail SL%');
-  });
-
-  test('SymbolPanel per-leg editor renders "TP %" / "SL %" (space before %)', () => {
-    expect(shellSrc).toContain('<span>TP %</span>');
-    expect(shellSrc).toContain('<span>SL %</span>');
-  });
-});
-
-test.describe('Spread% field renders alongside TP%/SL% with the correct default', () => {
-  test('TemplateBar declares a Spread% bindable prop + input, defaulted from wing_max_spread_pct ?? 0.5', () => {
-    expect(templateSrc).toContain('spreadMaxPctOverride');
-    // Default placeholder resolution — per-template field once it
-    // exists, else the same 0.5 fallback the global admin setting uses.
-    expect(templateSrc).toContain("selectedTemplate?.wing_max_spread_pct ?? 0.5");
-    // Rendered in the SAME param row as TP%/SL% (not gated on showsWing)
-    // — i.e. the <label>...Spread %... block sits between the SL % input
-    // and the `{#if showsWing}` wing block, not inside it.
-    const slIdx     = templateSrc.indexOf('>SL %');
-    const spreadIdx = templateSrc.indexOf('>Spread %');
-    const wingIfIdx  = templateSrc.indexOf('{#if showsWing}');
-    expect(slIdx).toBeGreaterThan(-1);
-    expect(spreadIdx).toBeGreaterThan(slIdx);
-    expect(wingIfIdx).toBeGreaterThan(spreadIdx);
-  });
-
-  test('OptionChainTab threads spreadMaxPctOverride through to TemplateBar via bind:', () => {
+test.describe('Spread% field renders alongside Expiry/DTE in OptionChainTab\'s own toolbar', () => {
+  test('OptionChainTab declares a Spread% bindable prop + its own input, defaulted to 0.5', () => {
     expect(chainSrc).toContain('spreadMaxPctOverride');
-    expect(chainSrc).toContain('bind:spreadMaxPctOverride');
+    expect(chainSrc).toContain('class="oct-spread-field"');
+    expect(chainSrc).toContain('placeholder="0.5"');
+    // Rendered in the Expiry toolbar, after the DTE chip.
+    const dteIdx = chainSrc.indexOf('class="oct-expiry-dte"');
+    const spreadIdx = chainSrc.indexOf('class="oct-spread-field"');
+    expect(dteIdx).toBeGreaterThan(-1);
+    expect(spreadIdx).toBeGreaterThan(dteIdx);
+  });
+
+  test('_effMaxSpreadPct() falls back to 0.5 when no override is set', () => {
+    const fnIdx = chainSrc.indexOf('function _effMaxSpreadPct()');
+    expect(fnIdx).toBeGreaterThan(-1);
+    const body = chainSrc.slice(fnIdx, fnIdx + 300);
+    expect(body).toContain('0.5');
   });
 
   test('SymbolPanel owns the shared Spread% override state and binds it into OptionChainTab', () => {
@@ -152,7 +88,7 @@ test.describe('Spread% field renders alongside TP%/SL% with the correct default'
 });
 
 test.describe('A wide-spread result blocks submission and shows a warning', () => {
-  test('_checkLegs() requires ok===true on every checked leg (parent AND offset) before the gate can pass', () => {
+  test('_checkLegs() requires ok===true on every checked leg before the gate can pass', () => {
     const fnIdx = chainSrc.indexOf('async function _checkLegs(');
     expect(fnIdx).toBeGreaterThan(-1);
     const body = chainSrc.slice(fnIdx, fnIdx + 1200);
@@ -167,23 +103,22 @@ test.describe('A wide-spread result blocks submission and shows a warning', () =
     expect(chainSrc).toContain('data-testid="spread-gate-place-anyway"');
   });
 
-  test('both the original/parent leg AND the computed offset/wing leg are included in the check targets', () => {
-    const fnIdx = chainSrc.indexOf('function _buildCheckTargets(');
+  test('every staged CE/PE leg is its own check target — futures legs are excluded', () => {
+    const fnIdx = chainSrc.indexOf('function _buildGatePlan()');
     expect(fnIdx).toBeGreaterThan(-1);
     const body = chainSrc.slice(fnIdx, fnIdx + 900);
-    expect(body).toContain('it.parentSym');
-    expect(body).toContain('it.wingSym');
+    expect(body).toMatch(/leg\?\.optType !== 'CE' && leg\?\.optType !== 'PE'/);
+    expect(body).toContain('tradingsymbol: leg.sym');
   });
 });
 
-test.describe('Changing TP% / SL% / Spread% triggers an immediate re-check', () => {
-  test('the gate re-check $effect watches tpOverride, slOverride, and spreadMaxPctOverride', () => {
+test.describe('Changing Spread% or the basket triggers an immediate re-check', () => {
+  test('the gate re-check $effect watches spreadMaxPctOverride and chainBasket', () => {
     const effIdx = chainSrc.indexOf('// Immediate re-check triggers');
     expect(effIdx).toBeGreaterThan(-1);
-    const body = chainSrc.slice(effIdx, effIdx + 700);
-    expect(body).toContain('void tpOverride');
-    expect(body).toContain('void slOverride');
+    const body = chainSrc.slice(effIdx, effIdx + 400);
     expect(body).toContain('void spreadMaxPctOverride');
+    expect(body).toContain('void chainBasket');
     expect(body).toContain('_gate.recheck()');
   });
 
@@ -208,18 +143,18 @@ test.describe('An explicit confirm-override allows submission despite a persiste
   test("runPreSubmitGate() resolves the awaiting caller true on 'overridden' (submission proceeds)", () => {
     const fnIdx = chainSrc.indexOf('export async function runPreSubmitGate()');
     expect(fnIdx).toBeGreaterThan(-1);
-    const body = chainSrc.slice(fnIdx, fnIdx + 1600);
+    const body = chainSrc.slice(fnIdx, fnIdx + 1200);
     expect(body).toContain("s.phase === 'passed' || s.phase === 'overridden'");
     expect(body).toContain('_settleGateResolvers(true)');
   });
 });
 
-test.describe('Disabling the template skips the check entirely', () => {
-  test('_buildGatePlan() returns an empty plan whenever no leg resolves a template (covers shellUsingNone)', () => {
+test.describe('No CE/PE leg staged skips the check entirely', () => {
+  test('_buildGatePlan() returns an empty plan when the basket has no CE/PE leg', () => {
     const fnIdx = chainSrc.indexOf('function _buildGatePlan()');
     expect(fnIdx).toBeGreaterThan(-1);
-    const body = chainSrc.slice(fnIdx, fnIdx + 1100);
-    expect(body).toContain('if (!wp || !wp.hasWing) continue;');
+    const body = chainSrc.slice(fnIdx, fnIdx + 900);
+    expect(body).toMatch(/continue;\s*\/\/ futures legs out of scope/);
   });
 
   test('runPreSubmitGate() resolves true immediately (no loop) when the plan is empty', () => {
@@ -227,12 +162,6 @@ test.describe('Disabling the template skips the check entirely', () => {
     const body = chainSrc.slice(fnIdx, fnIdx + 500);
     expect(body).toContain('if (items.length === 0)');
     expect(body).toContain('return true;');
-  });
-
-  test('shellUsingNone is a recheck trigger, so disabling the template mid-wait resolves on the next tick', () => {
-    const effIdx = chainSrc.indexOf('// Immediate re-check triggers');
-    const body = chainSrc.slice(effIdx, effIdx + 700);
-    expect(body).toContain('void shellUsingNone');
   });
 });
 
@@ -276,19 +205,10 @@ test.describe('No impact on the Ticket tab / OrderTicket submit path', () => {
     expect(shellSrc).toContain("} else if (_activeTab === 'ticket') {\n                _modalFireSubmit();");
   });
 
-  test('Spread% field stays Chain-only even after the 2026-10-16 Ticket/template re-wire', () => {
-    // 2026-10-16 — OrderTicket DOES mount <TemplateBar> now (the Ticket/
-    // Draft mutual-exclusion fix, operator: "keep bracket before draft
-    // on the same row"), reversing the 2026-09-29 severance this test
-    // used to assert. Spread% itself is still Chain-only by design
-    // (TemplateBar's own doc comment: "Chain-only pre-submit gate") —
-    // confirm OrderTicket's mount doesn't bind spreadMaxPctOverride,
-    // the narrower claim this test is actually about.
+  test('Spread% stays Chain-only — OrderTicket.svelte has no spreadMaxPctOverride prop at all (T3.3, bracket-removal — OrderTicket no longer mounts anything Bracket-related)', () => {
     const orderTicketSrc = readFileSync(`${ROOT}/order/OrderTicket.svelte`, 'utf-8');
-    expect(orderTicketSrc).toContain('<TemplateBar');
-    const mountIdx = orderTicketSrc.indexOf('<TemplateBar');
-    const mountBlock = orderTicketSrc.slice(mountIdx, mountIdx + 700);
-    expect(mountBlock).not.toContain('spreadMaxPctOverride');
+    expect(orderTicketSrc).not.toContain('spreadMaxPctOverride');
+    expect(orderTicketSrc).not.toContain('TemplateBar');
   });
 });
 
@@ -302,19 +222,11 @@ test.describe('Backend contract — GET /api/orders/spread-check', () => {
     expect(body).toContain('max_spread_pct');
   });
 
-  test('premium%-mode wing resolution calls /orders/ticket/preview ONCE per gate session, not inside the per-tick checkLegs callback', () => {
-    const resolveIdx = chainSrc.indexOf('async function _resolvePremiumWingSymbols(');
-    expect(resolveIdx).toBeGreaterThan(-1);
-    const resolveBody = chainSrc.slice(resolveIdx, resolveIdx + 1400);
-    expect(resolveBody).toContain('previewTicketTemplate(');
-
-    const checkLegsIdx = chainSrc.indexOf('async function _checkLegs(');
-    const checkLegsBody = chainSrc.slice(checkLegsIdx, checkLegsIdx + 900);
-    expect(checkLegsBody).not.toContain('previewTicketTemplate');
-
-    const runGateIdx = chainSrc.indexOf('export async function runPreSubmitGate()');
-    const runGateBody = chainSrc.slice(runGateIdx, runGateIdx + 900);
-    expect(runGateBody).toContain('_resolvePremiumWingSymbols(');
+  test('no premium%-mode wing resolution remains — the wing/template machinery that used to feed the gate is gone', () => {
+    expect(chainSrc).not.toContain('_resolvePremiumWingSymbols');
+    expect(chainSrc).not.toContain('_premiumWingSymCache');
+    expect(chainSrc).not.toContain('_effTemplateForLeg');
+    expect(chainSrc).not.toContain('_effWingParams');
   });
 });
 

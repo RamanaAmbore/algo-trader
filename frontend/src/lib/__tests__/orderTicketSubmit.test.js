@@ -144,11 +144,6 @@ describe('buildPlacePayload — source tagging (Sprint 2b)', () => {
     account: 'ZG0790',
     chase: false,
     chaseAgg: 'low',
-    templateId: null,
-    tpOverride: '',
-    slOverride: '',
-    wingPremPctOverride: '',
-    wingStrikeOffsetOverride: '',
     strategyId: null,
   });
 
@@ -170,8 +165,7 @@ describe('buildPlacePayload — draft_id threading (2026-10 Bug A fix)', () => {
     currentQty: 0, product: 'CNC', type: 'LIMIT', variety: 'regular', validity: 'DAY',
     showLimit: true, showTrigger: false, roundToTick: (v) => Number(v),
     price: '2500', trigger: '', account: 'ZG0790', chase: false, chaseAgg: 'low',
-    templateId: null, tpOverride: '', slOverride: '', wingPremPctOverride: '',
-    wingStrikeOffsetOverride: '', strategyId: null,
+    strategyId: null,
   });
 
   it('carries a real draftId through as draft_id', () => {

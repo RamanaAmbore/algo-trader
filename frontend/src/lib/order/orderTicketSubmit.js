@@ -5,26 +5,13 @@
 // these helpers can be unit-tested in isolation (follow indicators.test.js pattern).
 //
 // Section order mirrors the submit() flow:
-//   1. numericOverride     — template param coercion
-//   2. classifyIntent      — close vs open detection
-//   3. buildModifyPayload  — modify-branch request body
-//   4. buildOnSubmitPayload — outer onSubmit payload (all modes)
-//   5. buildPlacePayload   — placeTicketOrder arguments (paper/live)
-//   6. formatPlacementOk   — inline success message after place
-//   7. nextTriggerState    — D4: atomic counter-prop dispatch guard
-//   8. formatSubmitLabel   — R7: pre-submit button label (pending action)
-
-/**
- * Coerce a template-override field.
- * Empty string means "use template default" → null.
- * Any other value is converted to a Number.
- *
- * @param {number|string} v
- * @returns {number|null}
- */
-export function numericOverride(v) {
-  return v !== '' ? Number(v) : null;
-}
+//   1. classifyIntent      — close vs open detection
+//   2. buildModifyPayload  — modify-branch request body
+//   3. buildOnSubmitPayload — outer onSubmit payload (all modes)
+//   4. buildPlacePayload   — placeTicketOrder arguments (paper/live)
+//   5. formatPlacementOk   — inline success message after place
+//   6. nextTriggerState    — D4: atomic counter-prop dispatch guard
+//   7. formatSubmitLabel   — R7: pre-submit button label (pending action)
 
 /**
  * Determine order intent ('close' | 'open') based on the operator's
@@ -168,11 +155,6 @@ export function buildOnSubmitPayload(ctx) {
  *   account:                    string,
  *   chase:                      boolean,
  *   chaseAgg:                   string,
- *   templateId:                 number|null,
- *   tpOverride:                 number|string,
- *   slOverride:                 number|string,
- *   wingPremPctOverride:        number|string,
- *   wingStrikeOffsetOverride:   number|string,
  *   strategyId:                 number|null,
  *   draftId:                    number|null,
  * }} ctx
@@ -209,11 +191,6 @@ export function buildPlacePayload(ctx) {
     account:          ctx.account,
     chase:                ctx.showLimit ? ctx.chase : false,
     chase_aggressiveness: ctx.showLimit && ctx.chase ? ctx.chaseAgg : 'low',
-    template_id:                  ctx.templateId,
-    tp_pct_override:              numericOverride(ctx.tpOverride),
-    sl_pct_override:              numericOverride(ctx.slOverride),
-    wing_premium_pct_override:    numericOverride(ctx.wingPremPctOverride),
-    wing_strike_offset_override:  numericOverride(ctx.wingStrikeOffsetOverride),
     strategy_id:                  ctx.strategyId,
     // Draft cleanup (2026-10) — set only when this ticket originated from
     // a server-persisted draft row (see payoffDrafts.svelte.js). On

@@ -87,27 +87,8 @@ test.describe('Static source checks — OrderTicket.svelte', () => {
   });
 });
 
-test.describe('Static source checks — TemplateBar.svelte', () => {
-  const content = readFile('src/lib/TemplateBar.svelte');
-
-  test('.oes-tpl-scales-input min-width squeezes instead of overflowing narrow viewports', () => {
-    const body = ruleBody(content, '.oes-tpl-scales-input');
-    expect(body, '.oes-tpl-scales-input rule must exist').not.toBeNull();
-    expect(body).toMatch(/min-width:\s*min\(\s*14rem\s*,\s*100%\s*\)/);
-  });
-
-  test('.oes-tpl-errors takes its own full-width line inside the wrapping toolbar', () => {
-    const body = ruleBody(content, '.oes-tpl-errors');
-    expect(body, '.oes-tpl-errors rule must exist').not.toBeNull();
-    expect(body).toMatch(/flex-basis:\s*100%/);
-  });
-
-  test('.oes-tpl-expanded takes its own full-width line inside the wrapping toolbar', () => {
-    const body = ruleBody(content, '.oes-tpl-expanded');
-    expect(body, '.oes-tpl-expanded rule must exist').not.toBeNull();
-    expect(body).toMatch(/flex-basis:\s*100%/);
-  });
-});
+// "Static source checks — TemplateBar.svelte" describe block removed
+// here — T3.3, bracket-removal, 2026-11. TemplateBar.svelte is deleted.
 
 test.describe('Static source checks — OrderDepth.svelte', () => {
   const content = readFile('src/lib/order/OrderDepth.svelte');

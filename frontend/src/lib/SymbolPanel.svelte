@@ -30,15 +30,13 @@
   import { ORDER_TABS } from '$lib/order/tabs.js';
   import { formatSubmitLabel } from '$lib/order/orderTicketSubmit.js';
   import { SYM_TYPE_OPTS } from '$lib/data/symbolTypes';
-  import { aggregateCapWarnings } from '$lib/data/brokerCapWarnings';
-  import { placeBasket, fetchBasketMargin, fetchLiveStatus, previewTicketTemplate } from '$lib/api';
+  import { placeBasket, fetchBasketMargin, fetchLiveStatus } from '$lib/api';
   import ChartModal from '$lib/ChartModal.svelte';
   import ChartWorkspace from '$lib/ChartWorkspace.svelte';
   import { executionMode, visibleInterval } from '$lib/stores';
   import { priceFmt, aggFmt as aggFmtMargin, qtyFmt } from '$lib/format';
   import OrderTicket      from '$lib/order/OrderTicket.svelte';
   import OptionChainTab   from '$lib/order/OptionChainTab.svelte';
-  import TemplateBar      from '$lib/TemplateBar.svelte';
   import OrderCliTab      from '$lib/order/OrderCliTab.svelte';
   import ChaseCard       from '$lib/order/ChaseCard.svelte';
   import ChaseAggPicker  from '$lib/order/ChaseAggPicker.svelte';
@@ -46,12 +44,6 @@
   import SymbolSearchInput from '$lib/SymbolSearchInput.svelte';
   import LegLabel from '$lib/LegLabel.svelte';
   import Select            from '$lib/Select.svelte';
-  // Order-template catalog — shared with OrderTicket. SymbolPanel's
-  // basket bar exposes the "On fill" picker; the chosen template is
-  // attached per leg in submitBasket. Single source of truth so
-  // CRUD on the Brackets tab propagates here without a refresh.
-  import { loadOrderTemplates, orderTemplatesStore } from '$lib/data/templates';
-  import { appliesToFor as _appliesToFor } from '$lib/data/templateScope.js';
   // Chain tab's read-only "wing fired live" confirmation badge — tracks
   // this session's own LIVE basket submissions by their broker order id
   // so OptionChainTab can later recognize the async wing/hedge leg
@@ -73,36 +65,12 @@
   import { rootOf } from '$lib/data/rootOf.js';
   import { payoffDrafts } from '$lib/data/payoffDrafts.svelte.js';
 
-  // Templ toggle — remembers the operator's last on/off/specific-
-  // template choice PER SIDE-SCOPE (buy_option / sell_option / buy_any
-  // / sell_any / both — see `$lib/data/templateScope.js`), persisted
-  // across page reloads. Shape: a flat object keyed by scope string,
-  // value is `'on'` (follow the side-aware default), `'none'`
-  // (explicit off), or a number (a specific named template id).
-  // Best-effort — a read/write failure (private-mode localStorage,
-  // corrupt JSON) silently falls back to "nothing remembered" rather
-  // than throwing.
-  const _TEMPL_PREF_KEY = 'ramboq_templ_pref_v1';
-  /** @param {string} scope
-   *  @returns {'none'|number|undefined} */
-  function _readTemplPref(scope) {
-    try {
-      const raw = localStorage.getItem(_TEMPL_PREF_KEY);
-      if (!raw) return undefined;
-      const obj = JSON.parse(raw);
-      return obj?.[scope];
-    } catch { return undefined; }
-  }
-  /** @param {string} scope
-   *  @param {'none'|'on'|number} value */
-  function _writeTemplPref(scope, value) {
-    try {
-      const raw = localStorage.getItem(_TEMPL_PREF_KEY);
-      const obj = raw ? JSON.parse(raw) : {};
-      obj[scope] = value;
-      localStorage.setItem(_TEMPL_PREF_KEY, JSON.stringify(obj));
-    } catch { /* best-effort; ok to lose the remembered pref in private mode etc */ }
-  }
+  // Bracket/Templ preference — DEAD (T3.3, bracket-removal). The
+  // per-scope on/off/specific-template localStorage preference this
+  // key used to carry no longer has any reader; `_TEMPL_PREF_KEY_STALE`
+  // is removed once, on mount, below (see the onMount block) so an old
+  // browser session doesn't carry the dead key forever.
+  const _TEMPL_PREF_KEY_STALE = 'ramboq_templ_pref_v1';
 
   // Pinned anchors: no hardcoded list — SymbolSearchInput's own
   // _autoLoadPins() fires when no `pins` prop is supplied and loads
@@ -669,19 +637,10 @@
   }
   function clearBasket() {
     basketLegs = []; basketResultMsg = ''; _basketMarginRows = [];
-    // Reset per-account caps cache so stale data from a previous basket
-    // session does not carry over when the operator builds a new basket
-    // (possibly with different accounts). Cache will re-populate lazily
-    // from the effect below as new legs are added.
-    _basketCapsCache = {};
     // Audit fix (H-6) — also clear the persistent partial-fail
     // sticky banner so it doesn't outlive the basket it described.
     if (_stickyResultTimer) { clearTimeout(_stickyResultTimer); _stickyResultTimer = null; }
     _stickyResultMsg = ''; _stickyResultLevel = '';
-    // Bug fix (2026-09-30) — a cleared basket is a genuinely NEW order;
-    // drop the in-session explicit-choice flag so the next order's
-    // first scope resolution can read remembered per-scope prefs again.
-    _templExplicitThisSession = false;
   }
   // Parent-driven clear — bumping triggerClearBasket from /orders fires
   // the same path the in-modal Clear button does. Skip the initial 0
@@ -724,79 +683,6 @@
     }
     return [...seen];
   });
-  // Per-leg (account, exchange) tuples — needed by the cap-warning
-  // aggregator (H-5) so the MCX check fires on the leg whose
-  // exchange is MCX, not on every leg in the basket. Same de-dup
-  // pattern as _basketAccounts; key is "ACCT|EXCHANGE".
-  const _basketAccountExchanges = $derived.by(() => {
-    const seen = new Map();
-    for (const leg of basketLegs) {
-      const a = leg.account || _sharedAccount || account || '';
-      const e = leg.exchange || '';
-      if (!a) continue;
-      const k = `${a}|${e}`;
-      if (!seen.has(k)) seen.set(k, { account: a, exchange: e });
-    }
-    return [...seen.values()];
-  });
-  // Per-account BrokerCapabilities cache. Populated lazily by the
-  // $effect below; reads from the same /api/admin/brokers/{acct}/
-  // capabilities endpoint OrderTicket already hits. Cached so an
-  // operator who adds + removes + re-adds a leg only fetches caps
-  // once per account per modal lifetime.
-  /** @type {Record<string, any>} */
-  let _basketCapsCache = $state({});
-  $effect(() => {
-    const accts = _basketAccounts;
-    if (!Array.isArray(accts) || accts.length === 0) return;
-    const _needed = accts.filter(a => !_basketCapsCache[a]);
-    if (_needed.length === 0) return;
-    // Fire each fetch independently so a slow / failing one doesn't
-    // block the others. Cache result on success; on failure we leave
-    // the cache empty so the next basket change re-tries (rare).
-    untrack(() => {
-      for (const a of _needed) {
-        (async () => {
-          try {
-            const { fetchBrokerCapabilities } = await import('$lib/api');
-            const c = await fetchBrokerCapabilities(a);
-            if (c) _basketCapsCache = { ..._basketCapsCache, [a]: c };
-          } catch (_e) {
-            // Silent — demo / unauthed sessions can't see admin
-            // endpoints. The cap chip falls back to OrderTicket's
-            // single-account warning.
-          }
-        })();
-      }
-    });
-  });
-  // Aggregated cap warning across all (account, exchange) pairs in
-  // the basket. Imported helper de-dupes warning strings + tags each
-  // with the originating account so the operator can map back. When
-  // basket is empty, returns ''; the chip render falls back to the
-  // Ticket-tab single-account warning piped up from OrderTicket.
-  const _basketCapWarning = $derived.by(() => {
-    if (basketLegs.length === 0) return '';
-    if (!_selectedTemplate || _shellUsingNone) return '';
-    /** @type {Array<{account:string, caps:any, exchange:string}>} */
-    const tuples = [];
-    for (const { account: a, exchange: e } of _basketAccountExchanges) {
-      const c = _basketCapsCache[a];
-      if (!c) continue;   // caps not loaded yet — chip stays empty
-      tuples.push({ account: a, caps: c, exchange: e });
-    }
-    // Thread the live TP-type/TP%/SL% overrides through — the Kite
-    // MARKET-leg check (T17) needs the operator's in-session choice, not
-    // just the saved template row (see brokerCapWarnings.js docstring).
-    // TemplateBar renders once at shell level, so one override set
-    // applies across every leg/account in the basket.
-    return aggregateCapWarnings(_selectedTemplate, tuples, {
-      tpOrderType: _sharedTpOrderTypeOverride,
-      tpPct: _sharedTpOverride,
-      slPct: _sharedSlOverride,
-    });
-  });
-
   // Debounced effect — fires 500 ms after any basket change when basket
   // spans ≥2 accounts; clears the strip when basket is empty or single-acct.
   $effect(() => {
@@ -863,99 +749,6 @@
     };
   });
 
-  // Last-basket-leg on-fill preview — computed shell-side so the chip
-  // can swap to it when the operator is on the Chain tab. Mirrors
-  // OrderTicket's preview effect: same API, same 200ms debounce, same
-  // sequence guard for out-of-order responses. Effective overrides
-  // follow the same per-leg-vs-shell rule submitBasket uses (leg's
-  // explicit template_id → leg overrides only; shell template →
-  // shell overrides via `??`).
-  $effect(() => {
-    // Track every input that affects the last leg's plan.
-    const legs = basketLegs;
-    void legs;
-    void _sharedTemplateId;
-    void _sharedTpOverride;
-    void _sharedSlOverride;
-    void _sharedWingPremPctOverride;
-    void _sharedWingStrikeOffsetOverride;
-
-    if (_lastLegTimer) { clearTimeout(_lastLegTimer); _lastLegTimer = null; }
-    // Use the operator-focused leg (click any basket pill to focus it);
-    // falls back to the last leg added when nothing is explicitly
-    // focused.
-    const leg = _focusedLeg;
-    if (!leg || !leg.sym || !leg.lots || !(Number(leg.limit) > 0)) {
-      _lastLegPlan = null;
-      _lastLegError = '';
-      return;
-    }
-    const legAcct = legAccountOf(leg);
-    if (!legAcct) {
-      _lastLegPlan = null;
-      _lastLegError = '';
-      return;
-    }
-    _lastLegSeq++;
-    const seq = _lastLegSeq;
-    _lastLegTimer = setTimeout(async () => {
-      _lastLegLoading = true; _lastLegError = '';
-      const _hasLegTpl = leg.template_id != null && leg.template_id !== _sharedTemplateId;
-      // Per-leg legs use the leg's own overrides only — shell overrides
-      // belong to a DIFFERENT template and would silently contaminate
-      // (matches the submitBasket per-leg isolation fix).
-      const tpO = leg.tp_pct_override
-        ?? (_hasLegTpl ? null
-            : (_sharedTpOverride !== '' ? Number(_sharedTpOverride) : null));
-      const slO = leg.sl_pct_override
-        ?? (_hasLegTpl ? null
-            : (_sharedSlOverride !== '' ? Number(_sharedSlOverride) : null));
-      const wpO = leg.wing_premium_pct_override
-        ?? (_hasLegTpl ? null
-            : (_sharedWingPremPctOverride !== '' ? Number(_sharedWingPremPctOverride) : null));
-      const wsO = leg.wing_strike_offset_override
-        ?? (_hasLegTpl ? null
-            : (_sharedWingStrikeOffsetOverride !== '' ? Number(_sharedWingStrikeOffsetOverride) : null));
-      const dispatchedTplId = leg.template_id ?? _sharedTemplateId;
-      try {
-        // Backend's ticket-preview endpoint reads `quantity` as LOTS for
-        // F&O (it multiplies by lot_size itself — see
-        // `_rco_preview_resolve_qty` in backend/api/routes/orders.py).
-        // Chain-tab legs are always F&O, so sending `lots * lotSize`
-        // (contracts) here let the backend multiply by lot_size AGAIN,
-        // inflating parent_qty/wing qty by a factor of lot_size. Matches
-        // `OptionChainTab.svelte`'s own `leg.lots`-only convention.
-        const res = await previewTicketTemplate({
-          mode:             _sharedMode === 'draft' ? 'paper' : _sharedMode,
-          side:             leg.side,
-          tradingsymbol:    leg.sym,
-          quantity:         leg.lots || 1,
-          exchange:         leg.exchange || 'NFO',
-          product:          leg.product || 'NRML',
-          account:          legAcct,
-          reference_price:  Number(leg.limit) || 0,
-          template_id:                  dispatchedTplId,
-          tp_pct_override:              tpO,
-          sl_pct_override:              slO,
-          wing_premium_pct_override:    wpO,
-          wing_strike_offset_override:  wsO,
-        });
-        if (seq !== _lastLegSeq) return;
-        _lastLegPlan = res?.plan || null;
-      } catch (e) {
-        if (seq !== _lastLegSeq) return;
-        _lastLegError = /** @type {any} */ (e)?.message || 'preview failed';
-        _lastLegPlan = null;
-      } finally {
-        if (seq === _lastLegSeq) _lastLegLoading = false;
-      }
-    }, 200);
-
-    return () => {
-      if (_lastLegTimer) { clearTimeout(_lastLegTimer); _lastLegTimer = null; }
-    };
-  });
-
   // ── Shared account state ─────────────────────────────────────────
   // Single source of truth for the routable account across all three
   // tabs (command / ticket / chain). Earlier each tab maintained its
@@ -1011,443 +804,18 @@
   function _chaseInfoKeydown(/** @type {KeyboardEvent} */ e) {
     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _chaseInfoOpen = !_chaseInfoOpen; }
   }
-  // Shared template — applied to every leg in the basket on submit.
-  // Operator picks once from the bar; submitBasket threads the id
-  // into each BasketLeg's `template_id` so the backend runs the
-  // `apply_template_to_order` pipeline per leg on fill. Defaults
-  // to the 'none' (no-attach) row once the catalog loads so the
-  // first basket doesn't surprise the operator with an unexpected
-  // GTT. Operator: "template should be applicable to option chain too".
   // Audit fix (L-3) — demo session gate. Anonymous prod visitors can
   // see the algo surface but every LIVE/PAPER submit is blocked at
-  // the API layer. Pre-fix the Template Default/None pill toggle,
-  // override inputs, cap warning chip, and on-fill preview chip all
-  // rendered + computed for demo visitors — wasted compute + visual
-  // clutter that suggested capabilities they don't actually have.
-  // Replaced with a single muted "Sign in to use templates" note.
+  // the API layer. Still used to suppress the CLI tab's own demo gate.
   const _algoStatus = getContext('algoStatus');
   const _isDemo = $derived(_algoStatus?.isDemo ?? false);
-  let _sharedTemplateId = $state(/** @type {number|null} */ (null));
-  let _templates = $state(/** @type {any[]} */ ([]));
-  const _selectedTemplate = $derived(
-    _templates.find(t => t.id === _sharedTemplateId) || null
-  );
-  // The seeded "none" template — used as the per-leg "(no template —
-  // entry only)" sentinel. When the operator picks this option, leg.
-  // template_id gets the none-template's REAL id (not null) so the
-  // `??` fallback in submitBasket doesn't silently revert to shell.
-  const _noneTpl = $derived(_templates.find(t => t.slug === 'none') || null);
-  // Templates excluding the "none" row — used by the per-leg editor's
-  // dropdown so "none" isn't listed twice (once as the explicit
-  // sentinel, once as a regular template).
-  const _nonNoneTemplates = $derived(_templates.filter(t => t.slug !== 'none'));
-  // True when the shell row is on the explicit "None" pill — the
-  // operator opted out of any GTT attach for this submit. Derived so
-  // the pill toggle and the Default-template resolution stay in
-  // lockstep.
-  const _shellUsingNone = $derived(_sharedTemplateId === null);
-  // `_showTemplateBar`/`_showDemoTplNote` REMOVED 2026-10-21 (shared-
-  // row re-wire) — they existed only to gate OptionChainTab's own
-  // (now-deleted) <TemplateBar> render. The single surviving
-  // TemplateBar instance's visibility is `_bracketDraftClusterVisible`
-  // (declared further down, near the rest of the shared-row state).
-  // Shell-level on-fill preview + cap-warning strip visibility — this
-  // block sits at shell level, visible from BOTH tabs, and genuinely
-  // needs templates loaded / action='open' / a real symbol-or-legs
-  // before it has anything to preview.
-  const _showTemplatePreview = $derived(
-    _templates.length > 0 && action === 'open'
-    && !!((_localSymbol || '').trim() || basketLegs.length > 0)
-  );
-  // Shared TemplateBar handlers — single source of truth passed down
-  // into BOTH tabs' own mounts: OptionChainTab (Chain) and OrderTicket
-  // itself (Ticket, 2026-10-16 4th-and-final re-wire — see
-  // OrderTicket.svelte's own chase-row for where the Ticket copy
-  // actually renders; nothing shell-level here any more).
-  function _onTemplSelectDefault() {
-    if (_sideAwareDefault) {
-      _sharedTemplateId = _sideAwareDefault.id;
-      _writeTemplPref(_currentScope(), 'on');
-      _templExplicitThisSession = true;
-    }
-  }
-  function _onTemplSelectNone() {
-    _sharedTemplateId = null;
-    _writeTemplPref(_currentScope(), 'none');
-    _templExplicitThisSession = true;
-  }
-  function _onTemplSelectTemplate(/** @type {number} */ id) {
-    _sharedTemplateId = id;
-    _writeTemplPref(_currentScope(), id);
-    _templExplicitThisSession = true;
-  }
-  // Side-scope helper — mirrors OrderTicket's `_appliesToFor` so the
-  // shell can decide whether the active template matches the operator's
-  // current direction. Returns 'sell_option' for SELL CE/PE legs (the
-  // only scope that wants a protective wing), 'sell_any' / 'buy_any'
-  // for the directional defaults, and 'both' as a no-op catch.
-  /** Current side+symbol scope string ('buy_option' / 'sell_option' /
-   *  'buy_any' / 'sell_any' / 'both') — single source shared by
-   *  `_sideAwareDefault`, the side-flip auto-swap effect, and the
-   *  Templ-pref persistence call sites so they never disagree. */
-  function _currentScope() {
-    // Bug fix (2026-09-30): on the Chain tab `_localSymbol` is always the
-    // ROOT symbol (`_parseRoot` strips from the first digit, e.g.
-    // "CRUDEOIL26OCTFUT" → "CRUDEOIL") — never the specific option
-    // contract — so preferring it here meant `appliesToFor()` could
-    // never see a real "...CE"/"...PE" tradingsymbol and silently
-    // collapsed every Chain scope to buy_any/sell_any, never buy_option/
-    // sell_option. Whenever there's a real leg to derive the option-
-    // specific symbol from (Chain tab active, or any basket leg staged
-    // regardless of tab), prefer the focused/last leg's own `.sym` —
-    // only fall back to `_localSymbol` on Ticket with no legs yet.
-    // Fallback ladder preserved, just reordered conditionally: every
-    // consumer (`_sideAwareDefault`, the `_lastSideScope` effect, the
-    // three template-pref persistence call sites) shares this function.
-    //
-    // 2026-11-01: the Ticket-tab-no-legs branch (preferLeg === false) now
-    // prefers `_ticketState.resolvedSymbol` — OrderTicket's own resolved
-    // contract symbol, mirrored up via `onTicketStateChange` — ahead of
-    // `_localSymbol`. `_localSymbol` only ever holds whatever the
-    // operator directly typed/picked (see `_pickSymbol`'s Ticket-tab
-    // branch); for a bare-underlying option order it stays the bare
-    // root while OrderTicket resolves a specific CE/PE contract
-    // internally. Without this, `_currentScope()` could disagree with
-    // OrderTicket's own `_defaultTemplate`/re-validation-effect scope
-    // (`_appliesToFor(_side, _resolvedSymbol || symbol)`), so the
-    // Bracket toggle's displayed default label and the template a
-    // Default click actually arms could be for two different scopes.
-    // The preferLeg (Chain tab / basket legs) branch is untouched —
-    // that's the unrelated 2026-09-30 fix above and must not change.
-    const legSym = (_focusedLeg?.sym || '')
-      || (basketLegs.length > 0 ? basketLegs[basketLegs.length - 1].sym : '');
-    const preferLeg = _activeTab === 'chain' || basketLegs.length > 0;
-    const symForScope = preferLeg
-      ? (legSym || (_localSymbol || '').trim())
-      : (String(_ticketState?.resolvedSymbol || '').trim() || (_localSymbol || '').trim() || legSym);
-    const sideForScope = _focusedLeg?.side || _modalSide || 'BUY';
-    return _appliesToFor(sideForScope, symForScope);
-  }
-  // Shell-level template parameter overrides. Editing these in the
-  // "On fill" row updates them; OrderTicket binds them so its own
-  // submit carries the values. Operator: "on fill selected, if there
-  // are any parameters i should be update the parameters."
-  // Empty string = "no override; use the template's value".
-  let _sharedTpOverride               = $state(/** @type {number|''} */ (''));
-  let _sharedSlOverride               = $state(/** @type {number|''} */ (''));
-  let _sharedWingStrikeOffsetOverride = $state(/** @type {number|''} */ (''));
-  let _sharedWingPremPctOverride      = $state(/** @type {number|''} */ (''));
   // Chain-only pre-submit spread-gate threshold — see OptionChainTab's
-  // runPreSubmitGate(). Rendered in TemplateBar alongside TP%/SL%.
+  // runPreSubmitGate(). Rendered in that tab's own Expiry toolbar row.
   let _sharedSpreadMaxPctOverride     = $state(/** @type {number|''} */ (''));
   // bind:this target for OptionChainTab — lets the shared Submit button
   // (below) await its exported runPreSubmitGate() before calling
   // submitBasket(). Chain-tab-only; never set when _activeTab !== 'chain'.
   let _chainTabRef = $state(/** @type {any} */ (null));
-  // Whether the selected template's scope is a SELL option (the only
-  // case where the wing fields are relevant). Mirrors OrderTicket's
-  // `_appliesToFor` check at SymbolPanel level so the shell-row UI
-  // can hide the wing inputs when they wouldn't apply.
-  const _sharedTplShowsWing = $derived.by(() => {
-    const s = (_selectedTemplate?.applies_to || '').toLowerCase();
-    return s === 'sell_option';
-  });
-  // True when the active template will auto-attach a protective wing
-  // on fill — used to surface a "+ wing" indicator inside every
-  // eligible (SELL option) basket pill so the operator knows which
-  // legs will get a paired protective BUY at fill time. Combines the
-  // template's wing params (saved) with the operator's shell-level
-  // overrides (per-submit).
-  const _sharedWingPlanned = $derived.by(() => {
-    if (!_selectedTemplate || _selectedTemplate.slug === 'none') return false;
-    if ((_selectedTemplate.applies_to || '').toLowerCase() !== 'sell_option') return false;
-    const effPrem = _sharedWingPremPctOverride !== ''
-      ? Number(_sharedWingPremPctOverride)
-      : (_selectedTemplate.wing_premium_pct ?? null);
-    const effOff  = _sharedWingStrikeOffsetOverride !== ''
-      ? Number(_sharedWingStrikeOffsetOverride)
-      : (_selectedTemplate.wing_strike_offset ?? null);
-    return (effPrem != null && effPrem > 0) || (effOff != null && effOff !== 0);
-  });
-  // Side-aware default template — resolves the saved is_default row
-  // whose applies_to matches the operator's current scope (SELL CE/PE
-  // → sell_option; SELL eq/fut → sell_any; BUY any → buy_any). The
-  // Default pill in the on-fill row clicks this. Falls back through
-  // (a) side-matching default → (b) 'both' default → (c) null when
-  // nothing fits. Reactive so a side flip or symbol change refreshes
-  // both the pill state and the rendered template params.
-  const _sideAwareDefault = $derived.by(() => {
-    if (_templates.length === 0) return null;
-    // Scope computed by the shared `_currentScope()` helper — same
-    // _localSymbol/_focusedLeg/basketLegs/_modalSide fallback ladder
-    // (prefers _localSymbol, falls back through the focused/last
-    // basket leg, then 'BUY' when no side is known yet — 2026-09-30,
-    // operator: "by default [templ] should be on... when on, while
-    // placing the order it should take action on the other order").
-    // Deliberately does NOT touch `_modalSide` itself — that stays
-    // null on a cold open so the SideToggle shows neither pre-active
-    // and margin preflight still short-circuits (see the `_modalSide`
-    // declaration's own comment for why that's load-bearing). This
-    // only affects which template gets PREVIEWED/toggled-on by
-    // default; once the operator picks a real side, this recomputes
-    // to the correct scope automatically (already reactive).
-    const scope = _currentScope();
-    const sideMatch = _templates.find(t =>
-      t.is_default && (t.applies_to || '').toLowerCase() === scope
-    );
-    if (sideMatch) return sideMatch;
-    const bothMatch = _templates.find(t =>
-      t.is_default && (t.applies_to || '').toLowerCase() === 'both'
-    );
-    return bothMatch || null;
-  });
-  // Phase 5 — which basket-leg keys currently have their per-leg
-  // override editor open. Operator clicks the "⚙ tmpl" chip on a
-  // pill to toggle inclusion. Per-leg overrides are stored directly
-  // on the leg object (leg.template_id / leg.tp_pct_override / etc.)
-  // and consumed at submit time by submitBasket — the backend already
-  // accepts BasketLeg overrides as of the Phase 2 commit.
-  let _legEditorsOpen = $state(/** @type {Set<string>} */ (new Set()));
-  function _toggleLegEditor(/** @type {string} */ key) {
-    const next = new Set(_legEditorsOpen);
-    if (next.has(key)) next.delete(key); else next.add(key);
-    _legEditorsOpen = next;
-  }
-  /** Effective template id for a leg — per-leg override wins, else the
-   *  shell's pick. Used to label the per-leg chip. */
-  function _legEffectiveTplId(/** @type {any} */ leg) {
-    return leg?.template_id ?? _sharedTemplateId;
-  }
-  /** Effective template row for a leg — looked up in the catalog so
-   *  the chip can show the template name + the editor's inputs can
-   *  use the right placeholders. */
-  function _legEffectiveTpl(/** @type {any} */ leg) {
-    const id = _legEffectiveTplId(leg);
-    if (id == null) return null;
-    return _templates.find(t => t.id === id) || null;
-  }
-  /** True when the leg has ANY per-leg override set (template +
-   *  numeric fields). Used by the chip styling so the operator can
-   *  see at a glance which legs deviate from the shell defaults. */
-  function _legHasOverride(/** @type {any} */ leg) {
-    return (leg?.template_id != null)
-        || (leg?.tp_pct_override != null)
-        || (leg?.sl_pct_override != null)
-        || (leg?.wing_premium_pct_override != null)
-        || (leg?.wing_strike_offset_override != null);
-  }
-
-  // Compute the protective wing's tradingsymbol when the template
-  // uses a fixed `wing_strike_offset` — pure JS port of the backend
-  // `_wing_symbol` helper. Returns null for premium-scan wings (the
-  // exact strike comes from the chain scan at fill time, so we show
-  // a generic "+ wing on fill" instead).
-  // Audit fix — memoize the regex parse keyed by `parentSym` so the
-  // basket-pill render loop doesn't re-exec the regex per leg per
-  // render. Cache is keyed by the parsed-symbol shape (root + exp +
-  // strike + opt) only; the wing offset and selected template are
-  // applied after lookup so an override change doesn't have to bust
-  // the cache. The cache is process-lifetime; tradingsymbols don't
-  // change identity, so unbounded growth is bounded by the number of
-  // unique contracts the operator touches in a session.
-  /** @type {Map<string, {root: string, expTok: string, strike: number, opt: string} | null>} */
-  const _SYMBOL_PARSE_CACHE = new Map();
-  /** @param {string} parentSym */
-  function _parseOptionSymbol(parentSym) {
-    const key = String(parentSym || '').toUpperCase();
-    if (_SYMBOL_PARSE_CACHE.has(key)) return _SYMBOL_PARSE_CACHE.get(key);
-    const m = key.match(
-      /^([A-Z]+?)(\d{2}[A-Z]{3}|\d{4,5})(\d+(?:\.\d+)?)(CE|PE)$/
-    );
-    if (!m) {
-      _SYMBOL_PARSE_CACHE.set(key, null);
-      if (_SYMBOL_PARSE_CACHE.size > 500) _SYMBOL_PARSE_CACHE.delete(_SYMBOL_PARSE_CACHE.keys().next().value);
-      return null;
-    }
-    const [, root, expTok, strikeStr, opt] = m;
-    const strike = parseInt(strikeStr, 10);
-    if (!Number.isFinite(strike)) {
-      _SYMBOL_PARSE_CACHE.set(key, null);
-      if (_SYMBOL_PARSE_CACHE.size > 500) _SYMBOL_PARSE_CACHE.delete(_SYMBOL_PARSE_CACHE.keys().next().value);
-      return null;
-    }
-    const parsed = { root, expTok, strike, opt };
-    _SYMBOL_PARSE_CACHE.set(key, parsed);
-    if (_SYMBOL_PARSE_CACHE.size > 500) _SYMBOL_PARSE_CACHE.delete(_SYMBOL_PARSE_CACHE.keys().next().value);
-    return parsed;
-  }
-  function _wingSymbolFor(/** @type {string} */ parentSym) {
-    if (!_sharedWingPlanned || !_selectedTemplate) return null;
-    const effOff = _sharedWingStrikeOffsetOverride !== ''
-      ? Number(_sharedWingStrikeOffsetOverride)
-      : (_selectedTemplate.wing_strike_offset ?? null);
-    if (!effOff || isNaN(effOff)) return null;
-    const parsed = _parseOptionSymbol(parentSym);
-    if (!parsed) return null;
-    const { root, expTok, strike, opt } = parsed;
-    const wingStrike = opt === 'CE' ? strike + effOff : strike - effOff;
-    if (wingStrike <= 0) return null;
-    return `${root}${expTok}${wingStrike}${opt}`;
-  }
-  // Reset overrides when the template changes — operator's overrides
-  // were tied to a SPECIFIC template's defaults; carrying them across
-  // to a different template would silently surface unintended values.
-  let _lastSeenTemplateId = null;
-  $effect(() => {
-    if (_sharedTemplateId !== _lastSeenTemplateId) {
-      untrack(() => {
-        _lastSeenTemplateId = _sharedTemplateId;
-        _sharedTpOverride               = '';
-        _sharedSlOverride               = '';
-        _sharedWingStrikeOffsetOverride = '';
-        _sharedWingPremPctOverride      = '';
-      });
-    }
-  });
-  // Side-aware template auto-swap + remembered-pref application. When
-  // the operator flips BUY → SELL (or symbol changes from option to
-  // non-option), the currently-selected template's `applies_to` may no
-  // longer match the new direction (e.g. a long-call template on a
-  // SELL submit places a wrong-direction TP/SL) — swap to a different
-  // is_default template matching the new scope. This also runs on the
-  // VERY FIRST resolution (cold mount, `_lastSideScope` starts ''),
-  // which is what makes Templ default ON: previously `!current` was a
-  // silent no-op here (nothing ever got auto-selected on a fresh
-  // mount) — now it resolves to `_sideAwareDefault`.
-  // Operator: "side-aware template auto-select removed (BUY → SELL
-  // doesn't re-select default)" — restored via this effect. Extended
-  // 2026-09-30 (operator: "remember the operator's last on/off/
-  // specific-template choice per scope, persisted across sessions") —
-  // `_readTemplPref(scope)` is consulted FIRST, before the auto-swap
-  // logic below, so an explicit remembered "none" or specific
-  // template wins over the side-aware default even when the carried-
-  // over `current` selection would otherwise have been left alone.
-  // This effect only READS the remembered pref — it never writes one
-  // (writes happen at the three onSelect* call sites below).
-  let _lastSideScope = '';
-  // Bug fix (2026-09-30): true once the operator has made an EXPLICIT
-  // Templ choice (Default / None / a specific template, via the three
-  // onSelect* call sites below) during the CURRENT order-building
-  // session. Adding a leg with a different side re-triggers this effect
-  // for the NEW scope — without this flag, the remembered per-scope
-  // pref (`_readTemplPref`) for that new scope would be consulted fresh
-  // and could silently apply an unrelated stale 'none' from a
-  // completely different order/session, discarding the choice the
-  // operator just made for THIS order. When the flag is set, the pref
-  // lookup below is skipped entirely and control falls straight to the
-  // existing "current selection" fallback ladder, which already knows
-  // how to carry an explicit None / specific-template / still-fitting
-  // default forward across a scope change. Reset at every genuine
-  // fresh-order boundary — `clearBasket()` and `submitBasket()`'s
-  // success branch — so a later, unrelated order starts clean and can
-  // read remembered prefs normally again.
-  let _templExplicitThisSession = $state(false);
-  // Item 1 (2026-11-02, PLAN.md, operator ask) — brief Chain-tab-only
-  // flash when the scope-change effect below re-binds a Default-slot
-  // Bracket to the new scope's own default, or clears it when none
-  // exists for the new scope. Deliberately a SEPARATE mechanism from
-  // OrderTicket.svelte's own `.ot-tmpl-changed-flash` (#16) — that one
-  // covers the Ticket tab, which keeps the older "never re-arm" policy
-  // (2f60d39a) for the exact same shared `_sharedTemplateId` binding;
-  // this flash only ever fires for the Chain-tab re-bind/clear this
-  // effect performs, so the two surfaces never double-announce the
-  // same event.
-  let _bracketScopeFlash = $state(/** @type {{kind:'switched'|'cleared'}|null} */ (null));
-  let _bracketScopeFlashTimer = null;
-  function _flashBracketScopeChange(/** @type {'switched'|'cleared'} */ kind) {
-    _bracketScopeFlash = { kind };
-    if (_bracketScopeFlashTimer) clearTimeout(_bracketScopeFlashTimer);
-    _bracketScopeFlashTimer = setTimeout(() => { _bracketScopeFlash = null; }, 1200);
-  }
-  $effect(() => {
-    // action='modify' and 'cancel' don't need template auto-swap —
-    // the template is irrelevant for those actions. All other actions
-    // ('open', 'close', 'repeat') need it so e.g. a SELL close on a
-    // long option gets a sell_option template, not the stale BUY default.
-    if (action === 'modify' || action === 'cancel') return;
-    if (_templates.length === 0) return;
-    // Mirrors `_sideAwareDefault`'s own scope computation via the
-    // shared `_currentScope()` helper — keeps this effect's scope in
-    // lockstep with the toggle's own resolution so they never disagree.
-    const scope = _currentScope();
-    if (scope === _lastSideScope) return;
-    untrack(() => {
-      _lastSideScope = scope;
-      const pref = _templExplicitThisSession ? undefined : _readTemplPref(scope);
-      if (pref === 'none') {
-        _sharedTemplateId = null;
-        return;
-      }
-      if (typeof pref === 'number' && _templates.some(t => t.id === pref)) {
-        _sharedTemplateId = pref;
-        return;
-      }
-      // pref === 'on', undefined (nothing remembered yet, or skipped
-      // because the operator already made an explicit choice this
-      // session — see `_templExplicitThisSession` above), or a stale/
-      // deleted numeric id — fall through to the side-aware-default
-      // auto-swap. Don't override an explicit operator pick still in
-      // effect this session — "none" stays "none"; a non-default
-      // template the operator picked stays as-is; a default that
-      // still fits the new scope is left alone.
-      const current = _templates.find(t => t.id === _sharedTemplateId);
-      if (current && current.slug === 'none') return;
-      if (current && !current.is_default) return;
-      if (current) {
-        const cscope = (current.applies_to || '').toLowerCase();
-        if (cscope === scope || cscope === 'both') return;
-      }
-      // No current pick (cold mount / already cleared) — 2f60d39a
-      // policy (2026-10-05, "no implicit ... default ticket template")
-      // unchanged: nothing auto-ARMS a bracket that wasn't already
-      // armed. Silent — there's no prior selection for the operator to
-      // notice a change to, so no flash either.
-      if (!current) {
-        _sharedTemplateId = null;
-        return;
-      }
-      // `current` is the account's Default-slot template (checked
-      // above) and no longer fits the new scope (strike/CE-PE/side
-      // change). Item 1 (2026-11-02, PLAN.md, operator ask) — on the
-      // Chain tab, re-resolve to the NEW scope's own default rather
-      // than silently dropping to None, reusing the same
-      // `_sideAwareDefault` $derived every other Default-resolution
-      // call site already shares (`_onTemplSelectDefault`) instead of
-      // re-deriving the match. This is narrower than reverting
-      // 2f60d39a: it only ever CARRIES FORWARD a Default the operator
-      // already had armed — the cold/cleared branch above still never
-      // implicitly arms one. Reading `_sideAwareDefault` here, even
-      // inside `untrack()`, still recomputes against the just-updated
-      // `scope` — a $derived's own recomputation is independent of
-      // this effect's dependency tracking; `untrack()` only stops THIS
-      // effect from subscribing to it as a dependency.
-      //
-      // Deliberately scoped to the Chain tab only. On the Ticket tab,
-      // OrderTicket.svelte's own side+symbol re-validation effect (not
-      // suspended there) owns this exact decision for the SAME shared
-      // `_sharedTemplateId`/`templateId` binding, and that effect's
-      // policy is "never re-arm" (2f60d39a, pinned by a live Playwright
-      // test in order_ticket_bracket_scope_ssot_and_clear_policy.spec.js
-      // — "BUY default armed -> flip to SELL -> bracket clears to
-      // None"). Two effects racing to write the same binding with
-      // opposing policies would be a real bug, not a UX choice, so the
-      // Ticket-tab branch below stays a plain null and fires no flash
-      // of its own — OrderTicket already renders its own
-      // `.ot-tmpl-changed-flash` ("Bracket cleared for new side") for
-      // that case.
-      if (_activeTab === 'chain') {
-        if (_sideAwareDefault) {
-          _sharedTemplateId = _sideAwareDefault.id;
-          _flashBracketScopeChange('switched');
-        } else {
-          _sharedTemplateId = null;
-          _flashBracketScopeChange('cleared');
-        }
-      } else {
-        _sharedTemplateId = null;
-      }
-    });
-  });
   // Account list — falls through three layers:
   //   1. `accounts` prop (host page injects them, e.g. /orders)
   //   2. cached fetch from /api/accounts/ on mount when prop is empty
@@ -1463,30 +831,6 @@
       untrack(() => { _modalAccounts = accounts; });
     }
   });
-  // Subscribe to the template store + kick a defensive load. The
-  // store warms once at module evaluation in templates.js, but if
-  // this is the FIRST mount in the page's lifetime the rows may
-  // not have landed yet — kick a load() (idempotent, cached on
-  // repeat). The store subscription below picks up CRUD mutations
-  // on the Brackets tab while the modal is open.
-  loadOrderTemplates().catch(() => { /* picker stays empty */ });
-  // Pure subscription — keeps the basket-bar Select rows current when
-  // the Brackets tab mutates. Default selection is owned entirely
-  // by OrderTicket: it's always mounted (display:none, not unmounted,
-  // when Chain tab is active) and its own onMount `_autoSelectTemplate()`
-  // picks the side-aware is_default template into the SAME two-way-bound
-  // `_sharedTemplateId` that OptionChainTab reads via `bind:templateId`
-  // — so `templateId` is never null by the time Chain basket legs are
-  // built, without OptionChainTab needing its own duplicate default-pick
-  // logic (removed 2026-09, confirmed-dead per the always-shell-bound
-  // call site).
-  $effect(() => {
-    const rows = $orderTemplatesStore;
-    if (rows && rows.length) {
-      _templates = rows.filter(t => t.is_active);
-    }
-  });
-
   onMount(async () => {
     try {
       const list = await loadAccounts();
@@ -1724,15 +1068,14 @@
   // only gated on the unrelated `basketSubmitting` flag).
   // 2026-10-21 shared-row re-wire — widened with mktOpen/mktExch (the
   // market badge's belief, mirrored up so the shell doesn't recompute
-  // or relocate OrderTicket's own `_isOpen`/`_mktOpenForExchange`) and
-  // the Bracket-display fields (showDraftToggle/selectedTemplate/
-  // defaultTemplate/showsWing/isUsingNone) needed to render the
-  // single shared TemplateBar instance for the Ticket tab.
+  // or relocate OrderTicket's own `_isOpen`/`_mktOpenForExchange`).
+  // The Bracket-display fields (selectedTemplate/defaultTemplate/
+  // showsWing/isUsingNone) this payload used to carry are gone —
+  // T3.3, bracket-removal.
   let _ticketState = $state(
-    /** @type {{side: 'BUY'|'SELL'|null, qty: number, submitting: boolean, pending: boolean, depthPending: boolean, mktOpen: boolean, mktExch: string, showDraftToggle: boolean, selectedTemplate: any, defaultTemplate: any, showsWing: boolean, isUsingNone: boolean, resolvedSymbol: string|null}} */
+    /** @type {{side: 'BUY'|'SELL'|null, qty: number, submitting: boolean, pending: boolean, depthPending: boolean, mktOpen: boolean, mktExch: string, showDraftToggle: boolean, resolvedSymbol: string|null}} */
     ({ side: null, qty: 0, submitting: false, pending: false, depthPending: false,
-       mktOpen: false, mktExch: '', showDraftToggle: false, selectedTemplate: null,
-       defaultTemplate: null, showsWing: false, isUsingNone: true, resolvedSymbol: '' })
+       mktOpen: false, mktExch: '', showDraftToggle: false, resolvedSymbol: '' })
   );
   function _modalFireSubmit() {
     if (_activeTab !== 'ticket') {
@@ -1780,35 +1123,15 @@
   // render in the common action footer.
   let _modalMargin        = $state(/** @type {any} */ (null));
   let _modalMarginLoading = $state(false);
-  // On-fill preview chip piped up from OrderTicket via
-  // onPreviewPlanUpdate. Rendered inside the Template container so
-  // it shows on BOTH tabs (operator: "on fill chip text can be shown
-  // in chain also"). Updates whenever the Ticket form's _previewPlan
-  // re-derives — TP%/SL%/Wing override edits flow visibly into the chip.
-  let _modalPreviewPlan    = $state(/** @type {any} */ (null));
-  let _modalPreviewLoading = $state(false);
-  let _modalPreviewError   = $state('');
-  let _modalCapWarning     = $state('');
-  // Last-basket-leg preview — separate from the Ticket-form preview
-  // above. When the operator is on the Chain tab AND basket has legs,
-  // the displayed chip swaps to this so they see "on fill → TP/SL/Wing
-  // for the leg I just added" instead of the (potentially stale)
-  // Ticket form's preview. Computed shell-side with its own debounce +
-  // sequence guard so it doesn't interfere with the OrderTicket's
-  // identical mechanism. Operator: "swap to last basket leg on chain tab."
-  let _lastLegPlan    = $state(/** @type {any} */ (null));
-  let _lastLegLoading = $state(false);
-  let _lastLegError   = $state('');
-  // The basket-leg key the preview chip is locked to. Click any basket
-  // pill on the Chain tab to focus that leg's preview; null = follow
-  // the LAST leg added (the default). Cleared when the focused leg is
-  // removed so the chip falls back to last-leg behaviour without
-  // sticking on a stale key. Operator: "click a basket pill to swap
-  // preview to that leg."
+  // The basket-leg key the operator has clicked to "focus". Click any
+  // basket pill on the Chain tab to focus it; null = follow the LAST
+  // leg added (the default). Cleared when the focused leg is removed.
+  // Operator: "click a basket pill to swap preview to that leg" —
+  // drives `_chainMktExch`'s per-leg market-open badge resolution.
   let _focusedLegKey = $state(/** @type {string|null} */ (null));
   // Resolved focused leg — explicit pick when _focusedLegKey matches a
-  // current leg, otherwise the last leg. Used by both the preview
-  // effect and the pill's `is-focused` visual cue.
+  // current leg, otherwise the last leg. Used by both `_chainMktExch`
+  // and the pill's `is-focused` visual cue.
   const _focusedLeg = $derived.by(() => {
     if (basketLegs.length === 0) return null;
     if (_focusedLegKey) {
@@ -1817,71 +1140,14 @@
     }
     return basketLegs[basketLegs.length - 1];
   });
-  // Position of the focused leg in the basket (1-based) for the badge.
-  const _focusedLegIndex = $derived.by(() => {
-    if (!_focusedLeg) return 0;
-    const i = basketLegs.findIndex(l => l.key === _focusedLeg.key);
-    return i >= 0 ? i + 1 : basketLegs.length;
-  });
-  // Drop a stale `_focusedLegKey` once its leg leaves the basket so the
-  // preview cleanly falls back to last-leg.
+  // Drop a stale `_focusedLegKey` once its leg leaves the basket so
+  // `_chainMktExch`'s own per-leg exchange resolution cleanly falls
+  // back to last-leg.
   $effect(() => {
     if (_focusedLegKey && !basketLegs.find(l => l.key === _focusedLegKey)) {
       untrack(() => { _focusedLegKey = null; });
     }
   });
-  // Click-to-cycle handler — advances the focused-leg pointer through
-  // the basket in order, wrapping to leg 1 after the last. Used by the
-  // preview chip's onclick so the operator can flip through legs
-  // without leaving the chip surface. Released back to "track last
-  // leg" only via × on the focused pill (per the existing cleanup).
-  function _cycleFocusedLeg() {
-    if (basketLegs.length < 2) return;
-    const curIdx = _focusedLeg
-      ? basketLegs.findIndex(l => l.key === _focusedLeg.key)
-      : -1;
-    const nextIdx = (curIdx + 1) % basketLegs.length;
-    _focusedLegKey = basketLegs[nextIdx].key;
-  }
-  // Rich tooltip for the preview chip — shows the focused leg's
-  // identity + effective template so hovering anywhere on the chip
-  // surfaces the context the ₹ triggers below come from.
-  const _previewChipTooltip = $derived.by(() => {
-    if (!_previewFromLeg || !_focusedLeg) return '';
-    const leg = _focusedLeg;
-    const tplName = _legEffectiveTpl(leg)?.name
-      || _legEffectiveTpl(leg)?.slug
-      || 'no Bracket';
-    const acct = legAccountOf(leg) || '—';
-    const qty = ((leg.lots || 1) * (leg.lotSize || 1));
-    const cycleHint = basketLegs.length > 1 ? ' · click to cycle to next leg' : '';
-    return `${leg.side} ${qty} ${leg.sym} · acct ${acct} · Bracket: ${tplName}${cycleHint}`;
-  });
-  // Which preview drives the displayed chip — last-leg on Chain when
-  // basket has legs, Ticket form everywhere else. Single derivation
-  // so the chip swap is atomic + the label rendering doesn't have to
-  // branch internally.
-  const _activePreviewPlan    = $derived(
-    _activeTab === 'chain' && basketLegs.length > 0
-      ? _lastLegPlan : _modalPreviewPlan
-  );
-  const _activePreviewLoading = $derived(
-    _activeTab === 'chain' && basketLegs.length > 0
-      ? _lastLegLoading : _modalPreviewLoading
-  );
-  const _activePreviewError   = $derived(
-    _activeTab === 'chain' && basketLegs.length > 0
-      ? _lastLegError : _modalPreviewError
-  );
-  // True when the chip is showing the basket-leg preview instead of
-  // the Ticket form's. Used for a small "leg N of M" badge so the
-  // operator knows which context the chip reflects.
-  const _previewFromLeg = $derived(
-    _activeTab === 'chain' && basketLegs.length > 0
-  );
-  /** @type {ReturnType<typeof setTimeout>|null} */
-  let _lastLegTimer = null;
-  let _lastLegSeq = 0;
   // Chip-meta from OrderTicket: { isCashMode, cash, kind, side }.
   // Drives the footer chip label swap between "Cost · Cash" (cash-mode
   // orders: equity buy/sell + long option premium) and "Req · Avail"
@@ -2155,24 +1421,6 @@
     return mode;
   }
 
-  // Applies shared template override fields to a built leg object.
-  // Per-leg template picks opt out of shell overrides — see inline
-  // comment in submitBasket for the audit fix rationale.
-  function _applySharedOverrides(/** @type {any} */ l) {
-    const hasLegTpl = (l.template_id !== _sharedTemplateId);
-    return {
-      ...l,
-      tp_pct_override:             l.tp_pct_override ?? (hasLegTpl
-        ? null : (_sharedTpOverride !== '' ? Number(_sharedTpOverride) : null)),
-      sl_pct_override:             l.sl_pct_override ?? (hasLegTpl
-        ? null : (_sharedSlOverride !== '' ? Number(_sharedSlOverride) : null)),
-      wing_premium_pct_override:   l.wing_premium_pct_override ?? (hasLegTpl
-        ? null : (_sharedWingPremPctOverride !== '' ? Number(_sharedWingPremPctOverride) : null)),
-      wing_strike_offset_override: l.wing_strike_offset_override ?? (hasLegTpl
-        ? null : (_sharedWingStrikeOffsetOverride !== '' ? Number(_sharedWingStrikeOffsetOverride) : null)),
-    };
-  }
-
   async function submitBasket() {
     if (basketSubmitting || !basketLegs.length) return;
     basketSubmitting = true; basketResultMsg = '';
@@ -2308,24 +1556,18 @@
         chase_aggressiveness: _sharedChase ? (leg.chaseAgg || _sharedChaseAgg || 'low') : 'low',
         target_pct:       leg.target_pct   ?? null,
         target_abs:       leg.target_abs   ?? null,
-        // Same template attaches to every leg. Backend basket route
-        // reads BasketLeg.template_id; per-leg `apply_template_to_order`
-        // runs on fill to attach TP/SL/Wing GTTs. Per-leg overrides
-        // (Phase 5) supersede the shell defaults.
-        // Audit fix — when leg.template_id is set explicitly (operator
-        // picked a per-leg template), DON'T fall through to the shell
-        // overrides. The shell overrides were typed against the shell
-        // template's defaults; carrying them to a per-leg template T2
-        // silently contaminates T2's params with T1's overrides. Per-
-        // leg legs MUST opt-in to each override field independently.
-        template_id:      leg.template_id ?? _sharedTemplateId,
         // Sprint 2b (SPRINT2_LAYER_INTEGRATION.md §3/§4.4) — per-leg
         // origin tag for the /orders/basket path. Backend's BasketLeg
         // schema needs a matching `source` field to persist this onto
         // the AlgoOrder row (tracked separately); harmless no-op if
         // the field isn't yet recognized server-side.
         source:           'basket',
-      })).map(_applySharedOverrides),
+        // `template_id` deliberately omitted (T3.3, bracket-removal) —
+        // backend's `BasketLeg.template_id` still accepts it but
+        // silently drops it before persist; nothing should send it
+        // any more. See CLAUDE.md's "Order Ticket / Bracket-template
+        // re-wire" history.
+      })),
     }));
 
     const total = basketLegs.length;
@@ -2355,19 +1597,22 @@
           failedIdx.add(origIdx);
         } else {
           ok++;
-          // Chain live-wing badge — remember this leg's own broker
-          // order id (NOT written into basketLegs/leg itself — a
-          // separate, session-local tracker) so OptionChainTab can
-          // later recognize this template's wing leg firing on parent
-          // fill. Live-only: a paper/sim/replay fill never attaches a
-          // real broker wing (see CLAUDE.md "Template attach mode
-          // gate"), so tracking those would never match anything.
+          // Chain live-wing badge (T3.4 deletion candidate, untouched
+          // here per T3.3's scope — see CLAUDE.md "Order Ticket /
+          // Bracket-template re-wire" history) — remember this leg's
+          // own broker order id (NOT written into basketLegs/leg
+          // itself — a separate, session-local tracker) so
+          // OptionChainTab can recognize a wing leg firing on parent
+          // fill. Nothing attaches a wing any more (Bracket removed),
+          // so this can never match — left in place, not newly wired,
+          // per the explicit T3.3 instruction not to touch
+          // liveWingBadge.js/liveWingTracker.svelte.js in this sprint.
           // Option legs only (strike/optType) — equity legs never
           // carry a Chain-grid key to badge against anyway.
           if (basketMode2 === 'live' && leg.strike != null && leg.optType && r.order_id) {
             trackChainParentSubmission({
               account: acct, symbol: leg.sym, brokerOrderId: r.order_id,
-              templateName: _legEffectiveTpl(leg)?.name || _legEffectiveTpl(leg)?.slug || '',
+              templateName: '',
             });
           }
           onSubmit?.({
@@ -2433,11 +1678,6 @@
       _basketMarginRows = [];
       // Reset the symbol picker so the next session starts clean.
       _localSymbol = '';
-      // Bug fix (2026-09-30) — a fully-placed basket is a genuinely NEW
-      // order boundary; drop the in-session explicit-choice flag (see
-      // `clearBasket()`'s matching reset — this branch doesn't call
-      // clearBasket() itself, so it needs its own reset here).
-      _templExplicitThisSession = false;
       _stickyResultMsg = msg;
       _stickyResultLevel = 'ok';
       if (_stickyResultTimer) clearTimeout(_stickyResultTimer);
@@ -2449,9 +1689,8 @@
       // Audit fix — basket partial-failure UX. Pre-fix the operator
       // saw the rejected leg in the result message but the legs that
       // SUCCEEDED were silently committed to the broker with no
-      // visible record. Their template attaches would still fire on
-      // fill but the operator had no way to know which legs were
-      // live + needed monitoring. Now: surface a persistent sticky
+      // visible record, and the operator had no way to know which
+      // legs were live + needed monitoring. Now: surface a persistent sticky
       // banner (8s vs the 3s success banner) with the placed-vs-
       // rejected counts, and clear the basket only of legs that
       // DID succeed — the failed ones stay in the basket bar so
@@ -2527,6 +1766,12 @@
   }
 
   onMount(() => {
+    // One-time cleanup of the stale Bracket preference key (T3.3,
+    // bracket-removal) — an old browser session may still carry
+    // `ramboq_templ_pref_v1` from before Bracket was removed; nothing
+    // reads it any more, so drop it so it doesn't persist forever.
+    try { localStorage.removeItem(_TEMPL_PREF_KEY_STALE); } catch { /* private mode etc */ }
+
     // Defer initial focus until portal re-parenting settles (overlay
     // mode only — inline renders in-flow so no re-parenting occurs).
     // Skip the symbol input as the auto-focus target: its onfocus
@@ -2638,12 +1883,14 @@
     currentQty, avgCost, unrealizedPnl, onAddToBasket, initialDraftId,
   });
 
-  // ── Shared CHASE/BRACKET/DRAFT row (2026-10-21 consolidation) ───────
+  // ── Shared CHASE/DRAFT row (2026-10-21 consolidation; BRACKET
+  // removed T3.3 — bracket-removal) ───────
   // Promotes DRAFT from OrderTicket-local state to shell-level so one
-  // row (below .oes-picker) can render CHASE + the market badge +
-  // BRACKET + DRAFT identically on BOTH the Ticket and Chain tabs.
-  // `draftMode` itself binds straight into <OrderTicket> (see its mount
-  // below); Chain's own submitBasket() reads this flag directly.
+  // row (below .oes-picker) can render CHASE + DRAFT identically on
+  // the Ticket tab (Chain renders its own CHASE/DRAFT copies inside
+  // OptionChainTab's Expiry toolbar). `draftMode` itself binds
+  // straight into <OrderTicket> (see its mount below); Chain's own
+  // submitBasket() reads this flag directly.
   let _sharedDraftMode = $state(false);
 
   // CRITICAL FIX (2026-10-21, correctness bug found via advisor review)
@@ -2703,40 +1950,11 @@
     }
   });
 
-  // Three Ticket-only TemplateBar overrides, promoted to shared shell
-  // state alongside the five that already existed (tpOverride/
-  // slOverride/wingStrikeOffsetOverride/wingPremPctOverride/
-  // spreadMaxPctOverride — spreadMaxPctOverride is Chain-only-consumed,
-  // the three below are display-only on OrderTicket today — neither
-  // tab's submit payload reads them, matching their pre-existing
-  // inert-but-displayed behaviour; this re-wire only changes WHERE
-  // they live, not what consumes them). Bound into <OrderTicket> below.
-  let _sharedSlTrailPctOverride  = $state(/** @type {number|''} */ (''));
-  let _sharedTpOrderTypeOverride = $state(/** @type {'LIMIT'|'MARKET'|''} */ (''));
-  let _sharedTpScalesJsonOverride = $state(/** @type {string} */ (''));
-
-  // Mutual exclusion wrappers — Bracket (Default or a named template)
-  // turns Draft off; Draft turning ON forces the template to None.
-  // Mirrors the exact logic that used to live in OrderTicket.svelte's
-  // `_onBracketSelectDefault`/`_onBracketSelectTemplate`/
-  // `_onDraftToggleChange` before the shared-row re-wire moved
-  // Bracket+Draft out of OrderTicket entirely. Picking "None" has no
-  // mutual-exclusion effect on Draft (matches the old `_onBracketSelectNone`,
-  // which never touched draft mode either) — passed straight through
-  // as `_onTemplSelectNone`, no wrapper needed.
-  function _wrapTemplSelectDefault() {
-    if (_sharedDraftMode) _sharedDraftMode = false;
-    _onTemplSelectDefault();
-  }
-  function _wrapTemplSelectTemplate(/** @type {number} */ id) {
-    if (_sharedDraftMode) _sharedDraftMode = false;
-    _onTemplSelectTemplate(id);
-  }
+  // DRAFT toggle handler — Bracket used to force itself to None the
+  // moment Draft turned on (mutual exclusion). That relationship no
+  // longer exists (T3.3, bracket-removal); this is now a plain setter.
   function _onSharedDraftToggleChange(/** @type {boolean} */ checked) {
     _sharedDraftMode = checked;
-    if (checked && !_shellUsingNone) {
-      _onTemplSelectNone();
-    }
   }
 
   // Market badge — Chain tab. Ticket's own badge value is mirrored up
@@ -2834,36 +2052,6 @@
   const _mktBadgeOpen = $derived(_activeTab === 'chain' ? _chainMktOpen : !!_ticketState.mktOpen);
   const _mktBadgeExchShell = $derived(_activeTab === 'chain' ? _chainMktExch : (_ticketState.mktExch || 'Market'));
 
-  // Shared Bracket/Draft cluster visibility — Ticket excludes close
-  // orders (template attach doesn't apply there); Chain has no
-  // close-order concept. Split into a demo-agnostic "would apply" base
-  // so the demo note (below) can render in exactly the slot the real
-  // cluster would otherwise occupy, same precedence the old per-tab
-  // gates (OrderTicket's `!suspended && _isDemo` / OptionChainTab's
-  // `showDemoTplNote`) used — demo wins whenever both would apply.
-  const _bracketDraftClusterWouldApply = $derived(
-    _activeTab === 'chain' ? true : (_activeTab === 'ticket' && action !== 'close')
-  );
-  const _bracketDraftClusterVisible = $derived(!_isDemo && _bracketDraftClusterWouldApply);
-  const _bracketDraftDemoNoteVisible = $derived(_isDemo && _bracketDraftClusterWouldApply);
-  // Display props for the single TemplateBar instance — tab-conditional.
-  // Ticket's own bare-underlying inline Expiry/Strike/CE-PE flow
-  // resolves differently from the shell's own `_currentScope()`
-  // fallback (which reads `_localSymbol`, not OrderTicket's internal
-  // picks) — mirroring Ticket's own values (via `_ticketState`) avoids
-  // regressing that flow. Chain keeps the shell's own resolution.
-  const _tplBarSelectedTemplate = $derived(
-    _activeTab === 'ticket' ? (_ticketState.selectedTemplate ?? null) : _selectedTemplate
-  );
-  const _tplBarSideAwareDefault = $derived(
-    _activeTab === 'ticket' ? (_ticketState.defaultTemplate ?? null) : _sideAwareDefault
-  );
-  const _tplBarShowsWing = $derived(
-    _activeTab === 'ticket' ? !!_ticketState.showsWing : _sharedTplShowsWing
-  );
-  const _tplBarIsUsingNone = $derived(
-    _activeTab === 'ticket' ? (_ticketState.isUsingNone ?? _shellUsingNone) : _shellUsingNone
-  );
   // Draft toggle visibility — Chain always eligible (never equity,
   // never 'modify'); Ticket mirrors OrderTicket's own `showDraftToggle`
   // (depends on `isEquity`/`action`, both internal to OrderTicket).
@@ -3159,24 +2347,19 @@
       </div>
     {/if}
 
-    <!-- Shared CHASE / market badge / BRACKET / DRAFT row (2026-10-21
-         consolidation). One row, directly below the account/exchange/
-         symbol picker, identical on Ticket and Chain, to reclaim
-         vertical space and give Chain parity with controls that used
-         to only reach it via OrderTicket's own (display:none-while-
-         Chain-active) body. Order left-to-right: CHASE, market badge,
-         BRACKET (TemplateBar) / demo note, DRAFT. Excluded on Chart
-         (2026-10-22, operator: "chase, mcx open, draft and brackets
-         are not applicable in chart tab") in addition to the
-         pre-existing CLI exclusion — none of these controls place or
-         manage a real order from the Chart tab, which is read-only
-         (OrderTicket keeps running underneath with display:none for
-         its own margin-preflight effect, but TemplateBar was already
-         excluded here via `_bracketDraftClusterWouldApply` not
-         matching 'chart'/'cli' — this just extends the same exclusion
-         to CHASE/the market badge/DRAFT so the whole row disappears
-         together instead of leaving an inert CHASE+badge+DRAFT strip
-         with no Bracket control beside it). -->
+    <!-- Shared CHASE / DRAFT row (2026-10-21 consolidation; BRACKET
+         removed T3.3 — bracket-removal). One row, directly below the
+         account/exchange/symbol picker, below OrderTicket's own
+         (display:none-while-Chain-active) body. Order left-to-right:
+         CHASE, DRAFT. Excluded on Chart (2026-10-22, operator: "chase,
+         mcx open, draft and brackets are not applicable in chart tab")
+         in addition to the pre-existing CLI exclusion — neither control
+         places or manages a real order from the Chart tab, which is
+         read-only (OrderTicket keeps running underneath with
+         display:none for its own margin-preflight effect).
+         CHASE is excluded on Chain too (T3.3) — it now renders inside
+         OptionChainTab's own Expiry toolbar row instead, so this shared
+         row only ever shows CHASE for the Ticket tab. -->
     {#if _activeTab !== 'cli' && _activeTab !== 'chart'}
       <div class="oes-chase-row">
         <!-- CHASE — moved verbatim from .oes-tabs (unchanged markup).
@@ -3191,11 +2374,8 @@
              mode='live'). The confusion was this cluster staying
              visually present (greyed, non-interactive) during Draft
              mode instead of disappearing — a draft has zero chase
-             semantics, so there is nothing for it to show here.
-             BRACKET intentionally keeps its own grey-not-hide
-             treatment below (coordinator: "no brackets in draft
-             mode") — not touched here, out of scope for this fix. -->
-        {#if _chaseEnabled && !_sharedDraftMode}
+             semantics, so there is nothing for it to show here. -->
+        {#if _chaseEnabled && !_sharedDraftMode && _activeTab !== 'chain'}
           <span class="oes-chase-cluster">
             <span class="oes-common-chase-label on" bind:this={_chaseInfoAnchor}
                   role="button" tabindex={0} aria-expanded={_chaseInfoOpen}
@@ -3204,7 +2384,7 @@
                   onkeydown={_chaseInfoKeydown}>CHASE</span>
             <InfoHint popup hideButton id="chase-info-hint" anchor={_chaseInfoAnchor} bind:open={_chaseInfoOpen}
               panel title="Chase"
-              text="Chase is automatic for every limit order (on for LIMIT/SL order types, Chain legs are always limit) — re-quotes the price each interval until filled or max attempts is reached. Wait time between re-quotes depends on the aggressiveness picker beside it: <b>Low</b> — 30s, patient, eases into the spread (30 attempts max). <b>Med</b> — 20s, balanced (20 attempts max). <b>High</b> — 10s, crosses the spread fast (10 attempts max)." />
+              text="Chase is automatic for every limit order (on for LIMIT/SL order types) — re-quotes the price each interval until filled or max attempts is reached. Wait time between re-quotes depends on the aggressiveness picker beside it: <b>Low</b> — 30s, patient, eases into the spread (30 attempts max). <b>Med</b> — 20s, balanced (20 attempts max). <b>High</b> — 10s, crosses the spread fast (10 attempts max)." />
             <span class="oes-chase-agg-gap">
               <ChaseAggPicker value={_sharedChaseAgg} onChange={_setSharedChaseAgg} variant="panel" />
             </span>
@@ -3221,62 +2401,9 @@
              (visible on every page regardless of whether a ticket is
              open), keeping a second copy here became redundant. -->
 
-        <!-- BRACKET — single surviving <TemplateBar> instance (removes
-             the two previous render sites inside OrderTicket.svelte and
-             OptionChainTab.svelte). Display props are tab-conditional
-             (see `_tplBar*` derived values above); the catalog list
-             (`_nonNoneTemplates`) is shared — same already-fetched
-             copy both tabs read. onSelectDefault/onSelectTemplate are
-             wrapped to enforce Bracket→Draft-off mutual exclusion.
-             2026-10-21 (coordinator correction) — also greyed +
-             non-interactive whenever Draft is ON, same treatment as
-             CHASE above (`.oes-ctl-cluster-disabled`; operator: "no
-             brackets in draft mode"). Draft→off-Bracket mutual
-             exclusion still runs underneath via
-             `_onSharedDraftToggleChange` (forces the template to None
-             the moment Draft turns on) — the wrapper here is purely
-             the visual/interaction layer on top of that; Bracket was
-             never left in a "default template still armed" state even
-             before this fix, this only stops it from being clickable
-             while Draft is on. The Draft toggle itself is NOT wrapped
-             — it must stay interactive, it's the control being
-             toggled. -->
-        {#if _bracketDraftClusterVisible}
-          <span class="oes-bracket-cluster" class:oes-ctl-cluster-disabled={_sharedDraftMode}
-                title={_sharedDraftMode ? 'Bracket is unavailable while Draft is on' : undefined}>
-            <TemplateBar
-              selectedTemplate={_tplBarSelectedTemplate}
-              sideAwareDefault={_tplBarSideAwareDefault}
-              nonNoneTemplates={_nonNoneTemplates}
-              showsWing={_tplBarShowsWing}
-              shellUsingNone={_tplBarIsUsingNone}
-              bind:tpOverride={_sharedTpOverride}
-              bind:slOverride={_sharedSlOverride}
-              bind:wingStrikeOffsetOverride={_sharedWingStrikeOffsetOverride}
-              bind:wingPremPctOverride={_sharedWingPremPctOverride}
-              bind:spreadMaxPctOverride={_sharedSpreadMaxPctOverride}
-              bind:slTrailPctOverride={_sharedSlTrailPctOverride}
-              bind:tpOrderTypeOverride={_sharedTpOrderTypeOverride}
-              bind:tpScalesJsonOverride={_sharedTpScalesJsonOverride}
-              onSelectDefault={_wrapTemplSelectDefault}
-              onSelectNone={_onTemplSelectNone}
-              onSelectTemplate={_wrapTemplSelectTemplate} />
-          </span>
-        {:else if _bracketDraftDemoNoteVisible}
-          <span class="oct-tpl-demo-note">Exit rules (TP / SL / Wing) not available in demo.</span>
-        {/if}
-
-        <!-- Item 1 (2026-11-02) — Chain-tab-only scope-change flash,
-             see `_flashBracketScopeChange` above for why this is a
-             separate mechanism from OrderTicket's own `.ot-tmpl-
-             changed-flash`. -->
-        {#if _activeTab === 'chain' && _bracketScopeFlash}
-          <span class="oes-bracket-scope-flash" role="status" aria-live="polite">
-            {_bracketScopeFlash.kind === 'switched'
-              ? 'Bracket switched to default for new side'
-              : 'Bracket cleared for new side'}
-          </span>
-        {/if}
+        <!-- BRACKET (TemplateBar) removed entirely — T3.3, bracket-
+             removal. See CLAUDE.md's "Order Ticket / Bracket-template
+             re-wire" history for the feature this used to render. -->
 
         <!-- DRAFT — markup + class names moved verbatim from
              OrderTicket.svelte so existing Playwright selectors keyed
@@ -3302,7 +2429,7 @@
             <span class="ot-draft-label" class:on={_sharedDraftMode}>DRAFT</span>
           </label>
           <InfoHint popup panel title="Draft"
-            text="When ON, Submit adds this leg to the session payoff chart instead of placing a real broker order — nothing is sent to the exchange. Useful for sketching a strategy before committing. Mutually exclusive with Bracket — turning Draft on clears any active bracket (no exit-rule attach is meaningful for a leg that was never actually placed)." />
+            text="When ON, Submit adds this leg to the session payoff chart instead of placing a real broker order — nothing is sent to the exchange. Useful for sketching a strategy before committing." />
         {/if}
       </div>
     {/if}
@@ -3371,22 +2498,8 @@
             defaultChase={_sharedChase}
             defaultChaseAgg={_sharedChaseAgg}
             modeChaseHidden={true}
-            bind:templateId={_sharedTemplateId}
-            bind:tpOverride={_sharedTpOverride}
-            bind:slOverride={_sharedSlOverride}
-            bind:wingStrikeOffsetOverride={_sharedWingStrikeOffsetOverride}
-            bind:wingPremPctOverride={_sharedWingPremPctOverride}
-            bind:slTrailPctOverride={_sharedSlTrailPctOverride}
-            bind:tpOrderTypeOverride={_sharedTpOrderTypeOverride}
-            bind:tpScalesJsonOverride={_sharedTpScalesJsonOverride}
             bind:draftMode={_sharedDraftMode}
             onMarginUpdate={showCommonActions ? _onMarginUpdate : null}
-            onPreviewPlanUpdate={(plan, loading, err, capW) => {
-              _modalPreviewPlan    = plan;
-              _modalPreviewLoading = loading;
-              _modalPreviewError   = err;
-              _modalCapWarning     = capW;
-            }}
             onValidationChange={(err) => { _ticketValidationErr = err; }}
             onTicketStateChange={(s) => { _ticketState = s; }}
             initialDraftId={_ticketProps.initialDraftId ?? null}
@@ -3424,24 +2537,11 @@
           symbol={_localSymbol}
           account={_sharedAccount || account}
           onAccountChange={_onAccountChange}
-          bind:templateId={_sharedTemplateId}
-          templateName={_selectedTemplate?.name || _selectedTemplate?.slug || ''}
-          templateIsNone={_shellUsingNone}
-          selectedTemplate={_selectedTemplate}
-          sideAwareDefault={_sideAwareDefault}
-          nonNoneTemplates={_nonNoneTemplates}
-          showsWing={_sharedTplShowsWing}
-          shellUsingNone={_shellUsingNone}
-          bind:tpOverride={_sharedTpOverride}
-          bind:slOverride={_sharedSlOverride}
-          bind:wingStrikeOffsetOverride={_sharedWingStrikeOffsetOverride}
-          bind:wingPremPctOverride={_sharedWingPremPctOverride}
           bind:spreadMaxPctOverride={_sharedSpreadMaxPctOverride}
-          onSelectDefault={_onTemplSelectDefault}
-          onSelectNone={_onTemplSelectNone}
-          onSelectTemplate={_onTemplSelectTemplate}
           draftMode={_sharedDraftMode}
           onDraftToggleChange={_onSharedDraftToggleChange}
+          chaseAgg={_sharedChaseAgg}
+          onChaseAggChange={_setSharedChaseAgg}
           {accounts}
           refreshKey={_chainBump}
           basketLegs={basketLegs}
@@ -3485,128 +2585,10 @@
 
     </div>
 
-    <!-- BRACKET (TemplateBar) toggle — see the shared CHASE/BRACKET/
-         DRAFT row above (`.oes-chase-row`, inserted immediately below
-         `.oes-picker`). Default → side-aware is_default template
-         (`_sideAwareDefault`, auto-refreshes on side flip + symbol
-         change); None → explicit opt-out, no GTT attach. 2026-10-21 —
-         this is now ONE render site for BOTH tabs (previously Chain
-         rendered its own copy via <OptionChainTab>'s expiry row and
-         Ticket rendered its own copy inside OrderTicket.svelte; see
-         CLAUDE.md's "Order Ticket / Bracket-template re-wire" history
-         for the prior 4 reversals in this exact area). Nothing to
-         render at THIS point in the markup any more. -->
-
-    <!-- On-fill preview chip + cap-warning strip, which stays at shell
-         level (depends on several shell-only state vars) and keeps its
-         OWN separate `_showTemplatePreview` gate (templates loaded +
-         action='open' + symbol-or-legs) so it doesn't render with
-         nothing to preview now that the toggle's own gate is
-         unconditional — additionally gated on `!_isDemo` (never shown
-         during demo, matching the old else-if's demo-wins precedence)
-         and `!_shellUsingNone` (an empty bordered box with no content
-         would otherwise render when the operator has explicitly picked
-         "None", since the preview/cap-warning content below is itself
-         gated on `!_shellUsingNone`). -->
-    {#if _showTemplatePreview && !_isDemo && !_shellUsingNone}
-      <div class="oes-basket-tpl-row oes-basket-tpl-row-shell"
-           title={_selectedTemplate
-             ? `${_selectedTemplate.name || _selectedTemplate.slug}${_selectedTemplate.description ? ' — ' + _selectedTemplate.description : ''}`
-             : 'Default attaches the saved Bracket that matches the current side + symbol type. None opts out of any GTT attach.'}>
-        <!-- On-fill preview chip + cap warning. Piped up from OrderTicket
-             via onPreviewPlanUpdate (mirrors onMarginUpdate). Visible on
-             BOTH tabs because it lives in the shell-level Template
-             container. The chip's ₹ values re-compute reactively whenever
-             the operator edits TP% / SL% / Wing inputs above.
-             - cap warning surfaces broker-capability gaps (Groww OCO,
-               Dhan trail, MCX) BEFORE submit so the operator catches
-               them at compose time.
-             - preview chips render the EXACT triggers Kite GTT / Dhan
-               Forever / Groww OCO will set on fill — "TP ₹250 / SL ₹180
-               + Wing BUY 22000PE @ ~₹85" — the most useful piece of
-               context the operator has at submit time. -->
-        {#if !_shellUsingNone}
-          <!-- Audit fix (H-5) — when basket has legs spanning ≥1
-               account, surface the aggregated cross-account cap
-               warning instead of the Ticket-tab's single-account
-               warning. Multi-broker baskets (Kite + Dhan + Groww)
-               now show the union of broker-specific gaps with each
-               warning tagged by the originating account so the
-               operator can map back to the affected leg. Empty
-               basket falls back to OrderTicket's chip (single-
-               account context). -->
-          {@const _activeCapWarning = basketLegs.length > 0
-            ? _basketCapWarning
-            : _modalCapWarning}
-          {#if _activeCapWarning && _sharedTemplateId !== null && !_shellUsingNone}
-            <div class="oes-tpl-cap-warn" title={_activeCapWarning}>
-              ⚠ {_activeCapWarning}
-            </div>
-          {/if}
-          {#if _activePreviewError}
-            <div class="oes-tpl-preview-err">⚠ preview: {_activePreviewError}</div>
-          {:else if _activePreviewLoading}
-            <div class="oes-tpl-preview-loading">resolving plan…</div>
-          {:else if _activePreviewPlan && (_activePreviewPlan.gtts?.length > 0 || _activePreviewPlan.wing)}
-            <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-            <!-- role and tabindex are conditionally 'button'/0 when multi-leg
-                 (genuinely interactive) or undefined otherwise. Svelte can't
-                 track the conditional so we suppress the false-positive. -->
-            <div class="oes-tpl-preview"
-                 class:oes-tpl-preview-clickable={_previewFromLeg && basketLegs.length > 1}
-                 title={_previewChipTooltip || undefined}
-                 role={_previewFromLeg && basketLegs.length > 1 ? 'button' : undefined}
-                 tabindex={_previewFromLeg && basketLegs.length > 1 ? 0 : undefined}
-                 onclick={(e) => {
-                   if (!(_previewFromLeg && basketLegs.length > 1)) return;
-                   // Don't intercept clicks on existing chips inside —
-                   // they have their own affordances (none today, but
-                   // future-proof). Cycle on bare chip-area clicks.
-                   const tgt = /** @type {HTMLElement} */ (e.target);
-                   if (tgt && tgt !== e.currentTarget && tgt.closest('button, a, input')) return;
-                   _cycleFocusedLeg();
-                 }}
-                 onkeydown={(e) => {
-                   if (!(_previewFromLeg && basketLegs.length > 1)) return;
-                   if (e.key === 'Enter' || e.key === ' ') {
-                     e.preventDefault();
-                     _cycleFocusedLeg();
-                   }
-                 }}>
-              <span class="oes-tpl-preview-label">on fill →</span>
-              {#if _previewFromLeg}
-                <span class="oes-tpl-preview-leg-badge"
-                      title={_focusedLegKey
-                        ? `Preview locked to leg ${_focusedLegIndex} of ${basketLegs.length}. Click another basket pill to swap, or × the pill to release.`
-                        : `Preview tracks the last leg added (${_focusedLegIndex} of ${basketLegs.length}). Click any basket pill to lock to that leg instead.`}>
-                  leg {_focusedLegIndex}/{basketLegs.length}{_focusedLegKey ? ' ●' : ''}
-                </span>
-              {/if}
-              {#each _activePreviewPlan.gtts || [] as g}
-                <span class="oes-tpl-preview-chip"
-                      class:tp={g.label === 'TP'}
-                      class:sl={g.label === 'SL'}
-                      class:both={g.label === 'TP+SL'}>
-                  {g.label} {g.trigger_values?.map(v => priceFmt(Number(v))).join(' / ')}
-                </span>
-              {/each}
-              {#if _activePreviewPlan.wing}
-                <span class="oes-tpl-preview-chip oes-tpl-preview-wing"
-                      title={`Protective BUY leg auto-attached on fill. Reduces SPAN margin and caps tail risk. ${_activePreviewPlan.wing.order_type || 'MARKET'} order, qty matches parent.`}>
-                  + Wing BUY {_activePreviewPlan.wing.quantity}× <LegLabel sym={_activePreviewPlan.wing.tradingsymbol} compact={true} />
-                  {#if _activePreviewPlan.wing.estimated_price != null && _activePreviewPlan.wing.estimated_price > 0}
-                    <span class="oes-tpl-preview-chip-px">@ ~{priceFmt(Number(_activePreviewPlan.wing.estimated_price))}</span>
-                  {/if}
-                </span>
-              {/if}
-              {#each _activePreviewPlan.notes || [] as n}
-                <span class="oes-tpl-preview-note">· {n}</span>
-              {/each}
-            </div>
-          {/if}
-        {/if}
-      </div>
-    {/if}
+    <!-- BRACKET (TemplateBar) on-fill preview chip + cap-warning strip
+         removed entirely — T3.3, bracket-removal. See CLAUDE.md's
+         "Order Ticket / Bracket-template re-wire" history for the
+         feature this used to render. -->
 
     <!-- Shell-level basket bar — visible from any tab when legs exist,
          except the Chart tab (shows only the ChartWorkspace) and the
@@ -3646,20 +2628,22 @@
             <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
             <!-- Basket pill is a compound widget: the <span role="listitem">
                  contains interactive button children and also responds to
-                 click/keydown to focus the preview. Keyboard handler is
-                 already attached; the listitem role is intentional for AT. -->
+                 click/keydown to set this leg as "focused" (drives
+                 `_chainMktExch`'s per-leg market-open badge). Keyboard
+                 handler is already attached; the listitem role is
+                 intentional for AT. -->
             <span class="oes-basket-pill oes-basket-pill-{leg.side === 'BUY' ? 'buy' : 'sell'} oes-basket-pill-type-{/CE$/.test(leg.sym) ? 'ce' : /PE$/.test(leg.sym) ? 'pe' : /FUT$/.test(leg.sym) ? 'fut' : 'eq'}"
                   class:is-disabled={basketSubmitting}
                   class:is-focused={_isFocused}
                   role="listitem"
                   title={_isFocused
-                    ? 'On-fill preview is focused on this leg. Click another pill to swap.'
-                    : 'Click to focus the on-fill preview on this leg. Click × to remove.'}
+                    ? 'Focused — this leg\'s exchange drives the market-open badge. Click another pill to swap.'
+                    : 'Click to focus this leg. Click × to remove.'}
                   onclick={(e) => {
                     // Don't focus when the click bubbled from a child
                     // interactive element (×, stepper, account select,
-                    // template editor, limit input). The target check
-                    // covers all of them — buttons + inputs + selects.
+                    // limit input). The target check covers all of
+                    // them — buttons + inputs + selects.
                     const tgt = /** @type {HTMLElement} */ (e.target);
                     if (tgt?.closest('button, input, select, label')) return;
                     _focusedLegKey = leg.key;
@@ -3731,153 +2715,15 @@
               {:else if _legAcct}
                 <span class="oes-basket-pill-acct-static" title="Routing account (single broker loaded)">{_legAcct}</span>
               {/if}
-              <!-- Inline wing tag dropped — the wing now renders as a
-                   separate basket pill AFTER the parent pill closes
-                   (see `{#if _legHasWing(leg)}` below) so the operator
-                   sees the auto-attached BUY as a distinct order chip
-                   per operator request. -->
-
-              {#if action === 'open' && _templates.length > 0}
-                {@const _eff = _legEffectiveTpl(leg)}
-                {@const _has = _legHasOverride(leg)}
-                <button type="button"
-                        class="oes-basket-pill-tpl-chip"
-                        class:has-override={_has}
-                        disabled={basketSubmitting}
-                        title={_has
-                          ? `Per-leg override active. Click to edit / clear.`
-                          : `Inheriting shell defaults. Click to set a per-leg Bracket or override TP / SL / Wing for THIS leg only.`}
-                        onclick={() => _toggleLegEditor(leg.key)}>
-                  ⚙ {(_eff?.name || _eff?.slug || 'Bracket')}
-                </button>
-              {/if}
+              <!-- BRACKET per-leg chip, WING pill, and per-leg override
+                   editor removed entirely — T3.3, bracket-removal. See
+                   CLAUDE.md's "Order Ticket / Bracket-template re-wire"
+                   history for the feature this used to render. -->
               <button type="button" class="oes-basket-pill-remove"
                       title="Remove leg from basket"
                       disabled={basketSubmitting}
                       onclick={() => removeBasketLeg(i)}>×</button>
             </span>
-            <!-- Wing as a SEPARATE pill — operator: "when the wing
-                 order to be placed, the wing order also should be
-                 shown as an additional order as a chip". Sits
-                 immediately after the parent leg so the operator
-                 reads the pair "SELL CE + WING BUY PE" as two
-                 distinct orders. Read-only — qty + symbol come from
-                 the parent leg + template wing-scan. -->
-            {#if _sharedWingPlanned && leg.side === 'SELL' && /(CE|PE)$/.test(leg.sym)}
-              {@const _wingSym = _wingSymbolFor(leg.sym)}
-              <span class="oes-basket-pill oes-basket-pill-buy oes-basket-pill-wing-leg"
-                    role="listitem"
-                    title={_wingSym
-                      ? `Auto-attached wing — BUY ${_wingSym} on parent fill (qty matches the SELL).`
-                      : `Auto-attached wing — protective BUY picked from the chain by premium scan at fill time.`}>
-                <span class="oes-basket-pill-wing-tag">WING</span>
-                <span class="oes-basket-pill-side">B</span>
-                <span class="oes-basket-pill-sym"><LegLabel sym={_wingSym || `${leg.sym.replace(/(CE|PE)$/i, m => m.toUpperCase() === 'CE' ? 'PE' : 'CE')}`} compact={true} /></span>
-                <span class="oes-basket-pill-lots">{leg.lots || 1}</span>
-                {#if leg.lotSize > 1}
-                  <span class="oes-basket-pill-qty">× {leg.lotSize} = {qtyFmt((leg.lots || 1) * leg.lotSize)}</span>
-                {/if}
-                <span class="oes-basket-pill-wing-note">auto on fill</span>
-              </span>
-            {/if}
-            {#if _legEditorsOpen.has(leg.key) && action === 'open' && _templates.length > 0}
-              <!-- Per-leg override editor — surfaces below the pill in
-                   the same flex container so it wraps to a new line.
-                   Template Select + 4 numeric inputs bound to leg
-                   fields. Empty = inherit shell defaults. -->
-              {@const _eff2 = _legEffectiveTpl(leg)}
-              {@const _showWing2 = (_eff2?.applies_to || '').toLowerCase() === 'sell_option'}
-              <div class="oes-leg-editor" role="group" aria-label={`Override Bracket for ${leg.sym}`}>
-                <span class="oes-leg-editor-label">Bracket for {leg.sym}</span>
-                <label class="oes-leg-editor-field" title="Override the Bracket for THIS leg only. (shell default) inherits the On-fill picker; (no Bracket) explicitly skips any GTT attach for this leg even when the shell has one set.">
-                  <span>on fill</span>
-                  <!-- Audit fix — per-leg null-template sentinel.
-                       Pre-fix the dropdown only had "(shell default)"
-                       which set leg.template_id=null and silently fell
-                       through to the shell pick via the `??` operator
-                       in submitBasket. The operator could not say
-                       "this leg explicitly has NO template, ignore
-                       shell". Adding a separate "(no template)"
-                       option that maps to the seeded none-template's
-                       id covers that case — the id is non-null so
-                       the `??` no longer overrides it. The none row
-                       is excluded from the each-loop below so it's
-                       not duplicated. -->
-                  <Select
-                    disabled={basketSubmitting}
-                    value={leg.template_id ?? ''}
-                    options={[
-                      { value: '', label: '(shell default)' },
-                      ...(_noneTpl ? [{ value: _noneTpl.id, label: '(no Bracket — entry only)' }] : []),
-                      ..._nonNoneTemplates.map(t => ({ value: t.id, label: t.name || t.slug || `#${t.id}` })),
-                    ]}
-                    onValueChange={(v) => {
-                      const id = v === '' ? null : Number(v);
-                      updateLegByKey(leg.key, b => ({ ...b, template_id: id }));
-                    }} />
-                </label>
-                <label class="oes-leg-editor-field" title="TP% for this leg. Empty = inherit shell / Bracket default.">
-                  <span>TP %</span>
-                  <input type="number" step="0.5" disabled={basketSubmitting}
-                         placeholder={_eff2?.tp_pct != null ? String(_eff2.tp_pct) : '—'}
-                         value={leg.tp_pct_override ?? ''}
-                         oninput={(e) => {
-                           const raw = /** @type {HTMLInputElement} */ (e.currentTarget).value;
-                           const v = raw === '' ? null : Number(raw);
-                           updateLegByKey(leg.key, b => ({ ...b, tp_pct_override: v }));
-                         }} />
-                </label>
-                <label class="oes-leg-editor-field" title="SL% for this leg. Empty = inherit shell / Bracket default.">
-                  <span>SL %</span>
-                  <input type="number" step="0.5" disabled={basketSubmitting}
-                         placeholder={_eff2?.sl_pct != null ? String(_eff2.sl_pct) : '—'}
-                         value={leg.sl_pct_override ?? ''}
-                         oninput={(e) => {
-                           const raw = /** @type {HTMLInputElement} */ (e.currentTarget).value;
-                           const v = raw === '' ? null : Number(raw);
-                           updateLegByKey(leg.key, b => ({ ...b, sl_pct_override: v }));
-                         }} />
-                </label>
-                {#if _showWing2}
-                  <label class="oes-leg-editor-field" title="Wing strike offset for this leg.">
-                    <span>Wing strike+</span>
-                    <input type="number" step="50" disabled={basketSubmitting}
-                           placeholder={_eff2?.wing_strike_offset != null ? String(_eff2.wing_strike_offset) : '—'}
-                           value={leg.wing_strike_offset_override ?? ''}
-                           oninput={(e) => {
-                             const raw = /** @type {HTMLInputElement} */ (e.currentTarget).value;
-                             const v = raw === '' ? null : Number(raw);
-                             updateLegByKey(leg.key, b => ({ ...b, wing_strike_offset_override: v }));
-                           }} />
-                  </label>
-                  <label class="oes-leg-editor-field" title="Wing premium % for this leg.">
-                    <span>Wing prem%</span>
-                    <input type="number" step="0.5" disabled={basketSubmitting}
-                           placeholder={_eff2?.wing_premium_pct != null ? String(_eff2.wing_premium_pct) : '—'}
-                           value={leg.wing_premium_pct_override ?? ''}
-                           oninput={(e) => {
-                             const raw = /** @type {HTMLInputElement} */ (e.currentTarget).value;
-                             const v = raw === '' ? null : Number(raw);
-                             updateLegByKey(leg.key, b => ({ ...b, wing_premium_pct_override: v }));
-                           }} />
-                  </label>
-                {/if}
-                <button type="button" class="oes-leg-editor-clear"
-                        disabled={basketSubmitting}
-                        title="Clear every per-leg override on this leg — fall back to shell defaults."
-                        onclick={() => updateLegByKey(leg.key, b => ({
-                          ...b,
-                          template_id: null,
-                          tp_pct_override: null,
-                          sl_pct_override: null,
-                          wing_premium_pct_override: null,
-                          wing_strike_offset_override: null,
-                        }))}>clear</button>
-                <button type="button" class="oes-leg-editor-close"
-                        title="Close editor (overrides persist)."
-                        onclick={() => _toggleLegEditor(leg.key)}>×</button>
-              </div>
-            {/if}
           {/each}
         </div>
         <!-- Operator: "clear submit basket area duplicates common
@@ -4668,188 +3514,6 @@
   .bms-kv-short .bms-v { color: var(--c-short); }
   .bms-err  { opacity: 0.85; }
 
-  /* On-fill template picker row — lifted out of .oes-basket-bar in
-     commit 39184013 and now lives at SymbolPanel shell level (above
-     the sticky basket-bar) so it's visible on every tab + the modal.
-     Operator picks once; submitBasket threads template_id into every
-     leg. Active-template chip sits inline so the operator sees the
-     identity of the rule that will attach to each leg's fill. */
-  .oes-basket-tpl-row {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    width: 100%;
-    flex-wrap: wrap;
-  }
-  /* Shell-level template row — sits BELOW the tab body, above the
-     basket bar. Repalette: violet (0.06 bg / 0.18 borders) was dull
-     and blended into the surrounding navy. Switched to a deeper
-     navy-into-amber gradient with stronger amber accent borders so
-     the row reads as the algo primary action band. Amber matches the
-     platform's "this is the algo primary accent" everywhere else
-     (template chip, agent rules, GTT pills). */
-  /* Operator: "keep template container background a little different.
-     it is dominating everything". Toned down — amber gradient dropped
-     in favour of a faint slate tint that sits a half-step above the
-     surrounding navy. Borders use a low-alpha slate so the row reads
-     as "distinct band" without competing with the picker row or the
-     chase strip. */
-  .oes-basket-tpl-row-shell {
-    padding: 0.45rem 0.7rem;
-    background: rgba(15, 25, 45, 0.55);
-    border-top: 1px solid rgba(125, 211, 252, 0.16);
-    border-bottom: 1px solid rgba(125, 211, 252, 0.16);
-    box-shadow: none;
-    box-sizing: border-box;
-  }
-  /* .oes-basket-tpl-row-demo / .oes-basket-tpl-demo-note / .oes-basket-tpl-label
-     removed (2026-09-30) — the demo-mode note and the Templ toggle
-     itself both relocated into OptionChainTab.svelte's own expiry row
-     (see `.oct-tpl-demo-note` there); this shell-level row now only
-     ever renders the on-fill preview chip + cap-warning strip. */
-  /* .oes-basket-tpl-pick, .oes-basket-tpl-params, .oes-basket-tpl-param,
-     .oes-tpl-toggle, .oes-tpl-btn, .oes-basket-tpl-name
-     — moved to TemplateBar.svelte (Phase 3 extraction). */
-  /* Cap warning + on-fill preview chips — lifted from OrderTicket so
-     they're visible on both Ticket and Chain tabs. Same palette family
-     as the OrderTicket version so the visual identity is preserved:
-     cyan tinted background, TP green, SL red, Both amber, Wing violet. */
-  .oes-tpl-cap-warn {
-    flex-basis: 100%;
-    margin-top: 0.2rem;
-    padding: 0.18rem 0.42rem;
-    border-radius: 3px;
-    font-size: var(--fs-sm);
-    line-height: 1.25;
-    color: var(--c-action);
-    background: rgba(251, 191, 36, 0.10);
-    border: 1px solid rgba(251, 191, 36, 0.40);
-  }
-  .oes-tpl-preview {
-    flex-basis: 100%;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.3rem;
-    align-items: center;
-    margin-top: 0.25rem;
-    padding: 0.3rem 0.45rem;
-    background: rgba(34, 211, 238, 0.06);
-    border: 1px solid var(--c-info-22);
-    border-radius: 3px;
-    font-size: var(--fs-sm);
-    line-height: 1.35;
-    transition: background 0.12s, border-color 0.12s;
-  }
-  /* Clickable variant — Chain tab with 2+ legs. Cursor + hover ring
-     surface the "click to cycle" affordance without a textual hint.
-     Keyboard focus ring matches so Tab + Enter cycles too. */
-  .oes-tpl-preview-clickable {
-    cursor: pointer;
-  }
-  .oes-tpl-preview-clickable:hover {
-    background: var(--c-info-14);
-    border-color: rgba(34, 211, 238, 0.45);
-  }
-  .oes-tpl-preview-clickable:focus-visible {
-    outline: 2px solid rgba(165, 180, 252, 0.65);
-    outline-offset: 1px;
-  }
-  .oes-tpl-preview-label {
-    color: var(--text-med);
-    font-weight: 600;
-    margin-right: 0.15rem;
-    font-family: var(--font-numeric);
-  }
-  .oes-tpl-preview-chip {
-    padding: 0.1rem 0.4rem;
-    border-radius: 3px;
-    font-family: var(--font-numeric);
-    font-weight: 600;
-    color: var(--text-med);
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid color-mix(in srgb, var(--text-med) 20%, transparent);
-  }
-  .oes-tpl-preview-chip.tp {
-    color: var(--c-long);
-    background: var(--c-long-10);
-    border-color: rgba(74, 222, 128, 0.40);
-  }
-  .oes-tpl-preview-chip.sl {
-    color: var(--c-short);
-    background: var(--c-short-10);
-    border-color: rgba(248, 113, 113, 0.40);
-  }
-  .oes-tpl-preview-chip.both {
-    color: var(--c-action);
-    background: rgba(251, 191, 36, 0.10);
-    border-color: rgba(251, 191, 36, 0.40);
-  }
-  .oes-tpl-preview-chip.oes-tpl-preview-wing {
-    color: var(--algo-violet);
-    background: rgba(192, 132, 252, 0.10);
-    border-color: rgba(192, 132, 252, 0.40);
-  }
-  .oes-tpl-preview-chip-px {
-    margin-left: 0.3rem;
-    color: rgba(192, 132, 252, 0.78);
-    font-weight: 500;
-  }
-  /* Leg badge — small pill that labels the chip as reflecting a
-     specific basket leg's preview (Chain tab when basket has legs).
-     Slate-blue family so it reads as a context tag, not a direction
-     indicator. */
-  .oes-tpl-preview-leg-badge {
-    padding: 0.05rem 0.38rem;
-    border-radius: 3px;
-    font-family: var(--font-numeric);
-    font-size: var(--fs-xs);
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    color: #a5b4fc;
-    background: rgba(165, 180, 252, 0.10);
-    border: 1px solid rgba(165, 180, 252, 0.35);
-    margin-right: 0.1rem;
-  }
-  .oes-tpl-preview-note {
-    color: var(--text-lo);
-    font-style: italic;
-  }
-  .oes-tpl-preview-loading {
-    flex-basis: 100%;
-    font-size: var(--fs-sm);
-    color: var(--text-muted);
-    font-family: var(--font-numeric);
-    padding-left: 0.45rem;
-    margin-top: 0.25rem;
-  }
-  .oes-tpl-preview-err {
-    flex-basis: 100%;
-    font-size: var(--fs-sm);
-    color: var(--algo-red-text-bright);
-    padding: 0.25rem 0.4rem;
-    margin-top: 0.25rem;
-    background: rgba(248, 113, 113, 0.08);
-    border: 1px solid rgba(248, 113, 113, 0.30);
-    border-radius: 3px;
-  }
-  .oes-basket-tpl-note {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-    padding: 0.2rem 0.5rem;
-    background: rgba(125, 211, 252, 0.10);
-    border: 1px solid rgba(125, 211, 252, 0.28);
-    border-radius: 3px;
-    font-family: monospace;
-    font-size: var(--fs-xs);
-    color: var(--algo-slate);
-  }
-  .oes-basket-tpl-note-arrow { color: var(--algo-sky); font-weight: 700; }
-  .oes-basket-tpl-note-name  { color: var(--algo-sky); font-weight: 700; }
-  /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
-  .oes-basket-tpl-note-desc  { color: color-mix(in srgb, var(--algo-slate) 60%, transparent); }
-
   .oes-basket-bar {
     position: sticky;
     bottom: 0;
@@ -5053,208 +3717,15 @@
   }
   .oes-basket-pill-remove:hover:not(:disabled) { color: var(--c-short); }
   .oes-basket-pill-remove:disabled { opacity: 0.35; cursor: not-allowed; }
-  /* Wing-attach indicator chip — sits inline inside a SELL option
-     pill, before the × remove button. Purple palette matches the
-     wing chip in OrderTicket's template preview row + the OrderCard
-     "wing/wings:" chip so the paired-leg identity reads consistently
-     across surfaces. Compact + tabular-nums so the symbol string
-     doesn't shift the pill's height. */
-  .oes-basket-pill-wing {
-    display: inline-flex;
-    align-items: center;
-    margin-left: 0.25rem;
-    padding: 0.05rem 0.35rem;
-    background: rgba(192, 132, 252, 0.14);
-    border: 1px solid rgba(192, 132, 252, 0.45);
-    border-radius: 3px;
-    color: var(--algo-violet);
-    font-family: var(--font-numeric);
-    font-size: var(--fs-xs);
-    font-weight: 600;
-    letter-spacing: 0.02em;
-    font-variant-numeric: tabular-nums;
-  }
-  /* Wing AS a basket pill — operator: "the wing order also should be
-     shown as an additional order as a chip". Same shape as the parent
-     buy pill so it reads as an order; violet WING tag at the front so
-     the operator can tell at a glance "this is an auto-attached
-     wing, not a leg I added myself". Dashed border + slightly muted
-     bg distinguishes it from operator-added legs. */
-  .oes-basket-pill-wing-leg {
-    cursor: default !important;
-    border-style: dashed !important;
-    opacity: 0.92;
-  }
-  .oes-basket-pill-wing-tag {
-    display: inline-flex;
-    align-items: center;
-    padding: 0 0.32rem;
-    margin-right: 0.3rem;
-    height: 1.05rem;
-    background: rgba(192, 132, 252, 0.18);
-    border: 1px solid rgba(192, 132, 252, 0.55);
-    border-radius: 2px;
-    color: var(--algo-violet);
-    font-size: var(--fs-2xs);
-    font-weight: 800;
-    letter-spacing: 0.08em;
-  }
-  .oes-basket-pill-wing-note {
-    margin-left: 0.35rem;
-    color: rgba(192, 132, 252, 0.75);
-    font-size: var(--fs-2xs);
-    font-style: italic;
-    font-weight: 500;
-    letter-spacing: 0.02em;
-  }
-  /* Per-leg template chip — click to open the override editor.
-     Subtle slate-grey when inheriting shell; cyan-tinted when the
-     leg has any per-leg override active so the operator can spot
-     deviating legs at a glance. */
-  .oes-basket-pill-tpl-chip {
-    display: inline-flex;
-    align-items: center;
-    margin-left: 0.25rem;
-    padding: 0.05rem 0.35rem;
-    background: rgba(126, 151, 184, 0.16);
-    border: 1px solid rgba(126, 151, 184, 0.40);
-    border-radius: 3px;
-    color: var(--algo-slate);
-    font-family: var(--font-numeric);
-    font-size: var(--fs-xs);
-    font-weight: 600;
-    letter-spacing: 0.02em;
-    cursor: pointer;
-    max-width: 7rem;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    transition: background 0.1s, border-color 0.1s;
-  }
-  .oes-basket-pill-tpl-chip:hover:not(:disabled) {
-    background: rgba(126, 151, 184, 0.26);
-    border-color: rgba(126, 151, 184, 0.70);
-  }
-  .oes-basket-pill-tpl-chip.has-override {
-    background: rgba(34, 211, 238, 0.16);
-    border-color: rgba(34, 211, 238, 0.55);
-    color: var(--algo-cyan-text);
-  }
-  .oes-basket-pill-tpl-chip.has-override:hover:not(:disabled) {
-    background: rgba(34, 211, 238, 0.26);
-    border-color: rgba(34, 211, 238, 0.80);
-  }
-  .oes-basket-pill-tpl-chip:disabled { opacity: 0.45; cursor: not-allowed; }
+  /* BRACKET per-leg chip / editor CSS removed entirely — T3.3,
+     bracket-removal. */
 
-  /* Per-leg override editor — sits below the pill via flex-wrap.
-     Same cyan family as the chip's active state so the visual link
-     reads cleanly. Compact density matches the rest of the basket
-     bar; numeric inputs share the override-input shape used by the
-     shell-level row. */
-  .oes-leg-editor {
-    flex: 0 0 100%;
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.35rem;
-    /* Alignment fix (2026-09-30) — `flex: 0 0 100%` already sizes this
-       to its container's full width; the left margin on top of that
-       made it 0.4rem wider than the container every time. Removed
-       (was `margin: 0.15rem 0 0.3rem 0.4rem`). */
-    margin: 0.15rem 0 0.3rem 0;
-    padding: 0.3rem 0.5rem;
-    background: rgba(34, 211, 238, 0.06);
-    border: 1px solid rgba(34, 211, 238, 0.30);
-    border-radius: 4px;
-  }
-  .oes-leg-editor-label {
-    font-family: var(--font-numeric);
-    font-size: var(--fs-xs);
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
-    color: color-mix(in srgb, var(--algo-slate) 70%, transparent);
-  }
-  .oes-leg-editor-field {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.2rem;
-    font-family: monospace;
-    font-size: var(--fs-xs);
-    color: var(--algo-muted);
-  }
-  .oes-leg-editor-field > span {
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    font-weight: 700;
-  }
-  /* Per-leg override inputs — same high-contrast treatment as the
-     shell-level "On fill" param inputs (commit ba4d1d59). Pre-fix the
-     input bg (rgba(34,211,238,0.08)) almost matched the surrounding
-     editor container bg (rgba(34,211,238,0.06)) so the field chrome
-     bled into the row. Dark slate fill + stronger cyan border, with
-     hover lifting the border and focus inverting to a saturated cyan
-     for an unmistakable active cue. Per-leg overrides ride the cyan
-     palette (matches the `.has-override` per-leg chip + the OrderCard
-     `has-override` styling). */
-  .oes-leg-editor-field > input {
-    height: 1.3rem;
-    padding: 0 0.3rem;
-    background: rgba(8, 14, 28, 0.78);
-    border: 1px solid rgba(34, 211, 238, 0.65);
-    border-radius: 3px;
-    /* A3 (2026-09 audit) — was flat hex #f8fafc; now var(--algo-slate). */
-    color: var(--algo-slate);
-    font-family: var(--font-numeric);
-    font-size: var(--fs-xs);
-    font-weight: 600;
-    box-sizing: border-box;
-    font-variant-numeric: tabular-nums;
-    box-shadow: inset 0 0 0 1px rgba(34, 211, 238, 0.08);
-    transition: border-color 0.12s, background 0.12s;
-    width: 3.2rem;
-    text-align: right;
-  }
-  .oes-leg-editor-field > input:hover {
-    border-color: rgba(34, 211, 238, 0.90);
-  }
-  .oes-leg-editor-field > input:focus {
-    outline: none;
-    border-color: var(--algo-cyan, var(--c-info));
-    background: rgba(12, 24, 40, 0.92);
-    box-shadow: inset 0 0 0 1px rgba(34, 211, 238, 0.45);
-  }
-  .oes-leg-editor-field > input::placeholder {
-    color: rgba(34, 211, 238, 0.70);
-    font-style: italic;
-  }
-  .oes-leg-editor-clear,
-  .oes-leg-editor-close {
-    padding: 0.1rem 0.4rem;
-    background: transparent;
-    border: 1px solid rgba(126, 151, 184, 0.35);
-    border-radius: 3px;
-    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
-    color: color-mix(in srgb, var(--algo-slate) 75%, transparent);
-    font-family: var(--font-numeric);
-    font-size: var(--fs-xs);
-    cursor: pointer;
-  }
-  .oes-leg-editor-clear:hover:not(:disabled),
-  .oes-leg-editor-close:hover {
-    background: rgba(126, 151, 184, 0.15);
-    color: var(--algo-slate);
-  }
-  .oes-leg-editor-close { margin-left: auto; }
   .oes-basket-pill.is-disabled { opacity: 0.55; }
-  /* Focused pill — the basket leg the on-fill preview is locked to.
-     Slate-blue outer ring (matches the .oes-tpl-preview-leg-badge
-     palette) so the operator can see at a glance "this pill is
-     driving the chip". The whole pill is clickable to set focus;
-     hovering shows the affordance via cursor: pointer + a faint
-     ring. The badge in the preview chip displays the focused leg's
-     index, so eye travels from chip → badge → pill in one motion. */
+  /* Focused pill — the basket leg `_chainMktExch` resolves the
+     market-open badge against. Slate-blue outer ring so the operator
+     can see at a glance "this pill is driving the badge". The whole
+     pill is clickable to set focus; hovering shows the affordance via
+     cursor: pointer + a faint ring. */
   .oes-basket-pill { cursor: pointer; transition: box-shadow 0.12s; }
   .oes-basket-pill:hover:not(.is-focused) {
     box-shadow: inset 0 0 0 1px rgba(165, 180, 252, 0.32);
@@ -5739,12 +4210,8 @@
      (2026-09-29): "there should be space between chase and l/m/h". */
   .oes-chase-agg-gap { margin-left: 0.4rem; display: inline-flex; }
 
-  /* ── Shared CHASE/BRACKET/DRAFT row (2026-10-21 consolidation) ────── */
-  /* Normal in-flow block content, not `position: fixed` — flex-wrap
-     (not an overflow-x:auto scroll wrapper) so TemplateBar's inline
-     expand/collapse panel and any non-portaled popover anchored
-     inside the row are never clipped. Matches the existing
-     `.oes-tabs`/`.ot-chase-row` flex-wrap convention. */
+  /* Shared CHASE/DRAFT row (2026-10-21 consolidation; BRACKET removed
+     T3.3 — bracket-removal). */
   .oes-chase-row {
     display: flex;
     align-items: center;
@@ -5752,54 +4219,10 @@
     flex-wrap: wrap;
     padding: 0.2rem 0.4rem;
   }
-  /* Shared "greyed + non-interactive while Draft is on" treatment —
-     applied to BOTH the CHASE cluster (label + InfoHint +
-     ChaseAggPicker) and the BRACKET cluster (the single <TemplateBar>
-     instance), per coordinator: "no brackets in draft mode." Neither
-     ChaseAggPicker.svelte nor TemplateBar.svelte has its own
-     `disabled` prop, so both get wrapped in a container with this
-     class instead of threading a new prop through either component.
-     DRAFT itself is never wrapped in this — it must stay interactive,
-     it's the control being toggled. */
-  .oes-ctl-cluster-disabled {
-    opacity: 0.4;
-    pointer-events: none;
-  }
   /* Market badge group — REMOVED 2026-10-22 (.oes-mkt-badge/.oes-mkt-pill/
      .oes-mkt-open/.oes-mkt-closed). Moved to the shared page header
      (AlgoTimestamp.svelte's .ats-mkt-* classes) — see the markup-removal
      comment above where this group used to render. */
-  /* Demo-mode note — replaces the Bracket toggle when exit rules
-     (TP/SL/Wing) aren't available to an anonymous session. Duplicated
-     from OrderTicket.svelte/OptionChainTab.svelte's own
-     `.oct-tpl-demo-note` (both now removed — this is the one surviving
-     copy, scoped to this component). */
-  .oct-tpl-demo-note {
-    font-family: var(--font-numeric);
-    font-size: var(--fs-xs);
-    color: var(--text-lo);
-    font-style: italic;
-  }
-  /* Item 1 (2026-11-02) — Chain-tab scope-change flash. Amber pulse,
-     same palette + timing as OrderTicket.svelte's own
-     `.ot-tmpl-changed-flash` (#16), kept as a separate class because
-     this one fires for a DIFFERENT event (Chain-tab re-bind/clear,
-     not Ticket-tab clear-only). */
-  @keyframes oes-bracket-scope-flash-kf {
-    0%   { background: rgba(251, 191, 36, 0.28); border-color: rgba(251, 191, 36, 0.65); }
-    60%  { background: rgba(251, 191, 36, 0.18); border-color: rgba(251, 191, 36, 0.45); }
-    100% { background: rgba(251, 191, 36, 0.06); border-color: rgba(251, 191, 36, 0.20); }
-  }
-  .oes-bracket-scope-flash {
-    font-family: var(--font-numeric);
-    font-size: var(--fs-xs);
-    color: var(--c-action);
-    background: rgba(251, 191, 36, 0.06);
-    border: 1px solid rgba(251, 191, 36, 0.20);
-    border-radius: 3px;
-    padding: 0.2rem 0.5rem;
-    animation: oes-bracket-scope-flash-kf 1.2s ease-out forwards;
-  }
   /* DRAFT toggle — class names + styling duplicated verbatim from
      OrderTicket.svelte (now removed there) so existing Playwright
      selectors keyed on `.ot-draft-toggle`/`.ot-draft-label` keep

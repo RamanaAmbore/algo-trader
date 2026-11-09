@@ -9,13 +9,12 @@
  *  2. Perf  — no async I/O; all compute is synchronous
  *  3. Stale — grepped: no ternaries of this shape exist in OrderTicket.svelte submit()
  *  4. Reuse — same module used by OrderTicket.svelte (import paths match)
- *  5. UX    — edge cases: empty overrides, zero qty, MARKET/LIMIT paths, close vs open
+ *  5. UX    — edge cases: zero qty, MARKET/LIMIT paths, close vs open
  */
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  numericOverride,
   classifyIntent,
   buildModifyPayload,
   buildOnSubmitPayload,
@@ -24,30 +23,6 @@ import {
   nextTriggerState,
   formatSubmitLabel,
 } from '../src/lib/order/orderTicketSubmit.js';
-
-// ── numericOverride ───────────────────────────────────────────────────────────
-
-describe('numericOverride', () => {
-  test('empty string → null', () => {
-    assert.strictEqual(numericOverride(''), null);
-  });
-
-  test('numeric string → Number', () => {
-    assert.strictEqual(numericOverride('2.5'), 2.5);
-  });
-
-  test('numeric value 0 → 0 (not null)', () => {
-    assert.strictEqual(numericOverride(0), 0);
-  });
-
-  test('numeric value 1.5 → 1.5', () => {
-    assert.strictEqual(numericOverride(1.5), 1.5);
-  });
-
-  test('string "0" → 0 (not null)', () => {
-    assert.strictEqual(numericOverride('0'), 0);
-  });
-});
 
 // ── classifyIntent ────────────────────────────────────────────────────────────
 
@@ -248,11 +223,6 @@ describe('buildPlacePayload', () => {
     account: 'ZG0790',
     chase: true,
     chaseAgg: 'low',
-    templateId: 3,
-    tpOverride: '2.5',
-    slOverride: '',
-    wingPremPctOverride: '',
-    wingStrikeOffsetOverride: '50',
     strategyId: 7,
   };
 
@@ -284,31 +254,6 @@ describe('buildPlacePayload', () => {
   test('lot_size_hint null when lotSize=0', () => {
     const p = buildPlacePayload({ ...base, lotSize: 0 });
     assert.strictEqual(p.lot_size_hint, null);
-  });
-
-  test('template_id wired through', () => {
-    const p = buildPlacePayload(base);
-    assert.strictEqual(p.template_id, 3);
-  });
-
-  test('tp_pct_override coerced to Number', () => {
-    const p = buildPlacePayload(base);
-    assert.strictEqual(p.tp_pct_override, 2.5);
-  });
-
-  test('sl_pct_override null when empty string', () => {
-    const p = buildPlacePayload(base);
-    assert.strictEqual(p.sl_pct_override, null);
-  });
-
-  test('wing_strike_offset_override coerced to Number', () => {
-    const p = buildPlacePayload(base);
-    assert.strictEqual(p.wing_strike_offset_override, 50);
-  });
-
-  test('wing_premium_pct_override null when empty string', () => {
-    const p = buildPlacePayload(base);
-    assert.strictEqual(p.wing_premium_pct_override, null);
   });
 
   test('strategy_id wired through', () => {

@@ -36,7 +36,7 @@
   import CardHeader from '$lib/CardHeader.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
-  import { placeTicketOrder, previewOrderMargin, fetchAccounts, modifyOrder, previewTicketTemplate, fetchStrategies, cancelOrder } from '$lib/api';
+  import { placeTicketOrder, previewOrderMargin, fetchAccounts, modifyOrder, fetchStrategies, cancelOrder } from '$lib/api';
   import {
     buildModifyPayload,
     buildOnSubmitPayload,
@@ -46,11 +46,8 @@
     nextTriggerState,
   } from './orderTicketSubmit.js';
   import { fundsStore } from '$lib/data/marketDataStores.svelte.js';
-  import { loadOrderTemplates, orderTemplatesStore } from '$lib/data/templates';
   import { toast } from '$lib/data/toastStore.svelte.js';
   import ModalShell from '$lib/ModalShell.svelte';
-  import { appliesToFor as _appliesToFor } from '$lib/data/templateScope.js';
-  import { capWarningFor } from '$lib/data/brokerCapWarnings';
   import { getDefaultAccount } from '$lib/data/accounts';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
   import { aggFmt, priceFmt } from '$lib/format';
@@ -101,9 +98,8 @@
    *   onSideChange?: ((side: 'BUY'|'SELL') => void) | null,
    *   hostManagesEsc?: boolean,
    *   onMarginUpdate?: ((preview:any, loading:boolean, meta?: {isCashMode:boolean, cash:number|null, availMargin:number|null, usedMargin:number|null, fundsAccount:string, kind:string, side:string}) => void) | null,
-   *   onPreviewPlanUpdate?: ((plan:any, loading:boolean, error:string, capWarning:string) => void) | null,
    *   onValidationChange?: ((err: string) => void) | null,
-   *   onTicketStateChange?: ((state: {side: 'BUY'|'SELL'|null, qty: number, submitting: boolean, pending: boolean, depthPending: boolean, mktOpen: boolean, mktExch: string, showDraftToggle: boolean, selectedTemplate: object|null, defaultTemplate: object|null, showsWing: boolean, isUsingNone: boolean, resolvedSymbol: string|null}) => void) | null,
+   *   onTicketStateChange?: ((state: {side: 'BUY'|'SELL'|null, qty: number, submitting: boolean, pending: boolean, depthPending: boolean, mktOpen: boolean, mktExch: string, showDraftToggle: boolean, resolvedSymbol: string|null}) => void) | null,
    *   fundsHidden?: boolean,
    *   symbolHidden?: boolean,
    *   symType?: 'ALL' | 'EQ' | 'FUT' | 'OPT',
@@ -114,14 +110,6 @@
    *   modeChaseHidden?: boolean,
    *   hideDraftToggle?: boolean,
    *   suspended?: boolean,
-   *   templateId?: number | null,
-   *   tpOverride?: number | '',
-   *   slOverride?: number | '',
-   *   wingStrikeOffsetOverride?: number | '',
-   *   wingPremPctOverride?: number | '',
-   *   slTrailPctOverride?: number | '',
-   *   tpOrderTypeOverride?: 'LIMIT' | 'MARKET' | '',
-   *   tpScalesJsonOverride?: string,
    *   standalone?: boolean,
    *   defaultChase?: boolean,
    *   defaultChaseAgg?: 'low' | 'med' | 'high',
@@ -208,11 +196,6 @@
     // inside its common action footer so the operator sees the verdict
     // regardless of which tab is active.
     onMarginUpdate = /** @type {((preview:any, loading:boolean, meta?:{isCashMode:boolean,cash:number|null,availMargin:number|null,usedMargin:number|null,fundsAccount:string,kind:string,side:string}) => void) | null} */ (null),
-    // Pipes the on-fill preview chip (_previewPlan / _previewLoading /
-    // _previewError + cap warning) up to the host so SymbolPanel can
-    // render it inside the Template container — visible on BOTH tabs
-    // instead of only on Ticket. Mirrors the onMarginUpdate plumbing.
-    onPreviewPlanUpdate = /** @type {((plan:any, loading:boolean, error:string, capWarning:string) => void) | null} */ (null),
     // Fires whenever the current validation error changes. Host
     // (SymbolPanel) uses this to surface the error as a toast when
     // its common-action Submit button is clicked and the ticket form
@@ -274,22 +257,6 @@
     // is active in SymbolPanel). Preflight effects early-return to
     // avoid firing /api/orders/preflight while the tab is hidden.
     suspended = false,
-    // Shared exit-template id across SymbolPanel surfaces (Ticket /
-    // Chain / Basket bar). Operator picks once; selection persists
-    // across tabs and side flips. When unbound (parent passes a plain
-    // null), this falls back to standalone behaviour.
-    templateId = $bindable(/** @type {number|null} */ (null)),
-    // Per-template parameter overrides. Shell (SymbolPanel) binds
-    // them at the panel level so editing the TP%/SL%/Wing inputs in
-    // the shell row updates the value the Ticket form would submit.
-    // Empty string = "no override; use the template's value".
-    tpOverride                = $bindable(/** @type {number|''} */ ('')),
-    slOverride                = $bindable(/** @type {number|''} */ ('')),
-    wingStrikeOffsetOverride  = $bindable(/** @type {number|''} */ ('')),
-    wingPremPctOverride       = $bindable(/** @type {number|''} */ ('')),
-    slTrailPctOverride        = $bindable(/** @type {number|''} */ ('')),
-    tpOrderTypeOverride       = $bindable(/** @type {'LIMIT'|'MARKET'|''} */ ('')),
-    tpScalesJsonOverride      = $bindable(/** @type {string} */ ('')),
     // When false, OrderTicket is embedded inside another dialog (e.g.
     // SymbolPanel) and must not re-declare role="dialog" (ARIA prohibits
     // nested dialog roles). The overlay backdrop is also suppressed.
@@ -308,12 +275,11 @@
     initialDraftId            = /** @type {number|null} */ (null),
     // 2026-10-21 — "Add to Payoff" draft mode, promoted from local
     // $state to a $bindable prop so the shell's single shared CHASE/
-    // BRACKET/DRAFT row (SymbolPanel.svelte) can read + toggle it for
-    // BOTH the Ticket and Chain tabs. Every write site inside this
-    // component gates on `suspended` (see the stale-draft effect below
-    // and the onMount draft-prefill block) — same convention as the
-    // `templateId` re-validation effect — so this component never
-    // clobbers the shared value while hidden behind Chain.
+    // DRAFT row (SymbolPanel.svelte) can read + toggle it for BOTH the
+    // Ticket and Chain tabs. Every write site inside this component
+    // gates on `suspended` (see the stale-draft effect below and the
+    // onMount draft-prefill block) so this component never clobbers
+    // the shared value while hidden behind Chain.
     draftMode                 = $bindable(false),
   } = $props();
 
@@ -364,10 +330,10 @@
   // is async (GET /api/orders/drafts); without this gate, a ticket that
   // mounts before that fetch resolves would see an empty Map and flag
   // every real draft as "missing" on the very first render.
-  // Gated on `suspended` FIRST (2026-10-21 shared-row re-wire) — same
-  // convention as the templateId re-validation effect below. draftMode
-  // is now a shared/bound value (SymbolPanel's _sharedDraftMode); this
-  // effect must not reset it while OrderTicket is hidden behind Chain.
+  // Gated on `suspended` FIRST (2026-10-21 shared-row re-wire) —
+  // draftMode is now a shared/bound value (SymbolPanel's
+  // _sharedDraftMode); this effect must not reset it while OrderTicket
+  // is hidden behind Chain.
   // `suspended` is read first (before any early return below it) so it's
   // tracked and the effect re-runs the moment Ticket becomes active again.
   $effect(() => {
@@ -446,10 +412,6 @@
   const isOption = $derived(kind === 'CE' || kind === 'PE');
   const isFuture = $derived(kind === 'FUT');
   const isEquity = $derived(kind === 'EQ');
-  // Close orders never get a template attached — suppress TemplateBar
-  // chrome and force template_id: null in the submit payload so the
-  // backend's attach pipeline is bypassed entirely.
-  const _isCloseOrder = $derived(action === 'close');
 
   // Bare-underlying mode — symbol is just the underlying name
   // ("NIFTY") and symType says the operator wants FUT or OPT. We
@@ -986,62 +948,10 @@
   // legacy `target_pct` from external callers (Lab MCP scripts) via
   // a shim, so this removal is UI-surface-only.
 
-  // ── v2 template picker ──────────────────────────────────────────────
-  // Template state. `_templates` is the list fetched from
-  // /api/admin/templates on mount. `templateId` is the selected row's
-  // id; null means "no template" (entry-only, no follow-on attach).
-  // Override fields default to '' (blank) — the picker shows the
-  // template's value as a placeholder so the operator sees what will
-  // run unless they tweak it. Submitting with a blank override sends
-  // null (= use template default).
-  let _templates = $state(/** @type {any[]} */ ([]));
-  // Override fields aliased onto the bindable props above so every
-  // existing read/write through these locals routes through the
-  // shell's shared state (when SymbolPanel binds them). Stand-alone
-  // OrderTicket mounts (no parent binding) get fresh per-mount state.
-
-  // Pre-submit preview state.
-  let _previewPlan = $state(/** @type {any} */ (null));
-  let _previewLoading = $state(false);
-  let _previewError = $state('');
-  // Sequence number for the preview fetch — incremented before each
-  // dispatch, checked after `await` to drop stale responses. See the
-  // template-preview $effect for the full rationale.
-  let _previewSeq = 0;
-
-  const _selectedTemplate = $derived(
-    _templates.find(t => t.id === templateId) || null
-  );
-
-  // Two-state Template toggle (Default / None) — replaces the legacy
-  // multi-row Select. Operator: "Keep it simple to start using it."
-  // Default → auto-pick the is_default template for the current side.
-  // None    → explicit opt-out (no GTT / no wing on submit).
-  const _defaultTemplate = $derived.by(() => {
-    if (_templates.length === 0) return null;
-    // Byte-identical to the side+symbol re-validation effect's own scope
-    // expression below (`_appliesToFor(_side, _resolvedSymbol || symbol)`)
-    // — both must resolve the same scope string, or this derived (which
-    // feeds the Bracket toggle's DISPLAYED label via the
-    // `onTicketStateChange` -> `_ticketState.defaultTemplate` mirror)
-    // could show a default for the WRONG scope whenever _resolvedSymbol
-    // diverges from the bare symbol prop (bare-underlying option
-    // picker: operator picked a specific strike/expiry not reflected
-    // in `symbol` itself). Previously used the bare `symbol` prop.
-    const scope = _appliesToFor(_side, _resolvedSymbol || symbol);
-    return _templates.find(t =>
-      t.is_active && t.is_default && (t.applies_to === scope || t.applies_to === 'both')
-    ) || null;
-  });
-  const _noneTemplate = $derived(
-    _templates.find(t => t.slug === 'none') || null
-  );
-
   // Sprint C — broker capability matrix for the selected account.
-  // Drives the inline warning chip: when caps.gtt_oco is false the
-  // operator gets an "OCO emulated — ~15s race window" note before
-  // submitting a TP+SL template. Fetched lazily on first account
-  // change, cached in-memory per account so account-toggle is cheap.
+  // Drives OrderKnobsRow's product/exchange/variety restrictions.
+  // Fetched lazily on first account change, cached in-memory per
+  // account so account-toggle is cheap.
   /** @type {Record<string, any>} */
   let _capsCache = $state({});
   /** @type {any} */
@@ -1062,190 +972,7 @@
       }
     })();
   });
-  // Warning text — returned non-empty only when the SELECTED template
-  // produces a bracket the broker can't handle natively. Drives a
-  // small amber chip rendered next to the template summary. Logic
-  // extracted to `$lib/data/brokerCapWarnings` so SymbolPanel can
-  // reuse the same vocabulary when aggregating across basket accounts
-  // (H-5). One source of truth for "OCO emulated" / "can't trail" /
-  // MCX / postback-lag warnings.
-  const _templateCapWarning = $derived.by(() => {
-    const ex = String(_exchange || _resolvedExchange || exchange || '');
-    // Thread the live TP-type/TP%/SL% overrides through — the Kite
-    // MARKET-leg check (T17) needs the operator's in-session choice, not
-    // just the saved template row (see brokerCapWarnings.js docstring).
-    return capWarningFor(_selectedTemplate, _brokerCaps, ex, {
-      tpOrderType: tpOrderTypeOverride,
-      tpPct: tpOverride,
-      slPct: slOverride,
-    });
-  });
-  const _isUsingNone = $derived(
-    _selectedTemplate?.slug === 'none' || templateId === null
-  );
 
-  // 2026-10-21 — the Bracket toggle (TemplateBar) no longer renders
-  // inside this component at all (moved to SymbolPanel's shared row —
-  // see the comment near .ot-chase-row below). These derived values
-  // stay: _selectedTemplate/_isUsingNone/_templateCapWarning still
-  // drive Ticket's OWN inline wing-warning / GTT-preview / no-default-
-  // warning blocks further down, and _selectedTemplate/_defaultTemplate/
-  // _showsWing/_isUsingNone are mirrored up to the shell via the
-  // onTicketStateChange payload so it can render the Bracket toggle's
-  // display state for the Ticket tab without re-deriving it.
-  const _nonNoneTemplates = $derived(_templates.filter(t => t.slug !== 'none'));
-  const _showsWing = $derived(
-    !!_selectedTemplate &&
-    (_selectedTemplate.wing_strike_offset != null || _selectedTemplate.wing_premium_pct != null)
-  );
-
-  // Mutual exclusion (operator: "only one can be active or both can be
-  // inactive") — Bracket and Draft can never both be ON. 2026-10-21
-  // shared-row re-wire: the Bracket toggle (TemplateBar) and the Draft
-  // checkbox both now render once, at shell level, inside SymbolPanel's
-  // single CHASE/BRACKET/DRAFT row — the `_onBracketSelectDefault`/
-  // `_onBracketSelectNone`/`_onDraftToggleChange`/`_onBracketSelectTemplate`
-  // wrapper functions that used to live here (and enforced this mutual
-  // exclusion) moved there too. See SymbolPanel.svelte's
-  // `_wrapTemplSelectDefault`/`_wrapTemplSelectNone`/`_wrapTemplSelectTemplate`/
-  // `_onSharedDraftToggleChange`.
-
-  // #16 — side-flip template change flash. Set to true when _autoSelectTemplate
-  // fires due to a scope mismatch (side/symbol change); auto-clears after 1.2s.
-  let _templateChanged = $state(false);
-
-  function _summariseTemplate(t) {
-    if (!t) return '';
-    const parts = [];
-    if (t.tp_pct != null) {
-      const mkt = t.tp_order_type === 'MARKET' ? ' MKT' : '';
-      parts.push(`TP +${t.tp_pct}%${mkt}`);
-    }
-    // Scale-out ladder summary — Sprint D fix. Pre-fix a template
-    // with only tp_scales_json (no tp_pct) showed "(entry only)"
-    // and the operator had no warning that multiple TP legs would
-    // fire on submit.
-    if (t.tp_scales_json) {
-      try {
-        const scales = JSON.parse(t.tp_scales_json);
-        if (Array.isArray(scales) && scales.length > 0) {
-          parts.push(`TP ×${scales.length} scales`);
-        }
-      } catch (_e) { /* malformed JSON — silently skip */ }
-    }
-    if (t.sl_pct != null) {
-      const trail = t.sl_trail_pct != null ? ` trail ${t.sl_trail_pct}%` : '';
-      parts.push(`SL -${t.sl_pct}%${trail}`);
-    } else if (t.sl_trail_pct != null) {
-      parts.push(`SL trail ${t.sl_trail_pct}%`);
-    }
-    if (t.wing_strike_offset != null) parts.push(`Wing +${t.wing_strike_offset} pts`);
-    if (t.wing_premium_pct != null) parts.push(`Wing ${t.wing_premium_pct}% prem`);
-    return parts.length ? parts.join(' · ') : '(entry only)';
-  }
-
-  // Deliberate no-op — DO NOT fill this in without a fresh, explicit
-  // operator decision to reverse commit 2f60d39a (2026-10-05,
-  // "fix(orders): no implicit take-profit, no default ticket
-  // template..."). That commit is what gutted this function's real
-  // body (it used to assign the matched default template's own id — a
-  // side-scope match, else a 'both'-scope match, else the none-slug
-  // row — added 5a584847 2026-06-19 — the "Operator (turn N):
-  // 'Some templates are valid only for sell or buy...'" quote below is
-  // from THAT older commit, predates and is superseded by 2f60d39a, and
-  // describes behavior that no longer exists) — and it made the
-  // identical change to SymbolPanel.svelte's own side-aware auto-swap
-  // effect (`_sharedTemplateId = null;`, no re-selection either). Both
-  // files were changed together, for the same reason, in the same
-  // commit. A 2026-11-01 task to "fix" this by restoring the old
-  // `templateId = _defaultTemplate?.id ?? null;` body was investigated
-  // and NOT applied — see that investigation's handback for the full
-  // chronology. The one real, independent bug fixed alongside this
-  // comment is `_defaultTemplate`'s own scope computation below (now
-  // `_resolvedSymbol || symbol`, matching the re-validation effect) —
-  // that fix stands on its own regardless of the auto-select policy,
-  // since `_defaultTemplate` still feeds the Bracket toggle's DISPLAYED
-  // label (mirrored to SymbolPanel via `_ticketState.defaultTemplate`)
-  // even though nothing auto-arms it any more.
-  function _autoSelectTemplate() {
-    if (action === 'close') return;         // close orders never get a template
-    if (templateId !== null) return;        // operator already picked
-    if (_templates.length === 0) return;
-    // Intentionally does nothing further — see the policy note above.
-    // The operator arms a bracket only by explicitly clicking the
-    // Bracket toggle (SymbolPanel's `_onTemplSelectDefault`/
-    // `_onTemplSelectTemplate`), never automatically from this effect.
-  }
-
-  // Close orders must never carry a template — clear templateId
-  // reactively so any previously-selected template doesn't slip through
-  // if the action prop changes to 'close' while the ticket is open.
-  // Gated on `suspended` for the same reason as the re-validation
-  // effect below — OrderTicket stays mounted while Chain is active, so
-  // without this gate an `action` change elsewhere could reset the
-  // SHARED templateId out from under the Chain tab.
-  $effect(() => {
-    if (suspended) return;
-    if (action === 'close' && templateId !== null) {
-      templateId = null;
-    }
-  });
-
-  // Side+symbol → template re-validation. If the operator flips side
-  // (BUY → SELL pill) or changes the symbol kind (equity → option)
-  // after picking a template, a stale templateId carries over and may
-  // no longer match the new applies_to scope. Concrete incident:
-  // 2026-06-22 — modal opened BUY (default scope: buy_any → picked
-  // `default-bull`), operator clicked SELL pill on a PE option, submit
-  // shipped template_id=1 (buy_any) for a SELL option. Backend then
-  // attached a TP+SL OCO with BUY-side price math; one leg fired and
-  // closed 20 contracts of the operator's short at ₹1447.5.
-  //
-  // The backend now has a hard `applies_to` guard (refuses to attach
-  // a buy template to a SELL leg, etc.) so even a stale templateId
-  // is non-destructive — but resetting the picker on side/scope flip
-  // is the cleaner UX, and avoids the "I picked Default and got nothing"
-  // confusion after the guard kicks in.
-  $effect(() => {
-    // Track _side + _resolvedSymbol (covers symbol prop + bare-
-    // underlying + option-chain picks). _selectedTemplate is reactive
-    // off templateId + _templates, so we don't need to depend on it
-    // here — re-validate purely against the current leg shape.
-    const newScope = _appliesToFor(_side, _resolvedSymbol || symbol);
-    // 2026-10-16 — gate on `suspended` (same convention as the
-    // preflight effect above). OrderTicket stays mounted with
-    // display:none while Chain is active, so without this gate this
-    // effect kept firing on every Chain-tab side/symbol change too —
-    // now that templateId is a real shared binding again (the Ticket/
-    // template re-wire), it was resetting the SHARED _sharedTemplateId
-    // and calling this component's OWN _autoSelectTemplate() behind
-    // Chain's back, fighting the shell's own scope-tracking effect
-    // for the exact same value. Only the visually active tab may
-    // touch the shared template state.
-    if (suspended) return;
-    untrack(() => {
-      const current = _templates.find(t => t.id === templateId);
-      if (!current) return;             // no templateId or templates not loaded
-      const ap = (current.applies_to || 'both').toLowerCase();
-      // 'both' and 'none' (the explicit opt-out) match any scope.
-      if (ap === 'both' || current.slug === 'none') return;
-      if (ap === newScope) return;      // still valid for the new scope
-      // Mismatch: clear it. `_autoSelectTemplate()` is a deliberate
-      // no-op (see its own comment) — nothing re-arms a default here,
-      // per operator policy (commit 2f60d39a, 2026-10-05: "no implicit
-      // ... default ticket template"). The operator must explicitly
-      // click the Bracket toggle again for the new side.
-      templateId = null;
-      _autoSelectTemplate();
-      // #16 — brief amber flash so the operator notices the bracket
-      // was cleared (NOT "auto-updated" — nothing re-selects it; see
-      // the policy note above). Wording fixed 2026-11-01: the old text
-      // ("Bracket auto-updated for new side") became false the moment
-      // 2f60d39a removed the re-selection this flash used to announce.
-      _templateChanged = true;
-      setTimeout(() => { _templateChanged = false; }, 1200);
-    });
-  });
   // intentional: seeds from productVal once; $effect below re-syncs on symbol kind change
   // svelte-ignore state_referenced_locally
   let _product = $state($state.snapshot(productVal));
@@ -1985,25 +1712,6 @@
     // arrived, which is routine and expected whenever market is closed.
     (draftMode ? null : _validatePriceTrigger(showLimit, showTrigger, Number(_price), Number(_trigger), _tickSize, _tickDecimals)) ??
     _validateOrderContext(_mode, _account) ??
-    // #7 — TemplateBar override validation (blocks submit on invalid override values)
-    (!_isUsingNone && templateId !== null && tpOverride !== '' && tpOverride != null && Number(tpOverride) <= 0
-      ? 'TP% override must be > 0'
-      : null) ??
-    (!_isUsingNone && templateId !== null && slOverride !== '' && slOverride != null && Number(slOverride) <= 0
-      ? 'SL% override must be > 0'
-      : null) ??
-    (!_isUsingNone && templateId !== null && wingPremPctOverride !== '' && wingPremPctOverride != null && Number(wingPremPctOverride) <= 0
-      ? 'Wing prem% override must be > 0'
-      : null) ??
-    // #28 — preview says wing is not feasible (block submit)
-    (!_isUsingNone && templateId !== null && !_previewLoading && _previewPlan !== null && _previewPlan.wing_feasible === false
-      ? 'Wing unavailable — cannot place order'
-      : null) ??
-    // #29 — preview returned GTT trigger errors (block submit)
-    (!_isUsingNone && templateId !== null && !_previewLoading && _previewPlan !== null &&
-     Array.isArray(_previewPlan.gtt_trigger_errors) && _previewPlan.gtt_trigger_errors.length > 0
-      ? _previewPlan.gtt_trigger_errors[0]
-      : null) ??
     ''
   );
 
@@ -2027,23 +1735,12 @@
   // Ticket tab without duplicating/relocating `_isOpen`/
   // `_mktOpenForExchange` itself — those stay exactly where they are,
   // unedited, since an existing spec asserts against their source
-  // text) and the Bracket-display fields (showDraftToggle/
-  // selectedTemplate/defaultTemplate/showsWing/isUsingNone) so the
-  // shell's single TemplateBar instance can mirror Ticket's own
-  // resolution for the Ticket tab (Chain keeps the shell's own
-  // resolution — see SymbolPanel's `_currentScope()`). Every field here
-  // is a pure local-state read (no write to shared/bound state), so
-  // this effect does NOT need a `suspended` gate.
-  // 2026-11-01 — added `resolvedSymbol` (the SAME `_resolvedSymbol` that
-  // `_defaultTemplate` and the side+symbol re-validation effect already
-  // key off, via `_appliesToFor(_side, _resolvedSymbol || symbol)`).
-  // Without this, SymbolPanel's own `_currentScope()` (which drives both
-  // the Bracket toggle's "Default" click AND the remembered-pref/
-  // auto-swap effect) could only see the shell's bare `_localSymbol` on
-  // the Ticket tab — disagreeing with Ticket's own resolved contract for
-  // a bare-underlying option order and letting the displayed default
-  // label (fed by `defaultTemplate` above) diverge from the template a
-  // Default click actually arms.
+  // text). Every field here is a pure local-state read (no write to
+  // shared/bound state), so this effect does NOT need a `suspended` gate.
+  // 2026-11-01 — added `resolvedSymbol` so SymbolPanel's own
+  // `_currentScope()`-adjacent resolution can see Ticket's own resolved
+  // contract for a bare-underlying option order instead of only the
+  // shell's bare `_localSymbol`.
   $effect(() => {
     onTicketStateChange?.({
       side: _side,
@@ -2054,10 +1751,6 @@
       mktOpen: _isOpen,
       mktExch: _mktBadgeExch,
       showDraftToggle,
-      selectedTemplate: _selectedTemplate,
-      defaultTemplate: _defaultTemplate,
-      showsWing: _showsWing,
-      isUsingNone: _isUsingNone,
       resolvedSymbol: _resolvedSymbol,
     });
   });
@@ -2215,21 +1908,6 @@
     onMarginUpdate?.(_marginPreview, _marginLoading, _chipMeta);
   });
 
-  // Fire onPreviewPlanUpdate whenever the per-leg preview state changes.
-  // Same dedup pattern as onMarginUpdate but cheaper since the dict is
-  // already a stable reference. The shell renders the chip inside the
-  // Template container so it's visible on BOTH Ticket and Chain tabs.
-  let _lastPreviewKey = '';
-  $effect(() => {
-    if (!onPreviewPlanUpdate) return;
-    const key = JSON.stringify({
-      p: _previewPlan, l: _previewLoading, e: _previewError, c: _templateCapWarning,
-    });
-    if (key === _lastPreviewKey) return;
-    _lastPreviewKey = key;
-    onPreviewPlanUpdate(_previewPlan, _previewLoading, _previewError, _templateCapWarning);
-  });
-
   $effect(() => {
     // Track everything that materially affects the basket_margin number.
     // (Svelte 5 picks up reads inside this function automatically.)
@@ -2257,7 +1935,7 @@
     // ONLY draft-related check below was `_mode === 'draft'`, the
     // UNRELATED execution-mode enum ('sim'|'paper'|'live'|'shadow'|
     // 'draft' from $executionMode) — not the Draft TOGGLE (`draftMode`,
-    // promoted to a shell-bound prop in the CHASE/BRACKET/DRAFT
+    // promoted to a shell-bound prop in the CHASE/DRAFT row
     // consolidation). Turning Draft ON while execution mode was
     // 'live'/'paper' (the normal case) still fired a real
     // /api/orders/preflight call on every 350ms-debounced change.
@@ -2541,19 +2219,6 @@
           lots: _lots,
           lotSize: _lotSize,
           currentQty,
-          // 2026-10-16 — re-wired (4th and final decision, superseding
-          // the 2026-09-29 severance comment this replaced). Close
-          // orders never carry a template (template attach doesn't
-          // apply when reducing/closing a position — matches every
-          // other _isCloseOrder gate on template-adjacent UI in this
-          // file); otherwise send the real bound templateId so the
-          // operator's Bracket selection on this tab actually attaches
-          // TP/SL/Wing GTTs on fill, same as Chain.
-          templateId: _isCloseOrder ? null : templateId,
-          tpOverride,
-          slOverride,
-          wingPremPctOverride,
-          wingStrikeOffsetOverride,
           strategyId: _strategyId,
           // Draft cleanup (2026-10 fix) — only when this submit is the
           // real-placement path for a ticket that was opened from an
@@ -2757,31 +2422,8 @@
 
     // Seed default target pct from the `algo.default_target_pct` setting.
     // Legacy `algo.default_target_pct` setting fetch removed in audit
-    // pass 6 alongside the _targetPct state field. The Template picker
-    // is the canonical TP/SL surface now; setting is preserved server-
-    // side for back-compat but the modal no longer reads it.
-
-    // 2026-10-16 — Ticket/template re-wire, 4th and final decision on
-    // this exact question (superseding the 2026-09-29 severance above,
-    // operator: "fully re-wire it"). Restores the templates fetch so
-    // this component's own _selectedTemplate/_defaultTemplate/
-    // _nonNoneTemplates resolve correctly for the Bracket toggle now
-    // rendered on the CHASE/DRAFT row. Deliberately does NOT restore
-    // the old _autoSelectTemplate() call alongside it — when embedded
-    // (templateId bound from SymbolPanel), the SHELL's own side/scope-
-    // tracking $effect is the single owner of auto-selection; running
-    // both here and in the shell would be two competing writers to the
-    // same bound value. Standalone mounts (templateId unbound) simply
-    // start at the bindable default (null / "None") until the operator
-    // clicks the toggle — no auto-select regression there since
-    // standalone OrderTicket never auto-selected via this path either
-    // (it's embedded-only legacy behavior, per the shell's own prior
-    // _onTemplSelectDefault/scope-effect design).
-    loadOrderTemplates()
-      .then(/** @param {any[]} rows */ (rows) => {
-        _templates = rows.filter(t => t.is_active);
-      })
-      .catch(() => { /* silent — picker stays empty */ });
+    // pass 6 alongside the _targetPct state field. Setting is preserved
+    // server-side for back-compat but the modal no longer reads it.
 
     // D1: market open/closed badge — 30s wall-clock re-check so a
     // session boundary (e.g. 17:00 MCX evening open) flips the badge
@@ -2800,133 +2442,7 @@
   onDestroy(() => {
     _unsubOtOrder();
     if (_marginTimer)  { clearTimeout(_marginTimer);  _marginTimer  = null; }
-    if (_previewTimer) { clearTimeout(_previewTimer); _previewTimer = null; }
     _mktTimer?.();
-  });
-
-  // Re-sync when the catalog mutates elsewhere (e.g. operator edits a
-  // template on the Brackets tab while the modal is open). Pure
-  // subscription — no network cost.
-  $effect(() => {
-    const rows = $orderTemplatesStore;
-    if (rows && rows.length) {
-      _templates = rows.filter(t => t.is_active);
-    }
-  });
-
-  // Side-flip auto-update $effect removed when templateId became a
-  // shared SymbolPanel-level state (commit 108ce3a5) — operator's
-  // pick persists across tabs and side flips. Stale as of commit
-  // 2f60d39a (2026-10-05): `_autoSelectTemplate` is NOT called on
-  // mount any more (see the onMount comment near `loadOrderTemplates()`
-  // and `_autoSelectTemplate`'s own comment) — it's a deliberate no-op
-  // everywhere. To arm a side-aware default (new or after a side
-  // flip), the operator clicks the Bracket toggle in the template row.
-
-  // Pre-submit preview — debounced fetch so an operator typing in the
-  // override fields doesn't fire a request per keystroke.
-  //
-  // CRITICAL: `_previewTimer` MUST be a plain `let`, NOT `$state`. The
-  // $effect below reads it (`if (_previewTimer) clearTimeout(...)`) AND
-  // writes it (`_previewTimer = setTimeout(...)`); declaring it as
-  // $state creates a read+write loop inside the same effect that
-  // re-queues itself every 200 ms, saturating the scheduler and
-  // hanging the entire modal. Timer handles are internal cleanup
-  // state, not reactive UI state.
-  /** @type {ReturnType<typeof setTimeout> | null} */
-  let _previewTimer = null;
-  $effect(() => {
-    // Track the inputs that affect the preview. `_lots`/`_lotSize` feed
-    // `previewQty` below (lots-not-contracts fix).
-    const inputs = [
-      templateId, tpOverride, slOverride,
-      wingPremPctOverride, wingStrikeOffsetOverride,
-      _side, symbol, _qty, _price, _lots, _lotSize,
-    ];
-    // `_resolvedSymbol` is the actual picked contract in bare-underlying
-    // mode (e.g. NIFTY → pick expiry/strike/CE → NIFTY26JUNC22000CE) —
-    // without it tracked here, picking a strike never re-triggers this
-    // plan (the request below kept sending the bare root symbol until
-    // some OTHER watched field also changed). `_exchange`/
-    // `_resolvedExchange`/`_product` are likewise read by the request
-    // body below and must be tracked so an exchange/product change
-    // re-plans too.
-    inputs.push(_resolvedSymbol, _exchange, _resolvedExchange, _product);
-    // Skip preview when basics are incomplete. Critically — guard on
-    // empty `_account` too: an operator who opens the modal before
-    // an account is picked would otherwise generate one 400 every
-    // time they tweak the override fields (the backend rejects an
-    // empty account upfront). The catalog + auto-select still run
-    // on mount; only the preview API call is debounced behind a
-    // valid account.
-    if (!symbol || Number(_qty) <= 0 || !_account
-        || (templateId === null && !tpOverride && !slOverride)) {
-      _previewPlan = null;
-      _previewError = '';
-      return;
-    }
-    if (_previewTimer) clearTimeout(_previewTimer);
-    // Sequence guard — every fetch captures its own `seq` at start.
-    // When the response lands, we only assign if `seq` still matches
-    // the latest dispatched value. Without this, two preview calls
-    // fired back-to-back (operator flipping templates faster than
-    // the 200ms debounce + backend latency) could land
-    // out-of-order: the older call's response overwrites the newer
-    // call's response → "on fill" preview shows the template the
-    // operator already moved away from. Symptom: preview chips
-    // never sync with the template selector.
-    _previewSeq++;
-    const seq = _previewSeq;
-    _previewTimer = setTimeout(async () => {
-      _previewLoading = true; _previewError = '';
-      // Snapshot the dispatching state so the comparison after
-      // await checks the EXACT template_id we sent — not whatever
-      // templateId says by the time the response lands.
-      const dispatchedTemplateId = templateId;
-      try {
-        const refPx = Number(_price) > 0 ? Number(_price) : 0;
-        // Backend's ticket-preview endpoint reads `quantity` as LOTS for
-        // F&O exchanges (multiplying by lot_size itself — see
-        // `_rco_preview_resolve_qty` in backend/api/routes/orders.py) and
-        // raw contract/share qty for equity. `_qty` here is already
-        // CONTRACTS (`_qty = _lots * _lotSize`, see the sync effect
-        // above) — sending it unconverted doubled the lot multiplier
-        // server-side (parent_qty became lot_size² contracts instead of
-        // lot_size), inflating the wing qty and every TP/SL/margin
-        // preview chip derived from this plan. Matches
-        // `OptionChainTab.svelte`'s existing `leg.lots` convention.
-        const previewQty = _lotSize > 0 ? Number(_lots) : Number(_qty);
-        // Use the resolved contract symbol (bare-underlying mode picks
-        // expiry+strike+CE/PE into `_resolvedSymbol`), not the bare root
-        // `symbol` prop — the margin preview and real submit path both
-        // already use this fallback; the template-preview plan call was
-        // the one site still sending the root.
-        const res = await previewTicketTemplate({
-          mode:             _mode === 'draft' ? 'paper' : _mode,
-          side:             _side,
-          tradingsymbol:    _resolvedSymbol || symbol,
-          quantity:         previewQty,
-          exchange:         _exchange || _resolvedExchange || exchange || 'NFO',
-          product:          _product || 'NRML',
-          account:          _account || '',
-          reference_price:  refPx,
-          template_id:                  dispatchedTemplateId,
-          tp_pct_override:              tpOverride !== '' ? Number(tpOverride) : null,
-          sl_pct_override:              slOverride !== '' ? Number(slOverride) : null,
-          wing_premium_pct_override:    wingPremPctOverride !== '' ? Number(wingPremPctOverride) : null,
-          wing_strike_offset_override:  wingStrikeOffsetOverride !== '' ? Number(wingStrikeOffsetOverride) : null,
-        });
-        // Drop stale responses — a newer fetch has been dispatched.
-        if (seq !== _previewSeq) return;
-        _previewPlan = res?.plan || null;
-      } catch (e) {
-        if (seq !== _previewSeq) return;
-        _previewError = e?.message || 'preview failed';
-        _previewPlan = null;
-      } finally {
-        if (seq === _previewSeq) _previewLoading = false;
-      }
-    }, 200);
   });
 
   function _refetchFunds() {
@@ -3295,50 +2811,15 @@
       </div>
     {/if}
 
-    <!-- Template attachment — exit-rule preset chosen at submit time.
-         Replaces the legacy "Target take-profit" row from v1. The
-         dropdown lists every active OrderTemplate; the inline override
-         fields let the operator tune one order without saving. On
-         submit, /api/orders/ticket runs the unified template-attach
-         pipeline (sim or live based on SimDriver.active). The preview
-         line below shows exactly what TP/SL/Wing will be placed.
-         Industry analogue: NinjaTrader ATM Strategy attachment. -->
-    <!-- Template Default/None toggle + override inputs were removed
-         from OrderTicket because the shell-level "On fill" picker
-         (SymbolPanel) renders the same picker + the same four
-         override fields ABOVE the tab body. Pre-fix the Ticket tab
-         carried TWO template controls (shell + internal) while the
-         Chain tab carried one — same logical concept, asymmetric UI
-         between tabs. Operator: "On order template info shown, while
-         it is not shown on chain." Cap warning + on-fill preview
-         chip survive here because they're per-leg context (broker
-         capability vs the resolved leg, fill-time TP/SL/Wing trigger
-         prices computed against the entered limit) that the Chain
-         tab's multi-leg basket can't surface directly. -->
-    <!-- On-fill preview chip + cap warning lifted to the shell-level
-         Template container in SymbolPanel — visible on BOTH Ticket and
-         Chain tabs now. Operator: "on fill chip text can be shown in
-         chain also, as it clearly tells what is going to happen. when
-         changing these values chip should get updated. it can be part
-         of template container for both chain and order ticket." The
-         `onPreviewPlanUpdate` callback above fires whenever
-         _previewPlan / _previewLoading / _previewError /
-         _templateCapWarning change, so the shell stays in lockstep
-         with the Ticket form's reactive state. -->
-
-
-    <!-- A2: CHASE toggle moved here — inline above the depth ladder
-         so the operator can toggle chase while watching the depth
-         rather than hunting for it in the card header middle slot.
-         Only shown when limit price is relevant + not hidden by host. -->
-    <!-- 2026-10-21 shared-row re-wire — BRACKET (TemplateBar) and DRAFT
-         no longer render here at all. Both now live once, at shell
-         level, inside SymbolPanel's single CHASE/BRACKET/DRAFT row
-         (visible identically on Ticket + Chain). This CHASE-only block
-         is dead at the one real mount site (SymbolPanel always passes
-         `modeChaseHidden={true}`) but is kept, narrowed to just CHASE,
-         for a hypothetical future standalone (non-shell) mount — same
-         rationale `showLimit` elsewhere in this file is kept for. -->
+    <!-- A2: CHASE toggle — inline above the depth ladder so the
+         operator can toggle chase while watching the depth rather than
+         hunting for it in the card header middle slot. Only shown when
+         limit price is relevant + not hidden by host. This block is
+         dead at the one real mount site (SymbolPanel always passes
+         `modeChaseHidden={true}` and renders CHASE in its own shared
+         CHASE/DRAFT row) but is kept for a hypothetical future
+         standalone (non-shell) mount — same rationale `showLimit`
+         elsewhere in this file is kept for. -->
     {#if showLimit && !modeChaseHidden}
       <div class="ot-chase-row">
         <label class="ot-chase-toggle"
@@ -3400,98 +2881,6 @@
 
     </div>
     {/if}
-
-    <!-- Template-adjacent UI: wing warning, auto-switch flash, no-default
-         note, TP/SL trigger preview chips, GTT errors, wing-infeasible chip.
-         Suppressed entirely for close orders — template attachment is not
-         applicable when closing a position. -->
-    {#if !_isCloseOrder}
-    <!-- D2: wing warning — shown when the selected template has a wing
-         component (strike-offset or premium-pct). Contextual reminder
-         that a protective wing will be placed alongside the main order.
-         Uses wing_strike_offset / wing_premium_pct fields (not has_wing).
-         Only shown when NOT using the 'none' template. -->
-    {#if _selectedTemplate && !_isUsingNone &&
-         (_selectedTemplate.wing_strike_offset != null || _selectedTemplate.wing_premium_pct != null)}
-      <div class="ot-wing-warning" role="note">
-        <span class="ot-wing-icon">⛊</span>
-        Wing order will be placed:
-        {#if _selectedTemplate.wing_strike_offset != null}
-          <strong>+{_selectedTemplate.wing_strike_offset} pts offset</strong>
-        {/if}
-        {#if _selectedTemplate.wing_premium_pct != null}
-          {_selectedTemplate.wing_strike_offset != null ? ' or' : ''} <strong>{_selectedTemplate.wing_premium_pct}% premium</strong>
-        {/if}
-      </div>
-    {/if}
-
-    <!-- #16 — brief amber flash when the bracket is cleared due to a
-         side/scope flip (2026-11-01: wording fixed — nothing re-arms a
-         replacement default any more, see the re-validation $effect's
-         own comment; this used to say "auto-updated", which stopped
-         being true once commit 2f60d39a removed the re-selection). -->
-    {#if _templateChanged}
-      <div class="ot-tmpl-changed-flash" role="status" aria-live="polite">
-        Bracket cleared for new side
-      </div>
-    {/if}
-
-    <!-- #25 — warn when no default template exists for current scope -->
-    {#if !_isUsingNone && templateId !== null && _defaultTemplate === null && _templates.length > 0}
-      <div class="ot-tmpl-no-default-warn" role="note">
-        No default Bracket for this scope
-      </div>
-    {/if}
-
-    <!-- #15 — show TP/SL trigger prices from preview plan.
-         Gated behind `standalone` (item 4, visual-consistency pass):
-         this chip duplicates SymbolPanel's shell-level `.oes-tpl-preview`
-         (rendered above the tab body, visible on both Ticket + Chain),
-         which shows the same TP/SL trigger values via a different
-         formatter (`'₹' + Number(v).toLocaleString('en-IN')` vs this
-         component's `priceFmt`). `standalone` is `false` at the ticket's
-         only current mount site (SymbolPanel.svelte), so this gate stops
-         the duplicate render there without deleting the code path — a
-         genuinely standalone future mount (no shell chip above it) still
-         gets its own preview. -->
-    {#if standalone && !_isUsingNone && !_previewLoading && _previewPlan?.gtts?.length}
-      {@const _tpGtt = _previewPlan.gtts[0]}
-      {@const _twoLeg = _tpGtt?.trigger_type === 'two-leg' && _tpGtt?.trigger_values?.length >= 2}
-      {@const _tpTrig = _tpGtt?.trigger_values?.[0] ?? null}
-      {@const _slTrig = _twoLeg ? (_tpGtt?.trigger_values?.[1] ?? null) : null}
-      {#if _tpTrig != null || _slTrig != null}
-        <div class="ot-preview-trigger-row">
-          {#if _tpTrig != null}
-            <span class="ot-preview-trigger-chip ot-preview-tp">
-              TP &#8658; {priceFmt(_tpTrig)}
-            </span>
-          {/if}
-          {#if _slTrig != null}
-            <span class="ot-preview-trigger-chip ot-preview-sl">
-              SL &#8658; {priceFmt(_slTrig)}
-            </span>
-          {/if}
-        </div>
-      {/if}
-    {/if}
-
-    <!-- #29 — GTT trigger errors from preview (red chips, blocks submit) -->
-    {#if !_isUsingNone && templateId !== null && !_previewLoading && _previewPlan !== null &&
-         Array.isArray(_previewPlan.gtt_trigger_errors) && _previewPlan.gtt_trigger_errors.length > 0}
-      <div class="ot-preview-errors">
-        {#each _previewPlan.gtt_trigger_errors as _gttErr}
-          <span class="ot-preview-err-chip">{_gttErr}</span>
-        {/each}
-      </div>
-    {/if}
-
-    <!-- #28 — wing infeasible chip (red, blocks submit) -->
-    {#if !_isUsingNone && templateId !== null && !_previewLoading && _previewPlan !== null && _previewPlan.wing_feasible === false}
-      <div class="ot-preview-errors">
-        <span class="ot-preview-err-chip">Wing unavailable — cannot place order</span>
-      </div>
-    {/if}
-    {/if}<!-- /{#if !_isCloseOrder} -->
 
     {#if _shownErr}
       <div class="ot-err">{_shownErr}</div>
@@ -3842,101 +3231,6 @@
     gap: 0.5rem;
     margin: 0.3rem 0 0.2rem;
     flex-wrap: wrap;
-  }
-
-  /* .oct-tpl-demo-note removed 2026-10-21 (shared-row re-wire) — the
-     demo-mode note now renders once, at shell level, inside
-     SymbolPanel's single CHASE/BRACKET/DRAFT row. */
-
-  /* D2: wing warning */
-  .ot-wing-warning {
-    display: flex;
-    align-items: center;
-    gap: 0.35rem;
-    font-size: var(--fs-xs);
-    color: var(--algo-amber, var(--c-action));
-    background: rgba(251, 191, 36, 0.08);
-    border: 1px solid rgba(251, 191, 36, 0.22);
-    border-radius: 3px;
-    padding: 0.25rem 0.45rem;
-    margin-top: 0.3rem;
-  }
-  .ot-wing-icon {
-    font-size: var(--fs-base);
-    opacity: 0.8;
-  }
-
-  /* #16 — template auto-change flash (amber pulse, 1.2s) */
-  @keyframes ot-tmpl-flash {
-    0%   { background: rgba(251, 191, 36, 0.28); border-color: rgba(251, 191, 36, 0.65); }
-    60%  { background: rgba(251, 191, 36, 0.18); border-color: rgba(251, 191, 36, 0.45); }
-    100% { background: rgba(251, 191, 36, 0.06); border-color: rgba(251, 191, 36, 0.20); }
-  }
-  .ot-tmpl-changed-flash {
-    font-size: var(--fs-xs);
-    color: var(--algo-amber, var(--c-action));
-    background: rgba(251, 191, 36, 0.06);
-    border: 1px solid rgba(251, 191, 36, 0.20);
-    border-radius: 3px;
-    padding: 0.2rem 0.5rem;
-    margin-top: 0.25rem;
-    animation: ot-tmpl-flash 1.2s ease-out forwards;
-  }
-
-  /* #25 — no default template warning (amber, non-blocking). Token
-     consolidation (item 11) — was a hardcoded #fbbf24 literal where
-     every sibling amber/warning treatment in this file uses
-     var(--c-action) (same resolved value, single source of truth). */
-  .ot-tmpl-no-default-warn {
-    font-size: var(--fs-xs);
-    color: var(--c-action);
-    background: rgba(251, 191, 36, 0.08);
-    border: 1px solid rgba(251, 191, 36, 0.25);
-    border-radius: 3px;
-    padding: 0.2rem 0.5rem;
-    margin-top: 0.25rem;
-  }
-
-  /* #15 — TP/SL trigger price preview row */
-  .ot-preview-trigger-row {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.3rem;
-    margin-top: 0.25rem;
-  }
-  .ot-preview-trigger-chip {
-    font-family: var(--font-numeric), monospace;
-    font-size: var(--fs-xs);
-    font-variant-numeric: tabular-nums;
-    padding: 0.12rem 0.4rem;
-    border-radius: 3px;
-  }
-  .ot-preview-tp {
-    color: var(--c-long);
-    background: rgba(74, 222, 128, 0.10);
-    border: 1px solid rgba(74, 222, 128, 0.30);
-  }
-  .ot-preview-sl {
-    color: var(--c-short);
-    background: rgba(248, 113, 113, 0.10);
-    border: 1px solid rgba(248, 113, 113, 0.30);
-  }
-
-  /* #28/#29 — preview error chips (red, blocks submit) */
-  .ot-preview-errors {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.3rem;
-    margin-top: 0.25rem;
-  }
-  .ot-preview-err-chip {
-    font-family: var(--font-numeric);
-    font-size: var(--fs-xs);
-    color: var(--c-short);
-    background: rgba(248, 113, 113, 0.10);
-    border: 1px solid rgba(248, 113, 113, 0.32);
-    padding: 0.12rem 0.4rem;
-    border-radius: 3px;
   }
 
   .ot-close {
@@ -4772,119 +4066,6 @@
   /* `.ot-label-sub` kept — used by the Template card "(exit rules)"
      hint and other secondary-text spans across the ticket. */
   .ot-label-sub { opacity: 0.5; font-weight: 400; font-size: var(--fs-xs); margin-left: 0.2rem; }
-  /* `.ot-target-row` / `.ot-target-input-row` / `.ot-target-mode-pill`
-     / `.ot-target-input` / `.ot-target-hint` CSS rules removed in
-     audit pass 6 — the Target row markup was replaced by the
-     Template card in Phase 4c so these selectors had no markup left
-     to style. */
-
-  /* ── Template attachment card (v2.1) ─────────────────────────────── */
-  .ot-template-row { flex-wrap: nowrap; }
-  .ot-template-block {
-    display: flex;
-    flex-direction: column;
-    gap: 0.35rem;
-    width: 100%;
-  }
-  /* Eight dead CSS rule-blocks removed — `.ot-template-overrides`,
-     `.ot-tpl-field`, `.ot-tpl-input`, `.ot-tpl-toggle`, `.ot-tpl-btn`,
-     `.ot-tpl-active`, `.ot-tpl-active-name`, `.ot-tpl-active-summary`
-     all targeted markup that was deleted when the OrderTicket-internal
-     Default/None pill toggle + override-inputs row was lifted to the
-     shell-level "On fill" picker in SymbolPanel (commit 17a8b73b).
-     Cap-warn + preview chip CSS below stays because those elements
-     survive in OrderTicket. */
-  /* Sprint C — broker-capability warning chip below the template
-     summary. Amber so it reads as "heads-up", not "blocker". Only
-     visible when the selected template asks for a feature the
-     selected account's broker can't provide natively. */
-  .ot-tpl-cap-warn {
-    margin-top: 0.2rem;
-    padding: 0.18rem 0.42rem;
-    border-radius: 3px;
-    font-size: var(--fs-sm);
-    line-height: 1.25;
-    color: var(--c-action);
-    background: rgba(251, 191, 36, 0.10);
-    border: 1px solid rgba(251, 191, 36, 0.40);
-  }
-
-  /* Preview line — explains what will fire after the entry fills */
-  .ot-tpl-preview {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.3rem;
-    align-items: center;
-    margin-top: 0.15rem;
-    padding: 0.3rem 0.45rem;
-    background: rgba(34,211,238,0.06);
-    border: 1px solid var(--c-info-22);
-    border-radius: 3px;
-    font-size: var(--fs-sm);
-    line-height: 1.35;
-  }
-  .ot-tpl-preview-label {
-    color: var(--text-med);
-    font-weight: 600;
-    margin-right: 0.15rem;
-    font-family: var(--font-numeric);
-  }
-  .ot-tpl-preview-chip {
-    padding: 0.1rem 0.4rem;
-    border-radius: 3px;
-    font-family: var(--font-numeric);
-    font-weight: 600;
-    color: var(--text-med);
-    background: rgba(255,255,255,0.04);
-    border: 1px solid color-mix(in srgb, var(--text-med) 20%, transparent);
-  }
-  .ot-tpl-preview-chip.tp {
-    color: var(--c-long);
-    background: var(--c-long-10);
-    border-color: rgba(74,222,128,0.40);
-  }
-  .ot-tpl-preview-chip.sl {
-    color: var(--c-short);
-    background: var(--c-short-10);
-    border-color: rgba(248,113,113,0.40);
-  }
-  .ot-tpl-preview-chip.both {
-    color: var(--c-action);
-    background: rgba(251,191,36,0.10);
-    border-color: rgba(251,191,36,0.40);
-  }
-  .ot-tpl-preview-chip.wing {
-    color: var(--algo-violet);
-    background: rgba(192,132,252,0.10);
-    border-color: rgba(192,132,252,0.40);
-  }
-  /* Subtle in-chip price suffix — operator sees "+ Wing BUY 1×
-     SYM @ ~₹2.40" as one visual unit; the price half is dimmed
-     so the symbol stays the dominant element. */
-  .ot-tpl-preview-chip-px {
-    margin-left: 0.3rem;
-    color: rgba(192,132,252,0.78);
-    font-weight: 500;
-  }
-  .ot-tpl-preview-note {
-    color: var(--text-lo);
-    font-style: italic;
-  }
-  .ot-tpl-preview-loading {
-    font-size: var(--fs-sm);
-    color: var(--text-muted);
-    font-family: var(--font-numeric);
-    padding-left: 0.45rem;
-  }
-  .ot-tpl-preview-err {
-    font-size: var(--fs-sm);
-    color: var(--algo-red-text-bright);
-    padding: 0.25rem 0.4rem;
-    background: rgba(248,113,113,0.08);
-    border: 1px solid rgba(248,113,113,0.30);
-    border-radius: 3px;
-  }
-
   /* Demo-mode "you can't submit" modal — fires when an anonymous demo
      visitor clicks the (amber) Submit button. Modal sits ABOVE the
      OrderTicket (z=110 vs ticket z~50). Same visual language as

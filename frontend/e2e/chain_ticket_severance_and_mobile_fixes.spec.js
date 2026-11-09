@@ -3,11 +3,10 @@
  *
  * Source-scan guards for the 2026-09-29 batch of fixes:
  *
- *  1. Ticket/Chain template architectural severance — the operator's
- *     final, repeatedly-confirmed decision ("make sure order ticket is
- *     not wired to template"): the Ticket tab places/closes positions
- *     with NO template attach at all; templates only ever apply to the
- *     Chain tab's basket legs.
+ *  1. (REMOVED T3.3, bracket-removal, 2026-11) Ticket/Chain template
+ *     architectural severance — tested Bracket's Default/None templateId
+ *     wiring, now deleted entirely along with TemplateBar.svelte. See
+ *     CLAUDE.md's "Order Ticket / Bracket-template re-wire" history.
  *  2. Mobile chain-area height cap — operator reported the Templ row
  *     was invisible on mobile because .chain-grid-wrap's unbounded
  *     flex-grow starved every sibling below it (including the Templ
@@ -38,18 +37,15 @@
  *     reads as tactile feedback, not just a hover restatement.
  *
  * 2026-09-30 batch (Templ toggle relocation + CE/PE layout/palette):
- *  7. Templ toggle relocated from a shell-level SymbolPanel row into
- *     OptionChainTab's own expiry toolbar row; TemplateBar.svelte's
- *     primary control changed from a Default/None/named <Select>
- *     dropdown to a compact ON/OFF toggle pill (named-template picker
- *     moved into the expand panel).
+ *  7. (REMOVED T3.3) Templ toggle relocation + TemplateBar.svelte's
+ *     primary-control history — TemplateBar.svelte is deleted entirely.
  *  8. CE/PE header text-align flipped to match where the +/- buttons
  *     actually sit; header border-bottom darkened; chain font-size
  *     reset to the platform's normal --fs-md/--fs-sm scale (0.78rem
  *     override removed); +/- buttons get a solid rest-state border +
  *     one-tier-stronger background.
- *  9. Chain leg badges show a truncated template short-label suffix
- *     when a template is attached.
+ *  9. (REMOVED T3.3) Chain leg badges' truncated template short-label
+ *     suffix — the badge now shows only the bare lots count.
  * 10. app.css's global `.oes-common-chase-label` fallback realigned to
  *     match SymbolPanel.svelte's own scoped copy (color drift fix).
  *
@@ -69,7 +65,6 @@ const SYMBOL_PANEL = readFileSync(path.join(dir, 'src/lib/SymbolPanel.svelte'), 
 const ORDER_TICKET = readFileSync(path.join(dir, 'src/lib/order/OrderTicket.svelte'), 'utf8');
 const CHAIN_TAB = readFileSync(path.join(dir, 'src/lib/order/OptionChainTab.svelte'), 'utf8');
 const SUBMIT_HELPERS = readFileSync(path.join(dir, 'src/lib/order/orderTicketSubmit.js'), 'utf8');
-const TEMPLATE_BAR = readFileSync(path.join(dir, 'src/lib/TemplateBar.svelte'), 'utf8');
 const APP_CSS = readFileSync(path.join(dir, 'src/app.css'), 'utf8');
 const CHART_WORKSPACE = readFileSync(path.join(dir, 'src/lib/ChartWorkspace.svelte'), 'utf8');
 const ORDER_DEPTH = readFileSync(path.join(dir, 'src/lib/order/OrderDepth.svelte'), 'utf8');
@@ -149,184 +144,11 @@ async function _openPopupChainOnDashboard(page) {
   await chainTab.click();
 }
 
-test.describe('Ticket/Chain template severance', () => {
-  test('Templ toggle/note visibility gates only ever fire for the Chain tab, never Ticket', () => {
-    // 2026-09-30 — the shell-level demo/live if-else-if branch that used
-    // to render <TemplateBar> directly was replaced by two $derived
-    // booleans (_showTemplateBar / _showDemoTplNote), threaded down
-    // into <OptionChainTab> as plain props; the ENCLOSING mount gate
-    // (`{#if _activeTab === 'chain'}` around <OptionChainTab> itself)
-    // is what scopes both to the Chain tab, not either variable's own
-    // definition. `_showDemoTplNote` still has real content gating
-    // (demo + action='open' + symbol-or-legs). `_showTemplateBar` was
-    // made UNCONDITIONALLY true (2026-09-30 follow-up, operator: "Templ
-    // toggle should show unconditionally in Chain") — see the separate
-    // `_showTemplatePreview` test below for the preserved old gating on
-    // the shell-level preview/cap-warn strip (a different consumer).
-    const showTemplateBarDef = SYMBOL_PANEL.match(/const _showTemplateBar = \$derived\([\s\S]{0,60}?\);/)?.[0] ?? '';
-    const showDemoNoteDef = SYMBOL_PANEL.match(/const _showDemoTplNote = \$derived\([\s\S]{0,220}?\);/)?.[0] ?? '';
-    expect(showTemplateBarDef, '_showTemplateBar definition').not.toBe('');
-    expect(showDemoNoteDef, '_showDemoTplNote definition').not.toBe('');
-    expect(showTemplateBarDef).toMatch(/\$derived\(true\)/);
-    expect(showDemoNoteDef).toMatch(/_isDemo/);
-    expect(showDemoNoteDef).toMatch(/action === 'open'/);
-    // Both gates are threaded into <OptionChainTab>, which only ever
-    // mounts when `_activeTab === 'chain'` (its own enclosing {#if}).
-    expect(SYMBOL_PANEL).toMatch(/showTemplateBar=\{_showTemplateBar\}/);
-    expect(SYMBOL_PANEL).toMatch(/showDemoTplNote=\{_showDemoTplNote\}/);
-    // The old inline demo-note markup + its dedicated CSS rule blocks
-    // must be gone (a removal-note comment mentioning the class names
-    // in prose is fine) — the note itself now renders inside
-    // OptionChainTab.
-    expect(SYMBOL_PANEL).not.toMatch(/\.oes-basket-tpl-row-demo\s*\{/);
-    expect(SYMBOL_PANEL).not.toMatch(/\.oes-basket-tpl-demo-note\s*\{/);
-    expect(SYMBOL_PANEL).not.toMatch(/class="oes-basket-tpl-row-demo"/);
-  });
-
-  test('_showTemplatePreview keeps the OLD gating for the shell-level on-fill preview + cap-warn strip', () => {
-    // A SEPARATE consumer from the toggle above — genuinely needs
-    // templates loaded / action='open' / a real symbol-or-legs before
-    // it has anything to preview; making the toggle unconditional must
-    // not also make this strip render with nothing to show.
-    const def = SYMBOL_PANEL.match(/const _showTemplatePreview = \$derived\([\s\S]{0,220}?\);/)?.[0] ?? '';
-    expect(def, '_showTemplatePreview definition').not.toBe('');
-    expect(def).toMatch(/_templates\.length > 0/);
-    expect(def).toMatch(/action === 'open'/);
-    expect(SYMBOL_PANEL).toMatch(/\{#if _showTemplatePreview && !_isDemo && !_shellUsingNone\}/);
-    // The old variable name must not still be used for this gate.
-    expect(SYMBOL_PANEL).not.toMatch(/\{#if _showTemplateBar && !_isDemo/);
-  });
-
-  test('Templ toggle mounts inside OptionChainTab (Chain) AND OrderTicket itself (Ticket, 2026-10-16 4th-and-final re-wire)', () => {
-    // 2026-10-16 — this test previously went through two shapes in one
-    // day: first asserting <TemplateBar> was EXCLUSIVELY in
-    // OptionChainTab (the 2026-09-29 severance, operator's "3rd
-    // reversal"), then briefly a shell-level SymbolPanel mount gated on
-    // the Ticket tab (a same-day interim fix). Operator's 4th and final
-    // call ("fully re-wire it"): the Ticket tab's copy lives INSIDE
-    // OrderTicket.svelte itself now, on the same row as CHASE/DRAFT
-    // ("keep bracket before draft on the same row"), not at shell
-    // level — see the next test for its exact gating.
-    expect(CHAIN_TAB).toMatch(/<TemplateBar/);
-    expect(ORDER_TICKET).toMatch(/<TemplateBar/);
-    expect(ORDER_TICKET).toMatch(/import TemplateBar\s+from/);
-    // SymbolPanel no longer mounts it directly — only passes the
-    // shared state/handlers down into <OrderTicket> and <OptionChainTab>.
-    expect(SYMBOL_PANEL).not.toMatch(/<TemplateBar/);
-  });
-
-  test("OrderTicket's own TemplateBar mount is gated on !suspended — never a duplicate, invisible copy while Chain is active", () => {
-    // OrderTicket stays mounted (display:none) while Chain is active, so
-    // without this gate a second <TemplateBar> — bound to the SAME
-    // shared templateId — existed in the DOM at all times, hidden but
-    // still real. Any selector's .first() (tests, future code) could
-    // resolve to the wrong one. Gated with {#if}, not left to the
-    // ancestor's CSS alone, same pattern CHASE/DRAFT already use in
-    // this row.
-    const mount = ORDER_TICKET.match(/\{:else if !suspended && !_isCloseOrder\}[\s\S]{0,1500}?<TemplateBar[\s\S]{0,700}?\/>/)?.[0] ?? '';
-    expect(mount, "OrderTicket's gated <TemplateBar> mount").not.toBe('');
-    expect(mount).toMatch(/onSelectDefault=\{_onBracketSelectDefault\}/);
-    expect(mount).toMatch(/onSelectNone=\{_onBracketSelectNone\}/);
-    expect(mount).toMatch(/onSelectTemplate=\{_onBracketSelectTemplate\}/);
-  });
-
-  test('OrderTicket mount re-fetches templates but does NOT call the old auto-select (shell owns auto-selection now that templateId is shared again)', () => {
-    // 2026-10-16 — partial reversal of the 2026-09-29 severance: the
-    // templates fetch is restored (needed for this component's own
-    // _selectedTemplate/_defaultTemplate/_nonNoneTemplates to resolve),
-    // but _autoSelectTemplate() itself is deliberately NOT called from
-    // onMount — when embedded, SymbolPanel's own side/scope-tracking
-    // $effect is the single owner of auto-selecting a default; calling
-    // it from both places would be two competing writers to the same
-    // bound value.
-    const rawMountFn = ORDER_TICKET.match(/onMount\(\(\) => \{[\s\S]*?\n  \}\);/)?.[0] ?? '';
-    expect(rawMountFn, 'onMount body').not.toBe('');
-    const mountFn = rawMountFn
-      .split('\n')
-      .filter((line) => !/^\s*(\/\/|\*)/.test(line))
-      .join('\n');
-    expect(mountFn, 'onMount executable body must call loadOrderTemplates()')
-      .toMatch(/loadOrderTemplates\(\)/);
-    expect(mountFn, 'onMount executable body must not call _autoSelectTemplate()')
-      .not.toMatch(/_autoSelectTemplate\(\)/);
-  });
-
-  test('OrderTicket submit payload sends the real templateId (close orders excepted) — not hardcoded null any more', () => {
-    // 2026-10-16 — reverses the 2026-09-29 severance's unconditional
-    // null. Restores the original close-order guard: template attach
-    // never applies when reducing/closing a position.
-    expect(ORDER_TICKET).toMatch(/templateId:\s*_isCloseOrder\s*\?\s*null\s*:\s*templateId,/);
-    expect(ORDER_TICKET).not.toMatch(/templateId:\s*null,\n\s*tpOverride/);
-  });
-
-  test('side-aware Default resolution survives the severance — still wired into the Chain-only TemplateBar', () => {
-    // Replaces the old e2e/template_default_pill.spec.js (removed):
-    // that spec drove the 4-scope Default-pill matrix through the
-    // Ticket tab's BUY/SELL toggle + the old pill UI, both gone now
-    // (Ticket has no template row; the pill toggle became a dropdown
-    // in an earlier commit this session). The _sideAwareDefault
-    // resolver itself is untouched by the severance — only where it
-    // renders changed (Chain tab only) — so this is a structural
-    // continuity check, not a behavioural regression test.
-    expect(SYMBOL_PANEL).toMatch(/const _sideAwareDefault = \$derived\.by/);
-    expect(SYMBOL_PANEL).toContain('sideAwareDefault={_sideAwareDefault}');
-  });
-
-  test('side-aware Default falls back to BUY when no side is known yet, without touching _modalSide itself (2026-09-30 fix)', () => {
-    // Bug: a fresh/cold order entry starts with _modalSide === null
-    // (deliberate — see _modalSide's own declaration comment, preserves
-    // the SideToggle's neutral state and the margin-preflight
-    // short-circuit). appliesToFor(null, sym) falls through every
-    // BUY/SELL branch to 'both', and no template has
-    // is_default=true AND applies_to='both' — so Templ rendered
-    // disabled ("No default template configured for this side/type")
-    // on every fresh order, for every symbol, until the operator
-    // explicitly picked a side. Fix: the scope guess (NOT _modalSide
-    // itself) falls back to 'BUY' when nothing else is known yet.
-    // The fallback ladder was factored into a single shared
-    // `_currentScope()` helper (2026-09-30, remember-per-scope fix) —
-    // reused by `_sideAwareDefault`, the side-flip auto-swap effect,
-    // and the three Templ onSelect* persistence call sites, so they
-    // can never disagree on the fallback.
-    // Limit bumped 400 → 1800 (2026-09-30, bug-1 fix), then 1800 → 3000
-    // (2026-11-01, ticketState.resolvedSymbol fix below) — `_currentScope()`
-    // grew a documentation block explaining the Chain-tab leg-symbol
-    // preference reorder (root symbol was never option-suffixed, so
-    // appliesToFor() could never resolve to buy_option/sell_option), and
-    // again when the Ticket-tab-no-legs branch gained a comment + a read
-    // of `_ticketState.resolvedSymbol`.
-    const scopeFn = SYMBOL_PANEL.match(/function _currentScope\(\) \{[\s\S]{0,3000}?\n  \}/)?.[0] ?? '';
-    expect(scopeFn, '_currentScope() helper').not.toBe('');
-    expect(scopeFn).toMatch(/_focusedLeg\?\.side \|\| _modalSide \|\| 'BUY'/);
-    expect(scopeFn).toMatch(/_appliesToFor\(sideForScope, symForScope\)/);
-    // Both consumers call the shared helper rather than re-inlining the
-    // fallback ladder themselves.
-    const sideAwareDefaultBlock = SYMBOL_PANEL.match(/const _sideAwareDefault = \$derived\.by\([\s\S]{0,1400}?\n  \}\);/)?.[0] ?? '';
-    expect(sideAwareDefaultBlock, '_sideAwareDefault derivation block').not.toBe('');
-    expect(sideAwareDefaultBlock).toMatch(/_currentScope\(\)/);
-    // Limit bumped 2400 → 5000 (2026-09-30, bug-2 fix) — the effect grew
-    // the `_templExplicitThisSession` session-scoped explicit-choice
-    // flag + its gating comment (prevents a scope change from silently
-    // re-applying an unrelated remembered "none" pref over an explicit
-    // in-session operator choice).
-    const swapEffectBlock = SYMBOL_PANEL.match(/let _lastSideScope[\s\S]{0,5000}?\n  \}\);/)?.[0] ?? '';
-    expect(swapEffectBlock, 'side-flip auto-swap effect block').not.toBe('');
-    expect(swapEffectBlock).toMatch(/_currentScope\(\)/);
-  });
-
-  test('Both Chain and Ticket bind the SAME shared templateId (2026-10-16 re-wire — severance fully reversed)', () => {
-    // 2026-10-16 — the severance's "Ticket-only" scoping is gone: both
-    // tabs now bind the identical _sharedTemplateId, same as the
-    // pre-severance design. Exactly 2 consumers (OptionChainTab +
-    // OrderTicket), both the SAME variable — never two independently-
-    // tracked copies that could drift.
-    const binds = SYMBOL_PANEL.match(/bind:templateId=\{[^}]+\}/g) || [];
-    expect(binds.length, 'exactly 2 bind:templateId in SymbolPanel (Chain + Ticket)').toBe(2);
-    for (const b of binds) {
-      expect(b).toBe('bind:templateId={_sharedTemplateId}');
-    }
-  });
-});
+// The entire "Ticket/Chain template severance" describe block (Bracket's
+// Default/None templateId wiring across SymbolPanel/OrderTicket/
+// OptionChainTab/TemplateBar.svelte) was removed here — T3.3,
+// bracket-removal, 2026-11. `TemplateBar.svelte` is deleted; there is no
+// surviving Bracket feature for these tests to guard.
 
 test.describe('Mobile chain height cap REMOVED (2026-09-30 audit) + desktop row gap', () => {
   // REGRESSION FOLLOW-UP (2026-09-30, same day) — removing
@@ -529,11 +351,17 @@ test.describe('Mobile chain height cap REMOVED (2026-09-30 audit) + desktop row 
   });
 
   test('desktop chain rows have restored vertical padding after border-bottom removal', () => {
+    // Pre-existing stale assertion (predates T3.3, unrelated to bracket
+    // removal — confirmed via empty `git diff` on this block). A later,
+    // separate 2026-09-30 operator change moved the row divider into the
+    // BASE `.chain-row > td` rule (`border-bottom: 1px solid ...`)
+    // instead of overriding it to `none` in this desktop-only block, so
+    // the override here no longer carries a border-bottom line at all.
     const desktopBlock = CHAIN_TAB.match(/@media \(min-width: 640px\) \{\s*\.chain-row > td \{[\s\S]{0,900}?\n    \}/)?.[0] ?? '';
     expect(desktopBlock, 'desktop .chain-row > td override block').not.toBe('');
-    expect(desktopBlock).toMatch(/border-bottom:\s*none/);
     expect(desktopBlock).toMatch(/padding-top:\s*0\.3rem/);
     expect(desktopBlock).toMatch(/padding-bottom:\s*0\.3rem/);
+    expect(CHAIN_TAB).toMatch(/\.chain-row > td \{[\s\S]{0,600}?border-bottom:\s*1px solid/);
   });
 });
 
@@ -711,74 +539,10 @@ test.describe('CE/PE header alignment + palette normalization (2026-09-30, text-
   });
 });
 
-test.describe('Chain leg badge — template short-label suffix', () => {
-  test('badge shows a truncated template short-label when tmplAttached', () => {
-    expect(CHAIN_TAB).toMatch(/tmplShort\s*=\s*tmplAttached\s*\?\s*String\(templateName\)\.slice\(0,\s*6\)\s*:\s*''/);
-    // All 4 leg-badge render sites (ATM CE/PE + non-ATM CE/PE) must
-    // interpolate the short-label suffix, not just the bare lots count.
-    const badgeMatches = CHAIN_TAB.match(/\{(?:ce|pe)Leg\.lots\}L\{tmplAttached \? ' · ' \+ tmplShort : ''\}/g) ?? [];
-    expect(badgeMatches.length, 'expected 4 leg-badge occurrences (ATM CE/PE + non-ATM CE/PE)').toBe(4);
-    // The tooltip's own template-name string construction is untouched.
-    expect(CHAIN_TAB).toMatch(/tmplAttached \? ' · bracket: ' \+ templateName : ' · no bracket'/);
-  });
-});
-
-test.describe('TemplateBar — single toggle button replaces the primary dropdown/pill (2026-09-30)', () => {
-  test('primary control is one toggle button, not a <Select> or the retired two-button pill', () => {
-    expect(TEMPLATE_BAR).toMatch(/class="oes-tpl-button"/);
-    expect(TEMPLATE_BAR).toMatch(/class:active=\{_toggleOn\}/);
-    // Retired two-button pill markup/classes must be gone.
-    expect(TEMPLATE_BAR).not.toMatch(/class="oes-tpl-toggle"/);
-    expect(TEMPLATE_BAR).not.toMatch(/oes-tpl-toggle-btn-on/);
-    expect(TEMPLATE_BAR).not.toMatch(/oes-tpl-toggle-btn-off/);
-    // The toggle markup itself (before the expand panel) must not use <Select>.
-    const beforeExpandPanel = TEMPLATE_BAR.split('{#if _expanded}')[0] ?? '';
-    expect(beforeExpandPanel).not.toMatch(/<Select/);
-  });
-
-  test('RE-WIRED (2026-09-30) — button calls the real onSelectDefault/onSelectNone handlers, not a debug-only local toggle', () => {
-    // The temporary debug bypass (which isolated whether TemplateBar's
-    // own logic was the display problem) was reverted after the actual
-    // root cause was found and fixed: loadOrderTemplates() (templates.js)
-    // permanently cached a transient fetch failure as an empty template
-    // list. See that file's own test coverage
-    // (frontend/src/lib/__tests__/data/templates.test.js) for the fix.
-    const btn = TEMPLATE_BAR.match(/class="oes-tpl-button"[\s\S]{0,700}?<\/button>/)?.[0] ?? '';
-    expect(btn, 'toggle button block').not.toBe('');
-    expect(btn).toContain('onSelectDefault?.()');
-    expect(btn).toContain('onSelectNone?.()');
-    expect(btn).toMatch(/if\s*\(_toggleOn\)/);
-    // Button is always clickable/enabled (2026-09-30 follow-up,
-    // operator: "make Templ always clickable/enabled — never visually
-    // disabled") — the old `disabled={_templBtnDisabled}` attribute
-    // is gone; clicking with nothing to activate to is a silent no-op.
-    expect(btn).not.toMatch(/disabled=/);
-    expect(btn).not.toContain('_debugToggleClick');
-    expect(TEMPLATE_BAR).not.toMatch(/let _debugOn/);
-    // ON/active display state guards against a null _sharedTemplateId
-    // reading as "armed" (the financial-risk-relevant fix) — must
-    // require BOTH !shellUsingNone AND a concrete selectedTemplate.
-    expect(TEMPLATE_BAR).toMatch(/_toggleOn = \$derived\(!shellUsingNone && !!selectedTemplate\)/);
-  });
-
-  test('a specific named-template picker exists inside the expand panel, scoped to nonNoneTemplates', () => {
-    const expandPanel = TEMPLATE_BAR.match(/\{#if _expanded\}[\s\S]*$/)?.[0] ?? '';
-    expect(expandPanel, 'expand panel block').not.toBe('');
-    expect(expandPanel).toMatch(/oes-tpl-pick-specific/);
-    expect(expandPanel).toMatch(/<Select/);
-    expect(expandPanel).toMatch(/nonNoneTemplates\.map/);
-    expect(expandPanel).toMatch(/onSelectTemplate\?\.\(Number\(v\)\)/);
-  });
-
-  test('all existing TP%/SL%/Wing/Trail-SL/Scale-ladder override inputs are untouched', () => {
-    for (const bindable of ['tpOverride', 'slOverride', 'wingStrikeOffsetOverride', 'wingPremPctOverride', 'slTrailPctOverride', 'tpScalesJsonOverride']) {
-      expect(TEMPLATE_BAR, `${bindable} still bind:value`).toMatch(new RegExp(`bind:value=\\{${bindable}\\}`));
-    }
-    // TP order type is a button-pair toggle (not bind:value) — unchanged shape.
-    expect(TEMPLATE_BAR).toMatch(/tpOrderTypeOverride = 'LIMIT'/);
-    expect(TEMPLATE_BAR).toMatch(/tpOrderTypeOverride = 'MARKET'/);
-  });
-});
+// "Chain leg badge — template short-label suffix" and "TemplateBar —
+// single toggle button replaces the primary dropdown/pill" describe
+// blocks removed here — T3.3, bracket-removal, 2026-11. Both tested
+// TemplateBar.svelte-only behaviour (now deleted).
 
 test.describe('Color audit — .oes-common-chase-label drift fix (app.css)', () => {
   test("app.css global fallback matches SymbolPanel's scoped color values exactly", () => {
@@ -805,14 +569,16 @@ test.describe('Guard — no new order-placement call was added to any frontend s
   test('submitBasket still delegates to the existing placeBasket API helper, nothing new', () => {
     const fn = SYMBOL_PANEL.match(/async function submitBasket\(\) \{[\s\S]*?\n  \}/)?.[0] ?? '';
     expect(fn, 'submitBasket implementation').not.toBe('');
-    expect(fn).toMatch(/await placeBasket\(groups\)/);
+    // Pre-existing stale assertion (predates T3.3, confirmed via git blame
+    // on 12c5d07d) — the real call has carried a second `basketMode2` arg
+    // since before this sprint touched the file.
+    expect(fn).toMatch(/await placeBasket\(groups,\s*basketMode2\)/);
     // No direct broker/order-placement call bypassing the existing
     // placeBasket/placeTicketOrder API-layer helpers was introduced by
     // this batch of changes.
     for (const banned of ['apply_plan_live', 'broker.place_order', 'broker.place_gtt']) {
       expect(SYMBOL_PANEL, `SymbolPanel must not call ${banned}`).not.toContain(banned);
       expect(CHAIN_TAB, `OptionChainTab must not call ${banned}`).not.toContain(banned);
-      expect(TEMPLATE_BAR, `TemplateBar must not call ${banned}`).not.toContain(banned);
     }
   });
 });
@@ -874,106 +640,12 @@ test.describe('Header DTE chip removed (reversed decision)', () => {
 // "RE-WIRED" test above) helped isolate that the bug was NOT in either
 // this gate's own logic or TemplateBar's button logic — both now
 // reverted to their real, permanent behavior.
-test.describe('TemplateBar mount gate — real showDemoTplNote/showTemplateBar conditional restored', () => {
-  test('<TemplateBar> is gated by {#if showDemoTplNote}{:else if showTemplateBar}, not unconditional', () => {
-    const expiryIdx = CHAIN_TAB.indexOf('oct-toolbar-label">Expiry<');
-    expect(expiryIdx, 'Expiry label present').toBeGreaterThan(-1);
-    // Search from AFTER the Expiry label — "<TemplateBar" also appears
-    // earlier in this file's own JSDoc prop-documentation comment block.
-    const templateBarIdx = CHAIN_TAB.indexOf('<TemplateBar', expiryIdx);
-    expect(templateBarIdx, '<TemplateBar mount present after Expiry label').toBeGreaterThan(-1);
-    expect(templateBarIdx, '<TemplateBar sits within the Expiry toolbar row')
-      .toBeLessThan(expiryIdx + 2500);
-    const precedingText = CHAIN_TAB.slice(Math.max(0, templateBarIdx - 600), templateBarIdx);
-    expect(precedingText).toMatch(/\{#if showDemoTplNote\}/);
-    expect(precedingText).toMatch(/\{:else if showTemplateBar\}/);
-    expect(CHAIN_TAB).toMatch(/showTemplateBar\s*=\s*false/);
-    expect(CHAIN_TAB).toMatch(/showDemoTplNote\s*=\s*false/);
-  });
-});
-
-// 2026-09-30: Templ toggle batch — (1) remove the disabled gate so the
-// button is always clickable, (2) show unconditionally in Chain +
-// remember the operator's last on/off/specific-template choice per
-// side-scope, persisted to localStorage across sessions.
-test.describe('Templ toggle — always-enabled + unconditional-in-Chain + per-scope remembered pref (2026-09-30)', () => {
-  test('source: button never renders a `disabled` attribute anywhere in TemplateBar.svelte', () => {
-    expect(TEMPLATE_BAR).not.toMatch(/disabled=/);
-    expect(TEMPLATE_BAR).not.toContain('_templBtnDisabled');
-    expect(TEMPLATE_BAR).not.toContain('_toggleOnDisabled');
-  });
-
-  test('source: _readTemplPref/_writeTemplPref exist and are wired into all three onSelect* handlers + the scope-resolution effect', () => {
-    expect(SYMBOL_PANEL).toMatch(/const _TEMPL_PREF_KEY = 'ramboq_templ_pref_v1'/);
-    expect(SYMBOL_PANEL).toMatch(/function _readTemplPref\(scope\)/);
-    expect(SYMBOL_PANEL).toMatch(/function _writeTemplPref\(scope, value\)/);
-    // 2026-10-16 fix — the three onSelect* handlers were extracted out
-    // of their inline `onSelectX={() => { ... }}` prop form into named
-    // functions (`_onTemplSelect*`) so both the Chain tab's embedded
-    // <TemplateBar> (inside OptionChainTab) and the Ticket tab's
-    // shell-level one (the regression fix — see the "Templ toggle
-    // mounts inside OptionChainTab (Chain) AND SymbolPanel (Ticket
-    // only)" test above) share one source of truth instead of risking
-    // two copies drifting apart. Match the named-function bodies
-    // directly rather than an inline prop block.
-    const onSelectDefaultBlock = SYMBOL_PANEL.match(/function _onTemplSelectDefault\(\)\s*\{[\s\S]{0,400}?\n  \}/)?.[0] ?? '';
-    const onSelectNoneBlock = SYMBOL_PANEL.match(/function _onTemplSelectNone\(\)\s*\{[\s\S]{0,400}?\n  \}/)?.[0] ?? '';
-    const onSelectTemplateBlock = SYMBOL_PANEL.match(/function _onTemplSelectTemplate\([\s\S]{0,400}?\n  \}/)?.[0] ?? '';
-    expect(onSelectDefaultBlock, 'onSelectDefault handler').not.toBe('');
-    expect(onSelectNoneBlock, 'onSelectNone handler').not.toBe('');
-    expect(onSelectTemplateBlock, 'onSelectTemplate handler').not.toBe('');
-    expect(onSelectDefaultBlock).toMatch(/_writeTemplPref\(_currentScope\(\), 'on'\)/);
-    expect(onSelectNoneBlock).toMatch(/_writeTemplPref\(_currentScope\(\), 'none'\)/);
-    expect(onSelectTemplateBlock).toMatch(/_writeTemplPref\(_currentScope\(\), id\)/);
-    // Both <TemplateBar> mounts (Chain, via OptionChainTab; Ticket, at
-    // shell level) must reference these SAME named handlers, not a
-    // second inline/duplicated copy.
-    expect(CHAIN_TAB).toMatch(/\{onSelectDefault\}/);
-    expect(CHAIN_TAB).toMatch(/\{onSelectNone\}/);
-    expect(CHAIN_TAB).toMatch(/\{onSelectTemplate\}/);
-    expect(SYMBOL_PANEL).toMatch(/onSelectDefault=\{_onTemplSelectDefault\}/);
-    expect(SYMBOL_PANEL).toMatch(/onSelectNone=\{_onTemplSelectNone\}/);
-    expect(SYMBOL_PANEL).toMatch(/onSelectTemplate=\{_onTemplSelectTemplate\}/);
-    // The scope-resolution effect only READS the pref — it never writes
-    // one (writes are confined to the three handlers above).
-    // Limit bumped 2400 → 5000 (2026-09-30, bug-2 fix) — see matching
-    // note above the sibling `swapEffectBlock` match.
-    const effectBlock = SYMBOL_PANEL.match(/let _lastSideScope[\s\S]{0,5000}?\n  \}\);/)?.[0] ?? '';
-    expect(effectBlock, 'side-flip/pref-resolution effect').not.toBe('');
-    expect(effectBlock).toMatch(/_readTemplPref\(scope\)/);
-    expect(effectBlock).not.toMatch(/_writeTemplPref/);
-  });
-
-  test('live: a remembered "none" pref for the resolved scope makes the toggle mount OFF (localStorage seeded before load)', async ({ page }) => {
-    await loginAsAdmin(page);
-    await page.addInitScript(() => {
-      // BUY + a non-CE/PE symbol (NIFTY, the underlying — the actual
-      // Chain leg picks are CE/PE, but the shell's own scope guess
-      // falls through _localSymbol first) resolves to 'buy_any' (see
-      // _currentScope()'s fallback ladder). Seed that scope's pref to
-      // the explicit opt-out sentinel.
-      localStorage.setItem('ramboq_templ_pref_v1', JSON.stringify({ buy_any: 'none' }));
-    });
-    await _seedNiftyAndOpenChain(page);
-
-    const toggle = page.locator('.oes-tpl-button').first();
-    await expect(toggle).toBeVisible({ timeout: 15_000 });
-    await expect(toggle).not.toHaveClass(/active/);
-  });
-
-  test('live: Templ toggle renders unconditionally on Chain tab (visible + enabled), with nothing remembered', async ({ page }) => {
-    await loginAsAdmin(page);
-    await page.addInitScript(() => {
-      localStorage.removeItem('ramboq_templ_pref_v1');
-    });
-    await _seedNiftyAndOpenChain(page);
-
-    const toggle = page.locator('.oes-tpl-button').first();
-    await expect(toggle).toBeVisible({ timeout: 15_000 });
-    await expect(toggle).toBeEnabled();
-    await expect(toggle).not.toHaveAttribute('disabled', '');
-  });
-});
+// "TemplateBar mount gate" and "Templ toggle — always-enabled +
+// unconditional-in-Chain + per-scope remembered pref" describe blocks
+// removed here — T3.3, bracket-removal, 2026-11. Both tested
+// TemplateBar.svelte-only behaviour, including the `_readTemplPref`/
+// `_writeTemplPref` localStorage mechanism, which is also gone (see
+// SymbolPanel.svelte's one-time stale-key cleanup in its onMount).
 
 // 2026-09-30: Order Depth / Chain strike background color consistency —
 // .ot-depth (Ticket tab's depth ladder) used a generic black overlay
@@ -1093,23 +765,14 @@ test.describe('Fix #3 (2026-09-30 follow-up) — Expiry toolbar row height audit
     expect(rule).toMatch(/--ctl-h:\s*1\.4rem/);
   });
 
-  test('.oes-tpl-button and .oct-expiry-pick Select trigger both consume var(--ctl-h, ...) — so the toolbar-scoped token actually reaches them', () => {
-    expect(TEMPLATE_BAR).toMatch(/\.oes-tpl-button\s*\{[\s\S]*?height:\s*var\(--ctl-h,\s*1\.55rem\)/);
-    // Select.svelte is shared app-wide and intentionally untouched —
-    // just confirm it reads the same token name.
-    const SELECT = readFileSync(path.join(dir, 'src/lib/Select.svelte'), 'utf8');
-    expect(SELECT).toMatch(/\.rbq-select-trigger\s*\{[\s\S]*?min-height:\s*var\(--ctl-h,/);
-  });
-
   // `min-height` is a FLOOR, not a cap — Select's own default padding
   // (0.25rem top+bottom) plus --fs-sm text needs ~24.4px on its own,
   // more than the 1.4rem/22.4px floor just added above, so the floor
   // alone never actually governed and the trigger stayed oversized
   // (live-measured, confirmed before this second pass). Fixed with a
   // scoped padding override — Select.svelte itself is untouched; only
-  // Select triggers rendered inside .oct-toolbar (the expiry picker,
-  // and TemplateBar's "Specific tmpl" Select in its expand panel) are
-  // affected.
+  // Select triggers rendered inside .oct-toolbar (the expiry picker)
+  // are affected.
   test('.oct-toolbar overrides Select trigger padding-block so the min-height floor actually governs', () => {
     const rule = CHAIN_TAB.match(/\.oct-toolbar :global\(\.rbq-select-trigger\)\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
     expect(rule, '.oct-toolbar :global(.rbq-select-trigger) rule').not.toBe('');
@@ -1175,20 +838,16 @@ test.describe('Fix #1 (middle-ground pass, SUPERSEDED 2026-09-30 later same day)
     // on this same Chain-tab navigation instead of adding a 5th live
     // NIFTY-symbol-search test to this file (this file's own comments
     // above already document intermittent timeouts past the 4th
-    // consecutive one). Measured in BOTH toggle states — TP%/SL% inputs
-    // only exist while ON, so the OFF state only has the always-present
-    // trio (Select trigger / Template button / DTE chip).
+    // consecutive one). T3.3 (bracket-removal, 2026-11): the Template
+    // toggle (.oes-tpl-button) and its TP%/SL% inputs are gone; the
+    // always-present trio is now just Select trigger / DTE chip /
+    // Spread% input (OptionChainTab's own, replacing TemplateBar's).
     async function _measureToolbarHeights() {
       const heights = {};
-      for (const sel of ['.oct-expiry-pick .rbq-select-trigger', '.oes-tpl-button', '.oct-expiry-dte']) {
+      for (const sel of ['.oct-expiry-pick .rbq-select-trigger', '.oct-expiry-dte', '.oct-spread-field > input']) {
         const loc = page.locator(sel).first();
         await expect(loc, sel).toBeVisible({ timeout: 10_000 });
         heights[sel] = await loc.evaluate((el) => el.getBoundingClientRect().height);
-      }
-      const tpInput = page.locator('.oes-basket-tpl-param > input').first();
-      if (await tpInput.count()) {
-        await expect(tpInput).toBeVisible({ timeout: 5_000 });
-        heights['.oes-basket-tpl-param > input'] = await tpInput.evaluate((el) => el.getBoundingClientRect().height);
       }
       return heights;
     }
@@ -1198,22 +857,7 @@ test.describe('Fix #1 (middle-ground pass, SUPERSEDED 2026-09-30 later same day)
       expect(maxDelta, `${label} — expiry-toolbar control heights should be within 1px of each other: ${JSON.stringify(heights)}`).toBeLessThanOrEqual(1);
     }
 
-    const toggle = page.locator('.oes-tpl-button').first();
-    await expect(toggle).toBeVisible({ timeout: 10_000 });
-    const mountedActive = await toggle.evaluate((el) => el.classList.contains('active'));
-
-    _assertTight(await _measureToolbarHeights(), mountedActive ? 'ON (default mount)' : 'OFF (default mount)');
-
-    await toggle.click();
-    await page.waitForFunction(
-      (wasActive) => {
-        const el = document.querySelector('.oes-tpl-button');
-        return !!el && el.classList.contains('active') !== wasActive;
-      },
-      mountedActive,
-      { timeout: 10_000 }
-    );
-    _assertTight(await _measureToolbarHeights(), mountedActive ? 'OFF (after toggle click)' : 'ON (after toggle click)');
+    _assertTight(await _measureToolbarHeights(), 'Chain tab toolbar');
 
     const ticketTab = page.getByRole('tab', { name: /Ticket/i }).first();
     await ticketTab.click();
@@ -1230,177 +874,13 @@ test.describe('Fix #1 (middle-ground pass, SUPERSEDED 2026-09-30 later same day)
   });
 });
 
-// ═══════════════════════════════════════════════════════════════════════
-// 2026-09-30 audit fixes — Bug 1 (scope-detection always resolving to the
-// root symbol on Chain, never buy_option/sell_option) and Bug 2 (a
-// remembered template pref could silently flip Templ OFF mid-order on a
-// scope change, discarding the operator's just-made explicit choice).
-// ═══════════════════════════════════════════════════════════════════════
-
-/**
- * Poll for an ENABLED option CE/PE buy or sell button in the live chain
- * grid (disabled === no live/frozen bid+ask for that strike — see
- * OptionChainTab.svelte's `disabled={!(q?.bid > 0 || q?.ask > 0)}`).
- * Returns the Locator, or null if none appear within the poll window —
- * callers soft-skip rather than fail, matching this repo's established
- * convention for chain-quote-dependent live tests (chain_tab_api_driven
- * .spec.js, option_chain_order.spec.js: "market-close renders gracefully,
- * tests skip rather than fail" — whether frozen EOD quotes populate
- * bid/ask for any given strike varies run to run and is not something a
- * test should assert control over).
- * @param {import('@playwright/test').Page} page
- * @param {'buy'|'sell'} side
- * @param {'CE'|'PE'} optType
- */
-async function _findEnabledOptionButton(page, side, optType) {
-  const locator = page.locator(`.chain-btn-${side}[title*="${optType}"]:not([disabled])`);
-  for (let i = 0; i < 6; i++) {
-    if (await locator.count()) return locator.first();
-    await page.waitForTimeout(500);
-  }
-  return null;
-}
-
-test.describe('Bug 1 (2026-09-30) — Chain scope-detection prefers the leg symbol over the root symbol', () => {
-  test('source: _currentScope() prefers _focusedLeg/last-basket-leg sym ahead of _localSymbol whenever a leg exists or Chain is active', () => {
-    // Limit matches the bump applied above in the earlier fallback test
-    // (400 → 1800 → 3000, latest 2026-11-01) for the same function.
-    const scopeFn = SYMBOL_PANEL.match(/function _currentScope\(\) \{[\s\S]{0,3000}?\n  \}/)?.[0] ?? '';
-    expect(scopeFn, '_currentScope() helper').not.toBe('');
-    // The leg symbol (option contract, e.g. "...CE"/"...PE") must be
-    // computed and consulted AHEAD of _localSymbol (root symbol on
-    // Chain — _parseRoot strips from the first digit) whenever there's
-    // a real leg to derive it from.
-    expect(scopeFn).toMatch(/const legSym = \(_focusedLeg\?\.sym \|\| ''\)/);
-    expect(scopeFn).toMatch(/preferLeg = _activeTab === 'chain' \|\| basketLegs\.length > 0/);
-    // Fallback ladder preserved — legSym still falls back to
-    // _localSymbol when preferLeg is true and no leg symbol exists yet
-    // (preferLeg branch byte-identical to the 2026-09-30 fix, never
-    // touched by the 2026-11-01 ticketState.resolvedSymbol change below).
-    expect(scopeFn).toMatch(/preferLeg\s*\n\s*\? \(legSym \|\| \(_localSymbol \|\| ''\)\.trim\(\)\)/);
-    // 2026-11-01: the Ticket-tab-no-legs (preferLeg === false) branch now
-    // prefers `_ticketState.resolvedSymbol` (OrderTicket's own resolved
-    // contract, mirrored via `onTicketStateChange`) ahead of
-    // `_localSymbol`, which only ever holds whatever the operator
-    // directly typed/picked — closing a label-vs-click-action SSOT gap
-    // for a bare-underlying option order (see
-    // order_ticket_bracket_scope_ssot_and_clear_policy.spec.js for the
-    // full writeup and a behavioural proof of three-way agreement).
-    expect(scopeFn).toMatch(/: \(String\(_ticketState\?\.resolvedSymbol \|\| ''\)\.trim\(\) \|\| \(_localSymbol \|\| ''\)\.trim\(\) \|\| legSym\)/);
-  });
-
-  test('live: staging a SELL CE (or PE) option leg on Chain resolves the Templ default to a sell_option-scoped template (wing-eligible), not the buy_any/sell_any fallback', async ({ page }) => {
-    await loginAsAdmin(page);
-    await page.addInitScript(() => localStorage.removeItem('ramboq_templ_pref_v1'));
-    await _seedNiftyAndOpenChain(page);
-
-    const tplBtn = page.locator('.oes-tpl-button').first();
-    await expect(tplBtn).toBeVisible({ timeout: 15_000 });
-    const titleBeforeAnyLeg = await tplBtn.getAttribute('title');
-    // Cold mount, no legs yet, root symbol NIFTY (non-option) → buy_any
-    // scope. Confirms the baseline this test flips away from.
-    expect(titleBeforeAnyLeg || '', 'cold-mount Templ title').toMatch(/buy_any/);
-
-    const sellCe = await _findEnabledOptionButton(page, 'sell', 'CE');
-    const sellPe = sellCe ? null : await _findEnabledOptionButton(page, 'sell', 'PE');
-    const sellBtn = sellCe || sellPe;
-    if (!sellBtn) {
-      test.skip(true, 'No enabled (live/frozen-quote) CE or PE sell button found — chain quotes unavailable right now');
-      return;
-    }
-    await sellBtn.scrollIntoViewIfNeeded();
-    await sellBtn.click({ force: true });
-    await page.waitForTimeout(800);
-
-    const pill = page.locator('.oes-basket-pill-sell').first();
-    await expect(pill, 'a SELL leg pill must land in the basket').toBeVisible({ timeout: 5_000 });
-
-    // Bug-1 fix's observable effect: _sideAwareDefault now resolves a
-    // sell_option-scoped template — the description below is this
-    // environment's actual sell_option is_default template body, which
-    // explicitly mentions the protective-wing auto-pick (the ONE thing
-    // that's only ever true for sell_option, per templateScope.js's own
-    // docstring: "the only scope that wants a protective wing").
-    await expect(tplBtn).toHaveAttribute('title', /wing/i, { timeout: 5_000 });
-    const titleAfter = await tplBtn.getAttribute('title');
-    expect(titleAfter || '', 'post-SELL-leg Templ title').not.toMatch(/buy_any|non-option/i);
-  });
-});
-
-test.describe('Bug 2 (2026-09-30) — explicit in-session Templ choice survives a mid-order scope change', () => {
-  test('source: _templExplicitThisSession flag gates the remembered-pref lookup and is set by all three onSelect* handlers', () => {
-    expect(SYMBOL_PANEL).toMatch(/let _templExplicitThisSession = \$state\(false\)/);
-    // The pref lookup is skipped (treated as `undefined`) once the
-    // operator has made an explicit choice this session.
-    expect(SYMBOL_PANEL).toMatch(
-      /const pref = _templExplicitThisSession \? undefined : _readTemplPref\(scope\)/
-    );
-    // 2026-10-16 fix — named functions now, not inline props (see the
-    // matching note in the "source: _readTemplPref/_writeTemplPref..."
-    // test above).
-    const onSelectDefaultBlock = SYMBOL_PANEL.match(/function _onTemplSelectDefault\(\)\s*\{[\s\S]{0,400}?\n  \}/)?.[0] ?? '';
-    const onSelectNoneBlock = SYMBOL_PANEL.match(/function _onTemplSelectNone\(\)\s*\{[\s\S]{0,400}?\n  \}/)?.[0] ?? '';
-    const onSelectTemplateBlock = SYMBOL_PANEL.match(/function _onTemplSelectTemplate\([\s\S]{0,400}?\n  \}/)?.[0] ?? '';
-    expect(onSelectDefaultBlock).toMatch(/_templExplicitThisSession = true/);
-    expect(onSelectNoneBlock).toMatch(/_templExplicitThisSession = true/);
-    expect(onSelectTemplateBlock).toMatch(/_templExplicitThisSession = true/);
-  });
-
-  test('source: the flag resets at every genuine fresh-order boundary (clearBasket + submitBasket success), not mid-order', () => {
-    const clearBasketFn = SYMBOL_PANEL.match(/function clearBasket\(\) \{[\s\S]{0,1200}?\n  \}/)?.[0] ?? '';
-    expect(clearBasketFn, 'clearBasket() body').not.toBe('');
-    expect(clearBasketFn).toMatch(/_templExplicitThisSession = false/);
-    const submitSuccessBlock = SYMBOL_PANEL.match(/basket cleared`;[\s\S]{0,600}?_stickyResultMsg = msg;/)?.[0] ?? '';
-    expect(submitSuccessBlock, 'submitBasket() success branch').not.toBe('');
-    expect(submitSuccessBlock).toMatch(/_templExplicitThisSession = false/);
-  });
-
-  test('live: Templ toggled ON explicitly for a BUY option leg stays ON after adding a SELL option leg, even with a stale remembered "none" for the new scope', async ({ page }) => {
-    await loginAsAdmin(page);
-    await page.addInitScript(() => {
-      // A completely unrelated prior session explicitly turned Templ
-      // OFF for sell_option. This must NOT silently apply mid-order
-      // once the operator has made their own explicit choice this
-      // session (the Bug-2 fix under test).
-      localStorage.setItem('ramboq_templ_pref_v1', JSON.stringify({ sell_option: 'none' }));
-    });
-    await _seedNiftyAndOpenChain(page);
-
-    const buyCe = await _findEnabledOptionButton(page, 'buy', 'CE');
-    if (!buyCe) {
-      test.skip(true, 'No enabled (live/frozen-quote) CE buy button found — chain quotes unavailable right now');
-      return;
-    }
-    await buyCe.scrollIntoViewIfNeeded();
-    await buyCe.click({ force: true });
-    await page.waitForTimeout(600);
-
-    const tplBtn = page.locator('.oes-tpl-button').first();
-    await expect(tplBtn).toBeVisible({ timeout: 10_000 });
-    // Explicit off → on cycle so the operator's choice is unambiguous
-    // (this session's mount may have already auto-selected a default —
-    // clicking twice guarantees an EXPLICIT onSelectNone then
-    // onSelectDefault call, setting `_templExplicitThisSession`).
-    await tplBtn.click();
-    await expect(tplBtn).not.toHaveClass(/active/, { timeout: 3_000 });
-    await tplBtn.click();
-    await expect(tplBtn).toHaveClass(/active/, { timeout: 3_000 });
-
-    const sellPe = await _findEnabledOptionButton(page, 'sell', 'PE');
-    if (!sellPe) {
-      test.skip(true, 'No enabled (live/frozen-quote) PE sell button found — chain quotes unavailable right now');
-      return;
-    }
-    await sellPe.scrollIntoViewIfNeeded();
-    await sellPe.click({ force: true });
-    await page.waitForTimeout(800);
-
-    // Bug-2 assertion: the scope flip (buy_option → sell_option) must
-    // NOT silently apply the seeded stale 'none' pref over the
-    // operator's just-made explicit choice.
-    await expect(tplBtn, 'Templ must stay ON across the scope-changing leg add').toHaveClass(/active/);
-  });
-});
+// "Bug 1" and "Bug 2" describe blocks removed here — T3.3,
+// bracket-removal, 2026-11. Both guarded `_currentScope()`'s Templ-pref
+// resolution and the `_templExplicitThisSession` flag — `_currentScope()`
+// itself, the Templ-pref localStorage mechanism, and that flag are all
+// deleted along with Bracket/TemplateBar entirely. `_findEnabledOptionButton`
+// had no other callers in this file once these two blocks were removed,
+// so it is gone too.
 
 // 2026-09-30 audit — CE/PE quote-vs-stepper overflow at narrow (320-375px)
 // widths. .chain-grid-wrap's overflow-x:hidden is a deliberate clipping
@@ -1505,111 +985,11 @@ test.describe('CE/PE quote/stepper overflow fix — min-width:0 shrink, not over
 // Removed after an isolated before/after render confirmed it's a true
 // no-op at every realistic phone viewport (320/375/412px) and an
 // improvement below that (180/250px — see the rule's own comment).
-test.describe('.oct-tpl-demo-note flex-shrink:0 removed (dead rule, 2026-09-30 audit)', () => {
-  test('source: flex-shrink: 0 is gone from .oct-tpl-demo-note', () => {
-    const rule = CHAIN_TAB.match(/\.oct-tpl-demo-note\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
-    expect(rule, '.oct-tpl-demo-note rule').not.toBe('');
-    // Anchored to an actual declaration line — the removal comment
-    // itself mentions "flex-shrink: 0" / "flex-shrink:0" in prose.
-    expect(rule).not.toMatch(/^\s*flex-shrink:\s*0;/m);
-  });
-});
-
-test.describe('Template expand toggle — pure-CSS chevron, not tiny ▴/▾ or a plain "^" character (2026-09-30, twice)', () => {
-  // Operator: "template expand button look too small. make it either
-  // big or use ^ and inverted ^" — old glyphs were ▴/▾ at --fs-xs
-  // (0.55rem ≈ 9px). First switched to a literal "^" text character,
-  // sized up to a 1.1rem hit-area.
-  // Follow-up (same day): "make cap and reverse cap symbols after
-  // templated should be better looking visible symbols" — a text
-  // glyph is thin/small and font-dependent. Replaced with a pure-CSS
-  // chevron (.oes-tpl-expand-icon — two border edges forming a
-  // rotated corner), which renders identically crisp in every browser
-  // regardless of font.
-  test('button renders an icon span (.oes-tpl-expand-icon), not a literal "^" character or ▴/▾', () => {
-    const btnMarkup = TEMPLATE_BAR.match(/<button[^>]*class="oes-tpl-expand-btn"[\s\S]*?<\/button>/)?.[0] ?? '';
-    expect(btnMarkup, 'oes-tpl-expand-btn markup').not.toBe('');
-    expect(btnMarkup).toMatch(/<span class="oes-tpl-expand-icon"/);
-    expect(btnMarkup).not.toMatch(/>\s*\^\s*</);
-    expect(btnMarkup).not.toMatch(/[▴▾]/);
-  });
-
-  test('button toggles class:oes-tpl-expand-open, which is what flips the rotation (not a conditional glyph)', () => {
-    expect(TEMPLATE_BAR).toMatch(/class:oes-tpl-expand-open=\{_expanded\}/);
-  });
-
-  test('.oes-tpl-expand-btn is a 1.1rem square hit-area using the amber action color, not slate-muted', () => {
-    const rule = TEMPLATE_BAR.match(/\.oes-tpl-expand-btn\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
-    expect(rule, '.oes-tpl-expand-btn rule').not.toBe('');
-    expect(rule).toMatch(/width:\s*1\.1rem/);
-    expect(rule).toMatch(/height:\s*1\.1rem/);
-    expect(rule).not.toMatch(/color:\s*var\(--algo-slate-muted\)/);
-  });
-
-  test('.oes-tpl-expand-icon draws a chevron via two border edges (border-right + border-bottom) rotated 45deg, not a font glyph', () => {
-    const rule = TEMPLATE_BAR.match(/\.oes-tpl-expand-icon\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
-    expect(rule, '.oes-tpl-expand-icon rule').not.toBe('');
-    expect(rule).toMatch(/border-right:\s*2px solid currentColor/);
-    expect(rule).toMatch(/border-bottom:\s*2px solid currentColor/);
-    expect(rule).toMatch(/transform:\s*rotate\(45deg\)/);
-  });
-
-  test('expanded state (.oes-tpl-expand-open) rotates the button 180deg — composes with the icon\'s own 45deg to point up (collapsed = down)', () => {
-    const rule = TEMPLATE_BAR.match(/\.oes-tpl-expand-btn\.oes-tpl-expand-open\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
-    expect(rule, '.oes-tpl-expand-btn.oes-tpl-expand-open rule').not.toBe('');
-    expect(rule).toMatch(/transform:\s*rotate\(180deg\)/);
-    // The OLD :not(.oes-tpl-expand-open) selector (rotation applied
-    // when COLLAPSED) must be gone — the toggle direction flipped
-    // when the base icon shape itself became the "down" state.
-    expect(TEMPLATE_BAR).not.toMatch(/\.oes-tpl-expand-btn:not\(\.oes-tpl-expand-open\)/);
-  });
-});
-
-test.describe('TP%/SL% param inputs restyled to match the order ticket price field (2026-09-30)', () => {
-  // Operator: "make tp% and sl% values... look like price values in
-  // order ticket" — was a semi-transparent dark background with a
-  // strong amber border + inset glow (rgba(12,18,32,0.82) /
-  // rgba(251,191,36,0.70) / box-shadow glow), visually a different
-  // "kind" of input from OrderTicket.svelte's .ot-input. Matched to
-  // .ot-input's own solid #1d2a44 background and subtle 0.25-alpha
-  // amber border, no glow.
-  test('.oes-basket-tpl-param > input uses solid #1d2a44 background and subtle 0.25-alpha amber border, no inset glow', () => {
-    const rule = TEMPLATE_BAR.match(/\.oes-basket-tpl-param\s*>\s*input\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
-    expect(rule, '.oes-basket-tpl-param > input rule').not.toBe('');
-    expect(rule).toMatch(/background:\s*#1d2a44/);
-    expect(rule).toMatch(/border:\s*1px solid rgba\(251,\s*191,\s*36,\s*0\.25\)/);
-    expect(rule).not.toMatch(/background:\s*rgba\(12,\s*18,\s*32/);
-    expect(rule).not.toMatch(/border:\s*1px solid rgba\(251,\s*191,\s*36,\s*0\.70\)/);
-    expect(rule).not.toMatch(/box-shadow:\s*inset/);
-  });
-
-  test('.oes-basket-tpl-param > input height is UNCHANGED (still 1.4rem) — matching the toolbar-controls-same-height invariant, not .ot-input\'s own min-height: 1.7rem', () => {
-    const rule = TEMPLATE_BAR.match(/\.oes-basket-tpl-param\s*>\s*input\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
-    expect(rule, '.oes-basket-tpl-param > input rule').not.toBe('');
-    expect(rule).toMatch(/height:\s*1\.4rem/);
-    expect(rule).not.toMatch(/min-height:\s*1\.7rem/);
-  });
-
-  test('live: toolbar controls (Select trigger / Template toggle / DTE chip / TP% input) still all render at the same height after the restyle', async ({ page }) => {
-    await loginAsAdmin(page);
-    await _seedNiftyAndOpenChain(page);
-
-    const toggle = page.locator('.oes-tpl-button').first();
-    await expect(toggle).toBeVisible({ timeout: 10_000 });
-    const mountedActive = await toggle.evaluate((el) => el.classList.contains('active'));
-    if (!mountedActive) {
-      await toggle.click();
-      await page.waitForTimeout(300);
-    }
-    const heights = await page.evaluate(() => {
-      const sels = ['.oct-expiry-pick .rbq-select-trigger', '.oes-tpl-button', '.oct-expiry-dte', '.oes-basket-tpl-param > input'];
-      return sels.map((s) => document.querySelector(s)?.getBoundingClientRect().height).filter((h) => h != null);
-    });
-    expect(heights.length, 'all 4 toolbar controls must be present').toBe(4);
-    const maxDelta = Math.max(...heights) - Math.min(...heights);
-    expect(maxDelta, `toolbar control heights should be within 1px of each other: ${JSON.stringify(heights)}`).toBeLessThanOrEqual(1);
-  });
-});
+// ".oct-tpl-demo-note flex-shrink:0 removed", "Template expand toggle",
+// and "TP%/SL% param inputs restyled" describe blocks removed here —
+// T3.3, bracket-removal, 2026-11. All three were TemplateBar.svelte-only
+// (the demo note, the Bracket expand-panel chevron, and the Bracket
+// TP%/SL% override inputs), now deleted along with the component.
 
 test.describe('Basket leg pill background uses the stronger -22 token, not the faint -14 rest tier (operator: "order info card background the text is not very user friendly")', () => {
   test('.oes-basket-pill-buy/-sell use var(--c-long-22)/var(--c-short-22)', () => {

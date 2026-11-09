@@ -16,12 +16,13 @@
     placeTicketOrder,
     fetchAccounts,
     checkOrderSpread,
-    previewTicketTemplate,
   } from '$lib/api';
-  import { createSpreadGate, resolveWingTradingsymbol } from '$lib/data/spreadGate.js';
+  import { createSpreadGate } from '$lib/data/spreadGate.js';
   import { executionMode } from '$lib/stores';
   import { toast } from '$lib/data/toastStore.svelte.js';
   import Select from '$lib/Select.svelte';
+  import InfoHint from '$lib/InfoHint.svelte';
+  import ChaseAggPicker from './ChaseAggPicker.svelte';
   import {
     loadInstruments, suggestUnderlyings,
     listExpiries, listFutures, getInstrument,
@@ -33,13 +34,6 @@
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   import { KITE_INDEX_QUOTE_KEY_TO_ROOT as _KITE_IDX_TO_ROOT } from '$lib/data/resolveUnderlying.js';
   import { priceFmt } from '$lib/format';
-  // Order-template catalog — same source the OrderTicket uses.
-  // Operator: "template should be applicable to option chain too".
-  // Templates apply per-leg to each basket entry: when the leg fills,
-  // the template runs (TP / SL / Wing) just like a single-leg ticket.
-  import {
-    loadOrderTemplates,
-  } from '$lib/data/templates';
   // Read-only "wing fired live" confirmation badge — see
   // liveWingBadge.js's module docstring. `latestAlgoOrderRows` is the
   // SAME poll `(algo)/+layout.svelte` already runs every tick
@@ -61,24 +55,11 @@
    *   onPlaceLeg?:     (props: any) => void,
    *   onAccountChange?: (account: string) => void,
    *   refreshKey?:     number,
-   *   templateId?:     number | null,
-   *   templateName?:   string,
-   *   templateIsNone?: boolean,
-   *   selectedTemplate?: object | null,
-   *   sideAwareDefault?: object | null,
-   *   nonNoneTemplates?: any[],
-   *   showsWing?:        boolean,
-   *   shellUsingNone?:   boolean,
-   *   tpOverride?:               number | '',
-   *   slOverride?:               number | '',
-   *   wingStrikeOffsetOverride?: number | '',
-   *   wingPremPctOverride?:      number | '',
    *   spreadMaxPctOverride?:     number | '',
-   *   onSelectDefault?:  () => void,
-   *   onSelectNone?:     () => void,
-   *   onSelectTemplate?: (id: number) => void,
    *   draftMode?:           boolean,
    *   onDraftToggleChange?: (checked: boolean) => void,
+   *   chaseAgg?:            'low'|'med'|'high',
+   *   onChaseAggChange?:    (v: 'low'|'med'|'high') => void,
    * }} */
   let {
     // Seed the underlying from a known symbol (e.g. NIFTY25APR22000CE → NIFTY).
@@ -107,55 +88,46 @@
     // (futures + strikes + ATM). Used by SymbolPanel on tab activation
     // so switching back to Chain always shows fresh data.
     refreshKey = 0,
-    // Shared exit-template id across SymbolPanel surfaces. Bound by the
-    // shell so a pick on the Ticket tab persists when the operator
-    // flips to Chain (and vice versa). Standalone callers leave it
-    // unbound — the chain falls back to 'none' on first paint.
-    templateId = $bindable(/** @type {number|null} */ (null)),
-    // Resolved template display info — owned by SymbolPanel's own
-    // _selectedTemplate/_shellUsingNone (the single shared Template
-    // Default/None picker below the tab body). Passed down, not
-    // re-derived here, so the strike grid's per-leg badge can show
-    // WHICH template the system auto-picked without duplicating the
-    // template-catalog lookup the shell already owns.
-    templateName   = /** @type {string} */ (''),
-    templateIsNone = false,
-    // `showTemplateBar`/`showDemoTplNote` props REMOVED 2026-10-21 —
-    // they existed only to gate this tab's own <TemplateBar> render,
-    // which moved to SymbolPanel's shared row (see markup above).
-    // Template-state props below stay — still read internally by
-    // `_effTemplateForLeg`/`_effWingParams`/the spread-gate effect.
-    selectedTemplate = /** @type {any} */ (null),
-    sideAwareDefault = /** @type {any} */ (null),
-    nonNoneTemplates = /** @type {any[]} */ ([]),
-    showsWing        = false,
-    shellUsingNone   = false,
-    tpOverride               = $bindable(/** @type {number|''} */ ('')),
-    slOverride               = $bindable(/** @type {number|''} */ ('')),
-    wingStrikeOffsetOverride = $bindable(/** @type {number|''} */ ('')),
-    wingPremPctOverride      = $bindable(/** @type {number|''} */ ('')),
-    // Pre-submit spread-gate threshold (Chain-only). Shown in TemplateBar
-    // alongside TP%/SL%; consumed by runPreSubmitGate() below.
+    // Pre-submit spread-gate threshold (Chain-only). Rendered on this
+    // tab's own Expiry toolbar row; consumed by runPreSubmitGate() below.
     spreadMaxPctOverride     = $bindable(/** @type {number|''} */ ('')),
-    onSelectDefault  = /** @type {(() => void)|undefined} */ (undefined),
-    onSelectNone     = /** @type {(() => void)|undefined} */ (undefined),
-    onSelectTemplate = /** @type {((id: number) => void)|undefined} */ (undefined),
     // DRAFT toggle (2026-11-03, operator: "move draft to days before
     // expiry row") — state + handler are owned by SymbolPanel (shared
     // with the Ticket tab's own `_sharedDraftMode`); this tab only
     // renders the control, on the Expiry row, and reports clicks back
     // up. Ticket tab keeps rendering its own copy in the shared
-    // CHASE/BRACKET/DRAFT row — SymbolPanel suppresses that copy
-    // specifically while Chain is active, so there is never a second,
-    // duplicate DRAFT control on screen at once.
+    // CHASE/DRAFT row — SymbolPanel suppresses that copy specifically
+    // while Chain is active, so there is never a second, duplicate
+    // DRAFT control on screen at once.
     draftMode           = false,
     onDraftToggleChange = /** @type {((checked: boolean) => void)|undefined} */ (undefined),
+    // CHASE (T3.3, bracket-removal — merged into this tab's own Expiry
+    // toolbar row). Chase is unconditionally relevant for Chain (every
+    // Chain leg is a LIMIT order), so there is no `chaseEnabled` prop —
+    // rendering is gated on `!draftMode` only (same hide-not-grey
+    // treatment the shared CHASE/DRAFT row used before this merge).
+    // Markup/class names are the same `.oes-chase-cluster` shapes
+    // SymbolPanel's row already used, relocated verbatim rather than
+    // rebuilt — existing Playwright selectors keep matching.
+    chaseAgg         = /** @type {'low'|'med'|'high'} */ ('low'),
+    onChaseAggChange = /** @type {((v:'low'|'med'|'high') => void)|undefined} */ (undefined),
   } = $props();
 
   // "Place" mode toggle — default OFF (Basket mode). Off: +/− stage
   // legs into the shared basket. On: +/− open the Ticket tab pre-
   // filled with that leg for direct submit, same as Command's flow.
   let _placeMode = $state(false);
+
+  // CHASE tooltip trigger — own copy of SymbolPanel's click-to-pin
+  // InfoHint anchor (T3.3, bracket-removal, CHASE relocated into this
+  // tab's own Expiry toolbar). Local to this component; each tab's
+  // popup toggle is independent.
+  /** @type {HTMLElement | null} */
+  let _chaseInfoAnchor = $state(null);
+  let _chaseInfoOpen = $state(false);
+  function _chaseInfoKeydown(/** @type {KeyboardEvent} */ e) {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _chaseInfoOpen = !_chaseInfoOpen; }
+  }
 
   // Whether basket state is lifted to the shell or owned locally.
   const _externalBasket = $derived(basketLegs !== undefined && !!onAddLeg);
@@ -259,12 +231,6 @@
       _account = account;
     }
   });
-  // Template state — SELECTION lives entirely in the shell now.
-  // `templateId` is always bound by SymbolPanel (`bind:templateId`,
-  // the tab's sole call site), so the picker default and the
-  // side-aware auto-pick both live there; this tab only threads
-  // `templateId` through to `placeBasket()` per leg.
-
   // Push picker changes back to the shell so the other tabs sync.
   // Guard against the echo of the inbound prop sync above.
   let _lastNotifiedAcct = '';
@@ -905,11 +871,6 @@
         price: Number(leg.limit),
         variety: 'regular', account: leg.account || acct,
         chase: true, chase_aggressiveness: leg.chaseAgg || 'low',
-        // Same template attaches to every leg in the basket. The
-        // backend ticket route reads `template_id` and runs
-        // apply_template_to_order on fill — TP / SL / Wing GTTs
-        // for each leg get queued individually.
-        template_id: templateId,
         // Sprint 2b (SPRINT2_LAYER_INTEGRATION.md §3/§4.4) — Chain tab's
         // own per-leg ticket submit, distinct from SymbolPanel's
         // /orders/basket path (tagged 'basket').
@@ -973,14 +934,23 @@
   // ── Pre-submit spread gate (Chain-only) ───────────────────────────
   // Operator: "if there is too much spread on the offset limit side,
   // it should warn... it should be in a loop until the conditions are
-  // satisfied before placing the order." Runs ONLY when the submission
-  // would attach a wing/offset leg (either direction — see
-  // `_wing_direction` in backend/api/algo/template_attach.py, not the
-  // SELL-only `showsWing` prop, which predates that BUY-parent offset
-  // leg and must not be reused as this gate's predicate). Exposed as
-  // `runPreSubmitGate()` (component export, called via bind:this) so
-  // the shell's shared Submit button can await it before calling
-  // submitBasket() — see SymbolPanel.svelte's wiring.
+  // satisfied before placing the order." Exposed as `runPreSubmitGate()`
+  // (component export, called via bind:this) so the shell's shared
+  // Submit button can await it before calling submitBasket() — see
+  // SymbolPanel.svelte's wiring.
+  //
+  // Bracket removal (T3.3, 2026-11) — this gate used to check a leg
+  // ONLY when a Bracket wing/offset would attach to it (the old
+  // `_buildGatePlan`'s `if (!wp || !wp.hasWing) continue`). With Bracket
+  // gone, that predicate could never be true again, which would make
+  // the ENTIRE gate a permanent no-op for every future Chain basket —
+  // defeating its stated purpose rather than preserving it. Redesigned:
+  // every CE/PE leg in the basket now checks its OWN bid/ask spread
+  // against `spreadMaxPctOverride` (default 0.5%) unconditionally. This
+  // is the natural reading of the operator's original ask once the
+  // wing-specific framing is gone — "if there is too much spread...
+  // before placing the order" — generalised to any leg, not only a
+  // wing. Futures legs are still excluded (unchanged scope).
   /** @type {import('$lib/data/spreadGate.js').SpreadGateState} */
   let _gateState = $state({ phase: 'idle', legs: [], attempts: 0, lastError: '' });
   /** @type {ReturnType<typeof createSpreadGate> | null} */
@@ -989,153 +959,47 @@
    *  ref) so a double-click on Submit while the gate is already open
    *  can't leave an earlier caller's await dangling forever. */
   const _gateResolvers = /** @type {Set<(ok: boolean) => void>} */ (new Set());
-  /** Premium%-mode wing tradingsymbol cache, keyed by basket leg `key`.
-   *  Populated ONCE per gate session (in `runPreSubmitGate()`, before
-   *  `_gate.start()`) via `POST /api/orders/ticket/preview` — NEVER
-   *  re-queried on every poll tick. That endpoint runs a template load
-   *  + the wing chain-scan (with its own ntfy-alert-on-failure side
-   *  effect on scan failure — see `_pick_wing_by_premium` in
-   *  template_attach.py), so polling it every 4s would spam alerts;
-   *  `GET /api/orders/spread-check` (the actual per-tick poll target)
-   *  is deliberately template-agnostic and has no such side effect. */
-  let _premiumWingSymCache = /** @type {Map<string, string>} */ (new Map());
 
   function _isGateTerminal(/** @type {string} */ phase) {
     return phase === 'idle' || phase === 'passed' || phase === 'overridden' || phase === 'cancelled';
   }
 
-  /** Effective template row for a basket leg — per-leg `template_id`
-   *  wins, else the shell's shared pick. Mirrors SymbolPanel's
-   *  `_legEffectiveTpl` (that component owns the catalog lookup for
-   *  its own per-leg editor; this is the Chain tab's own copy over the
-   *  `nonNoneTemplates`/`selectedTemplate` props already passed down). */
-  function _effTemplateForLeg(/** @type {any} */ leg) {
-    const tid = leg?.template_id ?? templateId;
-    if (tid == null) return null;
-    if (selectedTemplate && selectedTemplate.id === tid) return selectedTemplate;
-    return nonNoneTemplates.find((t) => t.id === tid) || null;
-  }
-
-  /** Effective wing/spread params for a leg — leg override > shell
-   *  override (only when the leg has no template override of its own,
-   *  same precedence SymbolPanel's `_applySharedOverrides` uses) >
-   *  template default. Side-inclusive (CE or PE, BUY or SELL parent) —
-   *  deliberately NOT gated on `showsWing`/`applies_to === 'sell_option'`. */
-  function _effWingParams(/** @type {any} */ leg) {
-    const tpl = _effTemplateForLeg(leg);
-    if (!tpl) return null;
-    const hasLegTpl = leg?.template_id != null && leg.template_id !== templateId;
-    const offset = leg?.wing_strike_offset_override ?? (hasLegTpl ? null
-      : (wingStrikeOffsetOverride !== '' && wingStrikeOffsetOverride != null ? Number(wingStrikeOffsetOverride) : null))
-      ?? (tpl.wing_strike_offset ?? null);
-    const premPct = leg?.wing_premium_pct_override ?? (hasLegTpl ? null
-      : (wingPremPctOverride !== '' && wingPremPctOverride != null ? Number(wingPremPctOverride) : null))
-      ?? (tpl.wing_premium_pct ?? null);
-    const maxSpreadPct = (spreadMaxPctOverride !== '' && spreadMaxPctOverride != null)
+  /** Effective spread threshold — operator override, else the 0.5%
+   *  default (same fallback the admin `templates.wing_max_spread_pct`
+   *  setting used before Bracket removal). */
+  function _effMaxSpreadPct() {
+    return (spreadMaxPctOverride !== '' && spreadMaxPctOverride != null)
       ? Number(spreadMaxPctOverride)
-      : (tpl.wing_max_spread_pct ?? 0.5);
-    // _template_has_wing parity: offset != null (including 0, a valid
-    // ATM wing) OR a truthy premium%. Not a truthiness check on offset.
-    const hasWing = offset != null || !!(premPct && Number(premPct) > 0);
-    return { offset, premPct, maxSpreadPct, hasWing };
+      : 0.5;
   }
 
   /**
-   * Build the list of {leg, parentSym, parentExch, wingSym, wingUnresolved,
-   * maxSpreadPct} entries that need a spread check right now. Empty
-   * list = gate doesn't apply (no template, or no leg has a wing
-   * configured) — recomputed on every check (including every recheck),
-   * so disabling the template or removing the last wing-configured leg
-   * mid-wait naturally resolves to "nothing left to check" on the next
-   * tick, per the operator's "disabling template skips the check
-   * entirely" requirement.
+   * Build the list of check targets — one per CE/PE leg currently
+   * staged in the basket. Empty list = gate doesn't apply (no option
+   * leg staged) — recomputed on every check (including every recheck),
+   * so a Spread% edit or a basket-leg add/remove is reflected on the
+   * very next tick/recheck.
    */
   function _buildGatePlan() {
-    /** @type {Array<{leg: any, parentSym: string, parentExch: string, wingSym: string|null, wingUnresolved: boolean, premiumMode: boolean, maxSpreadPct: number}>} */
+    /** @type {Array<{tradingsymbol: string, exchange: string, maxSpreadPct: number, label: string}>} */
     const items = [];
+    const maxSpreadPct = _effMaxSpreadPct();
     for (const leg of chainBasket) {
-      if (leg?.optType !== 'CE' && leg?.optType !== 'PE') continue; // wing only applies to option legs
-      const wp = _effWingParams(leg);
-      if (!wp || !wp.hasWing) continue;
-      let wingSym = /** @type {string|null} */ (null);
-      let wingUnresolved = false;
-      let premiumMode = false;
-      if (wp.offset != null) {
-        wingSym = resolveWingTradingsymbol(leg.sym, wp.offset);
-        wingUnresolved = !wingSym;
-      } else {
-        // Premium%-scan mode — the real wing strike depends on a
-        // server-side chain scan at fill time (parent fill price not
-        // known pre-submit). `runPreSubmitGate()` resolves this ONCE
-        // per gate session via /orders/ticket/preview and caches it
-        // here by leg key; until resolved, check the parent leg only.
-        premiumMode = true;
-        const cached = _premiumWingSymCache.get(leg.key);
-        if (cached) wingSym = cached; else wingUnresolved = true;
-      }
-      items.push({ leg, parentSym: leg.sym, parentExch: leg.exchange || 'NFO', wingSym, wingUnresolved, premiumMode, maxSpreadPct: wp.maxSpreadPct });
+      if (leg?.optType !== 'CE' && leg?.optType !== 'PE') continue; // futures legs out of scope
+      items.push({ tradingsymbol: leg.sym, exchange: leg.exchange || 'NFO', maxSpreadPct, label: leg.sym });
     }
     return items;
   }
 
-  /** Resolve premium%-mode wing tradingsymbols ONCE per gate session —
-   *  see `_premiumWingSymCache`'s own comment for why this must not run
-   *  on every poll tick. No-op for items already cached or not in
-   *  premium mode. Failures are swallowed — that leg's wing simply
-   *  stays unresolved (parent-only check, flagged in the banner) rather
-   *  than blocking the whole gate on a preview-call failure. */
-  async function _resolvePremiumWingSymbols(/** @type {ReturnType<typeof _buildGatePlan>} */ items) {
-    const toResolve = items.filter((it) => it.premiumMode && it.wingUnresolved && !_premiumWingSymCache.has(it.leg.key));
-    if (toResolve.length === 0) return;
-    const mode = _resolveBasketMode();
-    await Promise.all(toResolve.map(async (it) => {
-      try {
-        const wp = _effWingParams(it.leg);
-        const tpl = _effTemplateForLeg(it.leg);
-        const resp = await previewTicketTemplate({
-          mode,
-          side: it.leg.side,
-          tradingsymbol: it.leg.sym,
-          quantity: Math.max(1, Number(it.leg.lots) || 1),
-          exchange: it.parentExch,
-          product: it.leg.product || 'NRML',
-          account: it.leg.account || _account,
-          reference_price: Number(it.leg.limit) || 0,
-          template_id: tpl?.id ?? null,
-          wing_premium_pct_override: wp?.premPct ?? null,
-        });
-        const sym = resp?.plan?.wing?.tradingsymbol;
-        if (sym) _premiumWingSymCache.set(it.leg.key, String(sym));
-      } catch { /* leave unresolved — parent-only check for this leg */ }
-    }));
-  }
-
-  /** Dedupe parent + wing symbols across every leg into one flat list
-   *  of {tradingsymbol, exchange, maxSpreadPct, label} check targets. */
-  function _buildCheckTargets(/** @type {ReturnType<typeof _buildGatePlan>} */ items) {
-    /** @type {Map<string, {tradingsymbol: string, exchange: string, maxSpreadPct: number, label: string}>} */
-    const map = new Map();
-    for (const it of items) {
-      const pk = `${it.parentExch}:${it.parentSym}`;
-      if (!map.has(pk)) map.set(pk, { tradingsymbol: it.parentSym, exchange: it.parentExch, maxSpreadPct: it.maxSpreadPct, label: it.parentSym });
-      if (it.wingSym) {
-        const wk = `${it.parentExch}:${it.wingSym}`;
-        if (!map.has(wk)) map.set(wk, { tradingsymbol: it.wingSym, exchange: it.parentExch, maxSpreadPct: it.maxSpreadPct, label: `${it.wingSym} offset` });
-      }
-    }
-    return [...map.values()];
-  }
-
   /** `checkLegs` callback handed to createSpreadGate — rebuilds the plan
    *  fresh on every call (not a stale snapshot from `start()`), so a
-   *  TP%/SL%/Spread%/wing edit — or disabling the template entirely —
-   *  is reflected on the very next tick/recheck. */
+   *  Spread% edit or a basket-leg add/remove is reflected on the very
+   *  next tick/recheck. */
   async function _checkLegs(/** @type {{signal: AbortSignal}} */ { signal }) {
-    const items = _buildGatePlan();
-    if (items.length === 0) {
-      return { ok: true, legs: [] }; // nothing wing-configured anymore — gate clears itself
+    const targets = _buildGatePlan();
+    if (targets.length === 0) {
+      return { ok: true, legs: [] }; // no CE/PE leg staged — gate clears itself
     }
-    const targets = _buildCheckTargets(items);
     const results = await Promise.all(targets.map(async (t) => {
       const r = await checkOrderSpread({
         tradingsymbol: t.tradingsymbol, exchange: t.exchange,
@@ -1160,11 +1024,11 @@
   /**
    * Component export — called via `bind:this` from the shell (see
    * SymbolPanel.svelte's shared Submit button). Returns a Promise that
-   * resolves `true` once it's safe to call submitBasket() (no wing
-   * configured, spread already fine, operator explicitly overrode, or
-   * the template got disabled mid-wait) and `false` if the operator
-   * cancels. NEVER auto-resolves true past the bounded error/timeout
-   * state — those require an explicit Retry / Place anyway / Cancel.
+   * resolves `true` once it's safe to call submitBasket() (no option
+   * leg staged, spread already fine, or the operator explicitly
+   * overrode) and `false` if the operator cancels. NEVER auto-resolves
+   * true past the bounded error/timeout state — those require an
+   * explicit Retry / Place anyway / Cancel.
    * @returns {Promise<boolean>}
    */
   export async function runPreSubmitGate() {
@@ -1173,22 +1037,10 @@
       // the same in-flight loop instead of starting a second one.
       return new Promise((resolve) => { _gateResolvers.add(resolve); });
     }
-    let items = _buildGatePlan();
+    const items = _buildGatePlan();
     if (items.length === 0) {
       _gateState = { phase: 'idle', legs: [], attempts: 0, lastError: '' };
       return true;
-    }
-    // New gate session — fresh premium-wing-symbol cache, resolved
-    // once here (not on every poll tick; see the cache's own comment).
-    _premiumWingSymCache = new Map();
-    const premiumItems = items.filter((it) => it.premiumMode);
-    if (premiumItems.length > 0) {
-      await _resolvePremiumWingSymbols(premiumItems);
-      items = _buildGatePlan(); // re-resolve now that the cache is populated
-      if (items.length === 0) {
-        _gateState = { phase: 'idle', legs: [], attempts: 0, lastError: '' };
-        return true;
-      }
     }
     return new Promise((resolve) => {
       _gateResolvers.add(resolve);
@@ -1210,15 +1062,11 @@
   function _gateCancel()      { _gate?.cancel(); }
   function _gateRetry()       { _gate?.retry(); }
 
-  // Immediate re-check triggers (operator req't c): TP%/SL%/Spread%/wing
-  // param edits, a template switch, or a basket-leg add/remove — only
-  // while the gate is actually open (not idle/resolved). Disabling the
-  // template (shellUsingNone flips true) also lands here and resolves
-  // to "nothing to check" on the very next tick via `_buildGatePlan()`.
+  // Immediate re-check triggers: a Spread% edit or a basket-leg
+  // add/remove — only while the gate is actually open (not idle/
+  // resolved).
   $effect(() => {
-    void tpOverride; void slOverride; void spreadMaxPctOverride;
-    void wingStrikeOffsetOverride; void wingPremPctOverride;
-    void templateId; void shellUsingNone; void chainBasket;
+    void spreadMaxPctOverride; void chainBasket;
     untrack(() => {
       if (_gate && !_isGateTerminal(_gateState.phase)) _gate.recheck();
     });
@@ -1251,11 +1099,6 @@
           _selfAccounts = list;
         }).catch(() => {});
     }
-    // Templates catalog — shared store warms via OrderTicket too, but
-    // an isolated chain mount (modal opened straight to Chain tab)
-    // wouldn't have triggered it yet. Idempotent — repeat opens
-    // serve from the in-memory cache.
-    loadOrderTemplates().catch(() => { /* silent — picker stays empty */ });
     return () => clearTimeout(_readyTimer);
   });
 </script>
@@ -1302,20 +1145,47 @@
           {_dte === 0 ? 'expires today' : `${_dte}d`}
         </span>
       {/if}
-      <!-- Template toggle — REMOVED 2026-10-21 (shared-row re-wire).
-           The Bracket (TemplateBar) toggle now renders once, at shell
-           level, inside SymbolPanel's single CHASE/BRACKET/DRAFT row
-           (visible identically on Ticket + Chain) — this tab no longer
-           mounts its own copy. `selectedTemplate`/`nonNoneTemplates`/
-           `shellUsingNone` stay as props (still read internally by
-           `_effTemplateForLeg`/`_effWingParams`/the spread-gate effect
-           below); `showTemplateBar`/`showDemoTplNote` were removed
-           entirely since they existed only to gate this now-deleted
-           render. DRAFT itself moved back here 2026-11-03 (operator:
-           "move draft to days before expiry row") — Chain-only; the
-           Ticket tab keeps its own copy in the shared row below, and
-           SymbolPanel suppresses that copy specifically while Chain is
-           active so the two never both render at once. Class names
+      <!-- Spread% — pre-submit bid/ask-spread gate threshold (T3.3,
+           bracket-removal; relocated from the deleted TemplateBar.svelte,
+           next to Expiry per the operator's ask). Genuine, Bracket-
+           independent risk control: `runPreSubmitGate()` above checks
+           every staged CE/PE leg's own spread against this threshold
+           before Submit is allowed through. Same state variable
+           (`spreadMaxPctOverride`), same 0.5 default, same live gate —
+           only WHERE it renders changed. -->
+      <label class="oct-spread-field" title="Max bid/ask spread % allowed on a staged option leg before Chain submit warns.">
+        <span>Spread %</span>
+        <input type="number" step="0.5" min="0"
+               placeholder="0.5"
+               bind:value={spreadMaxPctOverride} />
+      </label>
+      <!-- CHASE — relocated verbatim from SymbolPanel's shared
+           CHASE/DRAFT row (T3.3, bracket-removal — "merge CHASE into
+           OptionChainTab's .oct-toolbar"). Chase is unconditionally
+           relevant for Chain (every Chain leg is LIMIT), so there is
+           no enable/disable derived here — only hidden (not greyed)
+           while Draft is on, matching the pre-existing CHASE hide-not-
+           grey treatment. -->
+      {#if !draftMode}
+        <span class="oes-chase-cluster">
+          <span class="oes-common-chase-label on" bind:this={_chaseInfoAnchor}
+                role="button" tabindex={0} aria-expanded={_chaseInfoOpen}
+                title="Chase is active — click for details"
+                onclick={() => { _chaseInfoOpen = !_chaseInfoOpen; }}
+                onkeydown={_chaseInfoKeydown}>CHASE</span>
+          <InfoHint popup hideButton id="chase-info-hint-chain" anchor={_chaseInfoAnchor} bind:open={_chaseInfoOpen}
+            panel title="Chase"
+            text="Chase is automatic for every limit order (every Chain leg is a limit order) — re-quotes the price each interval until filled or max attempts is reached. Wait time between re-quotes depends on the aggressiveness picker beside it: <b>Low</b> — 30s, patient, eases into the spread (30 attempts max). <b>Med</b> — 20s, balanced (20 attempts max). <b>High</b> — 10s, crosses the spread fast (10 attempts max)." />
+          <span class="oes-chase-agg-gap">
+            <ChaseAggPicker value={chaseAgg} onChange={onChaseAggChange} variant="panel" />
+          </span>
+        </span>
+      {/if}
+      <!-- DRAFT itself moved back here 2026-11-03 (operator: "move
+           draft to days before expiry row") — Chain-only; the Ticket
+           tab keeps its own copy in the shared row, and SymbolPanel
+           suppresses that copy specifically while Chain is active so
+           the two never both render at once. Class names
            (`.ot-draft-toggle`/`.ot-draft-label`) are kept identical to
            the shared-row copy so existing Playwright selectors keep
            matching regardless of which tab is active. -->
@@ -1409,8 +1279,6 @@
             {@const peLeg = _basketLegByKey.get(`${k}:PE`)}
             {@const ceLive = _liveWingByKey.get(`${k}:CE`)}
             {@const peLive = _liveWingByKey.get(`${k}:PE`)}
-            {@const tmplAttached = !templateIsNone && !!templateName}
-            {@const tmplShort = tmplAttached ? String(templateName).slice(0, 6) : ''}
             {#if isAtm}
               <tr class="chain-row chain-row-{dir} chain-row-atm" class:chain-row-active={activeRow} use:chainAtmRow>
                 <td class="chain-td-ce">
@@ -1432,8 +1300,8 @@
                                 onclick={() => addOptionToBasket(k, 'CE', 'short')}>−</button>
                       </span>
                       {#if ceLeg}
-                        <span class="chain-leg-badge" class:chain-leg-badge-tmpl={tmplAttached}
-                              title={`${ceLeg.side} ${ceLeg.lots} lot${ceLeg.lots === 1 ? '' : 's'} × ${ceLeg.lotSize} = ${ceLeg.lots * ceLeg.lotSize} qty${tmplAttached ? ' · Bracket: ' + templateName : ' · no Bracket'}`}>{ceLeg.lots}L{tmplAttached ? ' · ' + tmplShort : ''}</span>
+                        <span class="chain-leg-badge"
+                              title={`${ceLeg.side} ${ceLeg.lots} lot${ceLeg.lots === 1 ? '' : 's'} × ${ceLeg.lotSize} = ${ceLeg.lots * ceLeg.lotSize} qty`}>{ceLeg.lots}L</span>
                       {:else if ceLive}
                         <!-- Read-only confirmation — the wing fired on parent
                              fill and landed on THIS strike/side. Nothing is
@@ -1464,8 +1332,8 @@
                                 onclick={() => addOptionToBasket(k, 'PE', 'short')}>−</button>
                       </span>
                       {#if peLeg}
-                        <span class="chain-leg-badge" class:chain-leg-badge-tmpl={tmplAttached}
-                              title={`${peLeg.side} ${peLeg.lots} lot${peLeg.lots === 1 ? '' : 's'} × ${peLeg.lotSize} = ${peLeg.lots * peLeg.lotSize} qty${tmplAttached ? ' · Bracket: ' + templateName : ' · no Bracket'}`}>{peLeg.lots}L{tmplAttached ? ' · ' + tmplShort : ''}</span>
+                        <span class="chain-leg-badge"
+                              title={`${peLeg.side} ${peLeg.lots} lot${peLeg.lots === 1 ? '' : 's'} × ${peLeg.lotSize} = ${peLeg.lots * peLeg.lotSize} qty`}>{peLeg.lots}L</span>
                       {:else if peLive}
                         <!-- Read-only confirmation — see the matching CE
                              comment above. -->
@@ -1505,8 +1373,8 @@
                                 onclick={() => addOptionToBasket(k, 'CE', 'short')}>−</button>
                       </span>
                       {#if ceLeg}
-                        <span class="chain-leg-badge" class:chain-leg-badge-tmpl={tmplAttached}
-                              title={`${ceLeg.side} ${ceLeg.lots} lot${ceLeg.lots === 1 ? '' : 's'} × ${ceLeg.lotSize} = ${ceLeg.lots * ceLeg.lotSize} qty${tmplAttached ? ' · Bracket: ' + templateName : ' · no Bracket'}`}>{ceLeg.lots}L{tmplAttached ? ' · ' + tmplShort : ''}</span>
+                        <span class="chain-leg-badge"
+                              title={`${ceLeg.side} ${ceLeg.lots} lot${ceLeg.lots === 1 ? '' : 's'} × ${ceLeg.lotSize} = ${ceLeg.lots * ceLeg.lotSize} qty`}>{ceLeg.lots}L</span>
                       {:else if ceLive}
                         <!-- Read-only confirmation — the wing fired on parent
                              fill and landed on THIS strike/side. Nothing is
@@ -1537,8 +1405,8 @@
                                 onclick={() => addOptionToBasket(k, 'PE', 'short')}>−</button>
                       </span>
                       {#if peLeg}
-                        <span class="chain-leg-badge" class:chain-leg-badge-tmpl={tmplAttached}
-                              title={`${peLeg.side} ${peLeg.lots} lot${peLeg.lots === 1 ? '' : 's'} × ${peLeg.lotSize} = ${peLeg.lots * peLeg.lotSize} qty${tmplAttached ? ' · Bracket: ' + templateName : ' · no Bracket'}`}>{peLeg.lots}L{tmplAttached ? ' · ' + tmplShort : ''}</span>
+                        <span class="chain-leg-badge"
+                              title={`${peLeg.side} ${peLeg.lots} lot${peLeg.lots === 1 ? '' : 's'} × ${peLeg.lotSize} = ${peLeg.lots * peLeg.lotSize} qty`}>{peLeg.lots}L</span>
                       {:else if peLive}
                         <!-- Read-only confirmation — see the matching CE
                              comment above. -->
@@ -1680,8 +1548,7 @@
      `:global(.rbq-select-trigger)` padding override just below closes
      that gap (0.15rem — the same value the DTE chip already uses)
      without touching Select.svelte itself; only Selects rendered
-     inside THIS toolbar (the expiry picker, and TemplateBar's own
-     "Specific tmpl" Select inside its expand panel) are affected. */
+     inside THIS toolbar (the expiry picker) are affected. */
   .oct-toolbar {
     --ctl-h: 1.4rem;
     display: flex;
@@ -1745,6 +1612,60 @@
     background: var(--algo-amber-bg);
     border-color: rgba(251, 191, 36, 0.42);
   }
+  /* Spread% field (T3.3, bracket-removal — relocated from the deleted
+     TemplateBar.svelte, next to Expiry). Styling matches the DTE chip's
+     own height/box-sizing convention (same row, same control-height
+     tier) rather than duplicating TemplateBar's input chrome. */
+  .oct-spread-field {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-family: monospace;
+    font-size: var(--fs-xs);
+    color: var(--algo-muted);
+  }
+  .oct-spread-field > span {
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 700;
+    color: rgba(251, 191, 36, 0.85);
+  }
+  .oct-spread-field > input {
+    width: 3.2rem;
+    min-height: 1.4rem;
+    padding: 0 0.3rem;
+    background: #1d2a44;
+    border: 1px solid rgba(251, 191, 36, 0.25);
+    border-radius: 3px;
+    color: var(--algo-slate);
+    font-family: var(--font-numeric);
+    font-size: var(--fs-md);
+    text-align: right;
+    box-sizing: border-box;
+    font-variant-numeric: tabular-nums;
+    color-scheme: dark;
+  }
+  .oct-spread-field > input::placeholder {
+    color: rgba(251, 191, 36, 0.6);
+    font-style: italic;
+  }
+  /* CHASE cluster (T3.3, bracket-removal — relocated verbatim from
+     SymbolPanel's shared CHASE/DRAFT row; Svelte scopes `<style>` per
+     component so SymbolPanel's own rule cannot reach markup rendered
+     inside this child component). Same rule, same values. */
+  .oes-common-chase-label {
+    color: var(--algo-slate-muted);
+    font-size: var(--fs-xs);
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    display: inline-flex;
+    align-items: center;
+    min-height: var(--ctl-h, 1.7rem);
+    box-sizing: border-box;
+    cursor: pointer;
+  }
+  .oes-common-chase-label.on { color: var(--c-action); }
+  .oes-chase-agg-gap { margin-left: 0.4rem; display: inline-flex; }
   /* DRAFT toggle (2026-11-03, moved onto the Expiry row — operator:
      "move draft to days before expiry row") — class names + styling
      duplicated verbatim from SymbolPanel.svelte's own shared-row copy
@@ -2476,11 +2397,7 @@
   /* Persistent per-leg lot badge — unlike .chain-quick-toast (900ms
      flash), this stays as long as the strike's CE/PE leg is staged in
      the basket, so the operator can see at a glance which legs of a
-     row are already added without re-clicking. Neutral slate at rest;
-     gets an amber ring + dot when a non-None template is currently
-     armed (`tmplAttached`), so "this leg will get TP/SL/Wing attached
-     on fill" is visible right at the leg, not only in the shared
-     Template Default/None row below the tab body. */
+     row are already added without re-clicking. */
   .chain-leg-badge {
     display: inline-flex;
     align-items: center;
@@ -2495,27 +2412,13 @@
     background: rgba(148, 163, 184, 0.14);
     border: 1px solid rgba(148, 163, 184, 0.35);
     color: var(--algo-slate);
-    /* 2026-09-30 — badge now optionally carries a " · <template>"
-       suffix (6-char truncated). nowrap + a max-width ellipsis
-       backstop keeps it from wrapping/pushing the +/- buttons out of
-       the 44%-width CE/PE column on a 375px viewport. */
+    /* nowrap + a max-width ellipsis backstop keeps the badge from
+       wrapping/pushing the +/- buttons out of the 44%-width CE/PE
+       column on a 375px viewport. */
     white-space: nowrap;
     max-width: 6.2rem;
     overflow: hidden;
     text-overflow: ellipsis;
-  }
-  .chain-leg-badge-tmpl {
-    background: rgba(251, 191, 36, 0.14);
-    border-color: rgba(251, 191, 36, 0.45);
-    color: var(--c-action);
-  }
-  .chain-leg-badge-tmpl::before {
-    content: '';
-    width: 4px;
-    height: 4px;
-    border-radius: 50%;
-    background: var(--c-action);
-    flex-shrink: 0;
   }
   /* Read-only "wing fired live" confirmation badge (`_liveWingByKey`) —
      DISTINCT from the staged leg badge above: this cell has nothing in

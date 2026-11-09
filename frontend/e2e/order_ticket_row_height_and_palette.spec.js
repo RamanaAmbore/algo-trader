@@ -78,7 +78,6 @@ const dir = path.resolve(import.meta.dirname ?? new URL('.', import.meta.url).pa
 const SYMBOL_PANEL = readFileSync(path.join(dir, 'src/lib/SymbolPanel.svelte'), 'utf8');
 const CHASE_AGG_PICKER = readFileSync(path.join(dir, 'src/lib/order/ChaseAggPicker.svelte'), 'utf8');
 const CHAIN_TAB = readFileSync(path.join(dir, 'src/lib/order/OptionChainTab.svelte'), 'utf8');
-const TEMPLATE_BAR = readFileSync(path.join(dir, 'src/lib/TemplateBar.svelte'), 'utf8');
 const SIDE_TOGGLE = readFileSync(path.join(dir, 'src/lib/order/SideToggle.svelte'), 'utf8');
 const SELECT = readFileSync(path.join(dir, 'src/lib/Select.svelte'), 'utf8');
 const ORDER_TICKET = readFileSync(path.join(dir, 'src/lib/order/OrderTicket.svelte'), 'utf8');
@@ -102,15 +101,14 @@ async function _seedNiftyOnTicket(page) {
 }
 
 /**
- * Navigate to /orders, seed NIFTY, switch to Chain, and ensure the
- * Templ toggle is ON (clicking it if it mounted OFF) so TP%/SL% param
- * inputs are rendered.
+ * Navigate to /orders, seed NIFTY, and switch to the Chain tab.
+ * T3.3 (bracket-removal, 2026-11) — this used to also ensure the Templ
+ * toggle was ON so TP%/SL% param inputs rendered; Bracket is gone, so
+ * the Chain tab's own Expiry toolbar (Select trigger / DTE chip /
+ * Spread% input) renders unconditionally with no toggle to arm.
  * @param {import('@playwright/test').Page} page
  */
-async function _seedNiftyOnChainWithTemplOn(page) {
-  await page.addInitScript(() => {
-    localStorage.removeItem('ramboq_templ_pref_v1');
-  });
+async function _seedNiftyOnChain(page) {
   await page.goto(`${BASE}/orders`, { waitUntil: 'domcontentloaded', timeout: 30000 });
   const symInput = page.locator('.ssi-input').first();
   await expect(symInput).toBeVisible({ timeout: 15_000 });
@@ -123,12 +121,6 @@ async function _seedNiftyOnChainWithTemplOn(page) {
   const chainTab = page.getByRole('tab', { name: /Chain/i }).first();
   await expect(chainTab).toBeEnabled({ timeout: 15_000 });
   await chainTab.click();
-
-  const toggle = page.locator('.oes-tpl-button').first();
-  await expect(toggle).toBeVisible({ timeout: 15_000 });
-  const isActive = await toggle.evaluate((el) => el.classList.contains('active'));
-  if (!isActive) await toggle.click();
-  await expect(toggle).toHaveClass(/active/, { timeout: 10_000 });
 }
 
 test.describe('Fix #1 — tab-strip row height (source)', () => {
@@ -213,28 +205,32 @@ test.describe('Fix #2 — 15d DTE chip vs TP%/SL% input height', () => {
     expect(rule).not.toMatch(/min-height:\s*var\(--ctl-h/);
   });
 
-  test('color roles remain distinct — chip stays muted slate-blue, TP%/SL% labels stay amber', () => {
+  test('color role — chip stays muted slate-blue', () => {
+    // T3.3 (bracket-removal, 2026-11) — the TP%/SL% amber-label
+    // comparison half of this test is gone (TemplateBar.svelte deleted);
+    // only the DTE chip's own color role survives as a check.
     const dteRule = CHAIN_TAB.match(/\.oct-expiry-dte\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
     expect(dteRule).toMatch(/color:\s*var\(--algo-muted\)/);
-    const paramLabelRule = TEMPLATE_BAR.match(/\.oes-basket-tpl-param\s*>\s*span,\s*\n?\s*\.oes-basket-tpl-param-label\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
-    expect(paramLabelRule, '.oes-basket-tpl-param-label rule').not.toBe('');
-    expect(paramLabelRule).toMatch(/rgba\(251,\s*191,\s*36,\s*0\.85\)/);
   });
 
-  test('live: .oct-expiry-dte box height matches .oes-basket-tpl-param > input box height (within 1px)', async ({ page }) => {
+  test('live: .oct-expiry-dte box height matches .oct-spread-field > input box height (within 1px)', async ({ page }) => {
     await loginAsAdmin(page);
-    await _seedNiftyOnChainWithTemplOn(page);
+    await _seedNiftyOnChain(page);
 
     const dteChip = page.locator('.oct-expiry-dte').first();
     await expect(dteChip).toBeVisible({ timeout: 15_000 });
-    const tpInput = page.locator('.oes-basket-tpl-param > input').first();
-    await expect(tpInput).toBeVisible({ timeout: 10_000 });
+    // T3.3 (bracket-removal) — `.oes-basket-tpl-param > input`
+    // (TemplateBar's TP% field) is gone; `.oct-spread-field > input`
+    // (OptionChainTab's own Spread% field, same row, same 1.4rem
+    // height convention) is its replacement same-row sibling.
+    const spreadInput = page.locator('.oct-spread-field > input').first();
+    await expect(spreadInput).toBeVisible({ timeout: 10_000 });
 
     const [dteH, inputH] = await Promise.all([
       dteChip.evaluate((el) => el.getBoundingClientRect().height),
-      tpInput.evaluate((el) => el.getBoundingClientRect().height),
+      spreadInput.evaluate((el) => el.getBoundingClientRect().height),
     ]);
-    expect(Math.abs(dteH - inputH), `15d chip height ${dteH}px vs TP% input height ${inputH}px`).toBeLessThanOrEqual(1);
+    expect(Math.abs(dteH - inputH), `15d chip height ${dteH}px vs Spread% input height ${inputH}px`).toBeLessThanOrEqual(1);
 
     // Fix #3 piggybacks on this same page/navigation (already on the
     // Chain tab with NIFTY seeded) rather than adding a separate live
@@ -317,38 +313,42 @@ test.describe('Fix #3 (2026-09-30 follow-up, superseded same day; STALE cross-ro
     expect(CHAIN_TAB).not.toMatch(/class="[^"]*\boct-mode-btn\b/);
   });
 
-  test('live: .oct-toolbar\'s OWN two remaining controls — Select trigger + DTE chip — still render at the same height (same row, confirmed via DOM containment)', async ({ page }) => {
+  test('live: .oct-toolbar\'s controls — Select trigger + DTE chip + Spread% input — still render at the same height (same row, confirmed via DOM containment)', async ({ page }) => {
     await loginAsAdmin(page);
-    await _seedNiftyOnChainWithTemplOn(page);
+    await _seedNiftyOnChain(page);
 
     const selectTrigger = page.locator('.oct-expiry-pick .rbq-select-trigger').first();
     const dteChip = page.locator('.oct-expiry-dte').first();
+    const spreadInput = page.locator('.oct-spread-field > input').first();
     await expect(selectTrigger).toBeVisible({ timeout: 15_000 });
     await expect(dteChip).toBeVisible({ timeout: 10_000 });
+    await expect(spreadInput).toBeVisible({ timeout: 10_000 });
 
     const containment = await page.evaluate(() => {
       const toolbar = document.querySelector('.oct-toolbar');
       const select = document.querySelector('.oct-expiry-pick .rbq-select-trigger');
       const dte = document.querySelector('.oct-expiry-dte');
-      const tpl = document.querySelector('.oes-tpl-button');
+      const spread = document.querySelector('.oct-spread-field');
       return {
         selectInToolbar: toolbar && select ? toolbar.contains(select) : null,
         dteInToolbar: toolbar && dte ? toolbar.contains(dte) : null,
-        // Documents the architecture this correction is based on — the
-        // Template toggle is confirmed OUTSIDE .oct-toolbar's own DOM
-        // subtree, so it is genuinely not a same-row control any more.
-        tplInToolbar: toolbar && tpl ? toolbar.contains(tpl) : null,
+        // T3.3 (bracket-removal) — the Spread% control (relocated from
+        // the deleted TemplateBar.svelte) is now a genuine same-row
+        // member of .oct-toolbar, not outside it.
+        spreadInToolbar: toolbar && spread ? toolbar.contains(spread) : null,
       };
     });
     expect(containment.selectInToolbar, 'Select trigger must still be inside .oct-toolbar').toBe(true);
     expect(containment.dteInToolbar, 'DTE chip must still be inside .oct-toolbar').toBe(true);
-    expect(containment.tplInToolbar, 'Template toggle must be OUTSIDE .oct-toolbar (2026-10-21 shared-row re-wire) — regression guard against this correction going stale the other way').toBe(false);
+    expect(containment.spreadInToolbar, 'Spread% field must be inside .oct-toolbar').toBe(true);
 
-    const [selectH, dteH] = await Promise.all([
+    const [selectH, dteH, spreadH] = await Promise.all([
       selectTrigger.evaluate((el) => el.getBoundingClientRect().height),
       dteChip.evaluate((el) => el.getBoundingClientRect().height),
+      spreadInput.evaluate((el) => el.getBoundingClientRect().height),
     ]);
     expect(Math.abs(selectH - dteH), `Select trigger ${selectH}px vs DTE chip ${dteH}px`).toBeLessThanOrEqual(1);
+    expect(Math.abs(selectH - spreadH), `Select trigger ${selectH}px vs Spread% input ${spreadH}px`).toBeLessThanOrEqual(1);
   });
 });
 
@@ -693,12 +693,15 @@ test.describe('Fix D — alignment/overflow batch (2026-09-30, audit follow-up)'
     expect(rowRule).toMatch(/overflow:\s*hidden/);
   });
 
-  test('D3 source: .oes-leg-editor no longer carries a left margin on top of its own full-width flex-basis', () => {
+  test('D3 dead-code check: .oes-leg-editor (Bracket per-leg override editor) is gone — T3.3 bracket-removal', () => {
+    // The Bracket per-leg override editor this rule belonged to was
+    // deleted entirely in T3.3 (bracket/template removal) along with
+    // TemplateBar.svelte and every per-leg template-override control in
+    // SymbolPanel.svelte. The D3 margin fix above is now moot — there is
+    // no `.oes-leg-editor` rule left to carry a left margin.
     const rule = SYMBOL_PANEL.match(/\.oes-leg-editor\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
-    expect(rule, '.oes-leg-editor rule').not.toBe('');
-    expect(rule).toMatch(/flex:\s*0 0 100%/);
-    // Was `margin: 0.15rem 0 0.3rem 0.4rem` — left component must be 0.
-    expect(rule).toMatch(/margin:\s*0\.15rem 0 0\.3rem 0;/);
+    expect(rule, '.oes-leg-editor rule').toBe('');
+    expect(SYMBOL_PANEL).not.toContain('oes-leg-editor');
   });
 
   test('D4 source: .oes-basket-meta no longer right-anchors via margin-left:auto', () => {
