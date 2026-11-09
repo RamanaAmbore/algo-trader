@@ -101,7 +101,7 @@ or share `/orders?symbol=BANKNIFTY26JUN50000CE&exchange=NFO`.
 
 **Activity card filters**:
 - Account multi-select (via ActivityHeaderFilters)
-- Status histogram filter (Chase / Open / Filled / Rejected-Cancelled / GTT, default first-non-zero)
+- Status histogram filter (Chase / Open / Filled / Rejected-Cancelled, default first-non-zero)
 - Level filter (All / Error / Warning / Info)
 - Inline Modify / Cancel / Reconcile buttons on OrderCard rows
 
@@ -749,18 +749,23 @@ automation/agent use.
 
 ### Status Histogram Filter
 
-**Above grid**: 5 status chips (Chase / Open / Filled / Rejected-Cancelled / GTT)
+**Above grid**: 4 status chips (Chase / Open / Filled / Rejected-Cancelled). A 5th
+"GTT" chip (standalone broker GTTs via `GET /api/orders/gtts/`) existed here until
+2026-11, removed per operator: "we don't need gtt count status pills" — see the
+changelog. `GET /api/orders/gtts/` itself is untouched; LogPanel's order log still
+calls it for the unrelated `'gtt_broker'` event line (§ "Order Log" or equivalent) —
+that's a different UI surface for the same "any broker GTT, regardless of origin"
+concept, not removed.
 - **Chase** — orders with active cancel-and-replace attempts in progress. While a cancel-and-replace
   is in flight, the superseded broker row is hidden for 25s (`_SUPERSEDED_GRACE_MS`), so it never
   shows as a second open card.
 - **Open** — orders placed but not yet filled (includes PENDING states)
 - **Filled** — terminal filled orders (broker COMPLETE or platform FILLED)
 - **Rejected-Cancelled** — merged chip for both rejection and cancellation (red styling)
-- **GTT** — count of standalone broker GTTs (distinct from template-attached GTTs)
 
 **Default behavior** (v2026-09-30): When the page first loads or is refreshed, exactly
 ONE chip is highlighted and its rows displayed — the first chip (in order Chase → Open
-→ Filled → Rejected-Cancelled → GTT) whose count is non-zero. This avoids a "union
+→ Filled → Rejected-Cancelled) whose count is non-zero. This avoids a "union
 of everything" view and makes the first non-empty category obvious at a glance.
 
 **Explicit selection**: Clicking any chip switches to exclusive-filter mode for that
@@ -771,12 +776,9 @@ category. The selection persists until another chip is clicked or the page reloa
 - Open (amber): orders resting at broker, may fill
 - Filled (emerald): completed and terminal
 - Rejected-Cancelled (red): blocked or cancelled
-- GTT (cyan): broker-resting standalone GTTs (no corresponding AlgoOrder)
 
 **Count accuracy**:
 - Chase, Open, Filled, Rejected-Cancelled: synced with AlgoOrder rows and postbacks
-- GTT: live count of active-status GTTs from `GET /api/orders/gtts/` (10s cache);
-  excludes triggered/cancelled/expired/disabled GTTs (only "active" rows count)
 
 **Card styling**: gradient + status-colored border + count number (bold 1.3rem).
 Hover: border opacity increases + card lifts 1px. Selected: 2px amber inset ring on top
@@ -784,7 +786,7 @@ Hover: border opacity increases + card lifts 1px. Selected: 2px amber inset ring
 ### Filters (ActivityHeaderFilters)
 
 1. **Account multi-select** — checkboxes for each account
-2. **Status filter** — Chase / Open / Filled / Rejected-Cancelled / GTT chips
+2. **Status filter** — Chase / Open / Filled / Rejected-Cancelled chips
    (same as the Status Strip above; clicking here has the same effect)
 3. **Level filter** — All / Error / Warning / Info (for log entries)
 4. **Mode filter** — SIM / PAPER / LIVE / SHADOW / REPLAY pills
@@ -1777,6 +1779,7 @@ alongside existing `set_bool`/`set_string` helpers.
 | 2026-10-08 | 90ad3d6d: Template GTT placement now tracks unverified ids with a new `unverified` flag; on ambiguous outcome (`_verify_gtt_accepted` failure), code calls `broker.cancel_gtt()` then surfaces the id + flag via `result.errors` + critical log, preventing duplicate GTTs on re-attach (§13 Duplicate Postbacks). |
 | 2026-10-08 | e77c8993: `release_held_order` (expiry-close release) now compares contracts vs contracts via normalized `broker_apis.fetch_positions()`, not raw broker (Kite reports MCX in lots). Fails closed on stale/circuit-open/fetch-failed data (§18 Release Implementation Details). |
 | 2026-10-31 | v2.5 Order-placement capability gate: `/api/orders/ticket` and `/basket` now `cap_guard("place_order")` (designated / trader only; admin/risk/partner refused with 403) (§14). Added `agent_origin` to `AlgoOrderInfo` and the **agent:** chip on OrderCard (§11 Metadata Chips, §14). Role matrix in ADMIN_GUIDE. |
+| 2026-11 | v2.5 GTT chip removed from the Status Histogram Filter (operator: "we don't need gtt count status pills") — 5 chips → 4 (Chase/Open/Filled/Rejected-Cancelled); OrderBook.svelte's standalone-GTT chip/card/cancel/CSV-export feature deleted entirely. `GET /api/orders/gtts/` is untouched — LogPanel's order log still calls it for the unrelated `'gtt_broker'` event line. See the Status Histogram Filter section below (corrected in place, not left stale alongside this row). |
 | 2026-10-08 | 2e1f0dd8: `release_held_order` now clears `hold_json = None` alongside status change; fixes stuck-in-held-list and 409-on-reclick bugs (§18 Release Implementation Details). |
 | 2026-10-08 | 5d5ab349: `release_template_exit` now validates GTT placement with `bypass_hold` kwarg; reports success only when GTTs/wing placed; restores hold on failure for operator retry (§18 Release Implementation Details). |
 | 2026-10-08 | (pre-existing corrections): Fixed broken relative links in §18 (BROKER_SPEC.md → BROKER_SPEC.md, SETTINGS_SPEC.md → SETTINGS_SPEC.md); fixed stale BROKER_SPEC refs to release route location and cancel-path availability. |

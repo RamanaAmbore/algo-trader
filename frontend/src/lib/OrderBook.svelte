@@ -31,11 +31,16 @@
    *                    default below. Kept declared (back-compat, still
    *                    type-checked at call sites) but no longer read by
    *                    `_activeStatus` — see `_defaultActiveId`. The 'gtt'
-   *                    variant was removed (2026-11, standalone broker-GTT
-   *                    viewer removed from this card per operator: "we
-   *                    don't need gtt count status pills") — orders_gtt.py
-   *                    itself is untouched, this just drops the only
-   *                    frontend caller of it.
+   *                    variant was removed (2026-11, this CARD's own
+   *                    standalone broker-GTT chip/viewer removed per
+   *                    operator: "we don't need gtt count status pills")
+   *                    — `orders_gtt.py`'s route is NOT orphaned by this:
+   *                    `LogPanel.svelte` still calls the `fetchGtts` API
+   *                    and feeds it through `matchGtts` for the order
+   *                    log's independent `'gtt_broker'` event line (a
+   *                    different UI surface for the same "any broker
+   *                    GTT, regardless of origin" concept). Only THIS
+   *                    card's chip/card-grid presentation of it is gone.
    */
   import { onMount, onDestroy, untrack } from 'svelte';
   import { visibleInterval, formatDualTz, withGuard } from '$lib/stores';
