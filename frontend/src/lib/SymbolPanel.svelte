@@ -44,12 +44,6 @@
   import SymbolSearchInput from '$lib/SymbolSearchInput.svelte';
   import LegLabel from '$lib/LegLabel.svelte';
   import Select            from '$lib/Select.svelte';
-  // Chain tab's read-only "wing fired live" confirmation badge — tracks
-  // this session's own LIVE basket submissions by their broker order id
-  // so OptionChainTab can later recognize the async wing/hedge leg
-  // firing on parent fill. Never touches basketLegs/chainBasket — see
-  // liveWingBadge.js's module docstring.
-  import { trackChainParentSubmission } from '$lib/data/liveWingTracker.svelte.js';
   // resolveUnderlying / findNearestFuture / resolveAnchorToTradeable
   // dynamically imported inside effects only — no static imports needed.
   import { loadAccounts, getDefaultAccount, recentSymbolStore, setRecentSymbol, setRecentAccount } from '$lib/data/accounts';
@@ -1597,24 +1591,6 @@
           failedIdx.add(origIdx);
         } else {
           ok++;
-          // Chain live-wing badge (T3.4 deletion candidate, untouched
-          // here per T3.3's scope — see CLAUDE.md "Order Ticket /
-          // Bracket-template re-wire" history) — remember this leg's
-          // own broker order id (NOT written into basketLegs/leg
-          // itself — a separate, session-local tracker) so
-          // OptionChainTab can recognize a wing leg firing on parent
-          // fill. Nothing attaches a wing any more (Bracket removed),
-          // so this can never match — left in place, not newly wired,
-          // per the explicit T3.3 instruction not to touch
-          // liveWingBadge.js/liveWingTracker.svelte.js in this sprint.
-          // Option legs only (strike/optType) — equity legs never
-          // carry a Chain-grid key to badge against anyway.
-          if (basketMode2 === 'live' && leg.strike != null && leg.optType && r.order_id) {
-            trackChainParentSubmission({
-              account: acct, symbol: leg.sym, brokerOrderId: r.order_id,
-              templateName: '',
-            });
-          }
           onSubmit?.({
             mode:            basketMode2,
             side:            leg.side,

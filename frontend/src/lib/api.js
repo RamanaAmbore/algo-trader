@@ -389,24 +389,13 @@ export const reloadGrammarRegistry = () => _post('/admin/grammar/reload', {}, { 
 // kind uses (see `consoleDispatch.js`'s `submitConsoleToken`/
 // `updateConsoleToken`).
 
-// ── Order templates — TP/SL/Wing exit-rule presets attached at OrderTicket
-// submit time. System rows are toggle + tune; custom rows full CRUD.
-export const fetchOrderTemplates = () =>
-  _get('/admin/templates/', { auth: true });
-export const fetchOrderTemplate  = (id) =>
-  _get(`/admin/templates/${id}`, { auth: true });
-export const createOrderTemplate = (payload) =>
-  _post('/admin/templates/', payload, { auth: true });
-export const patchOrderTemplate  = (id, payload) =>
-  _patch(`/admin/templates/${id}`, payload, { auth: true });
-export const deleteOrderTemplate = (id) =>
-  _del(`/admin/templates/${id}`, { auth: true });
-
-// Pre-submit preview: returns the TemplatePlan that would be applied if
-// this exact payload were submitted. Used by OrderTicket to show
-// "Will place TP @ ₹X · SL @ ₹Y · Wing -500CE" inline.
-export const previewTicketTemplate = (payload) =>
-  _post('/orders/ticket/preview', payload, { auth: true });
+// Order templates ("Brackets") — RETIRED (Track 3, T3.1/T3.2, 2026-11,
+// Bracket/Template/GTT removal). `fetchOrderTemplates`/`fetchOrderTemplate`/
+// `createOrderTemplate`/`patchOrderTemplate`/`deleteOrderTemplate`
+// (`/admin/templates/...`) and `previewTicketTemplate`
+// (`/orders/ticket/preview`) are gone — the backend routes they called
+// (`backend/api/algo/template_attach.py`, `bracket_registry.py`) were
+// deleted along with the rest of the Bracket engine.
 
 // ── Hedge proxies (admin) ───────────────────────────────────────────────
 // Cross-reference table for proxy hedges (GOLDBEES → GOLD etc.). Backs
@@ -700,13 +689,9 @@ export const killChase = (algoOrderId) =>
  *  OPEN rows against the broker. Returns {scanned, updated, missing}. */
 export const reconcileAlgoOrders = () =>
   _post('/orders/algo/reconcile', {}, { auth: true });
-/** POST /api/orders/{algo_order_id}/retry-template — re-run
- *  apply_template_to_order against an already-filled parent. Useful
- *  when the initial attach failed silently (e.g. wing scan returned
- *  no candidate). Idempotent: bails when already attached / not
- *  filled / no template was set. */
-export const retryTemplateAttach = (algoOrderId) =>
-  _post(`/orders/${algoOrderId}/retry-template`, {}, { auth: true });
+// `retryTemplateAttach` (POST /api/orders/{algo_order_id}/retry-template)
+// removed 2026-11 (Track 3, T3.4, Bracket/Template/GTT removal) —
+// `apply_template_to_order` is gone server-side.
 /** POST /api/orders/{broker_order_id}/reconcile — re-sync ONE order
  *  against the broker. Body `{account}` tells the route which Kite
  *  handle to query. Returns

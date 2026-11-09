@@ -15,13 +15,12 @@
  *    standardization Part 8, 2026-10-13 — superseded ConsoleTab's own
  *    now-removed CardHeader), with Fullscreen wired (Search omitted —
  *    no grid at this level).
- * 4. The three Agents-tab kind counts (Agents/Alerts/Brackets —
- *    Templates folded into Agents 2026-10-12) each carry a colour keyed
- *    to their kind. Revised 2026-10-13: Brackets moved OFF the amber
- *    "Open status card" scheme it briefly shared with Agents, onto the
- *    GREEN "Filled status" scheme instead (operator-requested) — all
- *    three kind counts (Agents/Alerts/Brackets) are distinct colors
- *    again. (2026-10-31: the kind-count grid was replaced by a dropdown.)
+ * 4. (Historical — superseded.) The Agents-tab kind counts (originally
+ *    Agents/Alerts/Brackets — Templates folded into Agents 2026-10-12)
+ *    each carried a colour keyed to their kind. The kind-count grid
+ *    itself was replaced by a dropdown (2026-10-31), and the Brackets
+ *    kind was removed entirely (2026-11, Track 3 T3.4, Bracket/Template/
+ *    GTT removal) — no test below exercises this item anymore.
  *
  * Mocking — order submission is mocked at the network boundary
  * (`POST /api/orders/ticket`), same approach as the sibling
@@ -351,8 +350,10 @@ test.describe('Item 3 — Workspace header removed; Console/Agents tab row carri
     // 2026-10-15 operator follow-up: "rdudce the width of dropdown by
     // 20%" — down from the first pass's 7.5rem (120px) to 6rem (96px).
     // 2026-10-17 operator follow-up: reduced a further 10%, to 5.4rem
-    // (86.4px) min-width — still wide enough that "Bracket" (the longest
-    // kind label) isn't cramped.
+    // (86.4px) min-width — still wide enough that "Action agent" (the
+    // longest kind label; "Bracket" was removed 2026-11, Track 3 T3.4,
+    // Bracket/Template/GTT removal, but was never the longest label to
+    // begin with) isn't cramped.
     expect(selectBox.width).toBeGreaterThan(80);
     expect(selectBox.width).toBeLessThan(92);
     // "add additional space after the dropdown and before trader guide"

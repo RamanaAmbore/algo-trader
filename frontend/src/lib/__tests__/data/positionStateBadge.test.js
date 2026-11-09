@@ -5,12 +5,16 @@ import { positionStateBadge, ORPHAN_GLYPH, ANCHOR_GLYPH } from '../../data/posit
 
 const _perfSrc = readFileSync(new URL('../../PerformancePage.svelte', import.meta.url), 'utf-8');
 
-describe('positionStateBadge — priority order (GTT > paired > orphan)', () => {
-  it('returns gtt state when has_gtt is true, regardless of other flags', () => {
+describe('positionStateBadge — priority order (auto-paired > orphan; GTT branch removed 2026-11 T3.4)', () => {
+  it('a stray has_gtt=true field (dead passthrough post-Bracket-removal) is ignored — pair_group_key still wins', () => {
     const b = positionStateBadge({ has_gtt: true, pair_group_key: 'P1', is_orphan: true });
-    expect(b.state).toBe('gtt');
-    expect(b.glyph).toBe('GTT');
-    expect(b.color).toBe('var(--algo-green)');
+    expect(b.state).toBe('paired');
+    expect(b.glyph).toBe('P1');
+  });
+
+  it('a stray has_gtt=true field alone (no pair/orphan) returns null state, not gtt', () => {
+    const b = positionStateBadge({ has_gtt: true });
+    expect(b.state).toBeNull();
   });
 
   it('returns paired state when only pair_group_key is set', () => {
@@ -28,7 +32,7 @@ describe('positionStateBadge — priority order (GTT > paired > orphan)', () => 
     expect(s.bg).toBe(p.bg);
   });
 
-  it('returns orphan state when is_orphan is true and no gtt/pair key', () => {
+  it('returns orphan state when is_orphan is true and no pair key', () => {
     const b = positionStateBadge({ is_orphan: true });
     expect(b.state).toBe('orphan');
     expect(b.glyph).toBe(ORPHAN_GLYPH);
@@ -85,11 +89,6 @@ describe('positionStateBadge — tooltip content', () => {
     expect(b.tooltip.toLowerCase()).not.toContain('auto-paired');
   });
 
-  it('gtt tooltip mentions GTT', () => {
-    const b = positionStateBadge({ has_gtt: true });
-    expect(b.tooltip).toContain('GTT');
-  });
-
   it('orphan tooltip mentions pairing', () => {
     const b = positionStateBadge({ is_orphan: true });
     expect(b.tooltip.toLowerCase()).toContain('pair');
@@ -104,19 +103,18 @@ describe('positionStateBadge — underlying-anchor row ("X", 2026-10-18)', () =>
     expect(b.glyph).toBe(ANCHOR_GLYPH);
   });
 
-  it('uses a distinct bright color, not any of GTT/paired/orphan colors', () => {
+  it('uses a distinct bright color, not any of paired/orphan colors', () => {
     const anchor = positionStateBadge({ _isUnderlyingAnchor: true });
-    const gtt = positionStateBadge({ has_gtt: true });
     const paired = positionStateBadge({ pair_group_key: 'P1' });
     const orphan = positionStateBadge({ is_orphan: true });
     expect(anchor.color).toBe('var(--algo-sky)');
     expect(anchor.bg).toBe('var(--algo-sky-bg)');
-    expect([gtt.color, paired.color, orphan.color]).not.toContain(anchor.color);
+    expect([paired.color, orphan.color]).not.toContain(anchor.color);
   });
 
-  it('_isUnderlyingAnchor outranks has_gtt/pair_group_key/is_orphan if all were somehow set', () => {
+  it('_isUnderlyingAnchor outranks pair_group_key/is_orphan if all were somehow set', () => {
     const b = positionStateBadge({
-      _isUnderlyingAnchor: true, has_gtt: true, pair_group_key: 'P1', is_orphan: true,
+      _isUnderlyingAnchor: true, pair_group_key: 'P1', is_orphan: true,
     });
     expect(b.state).toBe('anchor');
   });

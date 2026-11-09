@@ -11,7 +11,6 @@
     fetchSimStatus,
     startSimForAgent,
     fetchAgentRenderers, fetchSetting,
-    deleteOrderTemplate,
   } from '$lib/api';
   import ActivityLogSurface from '$lib/ActivityLogSurface.svelte';
   import AutomationTabs from '$lib/AutomationTabs.svelte';
@@ -19,7 +18,6 @@
   import Select from '$lib/Select.svelte';
   import DisclosureChevron from '$lib/DisclosureChevron.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
-  import { loadOrderTemplates, reloadOrderTemplates, orderTemplatesStore } from '$lib/data/templates';
   import ConsoleTab from '$lib/automation/ConsoleTab.svelte';
   import {
     KIND_CARDS, classifyAgentCardId, groupRowsByGroup, kindCounts,
@@ -27,7 +25,7 @@
   } from '$lib/data/automationKinds.js';
   import {
     fetchAgentCatalog, decompileAgent,
-    decompileBracket, decompileToken, lookupAgentCliEntry,
+    decompileToken, lookupAgentCliEntry,
   } from '$lib/command/grammars/agents.js';
   import { pushLayer, popLayer } from '$lib/utils/layerStack.js';
   import { goto } from '$app/navigation';
@@ -61,7 +59,7 @@
   // Edit action (below) can write into it, and so both survive a tab
   // switch away from Console and back. Bound two-way into ConsoleTab.
   let _consoleCliText = $state('');
-  /** @type {{rowKind: 'cycle'|'event'|'template'|'bracket', ref: string|number, label: string, hadExplicitAlert?: boolean} | null} */
+  /** @type {{rowKind: 'cycle'|'event'|'template', ref: string|number, label: string, hadExplicitAlert?: boolean} | null} */
   let _consoleEditTarget = $state(null);
 
   /** Command-history audit trail for LogPanel's Console tab (2026-10-18
@@ -111,20 +109,24 @@
   // is same with the exception of count, the sequence should also be
   // same." `_kindHint`'s default below used to be `'order'` — a
   // leftover from BEFORE this reorder, when `_KIND_OPTIONS` had `order`
-  // FIRST (`['order', 'bracket', 'agent', 'alert']`). The reorder above
-  // moved `agent` to first position but never updated the default to
-  // follow it, so Console silently kept defaulting to the OLD first
-  // item. Agents-tab's own default (`_activeCard`, below) already
-  // defaults to `'agents'` (Action agent) — changed here to match, so
-  // both dropdowns now default to the SAME kind. The only difference
-  // between the two is the Agents-tab label's trailing count suffix
-  // ("Action agent (12)" vs plain "Action agent" here) — display-only,
-  // not a default-kind mismatch.
-  const _KIND_OPTIONS = ['agent', 'alert', 'bracket', 'order'];
-  const _KIND_LABELS = { agent: 'Action agent', alert: 'Alert agent', bracket: 'Bracket', order: 'Order' };
+  // FIRST. The reorder above moved `agent` to first position but never
+  // updated the default to follow it, so Console silently kept
+  // defaulting to the OLD first item. Agents-tab's own default
+  // (`_activeCard`, below) already defaults to `'agents'` (Action agent)
+  // — changed here to match, so both dropdowns now default to the SAME
+  // kind. The only difference between the two is the Agents-tab label's
+  // trailing count suffix ("Action agent (12)" vs plain "Action agent"
+  // here) — display-only, not a default-kind mismatch.
+  //
+  // 2026-11 (Track 3, T3.4, Bracket/Template/GTT removal, operator: "in
+  // automation, the brackets dropdown should not exist, as bracket are
+  // no longer available") — the `bracket` entry/seed is removed from
+  // this dropdown; `bracket(...)` is now a hard compile error in
+  // agents.js, so suggesting it here would be misleading.
+  const _KIND_OPTIONS = ['agent', 'alert', 'order'];
+  const _KIND_LABELS = { agent: 'Action agent', alert: 'Alert agent', order: 'Order' };
   const _KIND_SEED = {
     order: 'order(account="", symbol="", side="BUY", lots=1)',
-    bracket: 'bracket(applies_to=buy_any, tp_pct=30, sl_pct=-20) #name=""',
     agent: 'WHEN pnl_pct@positions.total <= -5 DO alert(telegram)',
     alert: 'alert(telegram)',
   };
@@ -144,11 +146,12 @@
    *  kind an ordinary `WHEN...DO...` statement gets, even though
    *  textually it's the "Alert" bucket the operator picked. The
    *  selector's job is to reflect what the operator TYPED, not which
-   *  JSON shape it happens to compile to. */
+   *  JSON shape it happens to compile to. (The `bracket` branch was
+   *  removed 2026-11, Track 3 T3.4, Bracket/Template/GTT removal —
+   *  `bracket(...)` is now a hard compile error, never a kind hint.) */
   function _detectKindHint(/** @type {string} */ text) {
     const t = String(text || '').trimStart();
     if (/^(order|place_order)\s*\(/i.test(t)) return 'order';
-    if (/^bracket\s*\(/i.test(t)) return 'bracket';
     if (/^(when|do)\b/i.test(t)) return 'agent';
     if (/^alert\b/i.test(t)) return 'alert';
     return null;
@@ -172,7 +175,11 @@
   // redirect to the Agents tab with the matching kind-card preselected,
   // rather than landing on a tab that no longer exists. `?tab=tokens`
   // now lands on the 'agents' card itself (2026-10-12 — Templates folded
-  // into Agents, no separate card left to preselect).
+  // into Agents, no separate card left to preselect). `?tab=brackets`
+  // ALSO now lands on the 'agents' card (2026-11, Track 3 T3.4,
+  // Bracket/Template/GTT removal — the Brackets kind-card itself is
+  // gone, so there is no matching card left to preselect either; a
+  // stale bookmark must never land on a blank/nonexistent card).
   // Bug fix (2026-10, operator: "need to click two times on agents tab to
   // switch — that is a bug") — this effect's job is ONE-DIRECTIONAL sync
   // (URL -> activeTab), for direct navigation/bookmarks/back-forward. But
@@ -190,8 +197,7 @@
     const t = page.url.searchParams.get('tab');
     untrack(() => {
       if (t === 'console' && activeTab !== 'console') activeTab = 'console';
-      else if (t === 'brackets' && _activeCard !== 'brackets') { activeTab = 'agents'; _activeCard = 'brackets'; }
-      else if (t === 'tokens' && _activeCard !== 'agents') { activeTab = 'agents'; _activeCard = 'agents'; }
+      else if ((t === 'brackets' || t === 'tokens') && _activeCard !== 'agents') { activeTab = 'agents'; _activeCard = 'agents'; }
     });
   });
 
@@ -200,16 +206,9 @@
   // algo pages while the sim is running.
   let simActive   = $state(false);
 
-  // Template catalog for the Brackets card — same module-level cache +
-  // store every other surface (TemplateBar, OrderTicket) reads;
-  // loadOrderTemplates() below is a cheap no-op if already warm.
-  // Unfiltered — every OrderTemplate row is a Bracket row (Sprint 7's
-  // "table identity alone decides the kind" storage note).
-  let _allTemplates = $state(/** @type {any[]} */ ([]));
-  $effect(() => {
-    const rows = $orderTemplatesStore;
-    if (rows) _allTemplates = rows;
-  });
+  // The Brackets card's own template catalog warm-up (`loadOrderTemplates()`
+  // / `orderTemplatesStore` / `_allTemplates`) was removed 2026-11 (Track
+  // 3, T3.4, Bracket/Template/GTT removal) along with the card itself.
 
   // ── Kind-card toggle-filter / row-list (2026-10-12, revised per operator
   //    instruction: "use order status cards as reference... keep agent
@@ -237,15 +236,11 @@
     if (cardId === 'alerts' && !renderers.length) loadRenderers();
   }
 
-  const _cardCounts = $derived(kindCounts(agents, _allTemplates));
+  const _cardCounts = $derived(kindCounts(agents));
 
   /** Every row belonging to the currently-selected card, in its own
-   *  kind's own shape (`AgentInfo` for agents/alerts/templates,
-   *  `OrderTemplateOut` for brackets). */
-  const _activeCardRows = $derived.by(() => {
-    if (_activeCard === 'brackets') return _allTemplates;
-    return filterAgentRowsByCard(agents, _activeCard);
-  });
+   *  kind's own shape (`AgentInfo` for agents/alerts/templates). */
+  const _activeCardRows = $derived.by(() => filterAgentRowsByCard(agents, _activeCard));
 
   /** Rows sorted by `group` (reuses `groupRowsByGroup`'s existing
    *  alphabetical-named-groups-first, ungrouped-bucket-last convention —
@@ -375,29 +370,25 @@
    *  JSON into CLI text and switches to the Console tab with edit-mode
    *  armed (Save routes through UPDATE, never CREATE — see
    *  ConsoleTab's own `_EDIT_KIND_FOR_ROW_KIND`). On a decompile
-   *  failure (e.g. a system/default/slugged/inactive Bracket — see
-   *  `_bracketUnexpressibleFields` in agents.js) shows the error and
-   *  stays on the row — NEVER switches to Console with an empty/broken
-   *  box.
+   *  failure shows the error and stays on the row — NEVER switches to
+   *  Console with an empty/broken box.
    *
    *  Dispatch is keyed on `row.kind`, NOT `cardId` — since 2026-10-12,
    *  `kind='template'` rows share the 'agents' card with ordinary cycle
    *  agents (Templates folded into Agents), so `cardId === 'agents'` no
-   *  longer implies `row.kind` is 'cycle'. */
+   *  longer implies `row.kind` is 'cycle'. (The `cardId === 'brackets'`
+   *  branch was removed 2026-11, Track 3 T3.4, Bracket/Template/GTT
+   *  removal — the Brackets kind-card no longer exists.) */
   async function editRow(/** @type {string} */ cardId, /** @type {any} */ row) {
     let catalog;
     try { catalog = await _ensureEditCatalog(); }
     catch { toast.error('CLI catalog unavailable'); return; }
 
     let dec, ref;
-    /** @type {'cycle'|'event'|'template'|'bracket'|undefined} */
+    /** @type {'cycle'|'event'|'template'|undefined} */
     let rowKind;
     try {
-      if (cardId === 'brackets') {
-        rowKind = 'bracket';
-        ref = row.id;
-        dec = decompileBracket(row, catalog);
-      } else if (row.kind === 'template') {
+      if (row.kind === 'template') {
         rowKind = 'template';
         ref = row.slug;
         dec = decompileToken(row, catalog);
@@ -451,8 +442,10 @@
     _consoleEditTarget = null;
   }
 
-  function _deleteConfirmMessage(/** @type {string} */ cardId, /** @type {any} */ row) {
-    if (cardId === 'brackets') return `Delete bracket "${row.name}"? Existing orders that used it are not affected.`;
+  // `cardId === 'brackets'` branches removed from both functions below
+  // 2026-11 (Track 3, T3.4, Bracket/Template/GTT removal) — the Brackets
+  // kind-card no longer exists.
+  function _deleteConfirmMessage(/** @type {any} */ row) {
     if (row.kind === 'template') return `Delete token "${row.name}"? Any agent still $ref-ing it will log a warning and skip that reference.`;
     return `Delete agent "${row.name}"? This cannot be undone.`;
   }
@@ -463,23 +456,18 @@
   async function deleteRow(/** @type {string} */ cardId, /** @type {any} */ row) {
     const ok = await _deleteConfirmRef?.ask({
       title: 'Delete?',
-      message: _deleteConfirmMessage(cardId, row),
+      message: _deleteConfirmMessage(row),
       confirmLabel: 'Delete',
       cancelLabel: 'Cancel',
       destructive: true,
     });
     if (!ok) return;
     try {
-      if (cardId === 'brackets') {
-        await deleteOrderTemplate(row.id);
-        await reloadOrderTemplates().catch(() => {});
-      } else {
-        // 'agents' / 'alerts' / 'templates' — all three are Agent rows
-        // (templates = kind='template') deleted via the one unified
-        // endpoint (Sprint D2, Agent/Bracket/Template unification phase).
-        await deleteAgent(row.slug);
-        await loadAgents();
-      }
+      // 'agents' / 'alerts' / 'templates' — all three are Agent rows
+      // (templates = kind='template') deleted via the one unified
+      // endpoint (Sprint D2, Agent/Bracket/Template unification phase).
+      await deleteAgent(row.slug);
+      await loadAgents();
       toast.success(`${row.name}: deleted`);
       if (_expandedRowKey === `${cardId}:${row.id ?? row.slug}`) _expandedRowKey = null;
     } catch (e) {
@@ -781,9 +769,8 @@
     pollSimStatus();
     refreshTeardown   = visibleInterval(loadAll, 30000);
     simStatusTeardown = visibleInterval(pollSimStatus, 4000);
-    // Warm the template catalog for the Brackets kind-card — idempotent,
-    // module-level cached.
-    loadOrderTemplates().catch(() => { /* silent — store stays empty */ });
+    // The Brackets kind-card's template-catalog warm-up was removed
+    // 2026-11 (Track 3, T3.4, Bracket/Template/GTT removal).
   });
 
   onDestroy(() => {
@@ -1022,33 +1009,8 @@
   </div>
 {/snippet}
 
-{#snippet bracketRowView(/** @type {any} */ tpl)}
-  {#if tpl.description}
-    <div class="text-[length:var(--fs-sm)] text-[var(--c-muted)] italic mt-1.5 mb-1">{tpl.description}</div>
-  {/if}
-  <div class="preview-section-label mt-1">Applies to</div>
-  <div class="text-[length:var(--fs-sm)]">{tpl.applies_to}</div>
-  <div class="preview-section-label mt-2">TP / SL / Wing</div>
-  <div class="text-[length:var(--fs-sm)] flex flex-wrap gap-x-3 gap-y-0.5">
-    {#if tpl.tp_pct != null}<span>TP {tpl.tp_pct}% ({tpl.tp_order_type})</span>{/if}
-    {#if tpl.sl_pct != null}<span>SL {tpl.sl_pct}%</span>{/if}
-    {#if tpl.sl_trail_pct != null}<span>Trail {tpl.sl_trail_pct}%</span>{/if}
-    {#if tpl.wing_premium_pct != null}<span>Wing premium {tpl.wing_premium_pct}%</span>{/if}
-    {#if tpl.wing_strike_offset != null}<span>Wing offset {tpl.wing_strike_offset}</span>{/if}
-    {#if tpl.tp_pct == null && tpl.sl_pct == null && tpl.wing_premium_pct == null && tpl.wing_strike_offset == null}
-      <span class="text-[var(--c-muted)] italic">none set</span>
-    {/if}
-  </div>
-  {#if tpl.tags && tpl.tags.length}
-    <div class="preview-section-label mt-2">Tags</div>
-    <div class="flex flex-wrap gap-1">{#each tpl.tags as t}<span class="topic-badge">{t}</span>{/each}</div>
-  {/if}
-  <div class="flex items-center gap-2 text-[length:var(--fs-xs)] text-[var(--c-muted)] mt-2">
-    {#if tpl.is_system}<span class="topic-badge" title="Seeded built-in — body/description are code-owned">system</span>{/if}
-    {#if tpl.is_default}<span class="topic-badge" title="Default bracket for this applies_to scope">default</span>{/if}
-    {#if !tpl.is_active}<span class="topic-badge" title="Deactivated">inactive</span>{/if}
-  </div>
-{/snippet}
+<!-- `bracketRowView` snippet removed 2026-11 (Track 3, T3.4, Bracket/
+     Template/GTT removal) — the Brackets kind-card no longer exists. -->
 
 <!-- 2026-10-12 (revised, supersedes Sprint C's kind-count-card → per-kind
      #group= tabs → row-list drill-down) — exactly one kind is active at
@@ -1165,11 +1127,7 @@
                 </button>
               {/if}
             </div>
-            {#if _activeCard === 'brackets'}
-              {@render bracketRowView(row)}
-            {:else}
-              {@render agentRowView(row)}
-            {/if}
+            {@render agentRowView(row)}
             <div class="flex items-center justify-end gap-3 text-[length:var(--fs-xs)] mt-2">
               {#if (_activeCard === 'agents' || _activeCard === 'alerts') && !isDemo && row.kind !== 'template'}
                 <button type="button" onclick={(e) => { e.stopPropagation(); runInSim(row); }}

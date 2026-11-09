@@ -30,9 +30,7 @@
  * broker id / lots-vs-contracts conversion correctly for each), this
  * module hooks the one place ALL of the above ultimately surface: the
  * merged row array `OrderBook.svelte` / `LogPanel.svelte` already build
- * on every poll (same idiom as `templateAttachToast.js`'s
- * `noteAttachObservation`, which already runs on this exact merged array
- * for a different purpose). The moment any row's status transitions INTO
+ * on every poll. The moment any row's status transitions INTO
  * a filled state, bump the shared `bookChanged` counter — the SAME bus
  * every WS fill handler already bumps (see `bookChanged.js`), so every
  * existing subscriber (derivatives Payoff/Legs, MarketPulse,
@@ -63,7 +61,7 @@ let _seeded = false;
 /**
  * Call once per poll with the FULL merged order-row array (broker rows +
  * algo-only rows, same shape `_loadOrders()` already builds BEFORE any
- * status-chip filtering — mirrors `noteAttachObservation`'s contract).
+ * status-chip filtering).
  *
  * Fires (bumps `bookChanged` once, coalescing a whole poll/basket burst
  * into one refresh) when, after the initial seeding pass:

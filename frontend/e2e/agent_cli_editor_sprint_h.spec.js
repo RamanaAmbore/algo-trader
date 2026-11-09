@@ -82,18 +82,24 @@ test.describe('AgentCliEditor — Sprint H autocomplete completeness', () => {
     await expect(lotsPill).toBeVisible({ timeout: TIMEOUT });
   });
 
-  test('bracket( and token( get real parameter suggestions — previously zero (item 4)', async ({ page }) => {
+  test('token( gets real parameter suggestions — previously zero (item 4)', async ({ page }) => {
     const cliTextarea = page.locator('.agent-cli-textarea');
-    await cliTextarea.click();
-    await cliTextarea.pressSequentially('bracket(', { delay: 15 });
-    const tpPctPill = page.locator('.agent-cli-suggest-pill', { hasText: 'tp_pct' }).first();
-    await expect(tpPctPill).toBeVisible({ timeout: TIMEOUT });
-
-    await cliTextarea.fill('');
     await cliTextarea.click();
     await cliTextarea.pressSequentially('token(', { delay: 15 });
     const kindPill = page.locator('.agent-cli-suggest-pill', { hasText: 'kind' }).first();
     await expect(kindPill).toBeVisible({ timeout: TIMEOUT });
+  });
+
+  // `bracket(`'s own param suggestions (tp_pct etc.) removed 2026-11
+  // (Track 3, T3.4, Bracket/Template/GTT removal) — `bracket(...)` is a
+  // hard compile error now, so suggesting its params would be
+  // misleading; `_syntheticEntryFor` no longer has a 'bracket' branch.
+  test('bracket( gets no parameter suggestions at all (removed 2026-11, Track 3 T3.4)', async ({ page }) => {
+    const cliTextarea = page.locator('.agent-cli-textarea');
+    await cliTextarea.click();
+    await cliTextarea.pressSequentially('bracket(', { delay: 15 });
+    await page.waitForTimeout(300);
+    await expect(page.locator('.agent-cli-suggest-pill')).toHaveCount(0);
   });
 
   test('a bound label is suggested as a whole WHEN condition (item 8)', async ({ page }) => {

@@ -4,6 +4,10 @@
 // of app.css tokens for its border/buttons, and had no InfoHint explaining
 // what "held" means. Source-level guard, same pattern as
 // held_orders_release_all_labels.spec.js.
+//
+// 2026-11 (Track 3, T3.4, Bracket/Template/GTT removal): the "Bracket
+// exit" category / .held-kind-bracket class were removed — only Expiry
+// close and Repeated rejection remain.
 
 import { test, expect } from '@playwright/test';
 import { readFileSync } from 'fs';
@@ -13,22 +17,20 @@ const cardSrc = readFileSync(
 );
 
 test.describe('held orders card — per-category coloring + token usage', () => {
-  test('each hold kind maps to its own CSS class, not a shared one', () => {
+  test('each remaining hold kind maps to its own CSS class, not a shared one', () => {
     expect(cardSrc).toMatch(/function kindClassOf\(row\)/);
-    expect(cardSrc).toMatch(/'held-kind-bracket'/);
+    expect(cardSrc).not.toMatch(/'held-kind-bracket'/);
     expect(cardSrc).toMatch(/'held-kind-rejection'/);
     expect(cardSrc).toMatch(/'held-kind-expiry'/);
   });
 
-  test('the three kind classes resolve to three different color tokens', () => {
-    const bracket = cardSrc.match(/\.held-kind-bracket\s*\{[^}]*\}/)?.[0] ?? '';
+  test('the two remaining kind classes resolve to two different color tokens', () => {
+    expect(cardSrc).not.toMatch(/\.held-kind-bracket\s*\{/);
     const expiry = cardSrc.match(/\.held-kind-expiry\s*\{[^}]*\}/)?.[0] ?? '';
     const rejection = cardSrc.match(/\.held-kind-rejection\s*\{[^}]*\}/)?.[0] ?? '';
-    expect(bracket).toMatch(/var\(--algo-red\)/);
     expect(expiry).toMatch(/var\(--algo-amber\)/);
     expect(rejection).toMatch(/var\(--algo-orange\)/);
-    // Must not be the same literal color repeated three times.
-    expect(bracket).not.toBe(expiry);
+    // Must not be the same literal color repeated.
     expect(expiry).not.toBe(rejection);
   });
 

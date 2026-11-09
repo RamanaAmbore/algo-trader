@@ -12,13 +12,18 @@
  * replaces the old flat Agents grid AND the original Sprint C per-kind
  * `#group=` tab layer (now gone — each row shows its own `group` as an
  * inline tag instead, rows sorted by group):
- *   1. The Agent-kind dropdown (Action agent / Alert agent / Bracket, counts in labels) shows the
- *      right row counts and selecting each shows the right rows,
- *      directly below the cards, with no navigation.
- *   2. Groups are strictly per-kind — four rows (one Agent-cycle, one
- *      Agent-event, one Bracket, one Template) all share the SAME
- *      `group` string ("hedge-book"); each kind's own row list must show
- *      EXACTLY its own row (never another kind's), tagged "hedge-book".
+ *   1. The Agent-kind dropdown (Action agent / Alert agent, counts in
+ *      labels — the Bracket option was removed 2026-11, Track 3 T3.4,
+ *      Bracket/Template/GTT removal) shows the right row counts and
+ *      selecting each shows the right rows, directly below the cards,
+ *      with no navigation.
+ *   2. Groups are strictly per-kind — three rows (one Agent-cycle, one
+ *      Agent-event, one Template) all share the SAME `group` string
+ *      ("hedge-book"); each kind's own row list must show EXACTLY its
+ *      own row (never another kind's), tagged "hedge-book". A fourth,
+ *      historical kind='bracket' row sharing the same group is included
+ *      too — proving it is excluded from EVERY card, not just absent
+ *      from its own former card.
  *
  * All four list endpoints are mocked (`page.route`) so this spec is
  * deterministic regardless of real dev-DB contents. The grammar-tokens
@@ -93,16 +98,11 @@ const TEMPLATE_ROW = {
   tier: 'medium', topic: 'general', group: 'hedge-book', cli_source: null,
 };
 
-// Sprint E (Agent/Bracket/Template unification phase) — the Brackets
-// card now reads `GET /api/agents/` too (every `kind='bracket'` row,
-// reshaped client-side via `bracketAgentToTemplateOut`), NOT
-// `GET /api/admin/templates/` directly — this is now a REAL Agent row
-// riding along in `AGENT_ROWS`, not a separately-mocked endpoint.
-// `legacy_template_id` (201) is the canonical `OrderTemplate.id` this
-// row mirrors; `id` (202, deliberately DIFFERENT) is this Agent row's
-// own, unrelated primary key — proving the UI reads `legacy_template_id`
-// through the adapter, not `id`, matches the backend council-risk
-// review's fix #2 on the frontend side.
+// A historical kind='bracket' Agent row (Brackets kind-card and the
+// whole Bracket engine removed 2026-11, Track 3 T3.4, Bracket/Template/
+// GTT removal) — kept in this fixture ONLY to prove `classifyAgentCardId`
+// excludes it from every card (agents/alerts), never to prove it shows
+// up under its own former card (that card no longer exists).
 const BRACKET_AGENT_ROW = {
   id: 202, slug: 'bracket-201', name: 'E2E Bracket', long_name: null, description: '',
   conditions: {}, events: [], actions: [], scope: 'total', schedule: 'market_hours',
@@ -134,7 +134,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 test.describe('Agents tab — kind-count cards (Sprint C)', () => {
-  test('card counts exclude the manual row and split agents/alerts/brackets correctly (Templates folded into Agents, 2026-10-12)', async ({ page }) => {
+  test('card counts exclude the manual row and the historical bracket row, and split agents/alerts correctly (Templates folded into Agents, 2026-10-12; Brackets kind-card removed, 2026-11)', async ({ page }) => {
     // domcontentloaded, not networkidle — this page's WS reconnect loop
     // keeps the network non-idle indefinitely (same caveat already
     // documented in automation_agent_row_card_styling.spec.js).
@@ -142,15 +142,17 @@ test.describe('Agents tab — kind-count cards (Sprint C)', () => {
     await expect(agentKindTrigger(page)).toBeVisible({ timeout: TIMEOUT });
 
     // CYCLE_ROW + CYCLE_ROW_UNGROUPED + TEMPLATE_ROW (kind=template, now
-    // folded into Agents) = 3.
+    // folded into Agents) = 3. BRACKET_AGENT_ROW (kind=bracket) is
+    // excluded entirely — not counted under Agents, Alerts, or any other
+    // card (the Brackets kind-card itself is gone).
     // Counts now live inside the single "Agent kind" dropdown's option labels
     // (e.g. "Action agent (3)"). Templates were folded into Agents, so there
-    // is no templates option at all — exactly three options render.
+    // is no templates option at all — exactly two options render.
     await agentKindTrigger(page).click();
     await expect(page.getByRole('option', { name: 'Action agent (3)' })).toBeVisible({ timeout: TIMEOUT });
     await expect(page.getByRole('option', { name: 'Alert agent (1)' })).toBeVisible();
-    await expect(page.getByRole('option', { name: 'Bracket (1)' })).toBeVisible();
-    await expect(page.getByRole('option')).toHaveCount(3);
+    await expect(page.getByRole('option', { name: /^Bracket/ })).toHaveCount(0);
+    await expect(page.getByRole('option')).toHaveCount(2);
     await page.keyboard.press('Escape');
     await expect(page.getByRole('option')).toHaveCount(0);
   });
@@ -243,11 +245,12 @@ test.describe('Agents tab — groups are strictly per-kind (Sprint C regression)
     // 'Notify Critical Trio E2E' (kind=template) now shares the 'agents'
     // card with 'Loss Funds Negative E2E' (kind=cycle) — 2026-10-12,
     // Templates folded into Agents — so the 'agents' case expects BOTH
-    // rows instead of excluding one.
+    // rows instead of excluding one. 'E2E Bracket' (kind=bracket) is
+    // excluded from EVERY case — the Brackets kind-card itself was
+    // removed 2026-11, Track 3 T3.4, Bracket/Template/GTT removal.
     const cases = [
       { card: 'agents',   expectRows: ['Loss Funds Negative E2E', 'Notify Critical Trio E2E'], excludeRows: ['Error Alert E2E', 'E2E Bracket'] },
       { card: 'alerts',   expectRows: ['Error Alert E2E'],                                      excludeRows: ['Loss Funds Negative E2E', 'Notify Critical Trio E2E', 'E2E Bracket'] },
-      { card: 'brackets', expectRows: ['E2E Bracket'],                                          excludeRows: ['Loss Funds Negative E2E', 'Error Alert E2E', 'Notify Critical Trio E2E'] },
     ];
 
     for (const c of cases) {
@@ -299,43 +302,7 @@ test.describe('Agents tab — groups are strictly per-kind (Sprint C regression)
   });
 });
 
-test.describe('Brackets kind-filter reads live Agent(kind=bracket) data (Sprint E)', () => {
-  test('Edit on the Brackets card PATCHes /api/admin/templates/{legacy_template_id}, never {agent.id}', async ({ page }) => {
-    // BRACKET_AGENT_ROW.legacy_template_id = 201 (the real, canonical
-    // OrderTemplate.id) while its OWN Agent.id = 202 — deliberately
-    // different, so a PATCH sent to .../202 instead of .../201 proves
-    // the frontend adapter leaked the wrong id (the exact collision
-    // risk the backend council-risk review's fix #2 blocked dispatch
-    // on, mirrored here on the read/edit side).
-    let patchedUrl = /** @type {string | null} */ (null);
-    await page.route('**/api/admin/templates/201', async (route) => {
-      if (route.request().method() !== 'PATCH') { await route.continue(); return; }
-      patchedUrl = route.request().url();
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({}) });
-    });
-    await page.route('**/api/admin/templates/202', async (route) => {
-      // Must never be hit — if it is, patchedUrl above stays null and
-      // the test's final assertion fails.
-      await route.continue();
-    });
-
-    // domcontentloaded, not networkidle — this page's WS reconnect loop
-    // keeps the network non-idle indefinitely (same caveat already
-    // documented in automation_agent_row_card_styling.spec.js).
-    await page.goto('/automation', { waitUntil: 'domcontentloaded' });
-    await expect(agentKindTrigger(page)).toBeVisible({ timeout: TIMEOUT });
-
-    await pickAgentKind(page, 'brackets');
-    const row = page.locator('[role="listitem"]').filter({ hasText: 'E2E Bracket' });
-    await expect(row).toBeVisible({ timeout: TIMEOUT });
-    await row.locator('[role="button"]').first().click();
-    await row.getByRole('button', { name: 'Edit' }).click();
-
-    const saveBtn = page.locator('.console-agent-cli-btn');
-    await expect(saveBtn).toBeVisible({ timeout: TIMEOUT });
-    await saveBtn.click();
-
-    await expect.poll(() => patchedUrl, { timeout: TIMEOUT }).not.toBeNull();
-    expect(/** @type {string} */ (patchedUrl)).toContain('/api/admin/templates/201');
-  });
-});
+// `Brackets kind-filter reads live Agent(kind=bracket) data` describe
+// block removed 2026-11 (Track 3, T3.4, Bracket/Template/GTT removal) —
+// `pickAgentKind(page, 'brackets')` no longer resolves to any option,
+// and `PATCH /api/admin/templates/{id}` no longer exists server-side.

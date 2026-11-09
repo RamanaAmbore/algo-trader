@@ -4,6 +4,14 @@ import { test, expect } from '@playwright/test';
  * Showcase page (/about) — verify feature cards render with expected
  * text for order ticket enhancements and adaptive chase aggressiveness.
  * Test runs on desktop viewport only (no mobile-specific changes for showcase).
+ *
+ * 2026-11 (Track 3, T3.4, Bracket/Template/GTT removal): the standalone
+ * "Brackets — bracket OCO across every broker" feature card (and its
+ * /automation?tab=brackets link) and the "Wing-leg warning when a
+ * Bracket..." bullet on this "Rich order entry context" card were removed
+ * from +page.svelte — Bracket/Template/GTT support no longer exists.
+ * The card-count assertion below (`toBeGreaterThanOrEqual(12)`) still
+ * passes with one fewer card.
  */
 
 test.describe('Showcase page — order ticket features', () => {
@@ -27,7 +35,6 @@ test.describe('Showcase page — order ticket features', () => {
     await expect(page.getByText('ATM/ITM/OTM classification shown')).toBeVisible();
     await expect(page.getByText('Chase aggressiveness toggle')).toBeVisible();
     await expect(page.getByText('Exchange-closed badge in header')).toBeVisible();
-    await expect(page.getByText('Wing-leg warning when a Bracket')).toBeVisible();
 
     // Verify the card links to /orders
     const richCardLink = page.locator('.show-card').filter({

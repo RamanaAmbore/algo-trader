@@ -13,29 +13,22 @@
  *     (2026-10-17 — the legacy orders.js grammar, CommandBar.svelte and
  *     CommandLineTab.svelte were deleted entirely, operator-confirmed;
  *     see the 2026-10-17 entry in docs/specs/AUTOMATION_SPEC.md's change
- *     log).
- *   - resolveBracketTemplateRefs: a `bracket="slug"` reference resolves
- *     to the correct numeric `template_id` for both a single ticket and
- *     a multi-leg basket; an unknown slug (or a leg carrying both
- *     template_id and template_slug) is a structured error.
- *   - submitConsoleOrder: a no-match slug / a templates-fetch failure
- *     surfaces a structured error and NEVER calls placeTicketOrder or
- *     placeBasket.
- *   - submitConsoleAgent / submitConsoleBracket: thin wrappers over
- *     createAgent / createOrderTemplate, reusing the exact same API
- *     calls the existing UI already makes.
+ *     log). `bracket(...)` is still matched here (classifies 'agents'),
+ *     even though it's now a hard compile error one layer down — see
+ *     agents.js.
+ *   - submitConsoleOrder: a thin pass-through now (no bracket/template
+ *     resolution step — removed 2026-11, Track 3 T3.4, Bracket/
+ *     Template/GTT removal).
+ *   - submitConsoleAgent: a thin wrapper over createAgent, reusing the
+ *     exact same API call the existing UI already makes.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const loadOrderTemplates = vi.fn();
 const placeTicketOrder    = vi.fn();
 const placeBasket         = vi.fn();
 const createAgent         = vi.fn();
 const updateAgent         = vi.fn();
-const createOrderTemplate = vi.fn();
-const patchOrderTemplate  = vi.fn();
-const reloadOrderTemplates = vi.fn();
 const lookupHelpToken = vi.fn();
 
 vi.mock('$lib/api', () => ({
@@ -43,42 +36,32 @@ vi.mock('$lib/api', () => ({
   placeBasket:         (...a) => placeBasket(...a),
   createAgent:         (...a) => createAgent(...a),
   updateAgent:         (...a) => updateAgent(...a),
-  createOrderTemplate: (...a) => createOrderTemplate(...a),
-  patchOrderTemplate:  (...a) => patchOrderTemplate(...a),
   lookupHelpToken:     (...a) => lookupHelpToken(...a),
-}));
-vi.mock('$lib/data/templates', () => ({
-  loadOrderTemplates: (...a) => loadOrderTemplates(...a),
-  reloadOrderTemplates: (...a) => reloadOrderTemplates(...a),
 }));
 
 const {
   classifyConsoleStatement,
   dispatchConsoleStatement,
-  needsTemplateResolution,
-  resolveBracketTemplateRefs,
   resolveConsoleOrder,
   submitResolvedConsoleOrder,
   submitConsoleOrder,
   submitConsoleAgent,
-  submitConsoleBracket,
   submitConsoleToken,
   updateConsoleAgent,
-  updateConsoleBracket,
   updateConsoleToken,
   slugifyAgentName,
   submitConsoleHelp,
 } = await import('$lib/command/consoleDispatch.js');
 
+// `loadOrderTemplates` is no longer imported at all, since
+// `resolveConsoleOrder` no longer needs it — see the "no bracket
+// resolution step" describe block below.
+
 beforeEach(() => {
-  loadOrderTemplates.mockReset();
   placeTicketOrder.mockReset();
   placeBasket.mockReset();
   createAgent.mockReset();
   updateAgent.mockReset();
-  createOrderTemplate.mockReset();
-  patchOrderTemplate.mockReset();
-  reloadOrderTemplates.mockReset();
   lookupHelpToken.mockReset();
 });
 
@@ -207,157 +190,41 @@ describe('dispatchConsoleStatement', () => {
   });
 });
 
-// ── resolveBracketTemplateRefs / needsTemplateResolution ────────────────
+// `resolveBracketTemplateRefs` / `needsTemplateResolution` and their test
+// coverage removed 2026-11 (Track 3, T3.4, Bracket/Template/GTT removal)
+// — `bracket=` on an order leg is now rejected at COMPILE time (see
+// agents.js's `compileOrderStmt`), so a compiled leg can never carry a
+// `template_slug` field for this layer to resolve.
 
-const TEMPLATE_ROWS = [
-  { id: 101, slug: 'default-bull', name: 'Default Bull' },
-  { id: 102, slug: 'default-bear', name: 'Default Bear' },
-  // operator-authored custom template — slug is NULL per
-  // backend/api/models.py's own documented convention; NOT resolvable by
-  // name here (see consoleDispatch.js's header note on this gap).
-  { id: 103, slug: null, name: 'My Custom Template' },
-];
+// ── submitConsoleOrder / resolveConsoleOrder — now a trivial pass-through ──
 
-describe('needsTemplateResolution', () => {
-  it('is false when no leg carries a template_slug', () => {
-    expect(needsTemplateResolution({ ticket: { account: 'ZG0790' }, basket: null })).toBe(false);
-  });
-  it('is true when a ticket leg carries a template_slug', () => {
-    expect(needsTemplateResolution({ ticket: { template_slug: 'default-bull' }, basket: null })).toBe(true);
-  });
-  it('is true when any basket leg carries a template_slug', () => {
-    const basket = { groups: [{ account: 'A', legs: [{ side: 'BUY' }, { side: 'SELL', template_slug: 'default-bear' }] }] };
-    expect(needsTemplateResolution({ ticket: null, basket })).toBe(true);
-  });
-});
-
-describe('resolveBracketTemplateRefs', () => {
-  it('resolves a single-ticket bracket= reference to template_id and strips template_slug', () => {
-    const r = /** @type {any} */ (resolveBracketTemplateRefs(
-      { ticket: { account: 'ZG0790', template_slug: 'default-bull' }, basket: null },
-      TEMPLATE_ROWS,
-    ));
-    expect(r.ok).toBe(true);
-    expect(r.ticket).toEqual({ account: 'ZG0790', template_id: 101 });
-    expect(r.ticket.template_slug).toBeUndefined();
-  });
-
-  it('resolves bracket= references across every leg of a multi-account basket', () => {
-    const basket = {
-      groups: [
-        { account: 'A', legs: [{ side: 'BUY', template_slug: 'default-bull' }] },
-        { account: 'B', legs: [{ side: 'SELL', template_slug: 'default-bear' }, { side: 'BUY' }] },
-      ],
-    };
-    const r = /** @type {any} */ (resolveBracketTemplateRefs({ ticket: null, basket }, TEMPLATE_ROWS));
-    expect(r.ok).toBe(true);
-    expect(r.basket.groups[0].legs[0]).toEqual({ side: 'BUY', template_id: 101 });
-    expect(r.basket.groups[1].legs[0]).toEqual({ side: 'SELL', template_id: 102 });
-    expect(r.basket.groups[1].legs[1]).toEqual({ side: 'BUY' }); // untouched — no slug ref
-  });
-
-  it('errors on an unknown bracket slug, never returning a resolved payload', () => {
-    const r = /** @type {any} */ (resolveBracketTemplateRefs(
-      { ticket: { template_slug: 'nonexistent-slug' }, basket: null },
-      TEMPLATE_ROWS,
-    ));
-    expect(r.ok).toBe(false);
-    expect(r.error).toMatch(/Unknown bracket/);
-  });
-
-  it('cannot resolve a custom template by its name — only slug is matched (documented gap)', () => {
-    const r = /** @type {any} */ (resolveBracketTemplateRefs(
-      { ticket: { template_slug: 'My Custom Template' }, basket: null },
-      TEMPLATE_ROWS,
-    ));
-    expect(r.ok).toBe(false);
-  });
-
-  it('errors when a leg carries both an explicit template_id and a bracket= slug', () => {
-    const r = /** @type {any} */ (resolveBracketTemplateRefs(
-      { ticket: { template_id: 999, template_slug: 'default-bull' }, basket: null },
-      TEMPLATE_ROWS,
-    ));
-    expect(r.ok).toBe(false);
-    expect(r.error).toMatch(/cannot specify both/);
-  });
-});
-
-// ── submitConsoleOrder — the no-match / fetch-failure invariants ────────
-
-describe('submitConsoleOrder — bracket resolution gates submission', () => {
-  it('resolves bracket= then places a single ticket with template_id substituted', async () => {
-    loadOrderTemplates.mockResolvedValue(TEMPLATE_ROWS);
-    placeTicketOrder.mockResolvedValue({ order_id: 'OID1' });
-    const compiled = { ticket: { account: 'ZG0790', template_slug: 'default-bull' }, basket: null };
-    const r = await submitConsoleOrder(compiled, { mode: 'paper' });
-    expect(r.ok).toBe(true);
-    expect(placeTicketOrder).toHaveBeenCalledTimes(1);
-    const sentPayload = placeTicketOrder.mock.calls[0][0];
-    expect(sentPayload.template_id).toBe(101);
-    expect(sentPayload.template_slug).toBeUndefined();
-    expect(sentPayload.mode).toBe('paper');
-    expect(sentPayload.source).toBe('command');
-  });
-
-  it('resolves bracket= across a basket and calls placeBasket with resolved groups', async () => {
-    loadOrderTemplates.mockResolvedValue(TEMPLATE_ROWS);
-    placeBasket.mockResolvedValue({ groups: [] });
-    const basket = { groups: [{ account: 'A', legs: [{ side: 'BUY', template_slug: 'default-bull' }] }] };
-    const r = await submitConsoleOrder({ ticket: null, basket }, { mode: 'paper' });
-    expect(r.ok).toBe(true);
-    expect(placeBasket).toHaveBeenCalledTimes(1);
-    expect(placeBasket.mock.calls[0][0][0].legs[0].template_id).toBe(101);
-  });
-
-  it('skips the templates fetch entirely when no leg references a bracket', async () => {
+describe('submitConsoleOrder — no bracket resolution step (removed 2026-11, Track 3 T3.4)', () => {
+  it('never fetches the templates catalog — there is nothing left to resolve', async () => {
     placeTicketOrder.mockResolvedValue({ order_id: 'OID2' });
     const r = await submitConsoleOrder({ ticket: { account: 'ZG0790' }, basket: null }, { mode: 'paper' });
     expect(r.ok).toBe(true);
-    expect(loadOrderTemplates).not.toHaveBeenCalled();
     expect(placeTicketOrder).toHaveBeenCalledTimes(1);
   });
 
-  it('a no-match bracket slug never calls placeTicketOrder or placeBasket', async () => {
-    loadOrderTemplates.mockResolvedValue(TEMPLATE_ROWS);
-    const compiled = { ticket: { account: 'ZG0790', template_slug: 'does-not-exist' }, basket: null };
-    const r = await submitConsoleOrder(compiled, { mode: 'paper' });
-    expect(r.ok).toBe(false);
-    expect(/** @type {any} */ (r).error).toMatch(/Unknown bracket/);
-    expect(placeTicketOrder).not.toHaveBeenCalled();
-    expect(placeBasket).not.toHaveBeenCalled();
-  });
-
-  it('a templates-fetch failure surfaces a distinct error and never calls the ticket endpoint', async () => {
-    loadOrderTemplates.mockRejectedValue(new Error('network down'));
-    const compiled = { ticket: { account: 'ZG0790', template_slug: 'default-bull' }, basket: null };
-    const r = await submitConsoleOrder(compiled, { mode: 'paper' });
-    expect(r.ok).toBe(false);
-    expect(/** @type {any} */ (r).error).toMatch(/Could not load templates/);
-    expect(placeTicketOrder).not.toHaveBeenCalled();
-    expect(placeBasket).not.toHaveBeenCalled();
+  it('a single ticket and a basket both still submit through resolveConsoleOrder + submitResolvedConsoleOrder unchanged', async () => {
+    placeBasket.mockResolvedValue({ groups: [] });
+    const basket = { groups: [{ account: 'A', legs: [{ side: 'BUY' }] }] };
+    const r = await submitConsoleOrder({ ticket: null, basket }, { mode: 'paper' });
+    expect(r.ok).toBe(true);
+    expect(placeBasket).toHaveBeenCalledTimes(1);
   });
 });
 
 describe('resolveConsoleOrder + submitResolvedConsoleOrder split (page pre-confirm flow)', () => {
-  it('resolving separately from submitting still reaches the broker call once', async () => {
-    loadOrderTemplates.mockResolvedValue(TEMPLATE_ROWS);
+  it('resolving separately from submitting still reaches the broker call once, with no templates fetch', async () => {
     placeTicketOrder.mockResolvedValue({ order_id: 'OID3' });
-    const compiled = { ticket: { account: 'ZG0790', template_slug: 'default-bull' }, basket: null };
+    const compiled = { ticket: { account: 'ZG0790' }, basket: null };
     const resolved = await resolveConsoleOrder(compiled);
     expect(resolved.ok).toBe(true);
+    expect(resolved.ticket).toEqual(compiled.ticket);
     const r = await submitResolvedConsoleOrder(/** @type {any} */ (resolved), { mode: 'live' });
     expect(r.ok).toBe(true);
     expect(placeTicketOrder).toHaveBeenCalledTimes(1);
-    expect(loadOrderTemplates).toHaveBeenCalledTimes(1); // not refetched twice
-  });
-
-  it('a resolution failure never reaches submitResolvedConsoleOrder (caller must check .ok)', async () => {
-    loadOrderTemplates.mockResolvedValue(TEMPLATE_ROWS);
-    const compiled = { ticket: { account: 'ZG0790', template_slug: 'nope' }, basket: null };
-    const resolved = await resolveConsoleOrder(compiled);
-    expect(resolved.ok).toBe(false);
-    expect(placeTicketOrder).not.toHaveBeenCalled();
   });
 });
 
@@ -502,30 +369,9 @@ describe('slugifyAgentName', () => {
   });
 });
 
-// ── submitConsoleBracket ─────────────────────────────────────────────────
-
-describe('submitConsoleBracket', () => {
-  it('creates the template via the existing createOrderTemplate call and reloads the cache', async () => {
-    createOrderTemplate.mockResolvedValue({ id: 55, slug: null, name: 'My Bracket' });
-    const r = await submitConsoleBracket({ name: 'My Bracket', tp_pct: 20, sl_pct: 10 });
-    expect(r.ok).toBe(true);
-    expect(createOrderTemplate).toHaveBeenCalledWith({ name: 'My Bracket', tp_pct: 20, sl_pct: 10 });
-    expect(reloadOrderTemplates).toHaveBeenCalledTimes(1);
-  });
-
-  it('surfaces a create failure without reloading the templates cache', async () => {
-    createOrderTemplate.mockRejectedValue(new Error("template 'My Bracket' already exists"));
-    const r = await submitConsoleBracket({ name: 'My Bracket' });
-    expect(r.ok).toBe(false);
-    expect(reloadOrderTemplates).not.toHaveBeenCalled();
-  });
-
-  it('requires a compiled template — never calls createOrderTemplate with nothing', async () => {
-    const r = await submitConsoleBracket(null);
-    expect(r.ok).toBe(false);
-    expect(createOrderTemplate).not.toHaveBeenCalled();
-  });
-});
+// `submitConsoleBracket` and its test coverage removed 2026-11 (Track 3,
+// T3.4, Bracket/Template/GTT removal) — `compiled.kind` can never be
+// `'bracket'` anymore.
 
 // ── submitConsoleToken (Sprint 14) ──────────────────────────────────────
 
@@ -741,30 +587,9 @@ describe('updateConsoleAgent', () => {
   });
 });
 
-describe('updateConsoleBracket', () => {
-  it('calls patchOrderTemplate(id, ...) — never createOrderTemplate — and reloads the cache', async () => {
-    patchOrderTemplate.mockResolvedValue({ id: 55, name: 'My Bracket' });
-    const compiledTemplate = { name: 'My Bracket', tp_pct: 20, sl_pct: -10 };
-    const r = await updateConsoleBracket(55, compiledTemplate);
-    expect(r.ok).toBe(true);
-    expect(createOrderTemplate).not.toHaveBeenCalled();
-    expect(patchOrderTemplate).toHaveBeenCalledWith(55, compiledTemplate);
-    expect(reloadOrderTemplates).toHaveBeenCalledTimes(1);
-  });
-
-  it('requires a target id — never calls patchOrderTemplate with no row selected', async () => {
-    const r = await updateConsoleBracket(null, { name: 'x' });
-    expect(r.ok).toBe(false);
-    expect(patchOrderTemplate).not.toHaveBeenCalled();
-  });
-
-  it('surfaces an update failure without reloading the templates cache', async () => {
-    patchOrderTemplate.mockRejectedValue(new Error('not found'));
-    const r = await updateConsoleBracket(55, { name: 'x' });
-    expect(r.ok).toBe(false);
-    expect(reloadOrderTemplates).not.toHaveBeenCalled();
-  });
-});
+// `updateConsoleBracket` and its test coverage removed 2026-11 (Track 3,
+// T3.4, Bracket/Template/GTT removal) — `PATCH /api/admin/templates/{id}`
+// is gone server-side.
 
 describe('updateConsoleToken', () => {
   it('calls updateAgent(slug, {description, conditions, events, cli_source}) — never createAgent (Sprint D2)', async () => {

@@ -2611,7 +2611,7 @@ export function parseAgentStmt(state) {
 /** `order_stmt := call ("," call)* meta_item*` — restricted to
  *  order/place_order calls. A non-empty `meta` here is syntactically fine
  *  (parsed, not rejected) but is a COMPILE-time error — see
- *  `compileOrderStmt` — meta tags only apply to agents/brackets. */
+ *  `compileOrderStmt` — meta tags only apply to agents. */
 export function parseOrderStmt(state) {
   const calls = parseCallList(state);
   for (const c of calls) {
@@ -2627,22 +2627,14 @@ export function parseOrderStmt(state) {
   return { kind: 'order', calls, meta };
 }
 
-/** `bracket_stmt := call meta_item*` — Sprint 8. A SINGLE `bracket(...)`
- *  call (never a call_list — order_stmt's 2+-call basket form has no
- *  bracket equivalent), restricted to standalone use, EXACTLY mirroring
- *  `parseOrderStmt`'s own "only order(...) can be used standalone"
- *  rule/error-message style above, just naming "bracket" instead of
- *  "order". A trailing comma (an attempt at a bracket call_list) is
- *  rejected with its own, analogous message rather than silently being
- *  swallowed by `parseCallList`. */
 /** `cancel_all_orders_stmt := call meta_item*` — Sprint [cancel-all-cli]
  *  (2026-10). A SINGLE `cancel_all_orders(...)` call, restricted to
- *  standalone use, EXACTLY mirroring `parseBracketStmt`'s own "only
+ *  standalone use, EXACTLY mirroring `parseOrderStmt`'s own "only
  *  bracket(...) can be used standalone" rule/error-message style above,
  *  just naming "cancel_all_orders" instead of "bracket". `meta` is parsed
  *  (never rejected here) but is a compile-time error — see
  *  `compileCancelAllOrdersStmt` — a bare fleet-wide cancel has no
- *  agent/bracket to attach a name/description/tag/group to, same
+ *  agent to attach a name/description/tag/group to, same
  *  convention `parseOrderStmt`/`compileOrderStmt` already established for
  *  a bare `order(...)` statement. */
 export function parseCancelAllOrdersStmt(state) {
@@ -2671,7 +2663,7 @@ export function parseCancelAllOrdersStmt(state) {
  *  gate, safe in any mode (unlike `cancel_all_orders`, which is
  *  live-only). `meta` is parsed (never rejected here) but is a
  *  compile-time error — see `compileHelpStmt` — a bare lookup has no
- *  agent/bracket to attach a name/description/tag/group to, same
+ *  agent to attach a name/description/tag/group to, same
  *  convention every other bare-statement compiler already established. */
 export function parseHelpStmt(state) {
   const call = parseCall(state);
@@ -2691,28 +2683,10 @@ export function parseHelpStmt(state) {
   return { kind: 'help', call, meta };
 }
 
-export function parseBracketStmt(state) {
-  const call = parseCall(state);
-  if (call.name.toLowerCase() !== 'bracket') {
-    throw new _ParseError(
-      'only bracket(...) can be used standalone — wrap other actions in a WHEN ... DO ... agent',
-      { start: call.start },
-    );
-  }
-  if (_peek(state).type === 'COMMA') {
-    throw new _ParseError(
-      'only a single bracket(...) can be used standalone — wrap other actions in a WHEN ... DO ... agent',
-      _peek(state),
-    );
-  }
-  const meta = parseMetaClause(state);
-  return { kind: 'bracket', call, meta };
-}
-
 /** `token_stmt := call token_body meta_item*` — Sprint 10, extended
  *  2026-10-12 (operator: "build [condition-kind Token support] now") —
  *  a standalone `token(kind=...)` HEAD call, restricted to standalone
- *  use, EXACTLY mirroring `parseBracketStmt`'s own "only bracket(...)
+ *  use, EXACTLY mirroring `parseOrderStmt`'s own "only order(...)
  *  can be used standalone" rule/error-message style above, naming
  *  "token" instead.
  *
@@ -2817,6 +2791,22 @@ function _dispatchStatement(state) {
       first,
     );
   }
+
+  // Bracket/Template/GTT removal (Track 3, T3.4, 2026-11) — `bracket(...)`
+  // (standalone, or as the first item of a mixed preamble) is rejected
+  // immediately with a specific, named error, mirroring the `given`
+  // rejection just above — rather than falling through to the old
+  // try-then-fallback dance (which used to retry it as a preamble/DO
+  // action call) or a confusing generic error several tokens later.
+  // Thrown here, BEFORE the isLeadingOrder/isLeadingHelp try/catch below,
+  // so it propagates straight out to `parseStatement`'s own catch, never
+  // swallowed and silently retried as something else.
+  if (first.type === 'NAME' && first.hasCall && _wordIs(first, 'bracket')) {
+    throw new _ParseError(
+      'bracket() was removed — Bracket/Template/GTT support has been removed from the platform',
+      first,
+    );
+  }
   // A bare, non-called leading `ALERT` that ISN'T the event_stmt form
   // above is the OLD agent_stmt clause-keyword spelling (`ALERT telegram
   // DO nop`) — also removed, also a clear, specific rejection. `alert`
@@ -2848,40 +2838,40 @@ function _dispatchStatement(state) {
     return parseAgentStmt(state);
   }
 
-  // `order(...)`/`bracket(...)` — Sprint [grammar-unify]: these TWO ARE
-  // folded into the unified preamble/DO vocabulary (the plan's own worked
-  // example mixes `order(...)`/`bracket(...)` with `alert(...)`/
-  // `debug(...)`/`help(...)`/label-assignment ahead of a `WHEN ... DO
-  // ...` tail). A leading `order(...)`/`bracket(...)` is therefore
-  // AMBIGUOUS between "the whole statement is just this one standalone
-  // order/bracket" (today's pre-existing, unchanged `kind:'order'`/
-  // `kind:'bracket'` standalone forms — `parseOrderStmt`/
-  // `parseBracketStmt`, still reused completely unchanged — do NOT touch
-  // those compilers) and "this is the first item of a longer mixed
-  // preamble." Resolved by TRYING the exclusive standalone parser first
-  // and accepting it ONLY if it consumes the entire remaining input
-  // (reaches EOF); any throw, OR leftover trailing input, backtracks
-  // `state.pos` and falls through to the unified parser instead — which
-  // accepts the identical call vocabulary, so nothing is lost. Safe to
-  // backtrack: neither `parseOrderStmt` nor `parseBracketStmt` ever
-  // registers a binding (`_registerBinding`/`state.bindings` are untouched
-  // by either), so resetting `state.pos` alone is sufficient — there is
-  // no OTHER mutable parse state to undo. A non-`_ParseError` throw is
-  // NEVER swallowed here — only a nested statement's OWN deliberate
-  // `_ParseError` is a legitimate "try the other interpretation" signal;
-  // anything else is a real bug and must propagate.
+  // `order(...)` — Sprint [grammar-unify]: folded into the unified
+  // preamble/DO vocabulary (the plan's own worked example mixes
+  // `order(...)` with `alert(...)`/`debug(...)`/`help(...)`/label-
+  // assignment ahead of a `WHEN ... DO ...` tail). A leading `order(...)`
+  // is therefore AMBIGUOUS between "the whole statement is just this one
+  // standalone order" (today's pre-existing, unchanged `kind:'order'`
+  // standalone form — `parseOrderStmt`, still reused completely
+  // unchanged — do NOT touch that compiler) and "this is the first item
+  // of a longer mixed preamble." Resolved by TRYING the exclusive
+  // standalone parser first and accepting it ONLY if it consumes the
+  // entire remaining input (reaches EOF); any throw, OR leftover trailing
+  // input, backtracks `state.pos` and falls through to the unified parser
+  // instead — which accepts the identical call vocabulary, so nothing is
+  // lost. Safe to backtrack: `parseOrderStmt` never registers a binding
+  // (`_registerBinding`/`state.bindings` are untouched), so resetting
+  // `state.pos` alone is sufficient — there is no OTHER mutable parse
+  // state to undo. A non-`_ParseError` throw is NEVER swallowed here —
+  // only a nested statement's OWN deliberate `_ParseError` is a
+  // legitimate "try the other interpretation" signal; anything else is a
+  // real bug and must propagate.
   // `help(...)` joins the SAME try-then-fallback treatment (item 4): a
   // bare `help(<name>)` alone is still the pre-existing, unchanged
   // `kind:'help'` standalone form (`parseHelpStmt`), but `help(...)` is
   // ALSO folded into the unified preamble/DO vocabulary (the plan's own
   // worked example uses it there) — so the same EOF-gated trial applies.
+  // (`bracket(...)` used to join this same trial — removed 2026-11, Track
+  // 3 T3.4, Bracket/Template/GTT removal; a leading `bracket(...)` is now
+  // rejected immediately above, before this block is ever reached.)
   const isLeadingOrder = first.type === 'NAME' && first.hasCall && (_wordIs(first, 'order') || _wordIs(first, 'place_order'));
-  const isLeadingBracket = first.type === 'NAME' && first.hasCall && _wordIs(first, 'bracket');
   const isLeadingHelp = first.type === 'NAME' && first.hasCall && _wordIs(first, 'help');
-  if (isLeadingOrder || isLeadingBracket || isLeadingHelp) {
+  if (isLeadingOrder || isLeadingHelp) {
     const save = state.pos;
     try {
-      const ast = isLeadingOrder ? parseOrderStmt(state) : isLeadingBracket ? parseBracketStmt(state) : parseHelpStmt(state);
+      const ast = isLeadingOrder ? parseOrderStmt(state) : parseHelpStmt(state);
       if (_peek(state).type === 'EOF') return ast;
     } catch (e) {
       if (!(e instanceof _ParseError)) throw e;
@@ -5278,15 +5268,11 @@ function _compileAlertCallAsOrdinaryCall(call, catalog) {
  *    - `alert(...)`  -> `_compileAlertCallAsOrdinaryCall` (produces
  *      `events`, the SAME field a DO-position `alert(...)` has always
  *      produced — see `compileAgentStmt`'s own `events` wiring).
- *    - `bracket(...)` -> `_compileBracketCallFields`, wrapped as an
- *      ordinary `{type:'bracket', params}` action entry. NOTE: there is
- *      currently NO `bracket` action registered in the real backend
- *      action-dispatch tables (`_NOOP_ACTION_HANDLERS`/`_LIVE_ACTION_
- *      HANDLERS` — see CLAUDE.md's "Agent action-dispatch SSOT" entry) —
- *      this compiles correctly and gives the engine agent (plan item 0)
- *      something concrete to dispatch against, but the entry is INERT
- *      server-side until that wiring lands. Reported, not silently
- *      worked around.
+ *    - `bracket(...)` -> a hard compile error (removed 2026-11, Track 3
+ *      T3.4, Bracket/Template/GTT removal) — was previously
+ *      `_compileBracketCallFields`, wrapped as an ordinary
+ *      `{type:'bracket', params}` action entry; that compiler and the
+ *      backend action it targeted are both gone.
  *    - `debug(...)`  -> `_compileDebugCall` (unchanged — already reads
  *      `call._bindingsAt`, so no position-specific adjustment needed).
  *    - everything else (`order`/`place_order`/`help`/any other real
@@ -5301,8 +5287,10 @@ function _compileSharedCall(rawCall, catalog, opts, rowRefCtx) {
     return r.errors.length ? { errors: r.errors } : { isEvent: true, events: r.events };
   }
   if (rawName === 'bracket') {
-    const r = _compileBracketCallFields(rawCall, catalog);
-    return r.errors.length ? { errors: r.errors } : { action: { type: 'bracket', params: r.fields } };
+    // Bracket/Template/GTT removal (Track 3, T3.4, 2026-11) — `bracket(...)`
+    // in a preamble or DO position is now a hard compile error, matching
+    // the standalone-statement rejection in `_dispatchStatement` above.
+    return { errors: [_err('bracket() was removed — Bracket/Template/GTT support has been removed from the platform')] };
   }
   if (rawName === 'debug') {
     const r = _compileDebugCall(rawCall, rawCall._bindingsAt, catalog);
@@ -6209,25 +6197,16 @@ function _compileOrderCallToLeg(call, catalog, opts) {
   // wing_max_spread_pct/tp_order_type/sl_trail_pct/tp_scales_json are
   // literal keys in this entry's own catalog params_schema.
   const { tpSlWingArgs, call: afterTpSlWing } = _splitTpSlWingArgs(afterLots);
-  // `bracket=` (Sprint 8) — references an existing saved OrderTemplate by
-  // name; see `_compileTpSlWingFields`'s sibling note above for the
-  // analogous tp_order_type caveat. FIELD-NAME CHOICE (not independently
-  // confirmed — flagged for the backend agent): `TicketOrderRequest` has
-  // no raw name/slug reference field at all (only numeric `template_id`);
-  // the one existing precedent anywhere in the codebase for "reference a
-  // saved template by NAME, resolved server-side" is `backend/api/routes/
-  // lab.py`'s own request struct's `template_slug` field (resolved via
-  // `_res_resolve_template_slug` BEFORE a real TicketOrderRequest is
-  // built) — reused here for consistency. This compiler does no network
-  // I/O, so it can only emit the raw slug, never a resolved id.
+  // `bracket=` removed 2026-11 (Track 3, T3.4, Bracket/Template/GTT
+  // removal) — it used to reference an existing saved OrderTemplate by
+  // name, resolved server-side via `template_slug`
+  // (`backend/api/routes/lab.py:_res_resolve_template_slug`). That
+  // resolver and the whole Bracket/Template concept are gone, so the
+  // param is now a hard "unknown parameter" compile error, same as any
+  // other unrecognized `order(...)` kwarg.
   const bracketArgs = (afterTpSlWing.args || []).filter(a => a.key && a.key.toLowerCase() === 'bracket');
   const strippedCall = { ...afterTpSlWing, args: (afterTpSlWing.args || []).filter(a => !(a.key && a.key.toLowerCase() === 'bracket')) };
-  if (bracketArgs.length > 1) errors.push(_err("order: duplicate parameter 'bracket'"));
-  let template_slug = null;
-  if (bracketArgs.length === 1) {
-    const r = _coerceValueForSpec(bracketArgs[0].value, { type: 'string' }, 'bracket', 'order');
-    if (r.error) errors.push(r.error); else template_slug = r.value;
-  }
+  if (bracketArgs.length > 0) errors.push(_err("order: unknown parameter 'bracket' — Bracket/Template/GTT support has been removed"));
   const tpSlWingResult = _compileTpSlWingFields(tpSlWingArgs, 'ticket', 'order', entry.mutuallyExclusiveGroups);
   errors.push(...tpSlWingResult.errors);
 
@@ -6414,12 +6393,9 @@ function _compileOrderCallToLeg(call, catalog, opts) {
   // its `null` default from above.
   Object.assign(leg, tpSlWingResult.fields || {});
   if (lot_size_hint != null) leg.lot_size_hint = lot_size_hint;
-  // `bracket=` (Sprint 8) — conditionally added, same "only present when
-  // actually typed" convention `lot_size_hint` above already uses, so
-  // every pre-Sprint-8 `order(...)` compile's exact output shape
-  // (asserted via `.toEqual` in existing tests) is byte-for-byte
-  // unaffected when `bracket=` isn't used.
-  if (template_slug != null) leg.template_slug = template_slug;
+  // `leg.template_slug` removed 2026-11 (Track 3, T3.4, Bracket/Template/
+  // GTT removal) — `bracket=` is rejected above, so this field can never
+  // be set.
   return { leg, errors: [] };
 }
 
@@ -6430,11 +6406,11 @@ function _compileOrderCallToLeg(call, catalog, opts) {
  *  `backend/api/schemas.py:TicketOrderRequest` / `BasketOrderRequest`). */
 function compileOrderStmt(ast, catalog, opts = {}) {
   const errors = [];
-  // A bare order(...) statement has no agent/bracket to attach a
+  // A bare order(...) statement has no agent to attach a
   // name/description/tag/group to — parsed fine (see `parseOrderStmt`),
   // rejected here at compile time, per the operator's explicit scope.
   if (ast.meta && ast.meta.length) {
-    errors.push(_err('meta tags only apply to agents/brackets, not a bare order'));
+    errors.push(_err('meta tags only apply to agents, not a bare order'));
   }
   const legs = [];
   for (const call of ast.calls) {
@@ -6462,94 +6438,12 @@ function compileOrderStmt(ast, catalog, opts = {}) {
   return { kind: 'order', errors: [], ticket: null, basket: { groups } };
 }
 
-// Sprint 14 — added 'sell_any' to match the real backend
-// `_APPLIES_TO_CHOICES` set. Sprint 14 finding #4 (documented, never
-// actioned until 2026-10-12) also flagged a SECOND, separate gap:
-// 'buy_option' was still missing even though the real seeded
-// `default-long-option` bracket uses it — confirmed again directly by
-// a live decompile failure on a new custom bracket replicating that
-// same applies_to value. `_APPLIES_TO_CHOICES`
-// (`backend/api/routes/templates.py:50`) is the full, real set:
-// {"buy_any", "sell_option", "sell_any", "both", "buy_option"}.
-const _BRACKET_APPLIES_TO_SPEC = Object.freeze({ type: 'enum', enum: ['buy_any', 'sell_option', 'sell_any', 'both', 'buy_option'] });
-
-/** Compile a standalone `bracket(...)` call to an `OrderTemplateCreate`-
- *  shaped object (`backend/api/schemas.py`) — Sprint 8. `applies_to` is
- *  bracket-ONLY (not part of the shared TP/SL/Wing vocabulary, never valid
- *  on `order(...)`), CONFIRMED against the real struct's own declared
- *  default/comment (`applies_to: str = "both" # 'buy_any' / 'sell_option'
- *  / 'both'`). `#name=` is effectively required — `OrderTemplateCreate.name`
- *  is a required (non-Optional) `str` field — a missing `#name=` is a
- *  compile-time error, matching this file's existing required-field error
- *  style (`'<label>: missing required param '<key>''`). `catalog` (Sprint
- *  17) is threaded through purely so the shared wing-pair mutex check
- *  below can read `place_order`'s declared `mutuallyExclusiveGroups` —
- *  `OrderTemplateCreate` has no catalog token of its own; bracket's plain
- *  template-side field names reuse place_order's ticket-side group as the
- *  one shared business rule (see `_compileTpSlWingFields`'s own doc). */
-/** Compile a `bracket(...)` call's OWN arguments (tp/sl/wing fields +
- *  `applies_to=`) to `{fields, errors}` — extracted out of
- *  `compileBracketStmt` (Sprint [grammar-unify]) so the exact same body
- *  logic is reusable from `_compileSharedCall` when `bracket(...)`
- *  appears as one call among several in a preamble/DO list, not just as
- *  the WHOLE standalone statement. Carries NO meta/`#name=` handling at
- *  all — that stays `compileBracketStmt`-only (a bracket embedded in a
- *  preamble/DO list has no meta clause of its own to read; see
- *  `_compileSharedCall`'s own bracket branch, which reports — rather than
- *  invents — the fact that no backend `bracket` action exists yet to
- *  dispatch this entry, a gap for the engine agent to close, not this
- *  compiler). */
-function _compileBracketCallFields(call, catalog) {
-  const errors = [];
-  const { tpSlWingArgs, call: afterTpSlWing } = _splitTpSlWingArgs(call);
-  const appliesToArgs = (afterTpSlWing.args || []).filter(a => a.key && a.key.toLowerCase() === 'applies_to');
-  const otherArgs = (afterTpSlWing.args || []).filter(a => !(a.key && a.key.toLowerCase() === 'applies_to'));
-  if (appliesToArgs.length > 1) errors.push(_err("bracket: duplicate parameter 'applies_to'"));
-  for (const a of otherArgs) errors.push(_err(`bracket: unknown parameter '${a.key}'`));
-
-  // Sprint [order-unify] — tolerant lookup (schema-only; see
-  // `_compileOrderCallToLeg`'s identical comment).
-  const placeOrderEntry = catalog && catalog.actions
-    ? (catalog.actions.get('order') || catalog.actions.get('place_order'))
-    : null;
-  const tpSlWingResult = _compileTpSlWingFields(tpSlWingArgs, 'template', 'bracket', placeOrderEntry && placeOrderEntry.mutuallyExclusiveGroups);
-  errors.push(...tpSlWingResult.errors);
-
-  let applies_to;
-  if (appliesToArgs.length === 1) {
-    const r = _coerceValueForSpec(appliesToArgs[0].value, _BRACKET_APPLIES_TO_SPEC, 'applies_to', 'bracket');
-    if (r.error) errors.push(r.error); else applies_to = r.value;
-  }
-
-  if (errors.length) return { fields: null, errors };
-  const fields = {
-    ...(applies_to !== undefined ? { applies_to } : {}),
-    ...tpSlWingResult.fields,
-  };
-  return { fields, errors: [] };
-}
-
-function compileBracketStmt(ast, catalog, opts = {}) {
-  const errors = [];
-  const call = ast.call;
-  if (!call || call.name.toLowerCase() !== 'bracket') {
-    errors.push(_err('only bracket(...) can be used standalone'));
-    return { errors, template: null };
-  }
-
-  const bodyResult = _compileBracketCallFields(call, catalog);
-  errors.push(...bodyResult.errors);
-
-  const metaFields = compileMetaClause(ast.meta, errors);
-  if (!metaFields.name) {
-    errors.push(_err("bracket: missing required meta tag '#name' — a saved bracket must have a name"));
-  }
-
-  if (errors.length) return { errors, template: null };
-
-  const template = { ...metaFields, ...bodyResult.fields };
-  return { errors: [], template };
-}
+// `_BRACKET_APPLIES_TO_SPEC` / `_compileBracketCallFields` / `compileBracketStmt`
+// removed 2026-11 (Track 3, T3.4, Bracket/Template/GTT removal) —
+// `bracket(...)` is now a hard compile error in every position (see the
+// `_dispatchStatement` and `_compileSharedCall` rejections above); no AST
+// can ever carry `kind: 'bracket'` anymore, so this standalone-statement
+// compiler became unreachable.
 
 const _TOKEN_KIND_SPEC = Object.freeze({ type: 'enum', enum: ['notify', 'condition'] });
 
@@ -6646,8 +6540,7 @@ function compileTokenStmt(ast, catalog, opts = {}) {
  *  action already compiles through — no second schema to drift out of
  *  sync. `rowRefCtx` is always `null` here: a bare statement has no WHEN
  *  condition to bind a matched row from, so `$row`-style references are
- *  never meaningful on this path (mirrors `compileBracketStmt`'s own
- *  always-null rowRefCtx usage).
+ *  never meaningful on this path.
  *
  *  Live-only safety gate: `POST /api/orders/cancel-all` has no `mode`
  *  parameter and never routes through `PaperTradeEngine` — it only ever
@@ -6677,7 +6570,7 @@ function compileCancelAllOrdersStmt(ast, catalog, opts = {}) {
     return { errors, cancelAll: null };
   }
   if (ast.meta && ast.meta.length) {
-    errors.push(_err('meta tags only apply to agents/brackets, not a bare cancel_all_orders statement'));
+    errors.push(_err('meta tags only apply to agents, not a bare cancel_all_orders statement'));
   }
   if (!opts.mode) {
     errors.push(_err('mode ("paper"|"live") is required to compile a bare cancel_all_orders statement'));
@@ -6721,7 +6614,7 @@ function compileHelpStmt(ast, catalog, opts = {}) {
     return { errors, help: null };
   }
   if (ast.meta && ast.meta.length) {
-    errors.push(_err('meta tags only apply to agents/brackets, not a bare help statement'));
+    errors.push(_err('meta tags only apply to agents, not a bare help statement'));
   }
   if (errors.length) return { errors, help: null };
 
@@ -6739,13 +6632,14 @@ function compileHelpStmt(ast, catalog, opts = {}) {
  *  `null`.
  *
  *  `opts.allowedKinds` (Sprint B, 2026-10, Phase 2 "Console relocation") —
- *  an optional array restricting which of the five statement kinds
- *  (`'order'|'bracket'|'agent'|'event'|'token'`) this compile call accepts.
- *  Checked FIRST, before any kind-specific compiler runs, so a scope
- *  violation always surfaces as this one clear message — never a
- *  downstream error from a compiler that was never supposed to run (e.g.
- *  a `bracket(...)` missing `#name=` under an order-only scope must show
- *  THIS error, not "missing required meta tag '#name'"). This is the
+ *  an optional array restricting which statement kinds
+ *  (`'order'|'agent'|'event'|'token'|'cancel_all_orders'|'help'`) this
+ *  compile call accepts (`'bracket'` was a fifth kind here until it was
+ *  removed 2026-11, Track 3 T3.4, Bracket/Template/GTT removal — no AST
+ *  can carry that kind anymore). Checked FIRST, before any kind-specific
+ *  compiler runs, so a scope violation always surfaces as this one clear
+ *  message — never a downstream error from a compiler that was never
+ *  supposed to run. This is the
  *  SOLE enforcement point for the order-scoped CLI mounts added this
  *  phase (`/orders`' CLI tab, the SymbolPanel order-ticket modal's CLI
  *  tab) — the UI never hides a button to fake this restriction, it relies
@@ -6756,7 +6650,7 @@ export function compileStatement(ast, catalog, opts = {}) {
   if (opts.allowedKinds && !opts.allowedKinds.includes(ast.kind)) {
     return {
       kind: ast.kind,
-      errors: [_err('author agents/brackets on Automation → Console')],
+      errors: [_err('author agents on Automation → Console')],
       agent: null, ticket: null, basket: null, template: null, fragment: null, cancelAll: null, help: null,
     };
   }
@@ -6771,10 +6665,6 @@ export function compileStatement(ast, catalog, opts = {}) {
     // `compileEventStmt` are retired.
     const r = compileAgentStmt(ast, catalog, opts);
     return { kind: r.kind, errors: r.errors, agent: r.agent, ticket: null, basket: null, template: null, fragment: null, cancelAll: null, help: null };
-  }
-  if (ast.kind === 'bracket') {
-    const r = compileBracketStmt(ast, catalog, opts);
-    return { kind: 'bracket', errors: r.errors, agent: null, ticket: null, basket: null, template: r.template, fragment: null, cancelAll: null, help: null };
   }
   if (ast.kind === 'token') {
     const r = compileTokenStmt(ast, catalog, opts);
@@ -8039,16 +7929,16 @@ export function decompileActions(actions, catalog, opts = {}) {
       continue;
     }
     const lookupName = act.type.toLowerCase();
-    // Sprint [grammar-unify] — `bracket` is NEVER a real catalog action
-    // (`catalog.actions.get('bracket')` is always `undefined` — see
-    // `_compileSharedCall`'s own bracket branch) — checked BEFORE the
-    // catalog lookup below, which would otherwise fail this entry as
-    // "unknown action" before ever reaching a bracket-specific render
-    // path. No `notify=` support (bracket never compiles one).
+    // Bracket/Template/GTT removal (Track 3, T3.4, 2026-11) — a stored
+    // `{type:'bracket', params}` action entry (from before this removal)
+    // is now a hard decompile error, not rendered as `bracket(...)` CLI
+    // text — that text could never recompile anyway (see the
+    // `_compileSharedCall` rejection above), so rendering it would be a
+    // silently-broken round-trip, not a working one. Reported loudly,
+    // matching this file's "never silently drop" convention — see
+    // `decompileAgent`'s own doc for how this surfaces to the operator.
     if (lookupName === 'bracket') {
-      const r = _decompileBracketCallFields(act.params, catalog);
-      if (r.errors.length) { errors.push(...r.errors); continue; }
-      parts.push(r.text);
+      errors.push(_err("action 'bracket': Bracket/Template/GTT support has been removed — this agent's stored bracket action can no longer be edited via CLI; remove it from the row directly"));
       continue;
     }
     // Sprint [order-unify] — tolerant catalog lookup: `order` is the sole
@@ -8268,44 +8158,22 @@ function _decompileGivenPreamble(given) {
   return { text: `${parts.join('; ')}\n`, errors: [] };
 }
 
-/** Decompile a preamble/DO-position `bracket(...)` call's OWN fields
- *  (`{applies_to?, tp_order_type?, ...}` — the SAME shape
- *  `_compileBracketCallFields` produces) back to its `bracket(...)` call
- *  text — the mirror of THAT function, not of the full `decompileBracket`
- *  (which additionally requires `#name=`/meta that a preamble/DO
- *  bracket call never carries — see `_compileSharedCall`'s own bracket
- *  branch). A zero-argument result renders bare (`bracket`, no parens),
- *  matching `parseCall`'s own "a zero-argument token is always written
- *  bare" rule. */
-function _decompileBracketCallFields(fields, catalog) {
-  const t = fields || {};
-  const errors = [];
-  const argParts = [];
-  if (t.applies_to != null) {
-    if (typeof t.applies_to !== 'string') {
-      errors.push(_err('bracket.applies_to: expected an enum value'));
-    } else {
-      argParts.push(`applies_to=${_isBareable(t.applies_to) ? t.applies_to : _quoteString(t.applies_to).text}`);
-    }
-  }
-  const tpSlWingResult = _decompileTpSlWingFields(t, 'template', 'bracket');
-  errors.push(...tpSlWingResult.errors);
-  argParts.push(...tpSlWingResult.argParts);
-  if (errors.length) return { text: null, errors };
-  return { text: argParts.length ? `bracket(${argParts.join(', ')})` : 'bracket', errors: [] };
-}
+// `_decompileBracketCallFields` removed 2026-11 (Track 3, T3.4,
+// Bracket/Template/GTT removal) — it rendered a preamble/DO-position
+// `bracket(...)` call's own fields back to CLI text; both of its call
+// sites now reject the stored entry outright instead (see
+// `_decompilePreambleEntries` and `decompileActions` below).
 
 /** Decompile `agent.preamble[]` (Sprint [grammar-unify]) back to one CLI
  *  line PER entry, in textual order — the mirror of `compilePreambleClause`.
  *  `{type:'alert', events}` reuses `decompileEvents` UNCHANGED (the exact
  *  same body grammar `alert(...)`'s parens now wrap, see `parseCall`'s
  *  own `alert`-specific branch) and wraps it as `alert(...)`.
- *  `{type:'bracket', params}` goes through the dedicated
- *  `_decompileBracketCallFields` above. Every other entry is the
- *  ordinary `{type, params}` action shape `decompileActions` already
- *  renders ONE of — reused by wrapping it in a one-element array (never
- *  the `'nop'`/empty-array shortcut, since this is always called with a
- *  REAL single entry). */
+ *  `{type:'bracket', params}` is a hard error (removed 2026-11, see above).
+ *  Every other entry is the ordinary `{type, params}` action shape
+ *  `decompileActions` already renders ONE of — reused by wrapping it in a
+ *  one-element array (never the `'nop'`/empty-array shortcut, since this
+ *  is always called with a REAL single entry). */
 function _decompilePreambleEntries(preamble, catalog, opts) {
   if (!Array.isArray(preamble) || preamble.length === 0) return { text: '', errors: [] };
   const errors = [];
@@ -8322,9 +8190,9 @@ function _decompilePreambleEntries(preamble, catalog, opts) {
       continue;
     }
     if (entry.type === 'bracket') {
-      const r = _decompileBracketCallFields(entry.params, catalog);
-      if (r.errors.length) { errors.push(...r.errors); continue; }
-      lines.push(r.text);
+      // Mirrors the DO-action rejection above — a stored preamble
+      // `{type:'bracket', params}` entry can no longer be edited via CLI.
+      errors.push(_err("preamble 'bracket': Bracket/Template/GTT support has been removed — this agent's stored bracket entry can no longer be edited via CLI; remove it from the row directly"));
       continue;
     }
     const r = decompileActions([entry], catalog, opts);
@@ -8435,155 +8303,17 @@ function _renderObjectLiteral(obj) {
   return { text: `{${parts.join(', ')}}` };
 }
 
-/** Render a stored `tp_scales_json`/`tp_scales_json_override` STRING
- *  field (JSON-encoded array of objects — see the shared-vocabulary note
- *  on `_compileTpSlWingFields`) back to `[{...}, {...}]` CLI text. */
-function _renderTpScalesJsonValue(rawStr) {
-  let parsed;
-  try { parsed = JSON.parse(rawStr); } catch { return { error: true, message: 'tp_scales_json is not valid JSON' }; }
-  if (!Array.isArray(parsed)) return { error: true, message: 'tp_scales_json must decode to a JSON array of objects' };
-  const parts = [];
-  for (const item of parsed) {
-    const r = _renderObjectLiteral(item);
-    if (r.error) return r;
-    parts.push(r.text);
-  }
-  return { text: `[${parts.join(', ')}]` };
-}
-
-/** Decompile the shared TP/SL/Wing fields off a stored leg/template
- *  object back to `key=value` CLI arg-text fragments — the ONE mapping
- *  function both `order(...)` and `bracket(...)` decompilers would call
- *  (mirrors `_compileTpSlWingFields`'s own destKind convention: `'ticket'`
- *  reads `${kwarg}_override` keys, `'template'` reads plain `${kwarg}`
- *  keys). Returns `{ argParts, errors }` — never throws. */
-function _decompileTpSlWingFields(obj, destKind, label) {
-  const errors = [];
-  const argParts = [];
-  for (const kwarg of _TPSLWING_KWARGS) {
-    const srcKey = destKind === 'ticket' ? `${kwarg}_override` : kwarg;
-    if (obj[srcKey] == null) continue;
-    const value = obj[srcKey];
-
-    if (kwarg === 'tp_scales_json') {
-      if (typeof value !== 'string') { errors.push(_err(`${label}.${srcKey}: expected a JSON string`)); continue; }
-      const r = _renderTpScalesJsonValue(value);
-      if (r.error) { errors.push(_err(`${label}.${srcKey}: ${r.message}`)); continue; }
-      argParts.push(`tp_scales_json=${r.text}`);
-      continue;
-    }
-    if (kwarg === 'tp_order_type') {
-      const r = _renderParamValue(value, _TP_ORDER_TYPE_SPEC);
-      if (r.error) { errors.push(_err(`${label}.${srcKey}: ${r.message}`)); continue; }
-      argParts.push(`tp_order_type=${r.text}`);
-      continue;
-    }
-    const r = _renderParamValue(value, _TPSLWING_NUMBER_SPEC);
-    if (r.error) { errors.push(_err(`${label}.${srcKey}: ${r.message}`)); continue; }
-    argParts.push(`${kwarg}=${r.text}`);
-  }
-  return { argParts, errors };
-}
-
-/** The 4 real `OrderTemplate` fields (`backend/api/models.py`) that
- *  `bracket(...)` CLI syntax has NO way to express (Sprint 18 audit fix)
- *  — `compileBracketStmt` only ever recognizes `applies_to` + the shared
- *  TP/SL/Wing kwargs + the generic `#`-meta clause; any other kwarg is a
- *  hard "unknown parameter" compile error. Checking truthiness alone
- *  would be wrong — `is_active` is `true` and `is_default`/`is_system`
- *  are `false` on the overwhelming majority of real rows (every
- *  operator-created custom bracket), so this only flags a NON-DEFAULT
- *  value that this syntax would actually lose on resave:
- *    - `slug` (non-null) — system-seed-only; `OrderTemplateCreate` (the
- *      ONLY write path `/console`'s create-only submit can reach, see
- *      `consoleDispatch.js:submitConsoleBracket`) has no `slug` field at
- *      all, so there is structurally no way to round-trip it even if a
- *      `#slug=` meta key were invented.
- *    - `is_system: true` — `create_template` (`backend/api/routes/
- *      templates.py`) hardcodes `is_system=False` on every create; a
- *      decompiled-then-resaved system bracket can never come back as
- *      system, no matter what CLI syntax existed.
- *    - `is_default: true` — `OrderTemplateCreate.is_default` IS a real,
- *      honored create-time field, but `create_template`'s own
- *      `_demote_existing_default()` call means resubmitting this would
- *      ACTIVELY STEAL the default slot away from the original row in
- *      that `applies_to` scope — strictly worse than just losing
- *      information, so this is refused rather than "safely dropped".
- *    - `is_active: false` — dropping this silently resurrects an
- *      operator-deactivated row as active on resave.
- *  Refusing loud here (never silently emitting CLI text that would
- *  resave as a DIFFERENT row) is the same "fail loud, don't silently
- *  drop a field that would change behavior on resave" convention
- *  `decompileEventAgent`'s own docstring documents for its `gate` key.
- *  Returns the offending field names (empty = safe to decompile). */
-function _bracketUnexpressibleFields(t) {
-  const bad = [];
-  if (t.slug != null) bad.push('slug');
-  if (t.is_default === true) bad.push('is_default');
-  if (t.is_active === false) bad.push('is_active');
-  if (t.is_system === true) bad.push('is_system');
-  return bad;
-}
-
-/** Decompile a stored `OrderTemplateCreate`-shaped bracket back to its
- *  `bracket(...) #name=...` CLI text — the reverse of `compileBracketStmt`
- *  (Sprint 8). Reuses `decompileMetaClause` UNCHANGED (same generic helper
- *  `decompileAgent` uses) plus the shared `_decompileTpSlWingFields`
- *  renderer above. Same recompile safety net `decompileAgent` already
- *  uses — builds the text, then actually recompiles it and fails loud if
- *  that recompile itself errors.
- *
- *  Refuses outright (Sprint 18) when the row carries `slug`/`is_default`/
- *  `is_active`/`is_system` in a way `bracket(...)` syntax can't express —
- *  see `_bracketUnexpressibleFields` above for the full reasoning. */
-export function decompileBracket(template, catalog, opts = {}) {
-  const t = template || {};
-  const errors = [];
-  const argParts = [];
-
-  const unexpressible = _bracketUnexpressibleFields(t);
-  if (unexpressible.length) {
-    errors.push(_err(
-      `bracket: cannot safely decompile — [${unexpressible.join(', ')}] ` +
-      `${unexpressible.length === 1 ? 'has' : 'have'} no bracket(...) CLI ` +
-      `syntax yet; resaving this text would silently change this row's ` +
-      `${unexpressible.join('/')} instead of preserving it. This bracket ` +
-      `can't be edited via the CLI yet — view/delete it from its row ` +
-      `card on Automation → Agents → Brackets instead (Sprint C, 2026-10:` +
-      ` the old standalone Brackets structured-edit form was retired).`
-    ));
-    return { text: null, errors };
-  }
-
-  if (t.applies_to != null) {
-    if (typeof t.applies_to !== 'string') {
-      errors.push(_err('bracket.applies_to: expected an enum value'));
-    } else {
-      argParts.push(`applies_to=${_isBareable(t.applies_to) ? t.applies_to : _quoteString(t.applies_to).text}`);
-    }
-  }
-
-  const tpSlWingResult = _decompileTpSlWingFields(t, 'template', 'bracket');
-  errors.push(...tpSlWingResult.errors);
-  argParts.push(...tpSlWingResult.argParts);
-
-  const metaResult = decompileMetaClause({ name: t.name, description: t.description, tags: t.tags, group: t.group });
-  errors.push(...metaResult.errors);
-  if (typeof t.name !== 'string' || t.name === '') {
-    errors.push(_err("bracket: missing required 'name' — cannot decompile a nameless bracket"));
-  }
-
-  if (errors.length) return { text: null, errors };
-
-  const metaSuffix = metaResult.text ? ` ${metaResult.text}` : '';
-  const text = `bracket(${argParts.join(', ')})${metaSuffix}`;
-  const roundTrip = compileAgentCliStatement(text, catalog, opts);
-  if (!roundTrip.ok) {
-    const detail = (roundTrip.errors && roundTrip.errors[0] && roundTrip.errors[0].message) || 'unknown error';
-    return { text: null, errors: [_err(`internal: decompiled text failed to recompile (${detail})`)] };
-  }
-  return { text, errors: [] };
-}
+// `_renderTpScalesJsonValue` / `_decompileTpSlWingFields` /
+// `_bracketUnexpressibleFields` / `decompileBracket` removed 2026-11
+// (Track 3, T3.4, Bracket/Template/GTT removal) — all four existed
+// solely to decompile a saved `bracket(...)` row/call back to CLI text;
+// `bracket(...)` is now a hard compile error in every position (see the
+// `_dispatchStatement`/`_compileSharedCall` rejections above), so a
+// decompile could never round-trip successfully anyway. `order(...)`'s
+// own decompile path (`_decompileOrderAction`) never called any of
+// these — it renders every param generically via the real catalog
+// schema — so none of the four had a second, order-side caller to
+// preserve.
 
 /** Decompile a stored `kind='template'` Agent row back to its CLI text
  *  (Sprint C, 2026-10, Phase 2 "Automation redesign"; condition-kind
@@ -8762,10 +8492,12 @@ function _clauseKindFromTokenPrefix(tokens) {
 // its own catalog lookup, but `_lookupAnyCatalogEntry` below never did —
 // so `catalog.actions.get('order')` always missed (only `'place_order'`
 // is a real catalog key) and the whole call silently degraded to no
-// suggestions. `bracket`/`token` have NO catalog entry at all (hand-coded
-// compilers — `compileBracketStmt`/`compileTokenStmt` never go through
-// `entry.paramKeys`/`params_schema` the way `order`/`place_order` does),
-// so aliasing alone can't fix them — see `_syntheticEntryFor` below.
+// suggestions. `bracket`/`token` had NO catalog entry at all (hand-coded
+// compilers never went through `entry.paramKeys`/`params_schema` the way
+// `order`/`place_order` does), so aliasing alone couldn't fix them — see
+// `_syntheticEntryFor` below (`bracket`'s own synthetic entry was
+// removed 2026-11, Track 3 T3.4, Bracket/Template/GTT removal —
+// `bracket(...)` is a hard compile error now, in every position).
 // Sprint [order-unify] — relabeled, NOT functionally inverted (the
 // `_ACTION_NAME_ALIAS[key] || key` fallback at every call site already
 // resolved a directly-typed `place_order` to itself before this change,
@@ -8779,33 +8511,20 @@ function _clauseKindFromTokenPrefix(tokens) {
 const _ACTION_NAME_ALIAS = Object.freeze({ order: 'place_order', place_order: 'place_order' });
 
 // Sprint H (item 4) — synthetic, SUGGESTION-ONLY catalog-entry shapes for
-// `bracket(...)`/`token(...)`, built from the exact same constants their
-// REAL hand-coded compilers (`compileBracketStmt`/`compileTokenStmt`,
-// `_compileTpSlWingFields`, `_splitTpSlWingArgs`) already use — so a
-// change to the real accepted-field list there can never silently drift
-// out of sync with what's suggested here (no second hand-maintained list).
+// `token(...)`, built from the exact same constants its REAL hand-coded
+// compiler (`compileTokenStmt`) already uses — so a change to the real
+// accepted-field list there can never silently drift out of sync with
+// what's suggested here (no second hand-maintained list).
 // `order(...)`'s own real catalog entry (`place_order`) is ALSO missing
-// three categories of sugar its compiler (`_compileOrderCallToLeg`)
-// accepts — `lots`/`bracket` and the shared TP/SL/Wing kwargs — augmented
-// the same way below (`_syntheticEntryFor('order', ...)`).
+// one category of sugar its compiler (`_compileOrderCallToLeg`) accepts —
+// `lots` and the shared TP/SL/Wing kwargs — augmented the same way below
+// (`_syntheticEntryFor('order', ...)`).
+// (`bracket(...)`'s own synthetic entry, and the `bracket=` param
+// suggestion on `order`'s entry, were removed 2026-11 — Track 3 T3.4,
+// Bracket/Template/GTT removal. `bracket(...)` is now a hard compile
+// error, so suggesting it in autocomplete/help would be misleading.)
 function _syntheticEntryFor(name, catalog) {
   const lower = String(name).toLowerCase();
-  if (lower === 'bracket') {
-    // Sprint [order-unify] — tolerant lookup (suggestion-only; see
-    // `_compileOrderCallToLeg`'s identical comment).
-    const placeOrderEntry = catalog && catalog.actions
-      ? (catalog.actions.get('order') || catalog.actions.get('place_order'))
-      : null;
-    const schema = { applies_to: _BRACKET_APPLIES_TO_SPEC };
-    for (const k of _TPSLWING_KWARGS) schema[k] = k === 'tp_order_type' ? _TP_ORDER_TYPE_SPEC : _TPSLWING_NUMBER_SPEC;
-    return {
-      token: 'bracket',
-      paramsSchema: schema,
-      paramKeys: Object.keys(schema),
-      description: 'Saved, reusable TP/SL/Wing preset — requires #name=.',
-      mutuallyExclusiveGroups: placeOrderEntry ? placeOrderEntry.mutuallyExclusiveGroups : null,
-    };
-  }
   if (lower === 'token') {
     // `kind=condition` parses but is a guaranteed compile error today
     // (compileTokenStmt) — restrict the SUGGESTED enum to the one value
@@ -8824,7 +8543,7 @@ function _syntheticEntryFor(name, catalog) {
       ? (catalog.actions.get('order') || catalog.actions.get('place_order'))
       : null;
     if (!base) return null;
-    const schema = { ...base.paramsSchema, lots: { type: 'number', description: 'Order quantity in LOTS for F&O (converted to qty via lot size) — mutually exclusive with qty=.' }, bracket: { type: 'string', description: 'Reference an existing saved bracket(...) preset by its #name=.' } };
+    const schema = { ...base.paramsSchema, lots: { type: 'number', description: 'Order quantity in LOTS for F&O (converted to qty via lot size) — mutually exclusive with qty=.' } };
     for (const k of _TPSLWING_KWARGS) if (!(k in schema)) schema[k] = k === 'tp_order_type' ? _TP_ORDER_TYPE_SPEC : _TPSLWING_NUMBER_SPEC;
     return { token: base.token, paramsSchema: schema, paramKeys: Object.keys(schema), description: base.description, mutuallyExclusiveGroups: base.mutuallyExclusiveGroups };
   }
@@ -8879,12 +8598,15 @@ function _lookupAnyCatalogEntry(name, catalog, clauseKind, scopeHint) {
     && catalog.renderAction && String(catalog.renderAction.token).toLowerCase() === key) {
     return catalog.renderAction;
   }
-  // `order`/`place_order`/`bracket`/`token` ALWAYS resolve to the
-  // (possibly-augmented) synthetic shape FIRST — ahead of the plain
-  // catalog loop below — so `place_order(` and `order(` suggest the
-  // identical, fully-augmented param list (both compile through the exact
-  // same `_compileOrderActionParams`/`_compileOrderCallToLeg` sugar), not
-  // just whichever spelling happens to be typed.
+  // `order`/`place_order`/`token` ALWAYS resolve to the (possibly-
+  // augmented) synthetic shape FIRST — ahead of the plain catalog loop
+  // below — so `place_order(` and `order(` suggest the identical,
+  // fully-augmented param list (both compile through the exact same
+  // `_compileOrderActionParams`/`_compileOrderCallToLeg` sugar), not just
+  // whichever spelling happens to be typed. (`bracket` no longer has a
+  // synthetic entry — removed 2026-11, Track 3 T3.4, Bracket/Template/GTT
+  // removal — so it falls through to the plain catalog lookup below,
+  // which correctly finds nothing.)
   const aliased = _ACTION_NAME_ALIAS[key] || key;
   const synthetic = _syntheticEntryFor(aliased, catalog);
   if (synthetic) return synthetic;
@@ -8919,7 +8641,10 @@ export function lookupAgentCliEntry(name, catalog, clauseKind = null, scopeHint 
 // else that's a real `catalog.actions` entry, plus every clause-head
 // keyword/connective, is only reachable inside a full WHEN/ALERT/DO
 // agent statement, so it maps to 'agent'.
-const _ACTION_TOKEN_KIND = { order: 'order', place_order: 'order', cancel_all_orders: 'cancel_all_orders', bracket: 'bracket' };
+// `bracket: 'bracket'` removed 2026-11 (Track 3, T3.4, Bracket/Template/
+// GTT removal) — bracket(...) is a hard compile error now, so it must
+// not be suggested as a legitimate top-level token kind.
+const _ACTION_TOKEN_KIND = { order: 'order', place_order: 'order', cancel_all_orders: 'cancel_all_orders' };
 // Sprint [grammar-unify] — GIVEN and ALERT are removed: GIVEN has nothing
 // left to mark (the preamble is self-delimiting by position), and ALERT
 // is an ordinary call (`alert(...)`) now, never a clause-head keyword.

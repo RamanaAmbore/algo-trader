@@ -1,10 +1,8 @@
 // Console dispatch layer — sits ahead of the agents.js call-style grammar
 // on /automation's Console tab. Decides, from the raw typed text alone,
 // whether a statement is agent-family syntax (WHEN/ALERT/DO/GIVEN, bare
-// order(...)/place_order(...)/bracket(...)/token(...)/cancel_all_orders(...))
-// or anything else — then, for the order-compile path, resolves any
-// `bracket="slug"` reference to a real numeric `template_id` before a
-// ticket/basket request is ever built.
+// order(...)/place_order(...)/token(...)/cancel_all_orders(...)) or
+// anything else.
 //
 // The legacy positional orders.js grammar (buy/sell/modify/cancel,
 // `agent list`/`agent status` interpret, raw `/api/admin/exec` shell
@@ -14,37 +12,22 @@
 // now only distinguishes real agent-family syntax from everything else;
 // there is no second grammar or fallback execution path left to route to.
 //
-// ── `bracket="slug"` resolution — KNOWN GAP, do not silently "fix" ─────
-// The one existing server-side resolver for this exact reference shape
-// (`backend/api/algo/template_attach.py:load_template_for_slug_or_id`,
-// used by the MCP `place_order` tool) matches ONLY on
-// `Agent.slug` (Sprint E, Agent/Bracket/Template unification phase —
-// previously `OrderTemplate.slug` directly; see that function's own
-// doc) — exact string equality, never on `name`. This module mirrors
-// that canonical behaviour exactly, on purpose, by resolving against
-// the SAME reshaped row list `loadOrderTemplates()` already produces
-// (bracket-Agent rows reshaped via `bracketAgentToTemplateOut`, `id` =
-// the real `OrderTemplate.id` via `Agent.legacy_template_id`) rather
-// than fetching `/api/admin/templates/` directly: operator-authored
-// custom templates leave `slug` NULL on the `OrderTemplate` side and
-// get a DERIVED slug (`bracket-{id}`) on the mirrored Agent side (see
-// `backend.api.algo.bracket_registry.bracket_slug_for`) — never the
-// template's `name` — so a `bracket="my-custom-template"` reference
-// where "my-custom-template" is a custom template's NAME (not its
-// slug/derived-slug) will NOT resolve today — it surfaces a clear
-// "Unknown bracket" error rather than guessing. Widening this to also
-// match on `name` would diverge from the canonical resolver and risks
-// silently picking the wrong row when name and slug disagree. This is
-// a pre-existing, shared limitation (the MCP path has the identical
-// gap) — flagged here, not patched here.
+// `bracket(...)`/`bracket="slug"` resolution (the templates-catalog
+// lookup this module used to do before building a ticket/basket request)
+// was removed 2026-11 (Track 3, T3.4, Bracket/Template/GTT removal) —
+// `bracket(...)` is now a hard compile error in agents.js, and
+// `bracket=` on an `order(...)` leg is rejected at compile time too, so
+// no compiled result can ever carry a `template_slug` for this module to
+// resolve. `bracket` is still matched by `_AGENT_CALL_RE` below so a
+// typed `bracket(...)` classifies as agent-family and reaches the real
+// compiler's specific "bracket() was removed" error, rather than falling
+// through to this module's generic "unsupported syntax" hint.
 
 import {
   placeTicketOrder, placeBasket, cancelAllOrders,
   createAgent, updateAgent,
-  createOrderTemplate, patchOrderTemplate,
   lookupHelpToken,
 } from '$lib/api';
-import { loadOrderTemplates, reloadOrderTemplates } from '$lib/data/templates';
 
 // ─────────────────────────────────────────────────────────────────────────
 // (a) Classification
@@ -132,114 +115,36 @@ export function dispatchConsoleStatement(text, { onAgentFamily, onUnsupported } 
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// (b) `bracket="slug"` → `template_id` resolution
+// (b) `bracket="slug"` → `template_id` resolution — REMOVED 2026-11
+//     (Track 3, T3.4, Bracket/Template/GTT removal). `_collectLegs`,
+//     `needsTemplateResolution`, `_resolveLegTemplateRef` and
+//     `resolveBracketTemplateRefs` are gone — agents.js's compiler now
+//     rejects `bracket=` on an order leg outright (see `compileOrderStmt`
+//     in agents.js), so no compiled leg can ever carry a `template_slug`
+//     field for this module to resolve.
 // ─────────────────────────────────────────────────────────────────────────
-
-/** Collect every leg object out of a compiled order-kind result,
- *  regardless of single-ticket vs multi-leg-basket shape. */
-function _collectLegs(compiled) {
-  if (compiled && compiled.ticket) return [compiled.ticket];
-  if (compiled && compiled.basket) {
-    return (compiled.basket.groups || []).flatMap((g) => g.legs || []);
-  }
-  return [];
-}
-
-/** True iff ANY leg in the compiled result carries a `template_slug`
- *  reference — used to skip the templates fetch entirely on the (common)
- *  no-bracket-used path. */
-export function needsTemplateResolution(compiled) {
-  return _collectLegs(compiled).some((leg) => leg && leg.template_slug != null);
-}
-
-/** Resolve one leg's `template_slug` (if any) to a real `template_id`,
- *  stripping `template_slug` from the output object either way. Never
- *  mutates the input. Returns `{ok:true, leg}` or `{ok:false, error}`.
- * @returns {{ok:true, leg:any} | {ok:false, error:string}} */
-function _resolveLegTemplateRef(leg, templatesBySlug) {
-  if (!leg || leg.template_slug == null) return { ok: true, leg };
-  const slug = leg.template_slug;
-  if (leg.template_id != null) {
-    return {
-      ok: false,
-      error: `cannot specify both bracket="${slug}" and a numeric template_id on the same leg`,
-    };
-  }
-  const row = templatesBySlug.get(slug);
-  if (!row) {
-    return {
-      ok: false,
-      error: `Unknown bracket "${slug}" — no saved template with that slug`,
-    };
-  }
-  const { template_slug, ...rest } = leg; // eslint-disable-line no-unused-vars
-  return { ok: true, leg: { ...rest, template_id: row.id } };
-}
-
-/**
- * Resolve every `template_slug` reference in a compiled order result
- * against an already-fetched templates list. Pure — does no I/O. Matches
- * ONLY on `row.slug` (see this file's header note) — never on `name`.
- * @param {{ticket: any, basket: any}} compiled
- * @param {any[]} templateRows
- * @returns {{ok:true, ticket:any, basket:any} | {ok:false, error:string}}
- */
-export function resolveBracketTemplateRefs(compiled, templateRows) {
-  const templatesBySlug = new Map();
-  for (const row of templateRows || []) {
-    if (row && row.slug != null) templatesBySlug.set(row.slug, row);
-  }
-
-  if (compiled && compiled.ticket) {
-    const r = _resolveLegTemplateRef(compiled.ticket, templatesBySlug);
-    if (!r.ok) return /** @type {{ok:false, error:string}} */ (r);
-    return { ok: true, ticket: r.leg, basket: null };
-  }
-
-  if (compiled && compiled.basket) {
-    const groups = [];
-    for (const group of compiled.basket.groups || []) {
-      const legs = [];
-      for (const leg of group.legs || []) {
-        const r = _resolveLegTemplateRef(leg, templatesBySlug);
-        if (!r.ok) return /** @type {{ok:false, error:string}} */ (r);
-        legs.push(r.leg);
-      }
-      groups.push({ ...group, legs });
-    }
-    return { ok: true, ticket: null, basket: { groups } };
-  }
-
-  return { ok: true, ticket: null, basket: null };
-}
 
 // ─────────────────────────────────────────────────────────────────────────
 // (c) Submission — same API calls the existing Ticket/basket UI already
-//     makes (placeTicketOrder / placeBasket / createAgent /
-//     createOrderTemplate). No parallel execution path.
+//     makes (placeTicketOrder / placeBasket / createAgent). No parallel
+//     execution path.
 // ─────────────────────────────────────────────────────────────────────────
 
 /**
- * Resolve any `bracket=` reference in a compiled `kind:'order'` result
- * (fetching the templates catalog only when at least one leg actually
- * carries a `template_slug`). Does NOT submit — split out from
- * `submitResolvedConsoleOrder` so a caller (the /console page) can run
- * resolution BEFORE showing a live-order confirm dialog, so a no-match
- * or fetch-failure error surfaces without ever popping the dialog.
+ * Pass a compiled `kind:'order'` result through unchanged. Kept as its
+ * own function (not inlined at call sites) for two reasons: it is split
+ * out from `submitResolvedConsoleOrder` so a caller (the /console page)
+ * can run this step BEFORE showing a live-order confirm dialog, and its
+ * name/shape stay stable for `OrderCliTab.svelte`/`ConsoleTab.svelte`,
+ * which both call it today. It used to resolve a `bracket="slug"`
+ * reference to a real `template_id` here (removed 2026-11, Track 3 T3.4,
+ * Bracket/Template/GTT removal — see note (b) above); nothing is left to
+ * resolve now, so this can never fail.
  * @param {{ticket:any, basket:any}} compiled
- * @returns {Promise<{ok:true, ticket:any, basket:any} | {ok:false, error:string}>}
+ * @returns {Promise<{ok:true, ticket:any, basket:any}>}
  */
 export async function resolveConsoleOrder(compiled) {
-  if (!needsTemplateResolution(compiled)) {
-    return { ok: true, ticket: compiled.ticket || null, basket: compiled.basket || null };
-  }
-  let templateRows;
-  try {
-    templateRows = await loadOrderTemplates();
-  } catch (e) {
-    return { ok: false, error: e?.message ? `Could not load templates: ${e.message}` : 'Could not load templates for bracket lookup' };
-  }
-  return resolveBracketTemplateRefs(compiled, templateRows);
+  return { ok: true, ticket: compiled.ticket || null, basket: compiled.basket || null };
 }
 
 /**
@@ -291,16 +196,16 @@ export async function submitResolvedConsoleOrder(resolved, opts = {}) {
 
 /**
  * Convenience wrapper combining `resolveConsoleOrder` +
- * `submitResolvedConsoleOrder` — resolves any `bracket=` reference FIRST;
- * a fetch failure or an unresolved slug returns a structured error and
- * NEVER calls placeTicketOrder/placeBasket.
+ * `submitResolvedConsoleOrder`. `resolveConsoleOrder` is now a trivial,
+ * always-ok pass-through (the `bracket=` resolution step it used to run
+ * first was removed 2026-11, Track 3 T3.4, Bracket/Template/GTT
+ * removal), so this is a thin two-step call, not a resolve-then-guard.
  * @param {{ticket:any, basket:any}} compiled
  * @param {{mode?: string, source?: string}} opts
  * @returns {Promise<{ok:true, kind:'basket'|'ticket', response:any} | {ok:false, error:string}>}
  */
 export async function submitConsoleOrder(compiled, opts = {}) {
   const resolved = await resolveConsoleOrder(compiled);
-  if (!resolved.ok) return /** @type {{ok:false, error:string}} */ (resolved);
   return submitResolvedConsoleOrder(resolved, opts);
 }
 
@@ -432,23 +337,10 @@ export async function submitConsoleAgent(compiledAgent, rawText) {
   }
 }
 
-/**
- * Submit a compiled `kind:'bracket'` result (`compiled.template`,
- * OrderTemplateCreate-shaped) as a new saved order template. Reloads the
- * shared `loadOrderTemplates()` cache on success so OrderTicket / Chain /
- * this same console's own bracket= resolution immediately see it.
- * @param {any} compiledTemplate — `compiled.template`
- */
-export async function submitConsoleBracket(compiledTemplate) {
-  if (!compiledTemplate) return { ok: false, error: 'bracket requires a #name= tag' };
-  try {
-    const response = await createOrderTemplate(compiledTemplate);
-    try { await reloadOrderTemplates(); } catch { /* non-fatal — next loader call just refetches */ }
-    return { ok: true, response };
-  } catch (e) {
-    return { ok: false, error: e?.message || 'bracket create failed' };
-  }
-}
+// `submitConsoleBracket` removed 2026-11 (Track 3, T3.4, Bracket/
+// Template/GTT removal) — `compiled.kind` can never be `'bracket'`
+// anymore (agents.js rejects `bracket(...)` with a hard compile error in
+// every position), so this function was unreachable.
 
 /**
  * Submit a compiled `kind:'token'` result (`compiled.fragment` —
@@ -600,30 +492,9 @@ export async function updateConsoleAgent(slug, compiledAgent, rawText, hadExplic
   }
 }
 
-/**
- * Update an EXISTING saved order template (Bracket) via the existing
- * `PATCH /api/admin/templates/{id}`. `compiledTemplate` (`compiled.template`
- * from `compileBracketStmt`) never carries `slug`/`is_default`/`is_active`/
- * `is_system` at all (see `_bracketUnexpressibleFields` in agents.js — the
- * decompiler already refuses to produce CLI text for a row where any of
- * those four would be lost), so a PATCH built straight from it can never
- * regress them — every field PATCH doesn't receive stays at its current
- * value, same "absent = unchanged" convention `updateConsoleAgent` relies
- * on above.
- * @param {number} id — the OrderTemplate row being edited
- * @param {any} compiledTemplate — `compiled.template`
- */
-export async function updateConsoleBracket(id, compiledTemplate) {
-  if (id == null) return { ok: false, error: 'no bracket selected for update' };
-  if (!compiledTemplate) return { ok: false, error: 'nothing compiled to save' };
-  try {
-    const response = await patchOrderTemplate(id, compiledTemplate);
-    try { await reloadOrderTemplates(); } catch { /* non-fatal — next loader call just refetches */ }
-    return { ok: true, response };
-  } catch (e) {
-    return { ok: false, error: e?.message || 'bracket update failed' };
-  }
-}
+// `updateConsoleBracket` removed 2026-11 (Track 3, T3.4, Bracket/
+// Template/GTT removal) — `PATCH /api/admin/templates/{id}` and
+// `compileBracketStmt` are both gone; this function was unreachable.
 
 /**
  * Update an EXISTING Template (`Agent(kind='template')` row) via the

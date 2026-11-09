@@ -26,75 +26,13 @@
   import { priceFmt, qtyFmt } from '$lib/format';
   import { isDraftOrderRow } from '$lib/data/draftOrderRow.js';
   import { parseHold } from '$lib/data/holdRecord.js';
-  import { isHeldPendingReleaseState } from '$lib/data/templateAttachToast.js';
-  import { orderTemplatesStore } from '$lib/data/templates.js';
   import { formatDualTz } from '$lib/stores';
   import { longPress } from '$lib/actions/longPress.js';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
-  import { retryTemplateAttach, releaseHeldOrder } from '$lib/api';
-  import { toast } from '$lib/data/toastStore.svelte.js';
   import { acctColor } from '$lib/account';
-
-  // Re-attach button state — per-card spinner + inline note. The note
-  // disappears the next time the parent OrderCard re-renders with a
-  // fresh order prop (typical poll cadence ≤5s) so it stays ephemeral.
-  let _retrying = $state(false);
-  let _retryNote = $state('');
-
-  // Item 2 refinement (2026-11-02) — the 3-state Bracket status pill's
-  // "Tmpl Hold" click calls the SAME release endpoint
-  // `HeldOrdersCard.svelte`'s own Release button already calls
-  // (`releaseHeldOrder`, `POST /orders/held/{id}/release`) — no
-  // duplicated release logic, just a second entry point into it.
-  let _releasingHold = $state(false);
-  async function _releaseTemplateHold(/** @type {any} */ o) {
-    if (_releasingHold) return;
-    _releasingHold = true;
-    try {
-      await releaseHeldOrder(o.id);
-      toast?.success?.(`Released bracket exit for #${o.id}`);
-    } catch (e) {
-      toast?.error?.(/** @type {any} */ (e)?.message || 'Release refused');
-    } finally {
-      _releasingHold = false;
-    }
-  }
-  /** 'pending' | 'tmplhold' | 'active' | null — see the markup block
-   *  below for the full state-mapping rationale. */
-  function _bracketPillState(/** @type {any} */ o) {
-    if (o?.template_id == null) return null;
-    if (o.attached_gtts_json) return 'active';
-    if (isHeldPendingReleaseState(o)) return 'tmplhold';
-    return 'pending';
-  }
-
-  // #26 — re-attach failure history tracked in sessionStorage per order.
-  // Key: 'rbq.reattach-fail.<order_id>'. Value: JSON array of {ts, error}.
-  // Shows 'failed xN' chip when >= 2 recorded failures.
-  /** @returns {{ ts: number; error: string }[]} */
-  function _loadFailHistory(/** @type {number|string|null|undefined} */ orderId) {
-    if (orderId == null || typeof sessionStorage === 'undefined') return [];
-    try { return JSON.parse(sessionStorage.getItem(`rbq.reattach-fail.${orderId}`) || '[]') || []; } catch { return []; }
-  }
-  function _pushFailHistory(/** @type {number|string|null|undefined} */ orderId, /** @type {string} */ errorMsg) {
-    if (orderId == null || typeof sessionStorage === 'undefined') return;
-    try {
-      const key = `rbq.reattach-fail.${orderId}`;
-      const hist = _loadFailHistory(orderId);
-      hist.push({ ts: Date.now(), error: errorMsg });
-      sessionStorage.setItem(key, JSON.stringify(hist));
-    } catch { /* quota exceeded — silently skip */ }
-  }
-  // Reactive fail count — re-reads on _retrying change (post-attempt re-render).
-  const _failCount = $derived.by(() => {
-    // Depend on _retrying so count refreshes after each attempt.
-    void _retrying;
-    return _loadFailHistory(order?.id).length;
-  });
 
   let {
     /** @type {any} */                                   order,
-    /** @type {Array<any>} */                          gttLegs       = [],
     /** @type {((o:any) => void) | undefined} */         onCardClick   = undefined,
     /** @type {((o:any, e:Event) => void) | undefined} */onSymbolClick = undefined,
     /** @type {((o:any, e:MouseEvent) => void) | undefined} */
@@ -103,9 +41,9 @@
   } = $props();
 
   // Hold state: the backend stores it as JSON on hold_json; null when the
-  // order is not held. `parseHold` moved to `$lib/data/holdRecord.js`
-  // (2026-11-02, PLAN.md item 4) so `templateAttachToast.js`'s toast-
-  // wording decision reads the exact same parsed shape as this card.
+  // order is not held. `parseHold` lives in `$lib/data/holdRecord.js`,
+  // shared across every hold-displaying surface so they can never
+  // silently disagree on what "held" means.
   const holdInfo = $derived(parseHold(order.hold_json));
 
   // Status → data-status attribute. .algo-status-card reads this for
@@ -210,14 +148,6 @@
   }
 
   const _slip = $derived(_slippage(order));
-  // Trading-critical "template did not attach" toast: wired from the
-  // POLL LOOP (OrderBook.svelte / LogPanel.svelte `_loadOrders`, on the
-  // merged rows before any status-chip filtering) via
-  // templateAttachToast.js — NOT here. OrderCard only mounts for rows
-  // the currently-selected status filter happens to match, so tying
-  // detection to this component's own lifecycle would silently miss
-  // every row filtered out of the active view. See
-  // templateAttachToast.js's header comment for the full rationale.
 </script>
 
 <!-- Outer is a div role=button (not <button>) so inline action buttons
@@ -281,9 +211,6 @@
         title={`Pending: ${holdInfo.reason || holdInfo.category}`}>Pending</span>
     {/if}
   </div>
-  {#if holdInfo?.category === 'template_exit'}
-    <div class="held-exit-warn" role="status">Unprotected until released: exit GTTs wait for release.</div>
-  {/if}
   <!-- Chip row — same .log-chip / .log-chip-key family the LogPanel
        order rows used to render via _orderRowHtml, so the chips read
        identically when you flip between the dedicated /orders page
@@ -350,201 +277,11 @@
     {#if _ts}<span class="log-chip"><span class="log-chip-key">time:</span>{formatDualTz(new Date(_ts))}</span>{/if}
     {#if order.tag}<span class="log-chip {_tagClass(order.tag)}"><span class="log-chip-key">tag:</span>{order.tag}</span>{/if}
     {#if order.target_pct != null}<span class="log-chip log-chip-tp"><span class="log-chip-key">tp:</span>+{(Number(order.target_pct) * 100).toFixed(1)}%</span>{/if}
-    {#if order.template_id != null}
-      <!-- Item 2 (2026-11-02, PLAN.md; refined same day) — paired
-           main+bracket display as a 3-state status pill, mirroring
-           ChaseCard.svelte's own mode-pill pattern (plain colored
-           uppercase text, no box/border — see that file's `.cc-mode`
-           family and its 2026-11-02 "remove the button/box appearance"
-           fix) rather than inventing a new boxed-chip look. Shows the
-           bracket alongside the main order from the moment it's
-           selected (pending), not only once a wing/TP fires live at the
-           Chain strike row (that's the separate, post-fire-only
-           `6fbbe205` badge, untouched).
-           States (`_bracketPillState`, declared above):
-             'pending'  — armed, main order not yet FILLED (or FILLED
-                          but attach hasn't resolved either way yet —
-                          the brief async-attach race window; a
-                          genuinely stuck attach still gets the
-                          separate Re-attach chip/toast below/
-                          `templateAttachToast.js`, unrelated to this
-                          pill).
-             'tmplhold' — FILLED, no attached_gtts_json, and
-                          `isHeldPendingReleaseState()` is true (the
-                          hold-gate setting is holding this exit) —
-                          clickable: calls the SAME `releaseHeldOrder()`
-                          HeldOrdersCard.svelte's own Release button
-                          calls, no duplicated release logic.
-             'active'   — attach succeeded, attached_gtts_json
-                          populated — TP/SL are live broker GTT orders
-                          (NOT chased; only the main order is chased).
-           Template NAME + resolved TP trigger price (from `gttLegs`,
-           the live broker-matched GTT row — see `gttMatch.js` — not
-           the static `attached_gtts_json` entry, which carries no price
-           unless a trailing stop is configured) move from the pill's
-           visible text (now terse, matching ChaseCard's own terse mode
-           labels) into its `title` tooltip. Replaces the prior plain
-           "Bracket: {name} · Pending"/"triggered — TP @ {price}" text
-           chip entirely — folded in, not kept alongside. -->
-      {@const _tplName = (() => {
-        const t = $orderTemplatesStore.find(t => t.id === order.template_id);
-        return t ? (t.name || t.slug || `#${order.template_id}`) : `#${order.template_id}`;
-      })()}
-      {@const _pairedTpLeg = (gttLegs || []).find(l => /TP/i.test(l?.label || ''))
-        || (gttLegs || [])[0]
-        || null}
-      {@const _pairedTpPrice = _pairedTpLeg && Array.isArray(_pairedTpLeg.trigger_values) && _pairedTpLeg.trigger_values.length
-        ? _pairedTpLeg.trigger_values[0]
-        : null}
-      {@const _bpState = _bracketPillState(order)}
-      {@const _bpTitle = _bpState === 'active'
-        ? `Bracket: ${_tplName} — triggered${_pairedTpPrice != null ? `, TP @ ${priceFmt(_pairedTpPrice)}` : ''} — live broker GTT, not chased.`
-        : _bpState === 'tmplhold'
-          ? `Bracket: ${_tplName} — held pending release (hold-gate setting). Click to release.`
-          : `Bracket: ${_tplName} — armed, attaches once the order fills.`}
-      <!-- svelte-ignore a11y_no_noninteractive_tabindex -- role/tabindex
-           are conditional on `_bpState === 'tmplhold'` (the only
-           clickable state); the linter's static check can't see that
-           and flags the span as permanently noninteractive. -->
-      <span class="oc-bracket-pill oc-bracket-pill-{_bpState}"
-            class:oc-bracket-pill-clickable={_bpState === 'tmplhold'}
-            role={_bpState === 'tmplhold' ? 'button' : undefined}
-            tabindex={_bpState === 'tmplhold' ? 0 : undefined}
-            aria-disabled={_bpState === 'tmplhold' && _releasingHold ? 'true' : undefined}
-            title={_bpTitle}
-            onclick={_bpState === 'tmplhold' ? () => _releaseTemplateHold(order) : undefined}
-            onkeydown={_bpState === 'tmplhold'
-              ? (/** @type {KeyboardEvent} */ e) => {
-                  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _releaseTemplateHold(order); }
-                }
-              : undefined}>
-        {_releasingHold && _bpState === 'tmplhold'
-          ? '…'
-          : _bpState === 'active' ? 'Active' : _bpState === 'tmplhold' ? 'Tmpl Hold' : 'Pending'}
-      </span>
-      <!-- Audit fix (H-3) — distinguish full attach vs partial. Pre-fix
-           `attached_gtts_json != null` = ✓ (full). A row where TP
-           attached but the wing failed (e.g. low-OI chain scan)
-           still has attached_gtts_json populated; the chip showed ✓
-           even though the wing didn't land. Now inspect the JSON for
-           a wing entry and render `✓+w` (full, with wing), `✓` (full,
-           no wing was expected), or `✓⚠` (partial — at least one
-           GTT spec missing its broker id). Operator can hover for the
-           full JSON breakdown. -->
-      {@const _atJson = order.attached_gtts_json}
-      {@const _at = (() => {
-        if (!_atJson) return null;
-        try { const a = JSON.parse(_atJson); return Array.isArray(a) ? a : null; } catch { return null; }
-      })()}
-      {@const _hasWing = !!(_at && _at.some(e => e?.kind === 'wing' && e.id))}
-      {@const _gttCount = _at ? _at.filter(e => e?.kind === 'gtt').length : 0}
-      {@const _missingId = !!(_at && _at.some(e => e?.kind === 'gtt' && !e.id))}
-      <!-- #17 — build list of missing leg labels for partial-attach chip -->
-      {@const _failedLegs = _at
-        ? _at.filter(e => e?.kind === 'gtt' && !e.id).map(e => e.label ?? e.kind).join(', ')
-        : ''}
-      {@const _chipBadge = !_atJson
-        ? (order.status === 'FILLED' ? ' ⟳' : '…')
-        : (_missingId ? ` ✓⚠ missing: ${_failedLegs}` : (_hasWing ? ' ✓+w' : (_gttCount > 0 ? ' ✓' : ' ✓∅')))}
-      {@const _atSummary = (() => {
-        // Build a human-readable summary of the attached GTT specs instead
-        // of dumping raw JSON into the title attribute. Each entry has
-        // `kind` ('gtt'|'wing'), `label` ('TP'/'SL'/'TP+SL'), and `id`.
-        if (!_at || !_at.length) return '';
-        const lines = [];
-        for (const e of _at) {
-          if (e?.kind === 'gtt') {
-            const idStr = e.id ? `#${String(e.id).slice(-8)}` : 'no id';
-            const trail = e.sl_trail_pct != null ? ` trail ${e.sl_trail_pct}%` : '';
-            lines.push(`${e.label || 'GTT'}${trail} · ${idStr}`);
-          } else if (e?.kind === 'wing') {
-            const idStr = e.id ? `#${String(e.id).slice(-8)}` : 'no id';
-            lines.push(`Wing BUY · ${idStr}`);
-          }
-        }
-        return lines.join(' | ');
-      })()}
-      <!-- #23 — trailing stop chip: any GTT entry with sl_trail_pct set -->
-      {@const _trailEntry = _at ? _at.find(e => e?.kind === 'gtt' && e.sl_trail_pct != null) : null}
-      <!-- #18 — wing params chip from wing entry in the array -->
-      {@const _wingEntry = _at ? _at.find(e => e?.kind === 'wing') : null}
-      <span class="log-chip log-chip-template"
-            class:log-chip-template-partial={_missingId}
-            title={_atJson
-              ? `Bracket attached on fill — ${_gttCount} GTT spec(s)${_hasWing ? ', wing attached' : ''}${_missingId ? `. ⚠ Partial attach — missing: ${_failedLegs}.` : '.'} ${_atSummary}`
-              : (order.status === 'FILLED'
-                  ? 'Bracket was selected but attach did not run — click Re-attach to retry.'
-                  : 'Bracket selected — will attach on fill')}>
-        <span class="log-chip-key">Bracket:</span>#{order.template_id}{_chipBadge}
-      </span>
-      {#each gttLegs as leg (leg.id || leg.label)}
-        <span class="log-chip gtt-leg-chip"
-              class:gtt-leg-missing={leg.missing}
-              title={leg.missing
-                ? `${leg.label} GTT ${leg.id || ''} is not at the broker. Protection may not be active.`
-                : `${leg.label} GTT ${leg.id}: ${leg.status} at the broker.`}>
-          <span class="log-chip-key">{leg.label}:</span>{leg.missing ? 'missing at broker' : leg.status}
-        </span>
-      {/each}
-      <!-- #23 — trailing stop chip (amber) -->
-      {#if _trailEntry}
-        <span class="log-chip log-chip-trail"
-              title="Trailing stop is active — SL trigger ratchets toward LTP as it moves favorably.">
-          <span class="log-chip-key">trail:</span>{_trailEntry.sl_trail_pct}%
-        </span>
-      {/if}
-      <!-- #18 — wing params chip when wing entry present -->
-      {#if _wingEntry}
-        {@const _wingStrike = _wingEntry.wing_strike_offset != null ? `+${_wingEntry.wing_strike_offset}` : null}
-        {@const _wingPrem = _wingEntry.wing_premium_pct != null ? `${_wingEntry.wing_premium_pct}%p` : null}
-        <span class="log-chip log-chip-wing-params"
-              title="Protective wing order placed alongside this entry.">
-          <span class="log-chip-key">W:</span>{_wingStrike ?? _wingPrem ?? 'wing'}
-        </span>
-      {/if}
-    {/if}
-    {#if order.template_id != null && (order.status || '').toUpperCase() === 'FILLED' && !order.attached_gtts_json}
-      <button type="button"
-              class="log-chip log-chip-retry-attach"
-              disabled={_retrying}
-              title="Re-run Bracket attach against this filled parent — useful when the original attach silently dropped the wing (low OI etc.)."
-              onclick={async () => {
-                _retrying = true;
-                try {
-                  const r = await retryTemplateAttach(order.id);
-                  if (r?.ok) {
-                    _retryNote = 'Re-attach OK' + (r.wing_order_id ? ` · wing #${String(r.wing_order_id).slice(-6)}` : '');
-                  } else {
-                    const reason = r?.reason || 'unknown';
-                    _retryNote = `Re-attach skipped: ${reason}`;
-                    // #26 — record failure (not-ok is a failed attempt)
-                    _pushFailHistory(order.id, reason);
-                  }
-                } catch (e) {
-                  const msg = /** @type {any} */ (e)?.message || String(e);
-                  _retryNote = `Re-attach failed: ${msg}`;
-                  // #26 — record exception as a failed attempt
-                  _pushFailHistory(order.id, msg);
-                } finally {
-                  _retrying = false;
-                }
-              }}>
-        {_retrying ? '…' : '⟳ Re-attach'}
-      </button>
-    {/if}
-    {#if _retryNote}<span class="log-chip log-chip-retry-note">{_retryNote}</span>{/if}
-    <!-- #26 — re-attach failure count chip (shown when >= 2 failed attempts) -->
-    {#if _failCount >= 2}
-      <span class="log-chip log-chip-reattach-fail"
-            title={`Re-attach has failed ${_failCount} time(s) for this order. Check Bracket config or broker availability.`}>
-        ⟳ failed ×{_failCount}
-      </span>
-    {/if}
-    {#if order.parent_order_id != null}<span class="log-chip log-chip-parent" title="This row is an auto-attached leg of the listed parent order (typically the protective wing of a SELL option)."><span class="log-chip-key">parent:</span>#{String(order.parent_order_id).slice(-6)}</span>{/if}
+    {#if order.parent_order_id != null}<span class="log-chip log-chip-parent" title="This row is an auto-attached leg of the listed parent order (typically a take-profit child)."><span class="log-chip-key">parent:</span>#{String(order.parent_order_id).slice(-6)}</span>{/if}
     {#if order.child_order_ids && order.child_order_ids.length}
       <span class="log-chip log-chip-child"
-            title={`Auto-attached children of this order (typically the protective wing). Click any id in the activity log to inspect.`}>
-        <span class="log-chip-key">{order.child_order_ids.length === 1 ? 'wing:' : 'wings:'}</span>
+            title={`Auto-attached children of this order (typically a take-profit child). Click any id in the activity log to inspect.`}>
+        <span class="log-chip-key">{order.child_order_ids.length === 1 ? 'child:' : 'children:'}</span>
         {order.child_order_ids.map(id => '#' + String(id).slice(-6)).join(' ')}
       </span>
     {/if}
@@ -567,7 +304,6 @@
      2026-10). The only genuinely OrderCard-local status is "held",
      added to app.css's shared block instead of kept here. */
   .held-badge { color: var(--c-action); border-color: var(--c-action); }
-  .held-exit-warn { font-size: var(--fs-sm); color: var(--c-action); padding: 2px 0; }
   /* Account identity — STRIPE (not text colour, A2 2026-09 audit fix).
      Inline card header has far less horizontal room than a grid cell
      (LogPanel mounts at ≤360px), so this is a thinner 2px stripe + tight
@@ -598,62 +334,10 @@
   :global(.tag-manual)       { color: var(--algo-cyan-text); background: var(--c-info-14); }
   /* TP / parent / basket linkage chips */
   :global(.log-chip-tp)      { color: var(--c-long); background: var(--algo-green-bg); }
-  :global(.log-chip-template) { color: var(--algo-violet); background: rgba(192, 132, 252, 0.12); }
-  /* Item 2 (2026-11-02, PLAN.md, refined same day) — 3-state Bracket
-     status pill. Mirrors ChaseCard.svelte's own `.cc-mode`/`.cc-mode-*`
-     pattern deliberately (plain colored uppercase text, NO box/border —
-     ChaseCard itself removed the boxed look from its mode pill the
-     same day, per its own "remove the button/box appearance" comment),
-     rather than matching the boxed `.log-chip` family it sits inside —
-     an explicit operator design choice, not an oversight. Three colors,
-     one semantic ladder: sky (waiting/neutral) -> amber (needs your
-     action) -> green (done/safe) — the same ladder ChaseCard's own
-     mode-pill greens/reds already use for "safe" vs "live" modes. */
-  :global(.oc-bracket-pill) {
-    display: inline-block;
-    font-family: var(--font-numeric);
-    font-size: var(--fs-2xs);
-    font-weight: 800;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    padding: 0 0.2rem;
-  }
-  :global(.oc-bracket-pill-pending)  { color: var(--algo-sky); }
-  :global(.oc-bracket-pill-tmplhold) { color: var(--c-action); }
-  :global(.oc-bracket-pill-active)   { color: var(--c-long); }
-  /* Only the "Tmpl Hold" state is actionable (click releases the exit
-     hold) — cursor + hover-brighten is the sole affordance; matches
-     the plain-text (no new box) convention above. */
-  :global(.oc-bracket-pill-clickable) { cursor: pointer; }
-  :global(.oc-bracket-pill-clickable:hover) { text-decoration: underline; }
-  :global(.oc-bracket-pill-clickable[aria-disabled="true"]) { cursor: progress; opacity: var(--btn-disabled-opacity); }
   :global(.log-chip-parent)  { color: var(--algo-sky); background: rgba(125, 211, 252, 0.10); }
   :global(.log-chip-child)   { color: var(--algo-violet); background: rgba(192, 132, 252, 0.12); }
   :global(.log-chip-basket)  { color: var(--c-action); background: rgba(251, 191, 36, 0.10); }
 
-  /* Re-attach button — same chip shape as the rest of the row so it
-     visually slots in next to the template chip. Cyan-400 (cyan)
-     palette since it's an active action (vs purple's "informational"
-     template chip). Disabled while in-flight. */
-  :global(.log-chip-retry-attach) {
-    color: var(--c-info);
-    background: var(--c-info-14);
-    border: 1px solid rgba(34, 211, 238, 0.45);
-    cursor: pointer;
-  }
-  :global(.log-chip-retry-attach:hover) {
-    background: rgba(34, 211, 238, 0.18);
-    border-color: rgba(34, 211, 238, 0.75);
-  }
-  :global(.log-chip-retry-attach:disabled) {
-    opacity: 0.5;
-    cursor: wait;
-  }
-  :global(.log-chip-retry-note) {
-    color: var(--text-muted);
-    background: rgba(126, 151, 184, 0.10);
-    font-style: italic;
-  }
   /* Partial-fill chip — cyan palette (info/attention, not error).
      Shown when filled_quantity > 0 and < quantity on a non-terminal row.
      Matches the CANCEL_FAILED orange pill to signal "this row needs
@@ -663,30 +347,5 @@
     background: rgba(125, 211, 252, 0.12);
     border: 1px solid rgba(125, 211, 252, 0.40);
   }
-  /* #17/#18 partial-attach chip — red border signals missing legs */
-  :global(.log-chip-template-partial) {
-    color: var(--c-short);
-    background: rgba(248, 113, 113, 0.10);
-    border: 1px solid rgba(248, 113, 113, 0.35);
-  }
-  /* #23 — trailing stop chip (amber) */
-  :global(.log-chip-trail) {
-    color: var(--c-action);
-    background: rgba(251, 191, 36, 0.10);
-    border: 1px solid rgba(251, 191, 36, 0.30);
-  }
-  /* #18 — wing params chip (teal) */
-  :global(.log-chip-wing-params) {
-    color: #5eead4;
-    background: rgba(94, 234, 212, 0.10);
-    border: 1px solid rgba(94, 234, 212, 0.28);
-  }
-  /* #26 — re-attach failure count chip (red) */
-  :global(.log-chip-reattach-fail) {
-    color: var(--c-short);
-    background: rgba(248, 113, 113, 0.10);
-    border: 1px solid rgba(248, 113, 113, 0.32);
-  }
-  .gtt-leg-missing { color: var(--c-short); border-color: rgba(248,113,113,0.45); }
 .qty-unverified { color: var(--c-action); }
 </style>

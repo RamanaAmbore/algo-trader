@@ -43,26 +43,18 @@
  * OrderBook's/LogPanel's ticks all feed the SAME edge-detector — a fill
  * is only ever reported once regardless of how many pollers observed it.
  */
-import { writable } from 'svelte/store';
 import { fetchOrders, fetchAlgoOrdersRecent } from '$lib/api';
 import { noteOrderPollFills } from './orderFillDetector.js';
 
 /** Guards against overlapping polls if one call stalls past the next tick. */
 let _inFlight = false;
 
-/**
- * Latest `fetchAlgoOrdersRecent(100, 'all')` rows from this poll — the
- * SAME fetch this module already makes every tick, just exposed so
- * other reactive consumers (e.g. OptionChainTab's live-wing-confirmation
- * badge, see `liveWingTracker.svelte.js`) can read algo-order rows
- * (parent_order_id, source, broker_order_id, …) without adding a SECOND
- * poll/interval of their own. Set independently of the broker-fetch
- * outcome below (and before its early-return) so a broker outage never
- * freezes this feed; a failed algo fetch simply leaves the last-good
- * array in place (freeze-to-last-good, same convention as the rest of
- * this module).
- */
-export const latestAlgoOrderRows = writable(/** @type {any[]} */ ([]));
+// `latestAlgoOrderRows` (a writable store mirroring this poll's own
+// `fetchAlgoOrdersRecent(100, 'all')` rows) was removed 2026-11 (Track 3,
+// T3.4, Bracket/Template/GTT removal) — its one reader was
+// OptionChainTab's live-wing-confirmation badge (`liveWingTracker.svelte.js`
+// / `liveWingBadge.js`, both deleted in the same sprint). The poll itself
+// is unchanged; only the extra store write is gone.
 
 export async function pollOrderFillWatch() {
   if (_inFlight) return;
@@ -72,9 +64,6 @@ export async function pollOrderFillWatch() {
       fetchOrders(),
       fetchAlgoOrdersRecent(100, 'all'),
     ]);
-    if (algoResp.status === 'fulfilled' && Array.isArray(algoResp.value)) {
-      latestAlgoOrderRows.set(algoResp.value);
-    }
     // Freeze-to-last-good convention (matches OrderBook.svelte's
     // _loadOrders): a rejected broker fetch must NOT be treated as "the
     // broker book is empty" — skip this tick entirely rather than

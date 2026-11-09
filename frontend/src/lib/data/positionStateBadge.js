@@ -7,11 +7,16 @@
  * out of scope per the operator's scope-discipline rule; flagged in the
  * accompanying report).
  *
- * Priority order (highest wins): GTT > auto-paired > orphan.
- * A row with none of `has_gtt` / `pair_group_key` / `is_orphan` set
- * returns state `null` — callers should render nothing (no badge, no
- * button) for e.g. watchlist/mover/holding rows that were never part of
- * the positions book.
+ * Priority order (highest wins): auto-paired > orphan. The GTT branch was
+ * removed 2026-11 (Track 3, T3.4, Bracket/Template/GTT removal) — `has_gtt`
+ * was populated from the now-deleted Bracket/GTT-attach backend engine and
+ * is permanently false/null on every row going forward; the field is left
+ * as a dead passthrough in `expiryPnl.js`/`pulseUnified.js` (not read here
+ * anymore) per the sprint's scope decision — removing it from those files'
+ * row shapes is a separate, un-requested change.
+ * A row with none of `pair_group_key` / `is_orphan` set returns state
+ * `null` — callers should render nothing (no badge, no button) for e.g.
+ * watchlist/mover/holding rows that were never part of the positions book.
  *
  * PerformancePage.svelte's St column (`positionsCols`) also calls this
  * directly (converted 2026-10-18 — it previously carried its own
@@ -30,7 +35,7 @@
  * conventions documented in CLAUDE.md.
  *
  * @typedef {{
- *   state: 'gtt'|'paired'|'orphan'|'anchor'|null,
+ *   state: 'paired'|'orphan'|'anchor'|null,
  *   glyph: string,
  *   color: string,
  *   bg: string,
@@ -61,6 +66,9 @@ const _NONE = Object.freeze({
 });
 
 /**
+ * `has_gtt` is accepted in the type below but never read — see the
+ * GTT-branch-removed note above. Kept so upstream row shapes that still
+ * pass it through (a dead field, post-Bracket-removal) type-check here.
  * @param {{
  *   has_gtt?: boolean|null,
  *   pair_group_key?: string|null,
@@ -87,17 +95,6 @@ export function positionStateBadge(row) {
       bg: 'var(--algo-sky-bg)',
       border: null,
       tooltip: 'Underlying reference — front-month future contract; not a held position or option contract.',
-    };
-  }
-
-  if (row.has_gtt) {
-    return {
-      state: 'gtt',
-      glyph: 'GTT',
-      color: 'var(--algo-green)',
-      bg: 'var(--algo-green-badge)',
-      border: null,
-      tooltip: 'Protected by a GTT stop-loss / target order.',
     };
   }
 

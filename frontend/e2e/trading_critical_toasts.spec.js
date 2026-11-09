@@ -22,22 +22,11 @@
  *     off a signal that doesn't exist would be a silent no-op, so this
  *     is intentionally not implemented here — see the task report.
  *
- *  c) Template-attach stall — wired into the POLL LOOP (OrderBook.svelte
- *     / LogPanel.svelte `_loadOrders`, evaluated on the merged rows
- *     BEFORE status-chip filtering — NOT tied to OrderCard's own mount
- *     lifecycle, which only ever renders rows the currently-selected
- *     status chip matches). Once a LIVE-mode order's "template
- *     selected, order FILLED, nothing attached" state has PERSISTED
- *     for `ATTACH_STALL_THRESHOLD_MS` (15s — rides out the real async
- *     attach-latency race, timed from first observation, shared across
- *     any number of concurrent pollers via sessionStorage) a toast
- *     fires — deduped per order_id for the session, and never at all
- *     for non-live modes (paper/sim/replay/shadow never attempt a real
- *     attach, so that state is their permanent normal resting state).
- *     Debounce/gating logic itself is covered exhaustively by the
- *     Vitest unit suite (src/lib/__tests__/data/templateAttachToast.test.js);
- *     this spec verifies the toast actually renders end-to-end off a
- *     live poll cycle.
+ *  c) Template-attach stall — REMOVED 2026-11 (Track 3, T3.4,
+ *     Bracket/Template/GTT removal). `templateAttachToast.js` and its
+ *     test suite are deleted; `template_id`/`attached_gtts_json` can
+ *     never be populated by any live code path anymore, since the
+ *     Bracket/template-attach engine itself (backend) is gone.
  *
  * Five quality dimensions:
  *  1. SSOT   — drives the real submit() catch-path / poll-loop paths,
@@ -182,72 +171,3 @@ test.describe('(a) Order placement failure — toast + inline banner both fire',
   });
 });
 
-test.describe('(c) Template-attach stall — one toast per order_id, not one per poll', () => {
-  test.use({ viewport: { width: 1400, height: 900 } });
-
-  // AlgoOrderInfo shape (backend/api/routes/orders_helpers.py) — the
-  // ONLY row shape that ever carries `template_id`/`attached_gtts_json`
-  // (the plain broker `/orders/` feed never does — see
-  // templateAttachToast.js's header comment). `mode: 'live'` is
-  // required: `_fire_template_attach_on_fill` is a no-op for every
-  // other mode, so a non-live fixture would never satisfy
-  // `isAttachFailedState`.
-  function stalledAlgoOrder(id) {
-    return {
-      id,
-      symbol: 'NIFTY26JUN25000CE',
-      exchange: 'NFO',
-      transaction_type: 'BUY',
-      quantity: 50,
-      initial_price: 210.25,
-      status: 'FILLED',
-      mode: 'live',
-      created_at: new Date().toISOString(),
-      template_id: 3,
-      attached_gtts_json: null,
-      account: 'ZG0790',
-    };
-  }
-
-  test('toast fires once the stall has persisted, not on every poll, never before the threshold', async ({ page }) => {
-    // Detection is wired into the POLL LOOP (OrderBook.svelte /
-    // LogPanel.svelte `_loadOrders`), evaluated on the merged rows
-    // BEFORE status-chip filtering — so no chip needs to be selected
-    // for the toast to fire, sidestepping OrderBook's pre-existing
-    // "Filled" chip gap (its predicate checks broker-vocabulary
-    // 'COMPLETE', which AlgoOrder rows never use — see this fix's task
-    // report). Driving /orders here for a concrete UI surface; the
-    // same wiring also covers the dashboard card, Activity modal, and
-    // /activity page via LogPanel.svelte.
-    let pollCount = 0;
-    await page.route('**/api/orders/', (route) =>
-      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ rows: [] }) })
-    );
-    await page.route('**/api/orders/algo/recent**', (route) => {
-      pollCount++;
-      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([stalledAlgoOrder(555)]) });
-    });
-    await page.route('**/api/orders/events/recent**', (route) =>
-      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([]) })
-    );
-
-    await loginAsAdmin(page);
-    await page.goto('/orders', { waitUntil: 'domcontentloaded' });
-
-    // Wait for the first poll to land, then assert NO toast yet — the
-    // failed-attach state must persist for ATTACH_STALL_THRESHOLD_MS
-    // (15s) before it's treated as a genuine stall rather than the
-    // normal async attach-latency window.
-    await expect.poll(() => pollCount, { timeout: 10_000 }).toBeGreaterThanOrEqual(1);
-    const attachToast = page.locator('.rbq-toast').filter({ hasText: /bracket did not attach/i });
-    await expect(attachToast).toHaveCount(0);
-
-    // Wait past the threshold — the toast should now have fired exactly once.
-    await expect(attachToast).toHaveCount(1, { timeout: 20_000 });
-    await expect(attachToast.first()).toContainText('#555');
-
-    // A further poll cycle must not add a second toast for the same order.
-    await page.waitForTimeout(4_000);
-    await expect(attachToast).toHaveCount(1);
-  });
-});

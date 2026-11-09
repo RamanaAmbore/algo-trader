@@ -3,19 +3,24 @@
  * "Console retirement, Agent/Bracket/Template unification").
  *
  * Covers the mandatory test matrix from the sprint brief that isn't
- * already exercised by the updated console_decompile_bracket_edit_flow
- * / console_event_token_submit / console_guide_page specs:
+ * already exercised by the console_event_token_submit / console_guide_page
+ * specs (`console_decompile_bracket_edit_flow` was deleted 2026-11,
+ * Track 3 T3.4, Bracket/Template/GTT removal):
  *
- *   1. Automation's Console tab (full statement scope) — one statement
- *      of each kind (order / bracket / agent) compiles and submits via
- *      its real existing endpoint (mocked at the network boundary —
- *      see "Mocking" note below).
+ *   1. Automation's Console tab (full statement scope) — an order(...)
+ *      and a WHEN...DO... agent(...) statement each compile and submit
+ *      via their real existing endpoint (mocked at the network boundary
+ *      — see "Mocking" note below); a bracket(...) statement is
+ *      REJECTED with the removal message, in every position, even
+ *      though this mount has no `allowedKinds` restriction at all.
  *   2. Orders' CLI tab (order-scoped, mounted via SymbolPanel's
  *      restored `cli` tab — tabs.js) — an order(...) statement submits
  *      through the real pipeline (PAPER, direct; LIVE, through the
  *      existing confirm modal); a bracket(...)/WHEN... statement is
- *      REJECTED by the compiler with the scope error, visibly, in the
- *      UI — never a silent no-op.
+ *      REJECTED by the compiler, visibly, in the UI — never a silent
+ *      no-op. `bracket(...)` fails with its own removal message
+ *      (parse-time, ahead of the scope check); `WHEN...` fails with the
+ *      scope message.
  *   3. SymbolPanel order-ticket MODAL's own CLI tab — same order-only
  *      acceptance check, inside the modal context (opened via the
  *      page-header Order button, same mount component, different
@@ -24,12 +29,11 @@
  *      tab rather than 404ing.
  *
  * Mocking — every write path (`POST /api/orders/ticket`,
- * `POST /api/admin/templates/`, `POST /api/agents/`) is intercepted via
- * `page.route()` so this spec never creates real rows or places a real
- * order against dev — consistent with the existing bracket-decompile
- * spec's own mocking approach for the same reason (POST write
- * endpoints require a capability the default `rambo` admin fixture may
- * lack, and a Playwright spec must never place a live order).
+ * `POST /api/agents/`) is intercepted via `page.route()` so this spec
+ * never creates real rows or places a real order against dev (POST
+ * write endpoints require a capability the default `rambo` admin
+ * fixture may lack, and a Playwright spec must never place a live
+ * order).
  * LIVE mode (for the confirm-modal check) is forced the same way — by
  * mocking `GET /api/admin/execution/mode`, never by mutating real
  * backend settings.
@@ -82,10 +86,13 @@ test.describe('Automation Console tab — full statement scope (Sprint B)', () =
     await expect(cli).toHaveValue('', { timeout: TIMEOUT });
   });
 
-  test('bracket(...) statement compiles and submits via POST /api/admin/templates/', async ({ page }) => {
-    const captured = { body: null };
-    await mockPost(page, '**/api/admin/templates/', captured, { id: 99001, name: 'ZZZ E2E Bracket' });
-
+  // `bracket(...)` compiling/submitting via `POST /api/admin/templates/`
+  // removed 2026-11 (Track 3, T3.4, Bracket/Template/GTT removal) — that
+  // route and the whole Bracket engine are gone server-side;
+  // `bracket(...)` is now a hard compile error in every position.
+  // Replaced with the opposite assertion: no "Save bracket" button
+  // exists at all, and the textarea shows the removal error.
+  test('bracket(...) statement is rejected with the removal message — no Save bracket affordance exists', async ({ page }) => {
     await page.goto('/automation?tab=console');
     await page.waitForLoadState('networkidle');
 
@@ -93,15 +100,10 @@ test.describe('Automation Console tab — full statement scope (Sprint B)', () =
     await expect(cli).toBeVisible({ timeout: TIMEOUT });
     await cli.fill('bracket(applies_to=buy_any, tp_pct=30, sl_pct=-20) #name="ZZZ E2E Bracket"');
 
-    const saveBtn = page.locator('.console-agent-cli-btn', { hasText: 'Save bracket' });
-    await expect(saveBtn).toBeVisible({ timeout: TIMEOUT });
-    await saveBtn.click();
-
-    await expect.poll(() => captured.body, { timeout: TIMEOUT }).not.toBeNull();
-    expect(captured.body.applies_to).toBe('buy_any');
-    expect(captured.body.tp_pct).toBe(30);
-    expect(captured.body.name).toBe('ZZZ E2E Bracket');
-    await expect(cli).toHaveValue('', { timeout: TIMEOUT });
+    const errors = page.locator('.agent-cli-errors');
+    await expect(errors).toBeVisible({ timeout: TIMEOUT });
+    await expect(errors).toContainText(/bracket\(\) was removed/i);
+    await expect(page.locator('.console-agent-cli-btn', { hasText: 'Save bracket' })).toHaveCount(0);
   });
 
   test('WHEN...ALERT...DO... agent statement compiles and submits via POST /api/agents/', async ({ page }) => {
@@ -210,7 +212,12 @@ test.describe('Orders CLI tab — order-only scope (Sprint B)', () => {
     await expect.poll(() => captured.body, { timeout: TIMEOUT }).not.toBeNull();
   });
 
-  test('bracket(...) statement is rejected with the scope error, visibly, not a silent no-op', async ({ page }) => {
+  // `bracket(...)` is now rejected at PARSE time (removed 2026-11, Track
+  // 3 T3.4, Bracket/Template/GTT removal), BEFORE the order-only scope
+  // check (`allowedKinds`) ever runs — so the error here is the removal
+  // message, not the scope message. Still never a silent no-op, and
+  // still no affordance exists to act on it.
+  test('bracket(...) statement is rejected with the removal message, visibly, not a silent no-op', async ({ page }) => {
     await page.goto('/orders');
     await page.waitForLoadState('networkidle');
 
@@ -224,7 +231,7 @@ test.describe('Orders CLI tab — order-only scope (Sprint B)', () => {
 
     const errors = page.locator('.agent-cli-errors');
     await expect(errors).toBeVisible({ timeout: TIMEOUT });
-    await expect(errors).toContainText(/Automation.*Console/i);
+    await expect(errors).toContainText(/bracket\(\) was removed/i);
 
     // No "Save bracket"/"Create agent" affordance exists on this
     // order-only mount at all — the rejection is structural, not a
@@ -322,7 +329,8 @@ test.describe('SymbolPanel order-ticket modal — restored CLI tab (Sprint B)', 
     expect(captured.body.tradingsymbol).toBe('RELIANCE');
   });
 
-  test('bracket(...) statement is rejected inside the modal context too', async ({ page }) => {
+  // Same removal-message precedence as the /orders CLI tab test above.
+  test('bracket(...) statement is rejected with the removal message inside the modal context too', async ({ page }) => {
     await page.goto('/dashboard');
     await page.waitForLoadState('networkidle');
 
@@ -343,7 +351,7 @@ test.describe('SymbolPanel order-ticket modal — restored CLI tab (Sprint B)', 
 
     const errors = modal.locator('.agent-cli-errors');
     await expect(errors).toBeVisible({ timeout: TIMEOUT });
-    await expect(errors).toContainText(/Automation.*Console/i);
+    await expect(errors).toContainText(/bracket\(\) was removed/i);
   });
 });
 

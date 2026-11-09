@@ -96,11 +96,10 @@ describe('mkRightColDefs — pos_state cellRenderer (delegates to positionStateB
     expect(result).toContain('data-pos-state="paired"');
   });
 
-  it('has_gtt button shows "GTT" text and data-pos-state="gtt"', () => {
+  it('a stray has_gtt=true field (dead passthrough post-Bracket-removal, 2026-11 T3.4) renders no badge alone', () => {
     const col = getPosStateCol();
     const result = col.cellRenderer({ data: { has_gtt: true, quantity: 10 } });
-    expect(result).toContain('>GTT<');
-    expect(result).toContain('data-pos-state="gtt"');
+    expect(result).toBe('');
   });
 
   it('returns "" for _isTotal rows regardless of flags', () => {
@@ -136,10 +135,10 @@ describe('mkRightColDefs — pos_state cellRenderer (delegates to positionStateB
     expect(result).toEqual({ background: 'var(--algo-amber-bg)', color: 'var(--algo-amber)' });
   });
 
-  it('cellStyle returns green when has_gtt is true regardless of quantity', () => {
+  it('cellStyle returns {} for a stray has_gtt=true field alone (dead passthrough post-Bracket-removal)', () => {
     const col = getPosStateCol();
     const result = col.cellStyle({ data: { has_gtt: true, quantity: 10 } });
-    expect(result).toEqual({ background: 'var(--algo-green-badge)', color: 'var(--algo-green)' });
+    expect(result).toEqual({});
   });
 
   it('cellStyle returns {} for _isTotal rows regardless of quantity', () => {
@@ -198,13 +197,13 @@ describe('mkRightColDefs — pos_state column (Fix 2 original)', () => {
     expect(cols[0].hide).toBe(false);
   });
 
-  it('pos_state column headerTooltip includes paired/amber/cyan/green language', () => {
+  it('pos_state column headerTooltip includes paired/amber/cyan language, no GTT (removed 2026-11 T3.4)', () => {
     const cols = mkRightColDefs(makeOpts());
     const tooltip = cols[0].headerTooltip ?? '';
     expect(tooltip).toContain('paired');
     expect(tooltip).toContain('cyan');
     expect(tooltip).toContain('amber');
-    expect(tooltip).toContain('green');
+    expect(tooltip).not.toContain('GTT');
   });
 });
 
@@ -1205,10 +1204,10 @@ describe('mkRightColDefs — pos_state anchor-row tooltip (D6, 2026-10-20)', () 
     expect(result).toContain('not a held position or option contract');
   });
 
-  it('a real position row (has_gtt, no anchor flag) never carries the anchor tooltip', () => {
+  it('a real position row (paired, no anchor flag) never carries the anchor tooltip', () => {
     const col = getPosStateCol();
-    const result = col.cellRenderer({ data: { has_gtt: true, quantity: 10 } });
-    expect(result).toContain('data-pos-state="gtt"');
+    const result = col.cellRenderer({ data: { pair_group_key: 'P1', quantity: 10 } });
+    expect(result).toContain('data-pos-state="paired"');
     expect(result).not.toContain('front-month future contract');
   });
 

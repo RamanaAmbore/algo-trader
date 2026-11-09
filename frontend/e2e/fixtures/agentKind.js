@@ -1,9 +1,10 @@
 // Shared helper for the Agents-tab "Agent kind" dropdown (Select.svelte).
-// The three kinds are a single custom dropdown, not card buttons. Each
-// option label carries a trailing count, e.g. "Action agent (3)", so
-// options are matched by label substring, never by exact name. The selected
-// option's accessible name carries a leading check mark ("✓ Action agent (1)"),
-// so the match must NOT be anchored to the start.
+// The two kinds (Brackets removed 2026-11, Track 3 T3.4, Bracket/
+// Template/GTT removal) are a single custom dropdown, not card buttons.
+// Each option label carries a trailing count, e.g. "Action agent (3)",
+// so options are matched by label substring, never by exact name. The
+// selected option's accessible name carries a leading check mark
+// ("✓ Action agent (1)"), so the match must NOT be anchored to the start.
 import { expect } from '@playwright/test';
 
 export const AGENT_KIND_TIMEOUT = 20_000;
@@ -12,7 +13,6 @@ export const AGENT_KIND_TIMEOUT = 20_000;
 export const AGENT_KIND_LABEL = {
   agents: 'Action agent',
   alerts: 'Alert agent',
-  brackets: 'Bracket',
 };
 
 /** cardId -> option accessible-name regex (count suffix tolerated). */

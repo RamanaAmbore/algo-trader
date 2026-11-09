@@ -28,9 +28,9 @@ test.describe('held orders — cancel action', () => {
     expect(cardSrc).toMatch(/return 'Repeated rejection'/);
   });
 
-  test('kindOf() still labels template_exit and falls back to Expiry close', () => {
-    expect(cardSrc).toMatch(/h\.category === 'template_exit'/);
-    expect(cardSrc).toMatch(/return 'Bracket exit'/);
+  test('kindOf() no longer labels template_exit (removed 2026-11 T3.4 — Bracket removed); falls back to Expiry close', () => {
+    expect(cardSrc).not.toMatch(/h\.category === 'template_exit'/);
+    expect(cardSrc).not.toMatch(/return 'Bracket exit'/);
     expect(cardSrc).toMatch(/return 'Expiry close'/);
   });
 

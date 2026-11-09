@@ -86,7 +86,7 @@
   import { tick } from 'svelte';
   import {
     compileAgentCliStatement, suggestAgentCliAt, describeErrorPosition,
-    decompileAgent, decompileBracket, decompileToken,
+    decompileAgent, decompileToken,
     lookupAgentCliEntry, isInsideOpenCall, describeTokenAt, lexAgentStatement,
   } from '$lib/command/grammars/agents.js';
   import { pushLayer, popLayer } from '$lib/utils/layerStack.js';
@@ -749,12 +749,13 @@
   // so the JSON preview silently stayed blank for those compile kinds
   // even though they'd compiled successfully (only 'agent'/'order' had a
   // preview). Now uniform across every compile kind this editor can
-  // produce.
+  // produce. (`'bracket'` branch removed 2026-11, Track 3 T3.4,
+  // Bracket/Template/GTT removal — `compiled.kind` can never be
+  // `'bracket'` anymore.)
   const previewPayload = $derived.by(() => {
     if (!compiled?.ok) return null;
     if (compiled.kind === 'agent' || compiled.kind === 'event') return compiled.agent;
     if (compiled.kind === 'order') return compiled.ticket || { groups: compiled.basket?.groups };
-    if (compiled.kind === 'bracket') return compiled.template;
     if (compiled.kind === 'token') return compiled.fragment;
     // Sprint [cancel-all-cli] — shows the resolved scope/account/symbol/
     // side the operator is about to submit; this preview pane IS the
@@ -803,10 +804,10 @@
         const r = decompileAgent(compiled.agent, catalog, { lotSizeOf });
         return r.text ? [r.text] : null;
       }
-      if (compiled.kind === 'bracket') {
-        const r = decompileBracket(compiled.template, catalog, { lotSizeOf });
-        return r.text ? [r.text] : null;
-      }
+      // `compiled.kind === 'bracket'` branch removed 2026-11 (Track 3,
+      // T3.4, Bracket/Template/GTT removal) — `compileStatement` can
+      // never produce that kind anymore (bracket(...) is a hard compile
+      // error in every position), so this branch was unreachable.
       if (compiled.kind === 'token') {
         const r = decompileToken(compiled.fragment, catalog, { lotSizeOf });
         return r.text ? [r.text] : null;
@@ -833,14 +834,15 @@
   // Click-to-describe on the read-only "Generated statement(s)" preview
   // (.claude/PLAN.md, Part 1) — scoped to the decompile kinds that
   // actually render real parseable grammar text (`agent`/`event`/
-  // `bracket`/`token`); `order`/`cancel_all_orders` build a hand-written
+  // `token`; `bracket` removed 2026-11, Track 3 T3.4, Bracket/Template/
+  // GTT removal); `order`/`cancel_all_orders` build a hand-written
   // SUMMARY string via `_legSummaryText`/the inline cancel-all branch
   // above, not grammar text `describeTokenAt` could ever resolve against,
   // so those two kinds are deliberately left as plain, non-clickable text
   // (their own leg/param values are already shown directly).
   const _canonicalClickable = $derived(
     compiled?.kind === 'agent' || compiled?.kind === 'event'
-    || compiled?.kind === 'bracket' || compiled?.kind === 'token');
+    || compiled?.kind === 'token');
 
   /** Splits one canonical preview `line` into displayable segments —
    *  non-clickable gap text (whitespace/punctuation between tokens) and

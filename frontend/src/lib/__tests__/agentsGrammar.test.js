@@ -911,25 +911,34 @@ describe('adversarial — lots vs qty', () => {
 // ── Sprint 8 — shared TP/SL/Wing kwarg vocabulary, tp_scales_json object
 //    literals, bracket= on order(...), and the standalone bracket_stmt ──
 
+// `bracket(...)` as the test vehicle for tp_scales_json object-literal
+// parsing was removed 2026-11 (Track 3, T3.4, Bracket/Template/GTT
+// removal) — `bracket(...)` is now a hard compile error. The underlying
+// object-literal parser (`_parseTpScalesJsonArg`/`_compileTpSlWingFields`)
+// is shared with `order(...)`'s own `tp_scales_json` override field, so
+// these tests now use `order(...)` as the vehicle instead — same parser,
+// same coverage.
 describe('Sprint 8 — tp_scales_json object-literal parsing', () => {
+  const _ORDER_PREFIX = 'order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, price=100, ';
   it('a single {...} entry parses and compiles to a JSON-stringified array', () => {
-    const r = compile('bracket(tp_scales_json=[{at_pct=30, close_pct=50}]) #name="x"');
+    const r = compile(`${_ORDER_PREFIX}tp_scales_json=[{at_pct=30, close_pct=50}])`, { mode: 'paper' });
     expect(r.ok).toBe(true);
-    expect(r.template.tp_scales_json).toBe(JSON.stringify([{ at_pct: 30, close_pct: 50 }]));
+    expect(r.ticket.tp_scales_json_override).toBe(JSON.stringify([{ at_pct: 30, close_pct: 50 }]));
   });
 
   it('multiple comma-separated {...} entries all parse correctly', () => {
     const r = compile(
-      'bracket(tp_scales_json=[{at_pct=30, close_pct=50}, {at_pct=60, close_pct=50}]) #name="x"'
+      `${_ORDER_PREFIX}tp_scales_json=[{at_pct=30, close_pct=50}, {at_pct=60, close_pct=50}])`,
+      { mode: 'paper' },
     );
     expect(r.ok).toBe(true);
-    expect(r.template.tp_scales_json).toBe(
+    expect(r.ticket.tp_scales_json_override).toBe(
       JSON.stringify([{ at_pct: 30, close_pct: 50 }, { at_pct: 60, close_pct: 50 }])
     );
   });
 
   it('"=" is the object literal\'s key/value separator — ":" is a parse error, not a silent alternate spelling', () => {
-    const r = compile('bracket(tp_scales_json=[{at_pct:30}]) #name="x"');
+    const r = compile(`${_ORDER_PREFIX}tp_scales_json=[{at_pct:30}])`, { mode: 'paper' });
     expect(r.ok).toBe(false);
   });
 });
@@ -954,13 +963,13 @@ describe('Sprint 8 — order(...) inline TP/SL/Wing overrides', () => {
     expect(r.errors.some(e => /cannot specify both wing_premium_pct and wing_strike_offset/.test(e.message))).toBe(true);
   });
 
-  it('bracket="name" compiles to template_slug on the ticket', () => {
+  it('bracket="name" is rejected (removed 2026-11, Track 3 T3.4, Bracket/Template/GTT removal)', () => {
     const r = compile(
       'order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, price=100, bracket="default-bull")',
       { mode: 'paper' },
     );
-    expect(r.ok).toBe(true);
-    expect(r.ticket.template_slug).toBe('default-bull');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /unknown parameter 'bracket'/.test(e.message))).toBe(true);
   });
 });
 
@@ -969,16 +978,17 @@ describe('Sprint 8 — order(...) inline TP/SL/Wing overrides', () => {
 //    mutual-exclusion ─────────────────────────────────────────────────────
 
 describe('Sprint 17 — tp_scales_json per-key object-literal typing', () => {
+  const _ORDER_PREFIX = 'order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, price=100, ';
   it('a string value where a number is required ("thirty") is a compile error naming the key and expected type', () => {
-    const r = compile('bracket(tp_scales_json=[{at_pct="thirty", close_pct=50}]) #name="x"');
+    const r = compile(`${_ORDER_PREFIX}tp_scales_json=[{at_pct="thirty", close_pct=50}])`, { mode: 'paper' });
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /at_pct/.test(e.message) && /number/.test(e.message))).toBe(true);
   });
 
   it('a valid numeric entry still compiles fine (no regression)', () => {
-    const r = compile('bracket(tp_scales_json=[{at_pct=30, close_pct=50}]) #name="x"');
+    const r = compile(`${_ORDER_PREFIX}tp_scales_json=[{at_pct=30, close_pct=50}])`, { mode: 'paper' });
     expect(r.ok).toBe(true);
-    expect(r.template.tp_scales_json).toBe(JSON.stringify([{ at_pct: 30, close_pct: 50 }]));
+    expect(r.ticket.tp_scales_json_override).toBe(JSON.stringify([{ at_pct: 30, close_pct: 50 }]));
   });
 });
 
@@ -1060,11 +1070,11 @@ describe('Sprint 17 — generalized mutual-exclusion (declared mutuallyExclusive
     expect(r.errors.some(e => /cannot specify both/.test(e.message))).toBe(true);
   });
 
-  it('the wing-pair check still applies to standalone bracket(...) (catalog threaded through)', () => {
-    const r = compile('bracket(wing_premium_pct=5, wing_strike_offset=100) #name="x"');
-    expect(r.ok).toBe(false);
-    expect(r.errors.some(e => /cannot specify both wing_premium_pct and wing_strike_offset/.test(e.message))).toBe(true);
-  });
+  // The standalone-bracket(...) variant of this check was removed 2026-11
+  // (Track 3, T3.4, Bracket/Template/GTT removal) — `bracket(...)` is a
+  // hard compile error now, so the wing-pair check can no longer be
+  // reached through that vehicle. `order(...)`'s own variant above
+  // (via the shared `_compileTpSlWingFields`) is unaffected.
 
   it('only one of the pair still compiles fine (no regression)', () => {
     const r = compile(
@@ -1076,48 +1086,28 @@ describe('Sprint 17 — generalized mutual-exclusion (declared mutuallyExclusive
   });
 });
 
-describe('Sprint 8 — standalone bracket(...) statement', () => {
-  it('compiles to an OrderTemplateCreate-shaped object', () => {
-    const r = compile(
-      'bracket(applies_to=buy_any, tp_pct=30, sl_pct=-20, tp_order_type=LIMIT) #name="Default Bull"'
-    );
-    expect(r.ok).toBe(true);
-    expect(r.template).toEqual({
-      name: 'Default Bull', applies_to: 'buy_any', tp_pct: 30, sl_pct: -20, tp_order_type: 'LIMIT',
-    });
+// `Sprint 8 — standalone bracket(...) statement` describe block removed
+// 2026-11 (Track 3, T3.4, Bracket/Template/GTT removal) — replaced by
+// this one, which pins the new, opposite behaviour: bracket(...) is now
+// a hard compile error in every position it used to compile in.
+describe('bracket(...) is a hard compile error (Track 3, T3.4, Bracket/Template/GTT removal)', () => {
+  it('standalone bracket(...) is rejected with the removal message', () => {
+    const r = compile('bracket(applies_to=buy_any, tp_pct=30, sl_pct=-20) #name="Default Bull"');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /bracket\(\) was removed/.test(e.message))).toBe(true);
   });
 
-  it('a missing #name= is a compile-time error — a saved bracket must have a name', () => {
+  it('bracket(...) inside a DO clause is likewise rejected', () => {
+    const r = compile('WHEN always DO bracket(applies_to=buy_any)');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /bracket\(\) was removed/.test(e.message))).toBe(true);
+  });
+
+  it('bracket(...) missing #name= is still rejected with the removal message, not the old "#name" error', () => {
     const r = compile('bracket(applies_to=buy_any, tp_pct=30)');
     expect(r.ok).toBe(false);
-    expect(r.errors.some(e => /missing required meta tag '#name'/.test(e.message))).toBe(true);
-  });
-
-  it('bracket(...) used inside a DO clause now compiles (Sprint [grammar-unify] folds bracket into the shared preamble/DO vocabulary) — the entry is reported as inert server-side until the engine agent wires a real "bracket" action', () => {
-    const r = compile('WHEN always DO bracket(applies_to=buy_any)');
-    expect(r.ok).toBe(true);
-    expect(r.agent.actions).toEqual([{ type: 'bracket', params: { applies_to: 'buy_any' } }]);
-  });
-
-  // Sprint 14 — `applies_to=sell_any` was missing from the CLI's enum
-  // list even though the real backend `_APPLIES_TO_CHOICES`
-  // (backend/api/routes/templates.py:39) has always allowed it.
-  it('accepts applies_to=sell_any, matching the real backend enum', () => {
-    const r = compile('bracket(applies_to=sell_any, tp_pct=20) #name="Default Short"');
-    expect(r.ok).toBe(true);
-    expect(r.template.applies_to).toBe('sell_any');
-  });
-
-  // Sprint 14 finding #4 — `buy_option` was ALSO missing from the CLI's
-  // enum list (a second gap, documented but never actioned alongside
-  // sell_any above), even though the real seeded `default-long-option`
-  // bracket uses it. Confirmed live 2026-10-12: creating a new custom
-  // bracket replicating that same applies_to value failed to decompile
-  // with "'buy_option' is not one of [...]" until this enum was fixed.
-  it('accepts applies_to=buy_option, matching the real backend enum (Sprint 14 finding #4)', () => {
-    const r = compile('bracket(applies_to=buy_option, tp_pct=80, tp_order_type=MARKET) #name="Long Option"');
-    expect(r.ok).toBe(true);
-    expect(r.template.applies_to).toBe('buy_option');
+    expect(r.errors.some(e => /bracket\(\) was removed/.test(e.message))).toBe(true);
+    expect(r.errors.some(e => /missing required meta tag/.test(e.message))).toBe(false);
   });
 });
 
@@ -1650,14 +1640,21 @@ describe('compileStatement opts.allowedKinds — scope restriction', () => {
     expect(r.kind).toBe('order');
   });
 
-  it('a bracket(...) statement is rejected with the scope error when allowedKinds is order-only', () => {
+  // `bracket(...)` is now a hard compile error in EVERY position, even
+  // before this scope check ever runs (removed 2026-11, Track 3 T3.4,
+  // Bracket/Template/GTT removal) — it fails at parse time, with the
+  // removal message, regardless of `allowedKinds`. The three tests below
+  // that used `bracket(...)` as their scope-restriction test VEHICLE were
+  // rewritten; `token(...)` is still a valid vehicle for the general
+  // scope-restriction mechanism (bracket's own removal is orthogonal).
+  it('bracket(...) is rejected with the removal message even under an order-only scope, never the scope error', () => {
     const r = compile(
       'bracket(applies_to=buy_any, tp_pct=30, sl_pct=-20) #name="Default Bull"',
       { allowedKinds: ['order'] },
     );
     expect(r.ok).toBe(false);
-    expect(r.kind).toBe('bracket');
-    expect(r.errors.some(e => /author agents\/brackets on Automation . Console/.test(e.message))).toBe(true);
+    expect(r.errors.some(e => /bracket\(\) was removed/.test(e.message))).toBe(true);
+    expect(r.errors.some(e => /author agents on Automation/.test(e.message))).toBe(false);
   });
 
   it('a WHEN...DO... agent statement (with an alert(...) DO call) is rejected with the scope error when allowedKinds is order-only', () => {
@@ -1668,27 +1665,33 @@ describe('compileStatement opts.allowedKinds — scope restriction', () => {
     );
     expect(r.ok).toBe(false);
     expect(r.kind).toBe('agent');
-    expect(r.errors.some(e => /author agents\/brackets on Automation . Console/.test(e.message))).toBe(true);
+    expect(r.errors.some(e => /author agents on Automation . Console/.test(e.message))).toBe(true);
   });
 
   it('a token(...) statement is rejected with the scope error when allowedKinds is order-only', () => {
     const r = compile('token(kind="notify") telegram #name="my-token"', { allowedKinds: ['order'] });
     expect(r.ok).toBe(false);
     expect(r.kind).toBe('token');
-    expect(r.errors.some(e => /author agents\/brackets on Automation . Console/.test(e.message))).toBe(true);
+    expect(r.errors.some(e => /author agents on Automation . Console/.test(e.message))).toBe(true);
   });
 
-  it('the scope check runs BEFORE any kind-specific compiler — a bracket missing #name= under order-only scope shows the scope error, not the "#name" error', () => {
-    const r = compile('bracket(applies_to=buy_any, tp_pct=30)', { allowedKinds: ['order'] });
+  it('the scope check runs BEFORE any kind-specific compiler — a token missing #name= under order-only scope shows the scope error, not the "#name" error', () => {
+    const r = compile('token(kind="notify") telegram', { allowedKinds: ['order'] });
     expect(r.ok).toBe(false);
-    expect(r.errors.some(e => /author agents\/brackets on Automation . Console/.test(e.message))).toBe(true);
+    expect(r.errors.some(e => /author agents on Automation . Console/.test(e.message))).toBe(true);
     expect(r.errors.some(e => /missing required meta tag/.test(e.message))).toBe(false);
   });
 
-  it('omitting allowedKinds entirely is backward compatible — a bracket(...) still compiles normally', () => {
-    const r = compile('bracket(applies_to=buy_any, tp_pct=30, sl_pct=-20) #name="Default Bull"');
+  it('omitting allowedKinds entirely is backward compatible — a token(...) still compiles normally', () => {
+    const r = compile('token(kind="notify") telegram #name="my-token"');
     expect(r.ok).toBe(true);
-    expect(r.kind).toBe('bracket');
+    expect(r.kind).toBe('token');
+  });
+
+  it('bracket(...) is rejected the same way with no allowedKinds restriction at all — the removal is unconditional, not scope-gated', () => {
+    const r = compile('bracket(applies_to=buy_any, tp_pct=30, sl_pct=-20) #name="Default Bull"');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /bracket\(\) was removed/.test(e.message))).toBe(true);
   });
 });
 
@@ -1922,7 +1925,7 @@ describe('meta clause — #name=/#desc=/#tag=/#group=', () => {
   it('a bare order(...) statement with a trailing #... produces the exact compile-error text', () => {
     const r = compile('order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", qty=75) #name="x"', { mode: 'paper' });
     expect(r.ok).toBe(false);
-    expect(r.errors.some(e => e.message === 'meta tags only apply to agents/brackets, not a bare order')).toBe(true);
+    expect(r.errors.some(e => e.message === 'meta tags only apply to agents, not a bare order')).toBe(true);
   });
 
   it('an unknown meta key is a compile-time error, not a silent drop', () => {
@@ -4460,11 +4463,10 @@ describe('Sprint [grammar-unify] — GIVEN is rejected (negative test)', () => {
   });
 });
 
-describe('Sprint [grammar-unify] — mixed preamble (order/alert/bracket/debug/help/label-assignment) ahead of WHEN...DO...', () => {
+describe('Sprint [grammar-unify] — mixed preamble (order/alert/debug/help/label-assignment) ahead of WHEN...DO...', () => {
   it('every preamble call is present, in order, and only the DO call is gated by WHEN', () => {
     const r = compile(
       'order(account="ZG0790", symbol="NIFTY25JULFUT", side="BUY", lots=2)\n'
-      + 'bracket(applies_to=buy_any, tp_pct=30)\n'
       + 'alert(telegram)\n'
       + 'z = 1\n'
       + 'debug(z)\n'
@@ -4476,7 +4478,6 @@ describe('Sprint [grammar-unify] — mixed preamble (order/alert/bracket/debug/h
     // Every preamble call present, in textual order.
     expect(r.agent.preamble).toEqual([
       { type: 'order', params: { account: 'ZG0790', symbol: 'NIFTY25JULFUT', side: 'BUY', qty: 150 } },
-      { type: 'bracket', params: { applies_to: 'buy_any', tp_pct: 30 } },
       { type: 'alert', events: [{ channel: 'telegram', enabled: true }] },
       { type: 'log', params: { level: 'debug', message: '1' } },
       { type: 'help', params: { name: 'pnl' } },
@@ -4487,6 +4488,20 @@ describe('Sprint [grammar-unify] — mixed preamble (order/alert/bracket/debug/h
       type: 'close_position', params: { account: 'ZG0790', symbol: 'NIFTY25JULFUT' },
     }]);
     expect(r.agent.events).toEqual([]);
+  });
+
+  // bracket(...) in a preamble was removed 2026-11 (Track 3, T3.4,
+  // Bracket/Template/GTT removal) — a mixed preamble containing it now
+  // fails outright with the removal message, not a successful compile
+  // with a `{type:'bracket', params}` preamble entry.
+  it('a bracket(...) call anywhere in a mixed preamble fails the WHOLE statement with the removal message', () => {
+    const r = compile(
+      'order(account="ZG0790", symbol="NIFTY25JULFUT", side="BUY", lots=2)\n'
+      + 'bracket(applies_to=buy_any, tp_pct=30)\n'
+      + 'WHEN (pnl@positions.total==1) DO close_position(account="ZG0790", symbol="NIFTY25JULFUT")'
+    );
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /bracket\(\) was removed/.test(e.message))).toBe(true);
   });
 });
 
@@ -4639,7 +4654,7 @@ describe('Sprint [grammar-unify] — OrderCliTab scope (allowedKinds) never grow
     const r = compile('help(pnl)', { allowedKinds: ['order', 'cancel_all_orders'] });
     expect(r.ok).toBe(false);
     expect(r.kind).toBe('help');
-    expect(r.errors.some((e) => /author agents\/brackets on Automation . Console/.test(e.message))).toBe(true);
+    expect(r.errors.some((e) => /author agents on Automation . Console/.test(e.message))).toBe(true);
   });
 
   it('a plain order(...) statement still compiles under that SAME restricted scope (sanity check — the restriction is help-specific, not total)', () => {
@@ -4652,7 +4667,7 @@ describe('Sprint [grammar-unify] — OrderCliTab scope (allowedKinds) never grow
   });
 });
 
-describe('Sprint [grammar-unify] — help(...) and bracket(...) decompile round-trip, preamble and DO positions', () => {
+describe('Sprint [grammar-unify] — help(...) decompile round-trip, preamble and DO positions', () => {
   it('help(...) in DO decompiles and recompiles byte-identically (bare-arg sugar, never the quoted generic form)', () => {
     const r1 = compile('WHEN pnl@positions.total <= -1 DO help(pnl)');
     expect(r1.ok).toBe(true);
@@ -4675,24 +4690,34 @@ describe('Sprint [grammar-unify] — help(...) and bracket(...) decompile round-
     expect(r2.agent).toEqual(r1.agent);
   });
 
-  it('bracket(...) in DO decompiles and recompiles byte-identically', () => {
-    const r1 = compile('WHEN always DO bracket(applies_to=buy_any, tp_pct=30)');
-    expect(r1.ok).toBe(true);
-    const dec = decompileAgent(r1.agent, CATALOG);
-    expect(dec.errors).toEqual([]);
-    const r2 = compile(dec.text);
-    expect(r2.ok).toBe(true);
-    expect(r2.agent).toEqual(r1.agent);
+  // `bracket(...)` can no longer be COMPILED into a `{type:'bracket', ...}`
+  // DO/preamble entry at all (removed 2026-11, Track 3 T3.4,
+  // Bracket/Template/GTT removal), so the old round-trip tests here are
+  // moot. What remains reachable: a PRE-EXISTING saved agent (authored
+  // before this removal) may still hold such an entry in its stored JSON.
+  // `decompileAgent` must refuse loud on it, not silently drop it or
+  // produce unrecompilable `bracket(...)` text.
+  it('a stored {type:"bracket"} DO-action entry (from before the removal) is a hard decompile error, not silently rendered or dropped', () => {
+    const agent = {
+      conditions: { metric: 'avail_margin', scope: 'funds.any_acct', op: '>=', value: -999999999 },
+      actions: [{ type: 'bracket', params: { applies_to: 'buy_any', tp_pct: 30 } }],
+      events: [],
+    };
+    const dec = decompileAgent(agent, CATALOG);
+    expect(dec.text).toBeNull();
+    expect(dec.errors.some(e => /bracket/.test(e.message) && /removed/.test(e.message))).toBe(true);
   });
 
-  it('bracket(...) in the preamble decompiles and recompiles byte-identically', () => {
-    const r1 = compile('bracket(applies_to=buy_any, tp_pct=30)\nWHEN always DO alert(telegram)');
-    expect(r1.ok).toBe(true);
-    const dec = decompileAgent(r1.agent, CATALOG);
-    expect(dec.errors).toEqual([]);
-    const r2 = compile(dec.text);
-    expect(r2.ok).toBe(true);
-    expect(r2.agent).toEqual(r1.agent);
+  it('a stored {type:"bracket"} preamble entry (from before the removal) is likewise a hard decompile error', () => {
+    const agent = {
+      conditions: { metric: 'avail_margin', scope: 'funds.any_acct', op: '>=', value: -999999999 },
+      actions: [],
+      events: [],
+      preamble: [{ type: 'bracket', params: { applies_to: 'buy_any', tp_pct: 30 } }],
+    };
+    const dec = decompileAgent(agent, CATALOG);
+    expect(dec.text).toBeNull();
+    expect(dec.errors.some(e => /bracket/.test(e.message) && /removed/.test(e.message))).toBe(true);
   });
 });
 

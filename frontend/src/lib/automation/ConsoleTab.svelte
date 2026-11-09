@@ -3,7 +3,7 @@
   // "Console retirement"). Ported body of the retired `/console` route
   // (frontend/src/routes/(algo)/console/+page.svelte, now a redirect to
   // `/automation?tab=console`) — ONE visible CLI textbox (AgentCliEditor,
-  // agents.js grammar — FULL statement scope: order, bracket, agent,
+  // agents.js grammar — FULL statement scope: order, agent,
   // event, token — no `allowedKinds` restriction, unlike the two
   // order-scoped mounts added in Sprint B on /orders and the SymbolPanel
   // order-ticket modal, see OrderCliTab.svelte).
@@ -31,8 +31,8 @@
   import AgentCliEditor from '$lib/command/AgentCliEditor.svelte';
   import { fetchAgentCatalog, compileAgentCliStatement } from '$lib/command/grammars/agents.js';
   import {
-    submitConsoleAgent, submitConsoleBracket, submitConsoleToken,
-    updateConsoleAgent, updateConsoleBracket, updateConsoleToken,
+    submitConsoleAgent, submitConsoleToken,
+    updateConsoleAgent, updateConsoleToken,
     resolveConsoleOrder, submitResolvedConsoleOrder,
     submitConsoleCancelAllOrders, submitConsoleHelp,
     classifyConsoleStatement, dispatchConsoleStatement,
@@ -40,7 +40,7 @@
 
   /** @type {{
    *   value: string,
-   *   editTarget?: {rowKind: 'cycle'|'event'|'template'|'bracket', ref: string|number, label: string, hadExplicitAlert?: boolean} | null,
+   *   editTarget?: {rowKind: 'cycle'|'event'|'template', ref: string|number, label: string, hadExplicitAlert?: boolean} | null,
    *   placeholder?: string,
    *   onResult?: (entry: {status: '✓'|'✗', message: string}) => void,
    * }} */
@@ -62,16 +62,17 @@
   // right before it decompiles a row into `value` and switches to this
   // tab. Maps the row's own kind to the ONE compiled statement `kind`
   // that row can legally resave as — a cycle-kind Agent must recompile
-  // as `agent`, an event-kind Agent as `event`, a Token as `token`, a
-  // Bracket as `bracket`. Never falls back to CREATE on a mismatch (e.g.
-  // the operator rewrote a decompiled agent statement into a bracket
-  // statement while still "in" an agent's edit session) — Save simply
-  // refuses with a clear error in that case; the operator must either
-  // fix the text back to the expected kind or explicitly Cancel edit
-  // first (which is the only way to fall through to the ordinary
-  // create-only buttons below).
-  const _EDIT_KIND_FOR_ROW_KIND = { cycle: 'agent', event: 'event', template: 'token', bracket: 'bracket' };
-  const _ROW_KIND_LABEL = { cycle: 'agent', event: 'alert', template: 'token', bracket: 'bracket' };
+  // as `agent`, an event-kind Agent as `event`, a Token as `token`.
+  // (A Bracket's own `bracket` row-kind entry was removed 2026-11, Track
+  // 3 T3.4, Bracket/Template/GTT removal — Brackets no longer exist.)
+  // Never falls back to CREATE on a mismatch (e.g. the operator rewrote a
+  // decompiled agent statement into a different kind while still "in"
+  // an agent's edit session) — Save simply refuses with a clear error in
+  // that case; the operator must either fix the text back to the
+  // expected kind or explicitly Cancel edit first (which is the only way
+  // to fall through to the ordinary create-only buttons below).
+  const _EDIT_KIND_FOR_ROW_KIND = { cycle: 'agent', event: 'event', template: 'token' };
+  const _ROW_KIND_LABEL = { cycle: 'agent', event: 'alert', template: 'token' };
 
   const isDemo = $derived(!$authStore.user);
 
@@ -220,7 +221,7 @@
   /** Sets `_cliSubmitStatus` (the existing post-SUBMIT result line, shown
    *  via AgentCliEditor's `submitStatus` prop) AND mirrors the same
    *  outcome into `onResult` (2026-10-18 cmdHistory wiring) — called at
-   *  every real submit path below (order, cancel-all, agent/bracket/
+   *  every real submit path below (order, cancel-all, agent/
    *  token create+update, unsupported-submit), right alongside that
    *  path's own toast.success/toast.error call. Deliberately a plain
    *  synchronous helper called from event-handler code, NOT a `$effect`
@@ -281,32 +282,10 @@
     }
   }
 
-  async function _submitAgentCliBracket(/** @type {any} */ result) {
-    if (editTarget && editTarget.rowKind === 'bracket') {
-      if (!_editKindMatches(result)) {
-        toast.error('Editing bracket — statement no longer compiles as a bracket');
-        return;
-      }
-      const r = await updateConsoleBracket(/** @type {number} */ (editTarget.ref), result.template);
-      if (r.ok) {
-        _setSubmitStatus(true, `Bracket '${result.template?.name || ''}' updated`);
-        toast.success(`Bracket updated: ${result.template?.name || ''}`);
-        editTarget = null; value = '';
-      } else {
-        _setSubmitStatus(false, `Update failed: ${r.error}`);
-        toast.error(`Bracket update failed: ${_short(r.error)}`);
-      }
-      return;
-    }
-    const r = await submitConsoleBracket(result.template);
-    if (r.ok) {
-      _setSubmitStatus(true, `Bracket '${result.template?.name || ''}' created`);
-      toast.success(`Bracket saved: ${result.template?.name || ''}`); value = '';
-    } else {
-      _setSubmitStatus(false, `Create failed: ${r.error}`);
-      toast.error(`Bracket failed: ${_short(r.error)}`);
-    }
-  }
+  // `_submitAgentCliBracket` removed 2026-11 (Track 3, T3.4,
+  // Bracket/Template/GTT removal) — `compiled.kind` can never be
+  // `'bracket'` anymore (see agents.js's compiler rejection), so this
+  // function was unreachable.
 
   async function _submitAgentCliToken(/** @type {any} */ result) {
     if (editTarget && editTarget.rowKind === 'template') {
@@ -403,7 +382,7 @@
   }
 
   // Sprint C follow-up (2026-10) — CLI order placement stays inline in
-  // this panel, matching agent/bracket/token submission (see
+  // this panel, matching agent/token submission (see
   // `_submitAgentCliOrder` above).
 
   /** True only once the regex-based `classifyConsoleStatement` AND the
@@ -456,7 +435,6 @@
         if (!_agentCliCompiled?.ok) return;
         if (_agentCliCompiled.kind === 'order' || _agentCliCompiled.kind === 'cancel_all_orders') return _onAgentCliOrderSubmit(_agentCliCompiled);
         if (_agentCliCompiled.kind === 'agent' || _agentCliCompiled.kind === 'event') return _submitAgentCliAgent(_agentCliCompiled);
-        if (_agentCliCompiled.kind === 'bracket') return _submitAgentCliBracket(_agentCliCompiled);
         if (_agentCliCompiled.kind === 'token') return _submitAgentCliToken(_agentCliCompiled);
         if (_agentCliCompiled.kind === 'help') return _submitAgentCliHelp(_agentCliCompiled);
       },
@@ -512,7 +490,7 @@
          `/automation/+page.svelte`) instead of two separate rows here. -->
 
     <!-- The ONE visible CLI textbox — WHEN/GIVEN/ALERT/DO agents, bare
-         order(...)/place_order(...), bracket(...), and token(...) — full
+         order(...)/place_order(...) and token(...) — full
          statement scope, no allowedKinds restriction (this is the
          un-restricted Console mount; the order-only mounts live on
          /orders and the SymbolPanel modal via OrderCliTab). Anything
@@ -565,11 +543,6 @@
               onclick={() => _submitAgentCliAgent(_agentCliCompiled)}>
               {editTarget && (editTarget.rowKind === 'cycle' || editTarget.rowKind === 'event') ? 'Save' : 'Create agent'}
             </button>
-          {:else if !isDemo && _agentCliCompiled?.ok && _agentCliCompiled.kind === 'bracket'}
-            <button type="button" class="btn-primary console-agent-cli-btn"
-              onclick={() => _submitAgentCliBracket(_agentCliCompiled)}>
-              {editTarget && editTarget.rowKind === 'bracket' ? 'Save' : 'Save bracket'}
-            </button>
           {:else if !isDemo && _agentCliCompiled?.ok && _agentCliCompiled.kind === 'token'}
             <button type="button" class="btn-primary console-agent-cli-btn"
               onclick={() => _submitAgentCliToken(_agentCliCompiled)}>
@@ -588,7 +561,7 @@
                  consoleDispatch.js's header, 2026-10-17) — informational
                  text only, never a clickable action. Gated on !editTarget:
                  editing an existing row only ever recompiles as
-                 agent/event/bracket/token, never unsupported text. -->
+                 agent/event/token, never unsupported text. -->
             <span class="console-unsupported-hint">{_unsupportedHint}</span>
           {/if}
         </div>

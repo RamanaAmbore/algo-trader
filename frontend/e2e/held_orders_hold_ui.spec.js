@@ -36,9 +36,9 @@ test.describe('hold UI (H6)', () => {
     expect(card).toMatch(/\{#if holdInfo\}[\s\S]*Pending<\/span>/);
   });
 
-  test('order card warns that a held template exit is unprotected', () => {
-    expect(card).toMatch(/holdInfo\?\.category === 'template_exit'/);
-    expect(card).toMatch(/Unprotected until released/);
+  test('order card no longer warns about a held template exit (removed 2026-11 T3.4 — Bracket removed)', () => {
+    expect(card).not.toMatch(/holdInfo\?\.category === 'template_exit'/);
+    expect(card).not.toMatch(/Unprotected until released/);
   });
 
   test('release-all is guarded by the shared confirm modal', () => {

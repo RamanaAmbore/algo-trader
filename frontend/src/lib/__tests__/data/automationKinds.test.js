@@ -1,22 +1,25 @@
 import { describe, it, expect } from 'vitest';
 import {
-  KIND_CARDS, classifyAgentCardId, classifyBracketCardId,
+  KIND_CARDS, classifyAgentCardId,
   groupRowsByGroup, kindCounts, filterAgentRowsByCard, UNGROUPED_TAB_LABEL,
-  bracketAgentToTemplateOut, bracketRowsFromAgents,
 } from '$lib/data/automationKinds.js';
 
+// `classifyBracketCardId`, `bracketAgentToTemplateOut`, `bracketRowsFromAgents`
+// and the Brackets kind-card removed 2026-11 (Track 3, T3.4, Bracket/
+// Template/GTT removal, operator: "in automation, the brackets dropdown
+// should not exist, as bracket are no longer available") — their test
+// coverage below is removed too.
+
 describe('KIND_CARDS', () => {
-  it('has exactly the three cards (Templates folded into Agents, 2026-10-12), in display order', () => {
-    expect(KIND_CARDS.map((c) => c.id)).toEqual(['agents', 'alerts', 'brackets']);
+  it('has exactly the two cards (Templates folded into Agents, 2026-10-12; Brackets removed, 2026-11), in display order', () => {
+    expect(KIND_CARDS.map((c) => c.id)).toEqual(['agents', 'alerts']);
     // 2026-10-29: labels renamed to distinguish order-placing agents from
     // notify-only alert agents in the count pills (operator: "call agents
     // as action agents, alerts as alert agents in count pills").
     // 2026-10-31: singularized ("Action agent" not "Action agents") to
     // match the Console statement-kind dropdown's own labels, now that
-    // this same Select pattern is reused for both (operator: "we can
-    // call them action agent, alert agent, bracket and order ... in
-    // dropdown").
-    expect(KIND_CARDS.map((c) => c.label)).toEqual(['Action agent', 'Alert agent', 'Bracket']);
+    // this same Select pattern is reused for both.
+    expect(KIND_CARDS.map((c) => c.label)).toEqual(['Action agent', 'Alert agent']);
   });
 });
 
@@ -44,105 +47,8 @@ describe('classifyAgentCardId', () => {
     expect(classifyAgentCardId(null)).toBeNull();
     expect(classifyAgentCardId(undefined)).toBeNull();
   });
-  it('Sprint E: kind=bracket -> null (excluded, NOT reclassified to "brackets" '
-    + '— see the function doc for why reclassifying would double-count)', () => {
+  it('kind=bracket -> null (excluded — a historical row from before the Bracket engine was removed must never render anywhere)', () => {
     expect(classifyAgentCardId({ slug: 'default-bull', kind: 'bracket' })).toBeNull();
-  });
-});
-
-describe('bracketAgentToTemplateOut (Sprint E)', () => {
-  it('reconstructs an OrderTemplateOut-shaped row, id = legacy_template_id — '
-    + 'NEVER the Agent row\'s own id', () => {
-    const agentRow = {
-      id: 999,                    // the Agent row's OWN pk — must be ignored
-      legacy_template_id: 42,     // the REAL, canonical OrderTemplate.id
-      slug: 'default-bull',
-      name: 'Default Bull',
-      description: 'desc',
-      kind: 'bracket',
-      is_system: true,
-      status: 'active',
-      group: 'defaults',
-      tags: ['x'],
-      bracket_config: {
-        tp_pct: 30, sl_pct: 20, wing_premium_pct: null,
-        wing_strike_offset: null, wing_max_spread_pct: null,
-        tp_order_type: 'LIMIT', tp_scales_json: null, sl_trail_pct: null,
-        applies_to: 'buy_any', is_default: true,
-      },
-    };
-    const out = bracketAgentToTemplateOut(agentRow);
-    expect(out.id).toBe(42);
-    expect(out.id).not.toBe(agentRow.id);
-    expect(out.slug).toBe('default-bull');
-    expect(out.tp_pct).toBe(30);
-    expect(out.sl_pct).toBe(20);
-    expect(out.applies_to).toBe('buy_any');
-    expect(out.is_default).toBe(true);
-    expect(out.is_system).toBe(true);
-    expect(out.is_active).toBe(true);
-    expect(out.group).toBe('defaults');
-    expect(out.tags).toEqual(['x']);
-  });
-
-  it('a custom (non-system) bracket reports slug:null even though Agent.slug '
-    + 'carries bracket_registry\'s synthetic bracket-{id} placeholder -- '
-    + 'decompileBracket\'s refusal rule treats non-null slug as "system-seeded, '
-    + 'cannot round-trip", so forwarding the synthetic placeholder verbatim '
-    + 'would falsely refuse every custom bracket (the actual bug this guards)', () => {
-    const out = bracketAgentToTemplateOut({
-      id: 7, legacy_template_id: 42, slug: 'bracket-42', name: 'My Custom Bracket',
-      kind: 'bracket', is_system: false, status: 'active', bracket_config: {},
-    });
-    expect(out.slug).toBeNull();
-  });
-
-  it('a system bracket still forwards its real slug', () => {
-    const out = bracketAgentToTemplateOut({
-      id: 7, legacy_template_id: 1, slug: 'default-bull', name: 'Default Bull',
-      kind: 'bracket', is_system: true, status: 'active', bracket_config: {},
-    });
-    expect(out.slug).toBe('default-bull');
-  });
-
-  it('is_active derives from status, not a stored bracket_config flag', () => {
-    const out = bracketAgentToTemplateOut({
-      id: 1, legacy_template_id: 2, slug: 's', name: 'n', kind: 'bracket',
-      is_system: false, status: 'inactive', bracket_config: {},
-    });
-    expect(out.is_active).toBe(false);
-  });
-
-  it('returns null for a non-bracket row', () => {
-    expect(bracketAgentToTemplateOut({ kind: 'cycle' })).toBeNull();
-    expect(bracketAgentToTemplateOut(null)).toBeNull();
-  });
-});
-
-describe('bracketRowsFromAgents (Sprint E)', () => {
-  it('filters to kind=bracket only and reshapes each via bracketAgentToTemplateOut', () => {
-    const agentRows = [
-      { id: 1, slug: 'a1', kind: 'cycle' },
-      { id: 2, legacy_template_id: 10, slug: 'default-bull', name: 'Default Bull',
-        kind: 'bracket', is_system: true, status: 'active', bracket_config: { tp_pct: 30 } },
-      { id: 3, slug: 'notify-trio', kind: 'template' },
-    ];
-    const out = bracketRowsFromAgents(agentRows);
-    expect(out.length).toBe(1);
-    expect(out[0].id).toBe(10);
-    expect(out[0].slug).toBe('default-bull');
-  });
-
-  it('handles empty/missing input', () => {
-    expect(bracketRowsFromAgents([])).toEqual([]);
-    expect(bracketRowsFromAgents(undefined)).toEqual([]);
-  });
-});
-
-describe('classifyBracketCardId', () => {
-  it('every OrderTemplate row is a Bracket, regardless of its own fields', () => {
-    expect(classifyBracketCardId({ id: 1, name: 'x' })).toBe('brackets');
-    expect(classifyBracketCardId({})).toBe('brackets');
   });
 });
 
@@ -180,7 +86,6 @@ describe('groupRowsByGroup', () => {
     // never mix is that the CALLER always filters to one kind first.
     // This test proves that discipline actually produces disjoint tabs.
     const agentRows = [{ kind: 'cycle', slug: 'a1', group: 'hedge-book' }, { kind: 'event', slug: 'a2', group: 'hedge-book' }];
-    const bracketRows = [{ id: 1, name: 'b1', group: 'hedge-book' }];
 
     const agentsOnly = filterAgentRowsByCard(agentRows, 'agents');
     const alertsOnly = filterAgentRowsByCard(agentRows, 'alerts');
@@ -189,20 +94,17 @@ describe('groupRowsByGroup', () => {
 
     const agentsGroupTabs = groupRowsByGroup(agentsOnly);
     const alertsGroupTabs = groupRowsByGroup(alertsOnly);
-    const bracketsGroupTabs = groupRowsByGroup(bracketRows);
 
     expect(agentsGroupTabs).toEqual([{ id: 'hedge-book', name: 'hedge-book', rows: [{ kind: 'cycle', slug: 'a1', group: 'hedge-book' }] }]);
     expect(alertsGroupTabs).toEqual([{ id: 'hedge-book', name: 'hedge-book', rows: [{ kind: 'event', slug: 'a2', group: 'hedge-book' }] }]);
-    expect(bracketsGroupTabs).toEqual([{ id: 'hedge-book', name: 'hedge-book', rows: bracketRows }]);
     // Each kind's own "hedge-book" tab carries only that kind's rows.
     expect(agentsGroupTabs[0].rows.length).toBe(1);
     expect(alertsGroupTabs[0].rows.length).toBe(1);
-    expect(bracketsGroupTabs[0].rows.length).toBe(1);
   });
 });
 
 describe('kindCounts', () => {
-  it('counts each Agent sub-kind and the Brackets list, excluding the manual row', () => {
+  it('counts each Agent sub-kind, excluding the manual row (the Brackets count/templateRows param was removed 2026-11)', () => {
     const agentRows = [
       { slug: 'manual', kind: 'cycle' },
       { slug: 'loss-funds-negative', kind: 'cycle' },
@@ -210,40 +112,29 @@ describe('kindCounts', () => {
       { slug: 'notify-critical-trio', kind: 'template' },
       { slug: 'loss-margin-low', kind: 'threshold' },
     ];
-    const templateRows = [{ id: 1, name: 'default-bull' }, { id: 2, name: 'default-bear' }];
     // 'notify-critical-trio' (kind=template) now counts under 'agents'
     // too (2026-10-12 — Templates folded into Agents): 2 cycle/threshold
     // rows + 1 template row = 3.
-    expect(kindCounts(agentRows, templateRows)).toEqual({
-      agents: 3, alerts: 1, brackets: 2,
-    });
+    expect(kindCounts(agentRows)).toEqual({ agents: 3, alerts: 1 });
   });
 
-  it('handles empty/missing inputs without throwing', () => {
-    expect(kindCounts([], [])).toEqual({ agents: 0, alerts: 0, brackets: 0 });
-    expect(kindCounts(undefined, undefined)).toEqual({ agents: 0, alerts: 0, brackets: 0 });
+  it('handles empty/missing input without throwing', () => {
+    expect(kindCounts([])).toEqual({ agents: 0, alerts: 0 });
+    expect(kindCounts(undefined)).toEqual({ agents: 0, alerts: 0 });
   });
 
-  it('Sprint E: kind=bracket rows riding along in the full agentRows list are '
-    + 'NOT double-counted against the separately-supplied templateRows count', () => {
-    // This is the exact shape GET /api/agents/ now returns post-Sprint-E —
-    // bracket rows are real Agent rows, so they appear in the unfiltered
-    // list too. Automation/+page.svelte passes the bracket-reshaped list
-    // (via loadOrderTemplates()) as the SECOND argument separately.
+  it('a historical kind=bracket row riding along in the agentRows list is excluded entirely, never counted anywhere', () => {
     const agentRows = [
       { slug: 'loss-funds-negative', kind: 'cycle' },
       { slug: 'default-bull', kind: 'bracket' },
       { slug: 'default-bear', kind: 'bracket' },
     ];
-    const templateRows = [{ id: 10, name: 'default-bull' }, { id: 11, name: 'default-bear' }];
-    expect(kindCounts(agentRows, templateRows)).toEqual({
-      agents: 1, alerts: 0, brackets: 2,
-    });
+    expect(kindCounts(agentRows)).toEqual({ agents: 1, alerts: 0 });
   });
 });
 
 describe('filterAgentRowsByCard', () => {
-  it('"brackets" always returns [] for Agent rows — Agent rows are never Brackets', () => {
+  it('"brackets" always returns [] for Agent rows — the Brackets card no longer exists', () => {
     expect(filterAgentRowsByCard([{ slug: 'x', kind: 'cycle' }], 'brackets')).toEqual([]);
   });
 

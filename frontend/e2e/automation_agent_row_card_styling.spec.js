@@ -91,9 +91,12 @@ test.describe('automation agent rows — card chrome matches agent-templates .fr
 // badge this page never renders, so no color ever reached the card itself.
 // Fix adds LOCAL [data-status] border-left variants covering the real agent
 // vocabulary (statusDot(), above) and widens the data-status fallback to
-// `row.status ?? (row.is_active ? 'active' : 'inactive')` so Brackets/
-// Templates rows (no native `status` field — see automationKinds.js's
-// bracketAgentToTemplateOut, which only sets is_active) also get a color.
+// `row.status ?? (row.is_active ? 'active' : 'inactive')` so a Template
+// row (no native `status` field) also gets a color. (The Brackets
+// kind-card and `bracketAgentToTemplateOut` this comment used to
+// reference were removed 2026-11, Track 3 T3.4, Bracket/Template/GTT
+// removal — see the test below for the historical-row-exclusion
+// coverage that replaced the old bracket-row-styling check.)
 // Fix 2: row.name/row.long_name dropped from --fs-lg to --fs-sm to match
 // the rest of the app's row-text convention (Activity/LogPanel/Config
 // tables use --fs-xs/--fs-sm, not --fs-lg).
@@ -124,11 +127,11 @@ test.describe('automation agent rows — status-keyed border color + row text si
     conditions: { metric: 'pnl', scope: 'positions.total', op: '<=', value: -1 },
     kind: 'cycle', status: 'inactive',
   };
-  // No native `status` field at all once reshaped by bracketAgentToTemplateOut
-  // — only `is_active` (derived server-side from status==='active'). Carries
-  // `status: 'active'` here only because this mock represents the RAW
-  // `GET /api/agents/` row (pre-adapter); the rendered row object the
-  // component actually reads is the post-adapter shape with no `status` key.
+  // A historical kind='bracket' row (the Brackets kind-card and the whole
+  // Bracket engine were removed 2026-11, Track 3 T3.4, Bracket/Template/
+  // GTT removal) — kept in this fixture ONLY to prove it never renders
+  // under any card, not even the Agents card its own kind would have
+  // fallen under by accident.
   const ACTIVE_BRACKET = {
     ...BASE_FIELDS, id: 303, slug: 'bracket-401', name: 'Active Bracket Card Color E2E',
     conditions: {}, kind: 'bracket', status: 'active', legacy_template_id: 401,
@@ -150,7 +153,7 @@ test.describe('automation agent rows — status-keyed border color + row text si
     });
   });
 
-  test('active agent row border color differs from inactive agent row, and an active bracket row (no native status field) matches the active agent color', async ({ page }) => {
+  test('active agent row border color differs from inactive agent row, and a historical bracket row never renders under any card', async ({ page }) => {
     // domcontentloaded, not networkidle — this page's WS reconnect loop
     // (connectWS) keeps the network non-idle indefinitely (same reason
     // playwright.config.js's own timeout comment calls out "SSE keeps
@@ -180,15 +183,12 @@ test.describe('automation agent rows — status-keyed border color + row text si
     const inactiveColor = await borderColorOf(inactiveAgentRow);
     expect(activeColor, 'active vs inactive agent row border color').not.toBe(inactiveColor);
 
-    // Kind cards stay visible always (2026-10-12 revision — no more
-    // drill-down/Back navigation) — switching kinds is just another click.
-    await pickAgentKind(page, 'brackets');
-    // Only one row renders under the Brackets card — data-status is
-    // enough on its own, same collision-avoidance reasoning as above.
-    const bracketRow = page.locator('[role="listitem"][data-status="active"]');
-    await expect(bracketRow).toBeVisible({ timeout: TIMEOUT });
-    const bracketColor = await borderColorOf(bracketRow);
-    expect(bracketColor, 'active bracket row (is_active fallback) vs active agent row border color').toBe(activeColor);
+    // The Brackets kind-card no longer exists (removed 2026-11, Track 3
+    // T3.4, Bracket/Template/GTT removal) — `classifyAgentCardId`
+    // excludes kind='bracket' entirely, so the historical row must never
+    // render anywhere, under any card, including the Agents card it
+    // currently sits under in this raw agentRows fixture.
+    await expect(page.locator('[role="listitem"]').filter({ hasText: 'Active Bracket Card Color E2E' })).toHaveCount(0);
   });
 
   test('agent row name renders at --fs-sm, not --fs-lg', async ({ page }) => {

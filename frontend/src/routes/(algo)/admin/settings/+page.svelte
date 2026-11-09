@@ -88,8 +88,16 @@
   // concept. Setting paper_trading_mode=True server-side also clears
   // execution.shadow_mode (mirrors the navbar execution-mode combobox's
   // own paper-target semantics), so this panel can't desync the two.
+  // `template_exit_hold_enabled` was removed from this type/panel 2026-11
+  // (Track 3, T3.4, Bracket/Template/GTT removal) — the backend route/
+  // schema field itself is untouched (backend out of scope for this
+  // frontend-only sub-sprint; see order_hold_gate.py's own comment on
+  // `TEMPLATE_EXIT_RELEASED_KEY` — "functionally inert... removing the
+  // admin-settings toggle itself is frontend/admin cleanup"). The
+  // response may still carry the key; this panel no longer reads or
+  // renders it.
   /** @type {{paper_trading_mode:boolean, default_agent_trade_mode:string,
-   *          expiry_close_hold_enabled:boolean, template_exit_hold_enabled:boolean,
+   *          expiry_close_hold_enabled:boolean,
    *          expiry_close_lead_minutes_mcx:number, expiry_close_lead_minutes_nfo:number}|null} */
   let globalSwitches = $state(null);
   async function loadGlobalSwitches() {
@@ -133,11 +141,11 @@
     } catch (e) { toast.error(`Update failed: ${e.message}`); }
   }
 
-  /** expiry_close_hold_enabled / template_exit_hold_enabled are review-hold
-   *  gates (default true = safe). Turning either OFF lets automated orders
-   *  fire/attach with zero operator review — a real-money-risk action, so
-   *  it gets the same danger-confirm treatment as paper_trading_mode.
-   *  Turning a hold back ON is the safe direction and needs no confirm. */
+  /** expiry_close_hold_enabled is a review-hold gate (default true = safe).
+   *  Turning it OFF lets automated expiry-close orders fire with zero
+   *  operator review — a real-money-risk action, so it gets the same
+   *  danger-confirm treatment as paper_trading_mode. Turning a hold back
+   *  ON is the safe direction and needs no confirm. */
   async function toggleExpiryCloseHold() {
     if (!globalSwitches) return;
     const next = !globalSwitches.expiry_close_hold_enabled;
@@ -158,28 +166,6 @@
       // The generic settings catalog below shows the same underlying
       // flag under its storage key (hold.expiry_close_released, inverted
       // polarity) — refresh it so the two displays never diverge.
-      await load();
-    } catch (e) { toast.error(`Update failed: ${e.message}`); }
-  }
-
-  async function toggleTemplateExitHold() {
-    if (!globalSwitches) return;
-    const next = !globalSwitches.template_exit_hold_enabled;
-    if (!next) {
-      const ok = await _globalSwitchConfirmRef?.ask({
-        title: 'Disable template exit hold?',
-        message: '⚠ Template exits will attach automatically with no review.',
-        danger: true,
-        confirmLabel: 'Disable hold',
-        cancelLabel: 'Cancel',
-      });
-      if (!ok) return;
-    }
-    try {
-      const updated = await updateGlobalSwitches({ template_exit_hold_enabled: next });
-      globalSwitches = updated;
-      toast.success(`template_exit_hold_enabled → ${next}`);
-      // Same generic-catalog sync as toggleExpiryCloseHold above.
       await load();
     } catch (e) { toast.error(`Update failed: ${e.message}`); }
   }
@@ -618,27 +604,6 @@
           disabled={globalSwitches == null}
           onclick={toggleExpiryCloseHold}>
           Flip to {globalSwitches?.expiry_close_hold_enabled ? 'AUTO' : 'HELD'}
-        </button>
-      </div>
-    </div>
-  </div>
-  <div class="settings-row py-1.5">
-    <div class="flex items-center justify-between gap-2 flex-wrap">
-      <div class="flex items-baseline gap-2 flex-wrap">
-        <span>Hold template exit GTTs after fill</span>
-        <InfoHint popup panel title="template_exit_hold_enabled" text="ON (default) holds Bracket/template exit GTTs after the parent fills, until you click Release. OFF lets them attach automatically with no review." />
-        <span class="font-mono text-[length:var(--fs-2xs)] opacity-50">template_exit_hold_enabled</span>
-      </div>
-      <div class="flex items-center gap-2">
-        <span class="text-[length:var(--fs-sm)] font-bold px-1.5 py-0.5 rounded
-          {globalSwitches == null ? 'opacity-50'
-            : globalSwitches.template_exit_hold_enabled ? 'bg-[var(--algo-green-bg-mid)] text-[var(--algo-green)]' : 'bg-[var(--algo-red-bg-strong)] text-[var(--algo-red)]'}">
-          {globalSwitches == null ? '…' : (globalSwitches.template_exit_hold_enabled ? 'HELD' : 'AUTO')}
-        </span>
-        <button type="button" class="btn-secondary text-[length:var(--fs-sm)] py-0.5 px-2"
-          disabled={globalSwitches == null}
-          onclick={toggleTemplateExitHold}>
-          Flip to {globalSwitches?.template_exit_hold_enabled ? 'AUTO' : 'HELD'}
         </button>
       </div>
     </div>

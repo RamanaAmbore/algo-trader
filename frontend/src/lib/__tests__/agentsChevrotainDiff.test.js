@@ -140,7 +140,12 @@ const KNOWN_GAP_TEXTS = new Set([
   'order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, price=100)\norder(account="ZJ6294", symbol="BANKNIFTY25JULFUT", side="BUY", lots=1, price=200)',
   'p = pnl@positions.total\nmsg_txt = "Loss: " + p\nWHEN p <= -50000\nDO alert(msg = msg_txt, telegram), order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)',
   'p = pnl@positions.total\nq = p WHEN always DO alert(telegram), log(message=q)',
-  'order(account="ZG0790", symbol="NIFTY25JULFUT", side="BUY", lots=2)\nbracket(applies_to=buy_any, tp_pct=30)\nalert(telegram)\nz = 1\ndebug(z)\nhelp(pnl)\nWHEN (pnl@positions.total==1) DO close_position(account="ZG0790", symbol="NIFTY25JULFUT")',
+  // Text updated 2026-11 (Track 3, T3.4, Bracket/Template/GTT removal) to
+  // drop the `bracket(...)` preamble line (now a hard compile error) —
+  // byte-for-byte matching the corresponding `agentsCorpus.json` entry
+  // edited the same day. Same known gap class (newline-as-separator),
+  // unchanged.
+  'order(account="ZG0790", symbol="NIFTY25JULFUT", side="BUY", lots=2)\nalert(telegram)\nz = 1\ndebug(z)\nhelp(pnl)\nWHEN (pnl@positions.total==1) DO close_position(account="ZG0790", symbol="NIFTY25JULFUT")',
   'order(account="ZG0790", symbol="NIFTY25JULFUT", side="BUY", lots=1)\nx = 1\ndebug(x)\nhelp(pnl)',
   'p = pnl@positions.total; msg_txt = "Loss: " + p\nWHEN pnl@positions.total <= -50000 DO alert(msg=msg_txt, telegram)',
   'x = 5 ',

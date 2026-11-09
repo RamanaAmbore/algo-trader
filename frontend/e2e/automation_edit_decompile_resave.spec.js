@@ -6,8 +6,9 @@
  * tab's CLI text and arms edit mode, so Save routes through the real
  * UPDATE endpoint for that row — never the create-only path. This spec
  * proves the round-trip for the three Agent-table kinds (cycle/Agents,
- * event/Alerts, template/Templates); the Bracket kind's equivalent round
- * trip already lives in console_decompile_bracket_edit_flow.spec.js.
+ * event/Alerts, template/Templates). (The Bracket kind's equivalent
+ * round trip used to live in console_decompile_bracket_edit_flow.spec.js
+ * — deleted 2026-11, Track 3 T3.4, Bracket/Template/GTT removal.)
  *
  * Each endpoint is mocked (`page.route`) — the PUT/PATCH interceptor
  * asserts it was actually called with the right slug/id, which is the

@@ -1,7 +1,9 @@
 <!--
   HeldOrdersCard.svelte — automated orders held for review, with release
-  and cancel actions per order. Lists held expiry closes, held template
-  exits, and held agent orders (chase paused after repeated rejection).
+  and cancel actions per order. Lists held expiry closes and held agent
+  orders (chase paused after repeated rejection). The 'template_exit'
+  category (Bracket exits) was removed 2026-11 (Track 3, T3.4,
+  Bracket/Template/GTT removal) — see kindOf()'s own comment.
 -->
 <script>
   import { onMount } from 'svelte';
@@ -20,7 +22,10 @@
   function kindOf(row) {
     try {
       const h = JSON.parse(row.hold || '{}');
-      if (h.category === 'template_exit') return 'Bracket exit';
+      // 'template_exit' branch removed 2026-11 (Track 3, T3.4,
+      // Bracket/Template/GTT removal) — `HoldCategory.TEMPLATE_EXIT` no
+      // longer exists server-side (T3.1), so this category can never
+      // occur in a real hold_json payload going forward.
       if (h.category === 'agent_order') return 'Repeated rejection';
       return 'Expiry close';
     } catch {
@@ -35,16 +40,13 @@
     }
   }
 
-  // 2026-10 fix: the three hold categories previously all rendered with
-  // the exact same --algo-muted color — an operator scanning this card
-  // couldn't tell at a glance which kind of hold they were looking at,
-  // even though "Bracket exit" (an already-filled position sitting with
-  // zero protection) is materially riskier to leave sitting than
-  // "Expiry close" or "Repeated rejection". One CSS class per kind,
-  // ranked by how urgent leaving it held is.
+  // 2026-10 fix: the hold categories previously all rendered with the
+  // exact same --algo-muted color — an operator scanning this card
+  // couldn't tell at a glance which kind of hold they were looking at.
+  // One CSS class per kind, ranked by how urgent leaving it held is.
+  // ('Bracket exit' branch removed 2026-11, see kindOf()'s own comment.)
   function kindClassOf(row) {
     const kind = kindOf(row);
-    if (kind === 'Bracket exit') return 'held-kind-bracket';
     if (kind === 'Repeated rejection') return 'held-kind-rejection';
     return 'held-kind-expiry';
   }
@@ -130,7 +132,7 @@
     <CardHeader title="Held orders" showControls={false} detectOverflow={false}>
       {#snippet left()}
         <InfoHint
-          text="Automated orders paused for your review — the broker never got this order, or (Bracket exit) a position is sitting with no TP/SL. Release sends it; Cancel discards it."
+          text="Automated orders paused for your review — the broker never got this order. Release sends it; Cancel discards it."
         />
         <span class="held-count">{rows.length}</span>
       {/snippet}
@@ -180,15 +182,12 @@
   .held-row { display: flex; gap: 8px; align-items: center; padding: 4px 0; font-size: var(--fs-sm); }
   .held-kind { text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; }
   /* Per-category tint, ranked by how risky it is to leave the row held —
-     Bracket exit (an already-filled position with zero TP/SL) is the
-     most urgent, so it gets the same red used for SELL/short/reject
-     everywhere else; Expiry close keeps the card's own amber; Repeated
-     rejection (agent_order) is orange, matching OrderBook's SHADOW/
-     rejection-adjacent hue. No --algo-orange-bg token exists, so the
-     background is derived from --algo-orange via color-mix, the same
-     idiom this codebase already uses wherever a role has no dedicated
-     -bg token. */
-  .held-kind-bracket   { color: var(--algo-red); background: var(--algo-red-bg-strong); padding: 1px 5px; border-radius: 3px; }
+     Expiry close keeps the card's own amber; Repeated rejection
+     (agent_order) is orange, matching OrderBook's SHADOW/rejection-
+     adjacent hue. No --algo-orange-bg token exists, so the background is
+     derived from --algo-orange via color-mix, the same idiom this
+     codebase already uses wherever a role has no dedicated -bg token.
+     ('Bracket exit'/.held-kind-bracket removed 2026-11, see kindOf().) */
   .held-kind-expiry    { color: var(--algo-amber); background: var(--algo-amber-bg-strong); padding: 1px 5px; border-radius: 3px; }
   .held-kind-rejection { color: var(--algo-orange); background: color-mix(in srgb, var(--algo-orange) 22%, transparent); padding: 1px 5px; border-radius: 3px; }
   .held-desc { flex: 1; color: var(--algo-slate); }

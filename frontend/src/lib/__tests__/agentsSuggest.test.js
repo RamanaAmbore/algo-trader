@@ -486,17 +486,25 @@ describe('suggestAgentCliAt() — Sprint H item 2/3: comparators (incl. in/not i
   });
 });
 
-describe('suggestAgentCliAt() — Sprint H item 4: order(/bracket(/token( param suggestions', () => {
-  it('"order(" (the alias, not "place_order") now gets real param suggestions, including lots=/bracket= sugar', () => {
+// Describe title was "order(/bracket(/token( param suggestions" —
+// `bracket(` no longer has a synthetic catalog entry or any param
+// suggestions (removed 2026-11, Track 3 T3.4, Bracket/Template/GTT
+// removal); its own two tests below were replaced accordingly. `order`'s
+// own `bracket=` param suggestion was removed too — dropped from the
+// expected arrays in the first two tests.
+describe('suggestAgentCliAt() — Sprint H item 4: order(/token( param suggestions', () => {
+  it('"order(" (the alias, not "place_order") now gets real param suggestions, including lots= sugar', () => {
     const r = suggest('WHEN always DO order(');
     expect(r.kind).toBe('param');
-    expect(r.suggestions).toEqual(expect.arrayContaining(['account', 'symbol', 'side', 'qty', 'lots', 'bracket', 'tp_pct', 'sl_pct']));
+    expect(r.suggestions).toEqual(expect.arrayContaining(['account', 'symbol', 'side', 'qty', 'lots', 'tp_pct', 'sl_pct']));
+    expect(r.suggestions).not.toContain('bracket');
   });
 
   it('"place_order(" gets the SAME augmented param list as "order(" (not just the bare catalog schema)', () => {
     const r = suggest('WHEN always DO place_order(');
     expect(r.kind).toBe('param');
-    expect(r.suggestions).toEqual(expect.arrayContaining(['lots', 'bracket', 'tp_pct', 'sl_pct', 'wing_premium_pct']));
+    expect(r.suggestions).toEqual(expect.arrayContaining(['lots', 'tp_pct', 'sl_pct', 'wing_premium_pct']));
+    expect(r.suggestions).not.toContain('bracket');
   });
 
   it('a bare standalone "order(" (no WHEN/DO at all) also gets param suggestions', () => {
@@ -505,10 +513,9 @@ describe('suggestAgentCliAt() — Sprint H item 4: order(/bracket(/token( param 
     expect(r.suggestions).toEqual(expect.arrayContaining(['account', 'symbol', 'lots']));
   });
 
-  it('"bracket(" gets its TP/SL/Wing/applies_to param list — previously ZERO suggestions', () => {
+  it('"bracket(" gets no param suggestions at all (removed 2026-11, Track 3 T3.4, Bracket/Template/GTT removal)', () => {
     const r = suggest('bracket(');
-    expect(r.kind).toBe('param');
-    expect(r.suggestions).toEqual(expect.arrayContaining(['tp_pct', 'sl_pct', 'wing_premium_pct', 'wing_strike_offset', 'tp_order_type', 'applies_to']));
+    expect(r.suggestions).toEqual([]);
   });
 
   it('"token(" gets its "kind" param — previously ZERO suggestions', () => {
@@ -523,10 +530,10 @@ describe('suggestAgentCliAt() — Sprint H item 4: order(/bracket(/token( param 
     expect(r.suggestions).toEqual(['notify']);
   });
 
-  it('round-trip: a bracket(...) built entirely from suggested params compiles/parses', () => {
+  it('bracket(...) is rejected at parse time, even one built from what used to be suggested params', () => {
     const text = 'bracket(applies_to=buy_any, tp_pct=30, sl_pct=-20) #name="x"';
     const { errors } = parseStatement(text);
-    expect(errors).toEqual([]);
+    expect(errors.some(e => /bracket\(\) was removed/.test(e.message))).toBe(true);
   });
 });
 

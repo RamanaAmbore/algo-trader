@@ -34,12 +34,6 @@
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   import { KITE_INDEX_QUOTE_KEY_TO_ROOT as _KITE_IDX_TO_ROOT } from '$lib/data/resolveUnderlying.js';
   import { priceFmt } from '$lib/format';
-  // Read-only "wing fired live" confirmation badge — see
-  // liveWingBadge.js's module docstring. `latestAlgoOrderRows` is the
-  // SAME poll `(algo)/+layout.svelte` already runs every tick
-  // (orderFillPoller.js); no second interval is started here.
-  import { latestAlgoOrderRows } from '$lib/data/orderFillPoller.js';
-  import { refreshLiveWingState } from '$lib/data/liveWingTracker.svelte.js';
 
   /** @type {{
    *   symbol?:         string,
@@ -566,47 +560,6 @@
       if (b.strike != null && b.optType) map.set(`${b.strike}:${b.optType}`, b);
     }
     return map;
-  });
-
-  // ── Live-wing confirmation badge (read-only, NEVER a basket entry) ──
-  // Deliberately a SEPARATE map from `_basketLegByKey` above — see
-  // liveWingBadge.js's module docstring for why. Built from the
-  // existing orders-poll (`latestAlgoOrderRows`, from
-  // `orderFillPoller.js` — no new network call) cross-referenced
-  // against this session's own tracked Chain submissions
-  // (`liveWingTracker.svelte.js`). Recomputed in an `$effect` (not a
-  // `$derived`) because `refreshLiveWingState` also prunes the tracker
-  // module's own state as a side effect every time it runs — see
-  // CLAUDE.md's "never call get(store) inside $derived" convention.
-  /** @type {Map<string, {lots:number, templateName:string, side:string, algoOrderId:number, status:string}>} */
-  let _liveWingByKey = $state(new Map());
-  $effect(() => {
-    const rows = $latestAlgoOrderRows;
-    // 2026-11-03 — root cause of the live incident this feature caused
-    // (Chain hangs the instant it's pressed) was NOT in this effect; it
-    // was an unconditional write one layer below, inside
-    // `refreshLiveWingState()` itself (liveWingTracker.svelte.js — see
-    // that file's own header comment for the full account). This outer
-    // guard (skip reassigning `_liveWingByKey` when the result and the
-    // current value are both empty) is still kept — it is a real,
-    // independent optimization against needless re-renders of the
-    // whole strike grid on every poll tick — but it is not, on its
-    // own, what makes this effect safe; the inner fix is what does
-    // that. Also wrapped in try/catch: an uncaught exception inside an
-    // unguarded `$effect` can independently break a component's
-    // further reactivity, and `refreshLiveWingState` is read-only/
-    // display-only, so skipping one bad tick is always safe here.
-    try {
-      const next = refreshLiveWingState({
-        algoRows: rows,
-        chainUnderlying, chainExpiry,
-        findOption, getInstrument,
-      });
-      if (next.size === 0 && _liveWingByKey.size === 0) return;
-      _liveWingByKey = next;
-    } catch (e) {
-      console.error('[CHAIN] live-wing badge refresh failed, skipping this tick', e);
-    }
   });
 
   let basketPlacing  = $state(false);
@@ -1277,8 +1230,6 @@
             {@const peSpreadWide = peQ?.bid > 0 && peQ?.ask > 0 && (peQ.ask - peQ.bid) / ((peQ.ask + peQ.bid) / 2) > 0.10}
             {@const ceLeg = _basketLegByKey.get(`${k}:CE`)}
             {@const peLeg = _basketLegByKey.get(`${k}:PE`)}
-            {@const ceLive = _liveWingByKey.get(`${k}:CE`)}
-            {@const peLive = _liveWingByKey.get(`${k}:PE`)}
             {#if isAtm}
               <tr class="chain-row chain-row-{dir} chain-row-atm" class:chain-row-active={activeRow} use:chainAtmRow>
                 <td class="chain-td-ce">
@@ -1302,14 +1253,6 @@
                       {#if ceLeg}
                         <span class="chain-leg-badge"
                               title={`${ceLeg.side} ${ceLeg.lots} lot${ceLeg.lots === 1 ? '' : 's'} × ${ceLeg.lotSize} = ${ceLeg.lots * ceLeg.lotSize} qty`}>{ceLeg.lots}L</span>
-                      {:else if ceLive}
-                        <!-- Read-only confirmation — the wing fired on parent
-                             fill and landed on THIS strike/side. Nothing is
-                             staged here (chainBasket has no entry); the
-                             +/- buttons above still behave as if nothing
-                             were staged, same as an empty cell. -->
-                        <span class="chain-leg-badge chain-leg-badge-live"
-                              title={`${ceLive.side} ${ceLive.lots} lot${ceLive.lots === 1 ? '' : 's'} — wing fired live${ceLive.templateName ? ' · Bracket: ' + ceLive.templateName : ''} (#${ceLive.algoOrderId})`}>{ceLive.lots}L · live{ceLive.templateName ? ' · ' + String(ceLive.templateName).slice(0, 6) : ''}</span>
                       {/if}
                       {#if quickToast?.key === ceKey}
                         <span class="chain-quick-toast">{quickToast.msg}</span>
@@ -1334,11 +1277,6 @@
                       {#if peLeg}
                         <span class="chain-leg-badge"
                               title={`${peLeg.side} ${peLeg.lots} lot${peLeg.lots === 1 ? '' : 's'} × ${peLeg.lotSize} = ${peLeg.lots * peLeg.lotSize} qty`}>{peLeg.lots}L</span>
-                      {:else if peLive}
-                        <!-- Read-only confirmation — see the matching CE
-                             comment above. -->
-                        <span class="chain-leg-badge chain-leg-badge-live"
-                              title={`${peLive.side} ${peLive.lots} lot${peLive.lots === 1 ? '' : 's'} — wing fired live${peLive.templateName ? ' · Bracket: ' + peLive.templateName : ''} (#${peLive.algoOrderId})`}>{peLive.lots}L · live{peLive.templateName ? ' · ' + String(peLive.templateName).slice(0, 6) : ''}</span>
                       {/if}
                       {#if quickToast?.key === peKey}
                         <span class="chain-quick-toast">{quickToast.msg}</span>
@@ -1375,14 +1313,6 @@
                       {#if ceLeg}
                         <span class="chain-leg-badge"
                               title={`${ceLeg.side} ${ceLeg.lots} lot${ceLeg.lots === 1 ? '' : 's'} × ${ceLeg.lotSize} = ${ceLeg.lots * ceLeg.lotSize} qty`}>{ceLeg.lots}L</span>
-                      {:else if ceLive}
-                        <!-- Read-only confirmation — the wing fired on parent
-                             fill and landed on THIS strike/side. Nothing is
-                             staged here (chainBasket has no entry); the
-                             +/- buttons above still behave as if nothing
-                             were staged, same as an empty cell. -->
-                        <span class="chain-leg-badge chain-leg-badge-live"
-                              title={`${ceLive.side} ${ceLive.lots} lot${ceLive.lots === 1 ? '' : 's'} — wing fired live${ceLive.templateName ? ' · Bracket: ' + ceLive.templateName : ''} (#${ceLive.algoOrderId})`}>{ceLive.lots}L · live{ceLive.templateName ? ' · ' + String(ceLive.templateName).slice(0, 6) : ''}</span>
                       {/if}
                       {#if quickToast?.key === ceKey}
                         <span class="chain-quick-toast">{quickToast.msg}</span>
@@ -1407,11 +1337,6 @@
                       {#if peLeg}
                         <span class="chain-leg-badge"
                               title={`${peLeg.side} ${peLeg.lots} lot${peLeg.lots === 1 ? '' : 's'} × ${peLeg.lotSize} = ${peLeg.lots * peLeg.lotSize} qty`}>{peLeg.lots}L</span>
-                      {:else if peLive}
-                        <!-- Read-only confirmation — see the matching CE
-                             comment above. -->
-                        <span class="chain-leg-badge chain-leg-badge-live"
-                              title={`${peLive.side} ${peLive.lots} lot${peLive.lots === 1 ? '' : 's'} — wing fired live${peLive.templateName ? ' · Bracket: ' + peLive.templateName : ''} (#${peLive.algoOrderId})`}>{peLive.lots}L · live{peLive.templateName ? ' · ' + String(peLive.templateName).slice(0, 6) : ''}</span>
                       {/if}
                       {#if quickToast?.key === peKey}
                         <span class="chain-quick-toast">{quickToast.msg}</span>
@@ -2419,27 +2344,6 @@
     max-width: 6.2rem;
     overflow: hidden;
     text-overflow: ellipsis;
-  }
-  /* Read-only "wing fired live" confirmation badge (`_liveWingByKey`) —
-     DISTINCT from the staged leg badge above: this cell has nothing in
-     chainBasket/basketLegs, it reflects a real broker order already
-     placed asynchronously on parent fill. Solid red fill rather than
-     the staged badge's neutral/amber outline — matches this app's
-     established "LIVE = red" convention (ChaseCard's .cc-mode-live,
-     LogPanel's .mode-pill-live; the staged badge's slate/amber palette
-     is reserved for pre-submit intent, never confirmed-live state), so
-     "already live" reads visually heavier/more final than "about to
-     submit". */
-  .chain-leg-badge-live {
-    background: rgba(248, 113, 113, 0.22);
-    border-color: rgba(248, 113, 113, 0.55);
-    color: var(--c-short);
-  }
-  .chain-leg-badge-live::before {
-    content: '✓';
-    font-size: 0.6rem;
-    line-height: 1;
-    flex-shrink: 0;
   }
   /* Template selector — small inline label + dropdown. Sized to sit
      next to Clear / Place without dominating the action row. */

@@ -9,6 +9,15 @@
 // same treatment as paper_trading_mode) and expiry_close_lead_minutes_mcx/nfo
 // (numeric lead-time inputs). Source-level guards read the real page source +
 // api.js wrapper; the live-browser block drives the actual DOM.
+//
+// 2026-11 (Track 3, T3.4, Bracket/Template/GTT removal): the
+// template_exit_hold_enabled toggle was removed from this page — the
+// backend's HoldCategory.TEMPLATE_EXIT category no longer exists, so
+// nothing checks the flag server-side anymore (see order_hold_gate.py's
+// own comment on TEMPLATE_EXIT_RELEASED_KEY). The backend route/schema
+// field itself is untouched (backend out of scope for this frontend-only
+// sub-sprint). expiry_close_hold_enabled is a DIFFERENT, still-live toggle
+// (HoldCategory.EXPIRY_CLOSE) and is unaffected.
 
 import { test, expect } from '@playwright/test';
 import { readFileSync } from 'fs';
@@ -97,22 +106,20 @@ test.describe('admin/settings — Global Switches panel', () => {
     expect(pageSrc).toMatch(/onclick=\{toggleExpiryCloseHold\}/);
   });
 
-  test('template_exit_hold_enabled row has an operator-facing label, a Held/Auto pill, and a flip button', () => {
-    expect(pageSrc).toMatch(/<span>Hold template exit GTTs after fill<\/span>/);
-    expect(pageSrc).toMatch(/font-mono text-\[length:var\(--fs-2xs\)\] opacity-50">template_exit_hold_enabled</);
-    expect(pageSrc).toMatch(/globalSwitches\?\.template_exit_hold_enabled \? 'HELD' : 'AUTO'/);
-    expect(pageSrc).toMatch(/onclick=\{toggleTemplateExitHold\}/);
+  test('template_exit_hold_enabled row no longer exists (2026-11 T3.4 — Bracket removed)', () => {
+    expect(pageSrc).not.toMatch(/Hold template exit GTTs after fill/);
+    expect(pageSrc).not.toMatch(/template_exit_hold_enabled/);
+    expect(pageSrc).not.toMatch(/toggleTemplateExitHold/);
   });
 
-  test('both hold toggles carry an InfoHint explaining the ON default', () => {
+  test('expiry_close_hold_enabled carries an InfoHint explaining the ON default', () => {
     expect(pageSrc).toMatch(/InfoHint popup panel title="expiry_close_hold_enabled" text="ON \(default\) holds automated expiry-close orders/);
-    expect(pageSrc).toMatch(/InfoHint popup panel title="template_exit_hold_enabled" text="ON \(default\) holds Bracket\/template exit GTTs/);
   });
 
-  test('disabling either hold is danger-confirm-gated; enabling is not; both resync the generic catalog', () => {
+  test('disabling expiry-close hold is danger-confirm-gated; enabling is not; resyncs the generic catalog', () => {
     const expiryFn = pageSrc.slice(
       pageSrc.indexOf('async function toggleExpiryCloseHold()'),
-      pageSrc.indexOf('async function toggleTemplateExitHold()')
+      pageSrc.indexOf('function _validLeadMinutes(')
     );
     expect(expiryFn).toMatch(/if \(!next\) \{/);
     expect(expiryFn).toMatch(/_globalSwitchConfirmRef\?\.ask\(\{/);
@@ -123,17 +130,6 @@ test.describe('admin/settings — Global Switches panel', () => {
     // catalog (same flag under its inverted hold.*_released storage key)
     // never drifts from this panel.
     expect(expiryFn).toMatch(/await load\(\);/);
-
-    const templateFn = pageSrc.slice(
-      pageSrc.indexOf('async function toggleTemplateExitHold()'),
-      pageSrc.indexOf('function _validLeadMinutes(')
-    );
-    expect(templateFn).toMatch(/if \(!next\) \{/);
-    expect(templateFn).toMatch(/_globalSwitchConfirmRef\?\.ask\(\{/);
-    expect(templateFn).toMatch(/danger: true,/);
-    expect(templateFn).toMatch(/⚠ Template exits will attach automatically with no review\./);
-    expect(templateFn).toMatch(/await updateGlobalSwitches\(\{ template_exit_hold_enabled: next \}\);/);
-    expect(templateFn).toMatch(/await load\(\);/);
   });
 
   test('lead-time save handlers reject empty/out-of-range input instead of silently PATCHing 0', () => {
@@ -178,7 +174,9 @@ test.describe('admin/settings — Global Switches panel (live browser)', () => {
     paper_trading_mode: true,
     default_agent_trade_mode: 'paper',
     expiry_close_hold_enabled: true,
-    template_exit_hold_enabled: true,
+    // template_exit_hold_enabled removed from the frontend panel (2026-11
+    // T3.4) — the backend may still return it in the real response, but
+    // the mock no longer needs to carry it since nothing reads it.
     expiry_close_lead_minutes_mcx: 30,
     expiry_close_lead_minutes_nfo: 15,
   };
@@ -225,8 +223,6 @@ test.describe('admin/settings — Global Switches panel (live browser)', () => {
   for (const row of [
     { toggleKey: 'expiry_close_hold_enabled', flipLabel: 'Hold expiry-close orders for review',
       dangerMsg: '⚠ Expiry closes will fire automatically with no review.' },
-    { toggleKey: 'template_exit_hold_enabled', flipLabel: 'Hold template exit GTTs after fill',
-      dangerMsg: '⚠ Template exits will attach automatically with no review.' },
   ]) {
     test(`flipping "${row.flipLabel}" OFF opens the danger confirm modal before any PATCH fires; Cancel sends none, Confirm sends one`, async ({ page }) => {
       const { token } = await loginAsAdmin(page);

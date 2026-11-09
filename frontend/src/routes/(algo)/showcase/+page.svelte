@@ -75,7 +75,7 @@
       title: 'Declarative agent grammar',
       tag: 'Risk engine',
       color: '#7dd3fc',
-      body: 'One small DSL — WHEN/DO, a preamble, and a shared statement vocabulary (order, bracket, alert, log, debug, help) — compiles down to a metric/scope/op/value tree in a database table. Build it with the form UI or type it directly in the Console; both produce the identical compiled rule. Adding a new condition type is one DB row plus one Python resolver function, never an engine change.',
+      body: 'One small DSL — WHEN/DO, a preamble, and a shared statement vocabulary (order, alert, log, debug, help) — compiles down to a metric/scope/op/value tree in a database table. Build it with the form UI or type it directly in the Console; both produce the identical compiled rule. Adding a new condition type is one DB row plus one Python resolver function, never an engine change.',
       bullets: [
         '14 built-in agents across loss guardrails, expiry-day risk/auto-close, and market-schedule notifications',
         'A side-effecting preamble statement (order, close_position, …) fires at most once per activation — never once per poll cycle',
@@ -154,7 +154,6 @@
       bullets: [
         'Basket-building UI: one symbol per leg, per-leg account dropdown. Margin strip shows per-account Required / Avail / After.',
         'Auto profit target: default +30% (tunable in /admin/settings → algo.default_target_pct). Override per-order inline.',
-        'On-fill Bracket attach (per ticket OR per basket) — pick one TP/SL/Wing Bracket, every leg auto-arms its bracket OCO when the parent fills',
         'Submit → POST /api/orders/basket: one Kite basket_order call per account in parallel',
         'Spread-aware adaptive chase loop — same code path paper + live, validates via basket_margin before any order touches the broker',
         'REJECTED aborts the chase immediately so a broker reject can\'t loop into a fee-burning retry storm',
@@ -164,22 +163,6 @@
         'MCX qty unit fix: chase loop reverses Kite\'s lot-based status reporting back to contracts before comparing against remaining_qty (1-lot fill on 100-contract order no longer triggers a phantom partial)',
       ],
       link: { href: '/orders', label: 'Open Orders' },
-    },
-    {
-      title: 'Brackets — bracket OCO across every broker',
-      tag: 'Trading',
-      color: '#fcd34d',
-      body: 'Brackets pre-define the TP / SL / wing GTTs that arm the moment a parent fills. Pick once on OrderTicket or basket; the backend applies per leg through one unified apply_template_to_order pipeline. Brackets now work on Kite, Dhan, AND Groww — Groww\'s no-native-OCO case is emulated via two single-trigger GTTs with a background pair-watcher that cancels the survivor when one side fires.',
-      bullets: [
-        'Catalog at /automation → Agents tab → Brackets card — TP %, SL %, optional wing GTTs, scale-out ladders, trailing stops',
-        'OrderTicket Default/None toggle below the side pills; basket bar carries one above the legs list',
-        'Backend fires apply_template_to_order at every fill site — postback handler, chase terminal, reconcile path, paper-engine fill — same idempotency guard everywhere via per-row asyncio.Lock',
-        'Brackets respect the parent\'s side (BUY parent → SELL TP, SELL parent → BUY TP at fill ± bracket %)',
-        'Multi-broker: Kite native OCO; Dhan native OCO with correct leg-name dispatch on modify; Groww emulated OCO via compound "oco:{a}+{b}" id + 15s pair-watcher background task',
-        'Inline warning chip on OrderTicket flags the broker gaps at SUBMIT time ("Groww OCO emulated — 15s race window", "MCX not on Dhan"), not at fill time',
-        'Trailing stops now correctly modify both legs on Dhan OCO; Sprint A fix to the silent ENTRY_LEG-only modify_forever bug',
-      ],
-      link: { href: '/automation?tab=brackets', label: 'Open Brackets' },
     },
     {
       title: 'Rich order entry context',
@@ -195,7 +178,6 @@
         'ATM/ITM/OTM classification shown for option orders',
         'Chase aggressiveness toggle (Low / Med / High) relocated to price-entry row for LIMIT order type',
         'Exchange-closed badge in header when market is closed',
-        'Wing-leg warning when a Bracket with MARKET wing is selected during closed hours',
       ],
       link: { href: '/orders', label: 'Open Orders' },
     },

@@ -36,7 +36,6 @@
   import { visibleInterval, formatDualTz, withGuard } from '$lib/stores';
   import { isCurrentTradingSession } from '$lib/dateFormat.js';
   import { fetchOrders, fetchAlgoOrdersRecent, cancelOrder, reconcileSingleOrder, fetchGtts, cancelGtt, fetchOrderEventsById } from '$lib/api';
-  import { matchGtts } from '$lib/data/gttMatch.js';
   import { priceFmt } from '$lib/format';
   import { acctColor } from '$lib/account';
   import OrderCard from '$lib/order/OrderCard.svelte';
@@ -47,7 +46,6 @@
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
   import CardHeader from '$lib/CardHeader.svelte';
   import { toast } from '$lib/data/toastStore.svelte.js';
-  import { noteAttachObservation, noteHeldPendingRelease } from '$lib/data/templateAttachToast.js';
   import { noteOrderPollFills } from '$lib/data/orderFillDetector.js';
   import { isDraftOrderRow } from '$lib/data/draftOrderRow.js';
   import { groupPropFor } from '$lib/data/pulseDetached.svelte.js';
@@ -365,26 +363,6 @@
       // none of those backend paths broadcast today). See
       // orderFillDetector.js header for the full channel inventory.
       noteOrderPollFills(merged);
-      // Trading-critical "template did not attach" toast (2026-09-30) —
-      // evaluated on every merged row BEFORE status-chip filtering, so
-      // it fires regardless of which status bucket the operator has
-      // selected. See templateAttachToast.js for the live-only gate +
-      // time-based debounce this relies on.
-      //
-      // 2026-11-02 (PLAN.md item 4) — a HELD-pending-release row (a
-      // template-exit hold) is checked FIRST, via the separate
-      // `noteHeldPendingRelease()`, and gets its own, factually-correct
-      // wording instead of the "did not attach" text — see
-      // `isHeldPendingReleaseState`'s doc comment for why these are two
-      // distinct states that can never both be true for the same row.
-      for (const o of merged) {
-        const oid = o?.id ?? o?.order_id;
-        if (noteHeldPendingRelease(o)) {
-          toast.warning(`Order #${oid} Bracket pending — release from Held Orders`, { timeoutMs: 5000 });
-        } else if (noteAttachObservation(o)) {
-          toast.warning(`Order #${oid} Bracket did not attach — check Order Book`, { timeoutMs: 5000 });
-        }
-      }
     } catch (_) { /* keep last-good */ } finally {
       _loading = false;
     }
@@ -625,7 +603,6 @@
   // live-only filter above.
   const _filteredGttRows = $derived.by(() =>
     _applyAccountFilter(_gttRows || [], accountFilter).filter(_isLiveGtt));
-  const _gttMatch = $derived(matchGtts(filteredOrderRows, _filteredGttRows));
 
   // ── Cancel / Modify / Reconcile actions (mirrors LogPanel) ────────────
   /** @type {Set<string>} */
@@ -995,7 +972,6 @@
       {#each filteredOrderRows as o (o.order_id ?? o.id)}
         {@const _oKey = String(o.order_id || o.id || '')}
         <OrderCard order={o}
-          gttLegs={_gttMatch.legsByOrder.get(_oKey) || []}
           onSymbolClick={(ord) => {
             if (onSymbolClick) { onSymbolClick(ord); return; }
             _symPanelSym = ord.tradingsymbol || ord.symbol || '';

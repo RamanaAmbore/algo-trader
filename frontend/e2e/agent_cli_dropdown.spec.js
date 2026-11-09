@@ -7,7 +7,8 @@
  * `=`, `,`, `(`), and the 3-character gate for large candidate lists.
  *
  * The AgentCliEditor is mounted in three places:
- *   1. /automation?tab=console (full statement scope: order/agent/bracket/event/token)
+ *   1. /automation?tab=console (full statement scope: order/agent/event/token —
+ *      'bracket' removed 2026-11, Track 3 T3.4, Bracket/Template/GTT removal)
  *   2. /orders (order-scoped, via OrderCliTab)
  *   3. SymbolPanel order-ticket modal (order-scoped)
  *

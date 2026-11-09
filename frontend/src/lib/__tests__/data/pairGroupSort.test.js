@@ -321,47 +321,43 @@ describe('pairGroupSort — stable within-group ordering', () => {
 // sites now delegate to the shared `positionStateBadge.js` helper
 // (2026-10 fix) — see positionStateBadge.test.js for the full priority-
 // order + glyph test suite. These tests just confirm THIS file's own
-// pairGroupSort-adjacent expectations (GTT > paired > orphan,
+// pairGroupSort-adjacent expectations (auto-paired > orphan — the GTT
+// branch was removed 2026-11, Track 3 T3.4 Bracket/Template/GTT removal —
 // stale "○"/hex literals retired) still hold against the real helper.
 // ---------------------------------------------------------------------------
 
 describe('positionStateBadge — priority order (via the real shared helper)', () => {
-  it('returns gtt state when has_gtt is truthy', () => {
+  it('a stray has_gtt=true field (dead passthrough post-Bracket-removal) is ignored', () => {
     const b = positionStateBadge({ has_gtt: true, pair_group_key: 'P1', is_orphan: false });
-    expect(b.state).toBe('gtt');
-    expect(b.color).toBe('var(--algo-green)');
-  });
-
-  it('returns paired state when pair_group_key is set and has_gtt is false', () => {
-    const b = positionStateBadge({ has_gtt: false, pair_group_key: 'P1', is_orphan: false });
     expect(b.state).toBe('paired');
     expect(b.color).toBe('var(--algo-cyan-text)');
   });
 
-  it('returns orphan state when is_orphan is true and no key/gtt', () => {
-    const b = positionStateBadge({ has_gtt: false, pair_group_key: null, is_orphan: true });
+  it('returns paired state when pair_group_key is set', () => {
+    const b = positionStateBadge({ pair_group_key: 'P1', is_orphan: false });
+    expect(b.state).toBe('paired');
+    expect(b.color).toBe('var(--algo-cyan-text)');
+  });
+
+  it('returns orphan state when is_orphan is true and no pair key', () => {
+    const b = positionStateBadge({ pair_group_key: null, is_orphan: true });
     expect(b.state).toBe('orphan');
     expect(b.color).toBe('var(--algo-amber)');
   });
 
   it('returns null state when no state flags are set', () => {
-    const b = positionStateBadge({ has_gtt: false, pair_group_key: null, is_orphan: false });
+    const b = positionStateBadge({ pair_group_key: null, is_orphan: false });
     expect(b.state).toBeNull();
   });
 
   it('returns null state for _isTotal rows', () => {
-    const b = positionStateBadge({ _isTotal: true, has_gtt: true, pair_group_key: 'P1' });
+    const b = positionStateBadge({ _isTotal: true, pair_group_key: 'P1' });
     expect(b.state).toBeNull();
   });
 
   it('returns null state for null/undefined data', () => {
     expect(positionStateBadge(null).state).toBeNull();
     expect(positionStateBadge(undefined).state).toBeNull();
-  });
-
-  it('GTT takes priority over pair_group_key (both set)', () => {
-    const b = positionStateBadge({ has_gtt: true, pair_group_key: 'P1', is_orphan: true });
-    expect(b.state).toBe('gtt');
   });
 });
 

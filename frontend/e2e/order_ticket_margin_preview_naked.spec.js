@@ -25,12 +25,15 @@
  * reading the wing at all, that read — and its race — no longer
  * exists. Nothing further to fix for 9.2 once 8 is in.
  *
- * `paired_legs` is a SEPARATE request from the template-preview call
- * (`POST /api/orders/ticket/preview`, confirmed via api.js — different
- * endpoint entirely) — this spec intercepts `/api/orders/preflight`
- * specifically and asserts the real request body never carries the
- * field, using the exact bracket-activation flow already proven live
- * in `order_ticket_template_toggle_regression.spec.js`.
+ * 2026-11 (Track 3, T3.4, Bracket/Template/GTT removal) — the old
+ * second test here drove the TemplateBar "Bracket active" toggle
+ * (`.oes-tpl-button`) to prove `paired_legs` stayed absent even with a
+ * template wing resolved. TemplateBar.svelte is deleted and there is no
+ * surviving way to arm a bracket/wing on OrderTicket at all, so that
+ * live UI flow is gone — removed rather than rewritten, since there is
+ * no bracket behavior left to drive. The source-level test below still
+ * covers the real invariant: the margin-preview payload never builds
+ * `paired_legs`, full stop (not merely "not from the wing").
  */
 
 import { test, expect } from '@playwright/test';
@@ -84,7 +87,7 @@ test.describe('Order Ticket — margin preview is naked, not netted with the win
     expect(block).not.toMatch(/_previewPlan\?\.wing/);
   });
 
-  test('live: a real /api/orders/preflight request never carries paired_legs, even with a Bracket active', async ({ page }) => {
+  test('live: a real /api/orders/preflight request never carries paired_legs', async ({ page }) => {
     test.setTimeout(60_000);
     let preflightBody = null;
     let sawPreflightCall = false;
@@ -101,51 +104,17 @@ test.describe('Order Ticket — margin preview is naked, not netted with the win
         }),
       });
     });
-    // Mock the template-preview response so a wing is DEFINITELY present
-    // regardless of what the real dev DB's default bracket template
-    // happens to carry — pre-fix, this is exactly the data that would
-    // have been copied into the (now-removed) paired_legs field.
-    await page.route('**/api/orders/ticket/preview', async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          plan: {
-            template_id: 1,
-            template_name: 'Test Bracket',
-            parent_qty: 2,
-            wing: {
-              tradingsymbol: 'NIFTY26OCTFUT',
-              exchange: 'NFO',
-              transaction_type: 'BUY',
-              quantity: 2,
-              product: 'NRML',
-              order_type: 'MARKET',
-              estimated_price: 100,
-            },
-          },
-        }),
-      });
-    });
     await mockPaperMode(page);
     await loginAsAdmin(page);
     await _seedNiftyOnTicket(page);
-
-    const toggle = page.locator('.oes-tpl-button').first();
-    await expect(toggle).toBeVisible({ timeout: 15_000 });
-    if (!(await toggle.evaluate((el) => el.classList.contains('active')))) {
-      await toggle.click();
-    }
-    await expect(toggle).toHaveClass(/active/, { timeout: 5_000 });
 
     const buyPill = page.locator('button.ot-side-buy').first();
     if (await buyPill.count() > 0 && await buyPill.isEnabled().catch(() => false)) {
       await buyPill.click();
     }
 
-    // Give the 200ms template-preview debounce + 350ms margin-preview
-    // debounce time to both fire.
-    await page.waitForTimeout(1500);
+    // Give the 350ms margin-preview debounce time to fire.
+    await page.waitForTimeout(1000);
 
     expect(sawPreflightCall, 'expected at least one /api/orders/preflight request').toBe(true);
     expect(preflightBody, 'preflight request body must have been captured').not.toBeNull();

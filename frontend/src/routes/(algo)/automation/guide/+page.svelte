@@ -53,7 +53,7 @@
     /automation (below the plain orders bar) parses one statement at a time — it's a real multi-line textarea, so a
     statement can wrap across lines — into a live JSON preview, then shows a kind-appropriate
     submit button — <strong>Place order</strong>, <strong>Create agent</strong>,
-    <strong>Save bracket</strong>, or <strong>Create token</strong> — depending on what you typed.
+    or <strong>Create token</strong> — depending on what you typed.
     This page is a fast "how do I…" reference for that grammar, organised by what each
     statement shape is <em>for</em>. Every example below compiles against the grammar's own
     test suite (see the page source comment for how each was verified) — but swap in your own
@@ -83,15 +83,14 @@
 
     <div class="cg-example">
       <p class="cg-why">
-        A one-off trade where you want tighter exits than your usual saved Bracket —
-        skip the preset entirely and dial in a specific take-profit / stop-loss inline.
+        Dial in a specific take-profit / stop-loss inline for this one order, without
+        typing a separate statement.
       </p>
       <pre class="cg-code">order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, tp_pct=30, sl_pct=-20)</pre>
       <p class="cg-what">
         <code>tp_pct</code>/<code>sl_pct</code> compile straight to the ticket's
         <code>tp_pct_override</code>/<code>sl_pct_override</code> fields. Once the order fills,
-        the backend auto-arms a +30% take-profit GTT and a −20% stop-loss against your entry —
-        no bracket needed for a single trade.
+        the backend auto-arms a +30% take-profit GTT and a −20% stop-loss against your entry.
       </p>
     </div>
 
@@ -113,12 +112,6 @@ order(account="ZJ6294", symbol="BANKNIFTY25JULFUT", side="BUY", lots=1)</pre>
       </p>
     </div>
 
-    <p class="cg-note">
-      See <a href="#brackets">Brackets</a> below for a fourth order shape —
-      <code>order(..., bracket="default-bull")</code> — that attaches a saved TP/SL/Wing
-      preset by name instead of typing the overrides inline (admin-seeded presets only today —
-      see that section's "known gap" note).
-    </p>
   </section>
 
   <!-- ══════════════════════════ AGENTS ══════════════════════════ -->
@@ -372,55 +365,6 @@ WHEN log(tag=alert, where={'{'}alert_event={'{'}not_in=["filled", "cancelled"]{'
     </div>
   </section>
 
-  <!-- ══════════════════════════ BRACKETS ══════════════════════════ -->
-  <section id="brackets" class="algo-card cg-section">
-    <h2 class="section-heading">Brackets — <code>bracket(...)</code> (reusable Order Templates)</h2>
-    <p class="cg-lede">
-      A Bracket is a saved TP/SL/Wing preset — the idea is to build the exit rules ONCE, then
-      attach a preset to any order going forward just by name, instead of retyping
-      <code>tp_pct</code>/<code>sl_pct</code>/wing kwargs on every single order.
-      <code>bracket(...)</code> used standalone (never inside a <code>DO</code> clause) saves a
-      NEW preset; clicking <strong>Save bracket</strong> persists it. (See the known gap
-      below — today, referencing-by-name only works for presets seeded by an admin.)
-    </p>
-
-    <div class="cg-example">
-      <p class="cg-why">
-        Your standard long-side exit rule: whenever you go long, take profit at +30% (as a
-        LIMIT order) and cut losses at −20%. Save it once as "Default Bull" instead of
-        typing those three numbers into every buy order you place.
-      </p>
-      <pre class="cg-code">bracket(applies_to=buy_any, tp_pct=30, sl_pct=-20, tp_order_type=LIMIT) #name="Default Bull"</pre>
-      <p class="cg-what">
-        Compiles to an <code>OrderTemplateCreate</code> row — <code>applies_to=buy_any</code>
-        scopes it to BUY orders. <code>#name=</code> is required (a saved bracket must have a
-        name); there's no condition or channel here at all, just the exit-rule shape.
-      </p>
-    </div>
-
-    <div class="cg-example">
-      <p class="cg-why">
-        Attach an EXISTING saved bracket to a new order by name, instead of re-specifying
-        TP/SL inline every time.
-      </p>
-      <pre class="cg-code">order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, bracket="default-bull")</pre>
-      <p class="cg-what">
-        <code>bracket="default-bull"</code> compiles to a <code>template_slug</code> on the
-        ticket, resolved to the real numeric <code>template_id</code> right before submit.
-      </p>
-      <p class="cg-what cg-warn">
-        <strong>Known gap:</strong> matching is by the saved template's <code>slug</code>
-        column, exact string equality only — never by display name. Presets seeded by an
-        admin carry a real slug and ARE addressable this way today. A bracket you save
-        yourself from this CLI (the "Default Bull" example above) does NOT currently get a
-        slug written on create, so <code>bracket="..."</code> can't reference it yet — you'd
-        see a clear "Unknown bracket" error, not a silent mismatch. Ask an admin which slugs
-        are available, or attach a freshly-saved bracket from its own row in the template list
-        (outside this CLI) until this gap closes.
-      </p>
-    </div>
-  </section>
-
   <!-- ══════════════════════════ TOKENS ══════════════════════════ -->
   <section class="algo-card cg-section">
     <h2 class="section-heading">Tokens — <code>token(kind=notify|condition) ...</code></h2>
@@ -471,9 +415,9 @@ WHEN log(tag=alert, where={'{'}alert_event={'{'}not_in=["filled", "cancelled"]{'
   <section class="algo-card cg-section">
     <h2 class="section-heading">Meta tags — <code>#name</code> / <code>#desc</code> / <code>#tag</code> / <code>#group</code></h2>
     <p class="cg-lede">
-      A trailing <code>#key=value</code> clause (after everything else) labels an agent,
-      bracket, or token for your own organisation — never valid on a bare order. All four
-      are independently optional except where noted above (brackets/tokens require
+      A trailing <code>#key=value</code> clause (after everything else) labels an agent
+      or token for your own organisation — never valid on a bare order. All four
+      are independently optional except where noted above (tokens require
       <code>#name</code>).
     </p>
     <div class="cg-meta-grid">
@@ -612,11 +556,10 @@ WHEN max(column=pnl)@positions.expiring_today &lt;= -10000 DO alert(telegram)</p
           <tr><td><code>funds.cash</code></td><td>Column alias on <code>funds</code> scope — direct access to cash balance, use as <code>funds.cash@funds.total</code></td></tr>
           <tr><td><code>funds.margin</code></td><td>Column alias on <code>funds</code> scope — direct access to available margin, use as <code>funds.margin@funds.any_acct</code></td></tr>
           <tr><td><code>lots=</code> vs <code>qty=</code></td><td>F&amp;O orders take <code>lots=</code> (auto-converted via the symbol's lot size); equity uses raw <code>qty=</code></td></tr>
-          <tr><td><code>tp_pct</code> / <code>sl_pct</code></td><td>Inline take-profit / stop-loss override, on <code>order(...)</code> or <code>bracket(...)</code></td></tr>
+          <tr><td><code>tp_pct</code> / <code>sl_pct</code></td><td>Inline take-profit / stop-loss override, on <code>order(...)</code></td></tr>
           <tr><td><code>wing_premium_pct</code> / <code>wing_strike_offset</code></td><td>Wing-leg hedge sizing — mutually exclusive, pick one</td></tr>
-          <tr><td><code>bracket="slug"</code></td><td>Attach a saved Bracket by slug to an <code>order(...)</code></td></tr>
           <tr><td>Short kwarg aliases</td><td><code>acct</code>=account, <code>sym</code>=symbol, <code>exch</code>=exchange, <code>otype</code>=order_type, <code>px</code>=price, <code>trigpx</code>=trigger_price, <code>prod</code>=product, <code>var</code>=variety, <code>chase</code>=chase_level</td></tr>
-          <tr><td><code>#name</code> / <code>#desc</code> / <code>#tag</code> / <code>#group</code></td><td>Trailing meta tags — agents/brackets/tokens only, never on a bare order</td></tr>
+          <tr><td><code>#name</code> / <code>#desc</code> / <code>#tag</code> / <code>#group</code></td><td>Trailing meta tags — agents/tokens only, never on a bare order</td></tr>
         </tbody>
       </table>
     </div>
@@ -710,18 +653,6 @@ WHEN max(column=pnl)@positions.expiring_today &lt;= -10000 DO alert(telegram)</p
     color: #8a99b3;
     margin-top: 0.4rem;
   }
-
-  /* Known-gap callouts — amber, matches the algo palette's "action/
-     attention" accent (see CLAUDE.md palette: action = #fbbf24). */
-  .cg-warn {
-    margin-top: 0.4rem;
-    padding: 0.4rem 0.55rem;
-    border-radius: 0.25rem;
-    background: var(--algo-amber-bg-soft, rgba(251, 191, 36, 0.08));
-    border: 1px solid var(--algo-amber-border-soft, rgba(251, 191, 36, 0.30));
-    color: #d6b06a;
-  }
-  .cg-warn strong { color: #fbbf24; }
 
   code {
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;

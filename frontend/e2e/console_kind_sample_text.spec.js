@@ -5,6 +5,8 @@
  * agents/order/bracket/alert does not change cli text sample text. two
  * issues. it stays static. if it changes, it shows as real text
  * entered, instead of erasing it waiting for user inputs."
+ * ('bracket' is no longer a kind option at all — removed 2026-11, Track
+ * 3 T3.4, Bracket/Template/GTT removal.)
  *
  * The first pass (now superseded) wrote each kind's sample straight into
  * the real bound `value`, tracked via a hand-rolled `_isSeedActive` flag
@@ -48,8 +50,10 @@ test.describe('Console kind dropdown — placeholder sample always reflects the 
     const textarea = page.locator('.aw-view-body textarea, textarea').first();
     await expect(textarea).toHaveValue('', { timeout: TIMEOUT });
 
-    await pickKind(page, 'Bracket');
-    await expect(textarea).toHaveAttribute('placeholder', /^bracket\(/, { timeout: TIMEOUT });
+    // 'Bracket' removed 2026-11 (Track 3, T3.4, Bracket/Template/GTT
+    // removal, operator: "in automation, the brackets dropdown should
+    // not exist, as bracket are no longer available") — no longer a
+    // kind option to pick here.
     // 2026-11-01: labels renamed 'Agent'/'Alert' -> 'Action agent'/'Alert agent'
     // (2026-10-31 operator rename) — stale exact-text matches here timed out
     // forever since 'Agent'/'Alert' no longer render anywhere in the dropdown.
@@ -66,6 +70,11 @@ test.describe('Console kind dropdown — placeholder sample always reflects the 
 
     // The real value is untouched by any of this — only the placeholder changed.
     await expect(textarea).toHaveValue('', { timeout: TIMEOUT });
+  });
+
+  test('"Bracket" is no longer a kind option in the dropdown', async ({ page }) => {
+    await page.locator('.aw-kind-select .rbq-select-trigger').click();
+    await expect(page.getByRole('option', { name: /^Bracket/ })).toHaveCount(0);
   });
 
   test('a placeholder is never real content — focusing/clicking never leaves committed text behind', async ({ page }) => {

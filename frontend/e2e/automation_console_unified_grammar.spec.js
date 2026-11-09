@@ -4,8 +4,10 @@
  * order-scoped CLI mounts (`/orders` tab, SymbolPanel order modal).
  *
  * Covers the six behaviours from the grammar-unification e2e pass:
- *   1. Bare unconditional statements (order / bracket / ALERT event /
- *      debug) compile and submit exactly once through their own button.
+ *   1. Bare unconditional statements (order / ALERT event / debug)
+ *      compile and submit exactly once through their own button; a bare
+ *      bracket(...) statement is rejected outright (removed 2026-11,
+ *      Track 3 T3.4, Bracket/Template/GTT removal).
  *   2. A multi-kind preamble (debug + order + condition label) ahead of a
  *      `WHEN ... DO ...` tail compiles, and the preview JSON carries every
  *      preamble entry plus the conditional tail.
@@ -175,19 +177,20 @@ test.describe('Console — unified grammar CLI (bare statements, preamble, help,
     await expect(page.locator('textarea.agent-cli-textarea')).toHaveValue('');
   });
 
-  test('bare bracket(...) compiles to a bracket template and saves exactly once', async ({ page }) => {
+  // `bracket(...)` compiling to a template and saving removed 2026-11
+  // (Track 3, T3.4, Bracket/Template/GTT removal) — `/api/admin/templates/`
+  // and the whole Bracket engine are gone server-side; `bracket(...)` is
+  // now a hard compile error in every position. Replaced with the
+  // opposite assertion.
+  test('bare bracket(...) is rejected with the removal message — no Save bracket affordance, nothing POSTed', async ({ page }) => {
     const templates = await recordPosts(page, '/api/admin/templates/', { id: 501, name: 'Console Unified Bracket' });
     await gotoConsole(page);
 
     await page.locator('textarea.agent-cli-textarea').fill(BRACKET);
 
-    const saveBtn = page.locator('.console-agent-cli-btn', { hasText: 'Save bracket' });
-    await expect(saveBtn).toBeVisible({ timeout: TIMEOUT });
-    await saveBtn.click();
-
-    await expect(page.locator('.agent-cli-submit-status')).toContainText("Bracket 'Console Unified Bracket' created", { timeout: TIMEOUT });
-    expect(templates).toHaveLength(1);
-    expect(templates[0].body.name).toBe('Console Unified Bracket');
+    await expect(page.locator('.agent-cli-errors')).toContainText(/bracket\(\) was removed/i, { timeout: TIMEOUT });
+    await expect(page.locator('.console-agent-cli-btn', { hasText: 'Save bracket' })).toHaveCount(0);
+    expect(templates).toHaveLength(0);
   });
 
   test('bare WHEN log(...) DO render(...) event statement compiles to an event agent and creates exactly once', async ({ page }) => {

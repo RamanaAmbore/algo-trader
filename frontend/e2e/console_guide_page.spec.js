@@ -12,8 +12,10 @@
  * Covers:
  *   1. The guide page renders (via the old /console/guide URL, through
  *      the redirect) and shows the expected section headers (Orders,
- *      Agents, Event agents, Brackets, Tokens, Meta tags, Quick
- *      reference).
+ *      Agents, Event agents, Tokens, Meta tags, Quick reference). The
+ *      Brackets section was removed 2026-11 (Track 3, T3.4, Bracket/
+ *      Template/GTT removal) — `bracket(...)` is a hard compile error
+ *      now, so there is nothing left to document.
  *   2. Clicking the Guide link on Automation's Console tab navigates to
  *      /automation/guide successfully.
  */
@@ -37,7 +39,6 @@ test.describe('Console CLI guide page', () => {
       /Orders/,
       /^Agents/,
       /Event agents/,
-      /Brackets/,
       /^Tokens/,
       /Meta tags/,
       /Quick reference/,
@@ -46,6 +47,10 @@ test.describe('Console CLI guide page', () => {
       await expect(page.locator('h2.section-heading', { hasText: re }).first())
         .toBeVisible({ timeout: TIMEOUT });
     }
+
+    // Brackets section removed 2026-11 (Track 3, T3.4, Bracket/Template/
+    // GTT removal) — must not reappear.
+    await expect(page.locator('h2.section-heading', { hasText: /Brackets/ })).toHaveCount(0);
 
     // Spot-check one real, confirmed-working example statement renders
     // verbatim (regression guard against accidental rewording that

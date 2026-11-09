@@ -31,7 +31,7 @@ vi.mock('$lib/api', () => ({ fetchGrammarTokens: vi.fn() }));
 
 const {
   buildCatalog, compileAgentCliStatement, decompileCondition, decompileEvents,
-  decompileActions, decompileAgent, decompileMetaClause, decompileBracket,
+  decompileActions, decompileAgent, decompileMetaClause,
   decompileToken, ALWAYS_LEAF,
 } = await import('$lib/command/grammars/agents.js');
 
@@ -1201,124 +1201,15 @@ describe('meta clause decompile round-trip', () => {
   });
 });
 
-// ── Sprint 8 — bracket(...) decompile→recompile round-trip ─────────────
-
-function decompileBracketTemplate(templateJson, opts = {}) {
-  return decompileBracket(templateJson, CATALOG, { lotSizeOf, ...opts });
-}
-
-/** compile(text) -> decompileBracket(.template) -> compile(decompiled
- *  text) -> assert the SECOND compile's template JSON deep-equals the
- *  FIRST's — the same hard round-trip contract `roundTrip()` above
- *  enforces for agents. */
-function roundTripBracket(text) {
-  const first = compile(text);
-  expect(first.ok).toBe(true);
-  const dec = decompileBracketTemplate(first.template);
-  expect(dec.errors).toEqual([]);
-  expect(typeof dec.text).toBe('string');
-  const second = compile(dec.text);
-  expect(second.errors).toEqual([]);
-  expect(second.ok).toBe(true);
-  expect(second.template).toEqual(first.template);
-  return { first, dec, second };
-}
-
-describe('Sprint 8 — bracket(...) decompile round-trip', () => {
-  it('round-trips a bracket with every shared TP/SL/Wing field set, including a 2-entry tp_scales_json', () => {
-    const { first, dec } = roundTripBracket(
-      'bracket(applies_to=buy_any, tp_pct=30, sl_pct=-20, wing_max_spread_pct=2.5, ' +
-      'tp_order_type=LIMIT, sl_trail_pct=5, ' +
-      'tp_scales_json=[{at_pct=30, close_pct=50}, {at_pct=60, close_pct=50}]) ' +
-      '#name="Default Bull" #desc="Scale-out preset" #tag=hedge,nifty #group=hedge-book'
-    );
-    expect(first.template).toEqual({
-      name: 'Default Bull',
-      description: 'Scale-out preset',
-      tags: ['hedge', 'nifty'],
-      group: 'hedge-book',
-      applies_to: 'buy_any',
-      tp_pct: 30,
-      sl_pct: -20,
-      wing_max_spread_pct: 2.5,
-      tp_order_type: 'LIMIT',
-      sl_trail_pct: 5,
-      tp_scales_json: JSON.stringify([{ at_pct: 30, close_pct: 50 }, { at_pct: 60, close_pct: 50 }]),
-    });
-    expect(dec.text).toMatch(/^bracket\(/);
-    expect(dec.text).toMatch(/#name="Default Bull"/);
-  });
-
-  it('wing_premium_pct alone (not wing_strike_offset) also round-trips', () => {
-    roundTripBracket('bracket(tp_pct=30, wing_premium_pct=4.5) #name="x"');
-  });
-
-  it('decompileBracket() fails loud (never guesses) on a nameless template', () => {
-    const dec = decompileBracketTemplate({ tp_pct: 30 });
-    expect(dec.text).toBeNull();
-    expect(dec.errors.some(e => /missing required 'name'/.test(e.message))).toBe(true);
-  });
-});
-
-// ── Sprint 18 — decompileBracket() refuses loud on slug/is_default/
-//    is_active/is_system instead of silently dropping them ─────────────
-//
-// Audit finding: decompiling (and resaving, via /console's create-only
-// submit) a seeded system bracket like 'default-bull' silently produced
-// a slugless, non-default, non-system copy — none of these 4 real
-// OrderTemplate fields had any bracket(...) CLI representation, and the
-// old decompiler just never read them. Fixed by refusing outright
-// (never emitting text that would resave as a materially different row)
-// — see `_bracketUnexpressibleFields`'s own doc for why "emit cleanly"
-// isn't viable (no slug field on OrderTemplateCreate at all; is_system
-// is hardcoded False server-side; is_default would actively steal the
-// default slot from the original row via `_demote_existing_default`).
-describe('Sprint 18 — decompileBracket() refuses loud on slug/is_default/is_active/is_system', () => {
-  const BASE = { id: 7, name: 'Realistic Custom Bracket', tp_pct: 30, sl_pct: -20 };
-
-  it('refuses when slug is set (non-null) — system-seed-only field, no create-API support', () => {
-    const dec = decompileBracketTemplate({ ...BASE, slug: 'default-bull' });
-    expect(dec.text).toBeNull();
-    expect(dec.errors.some(e => /\bslug\b/.test(e.message))).toBe(true);
-  });
-
-  it('refuses when is_default is true — resaving would steal the default slot from the real row', () => {
-    const dec = decompileBracketTemplate({ ...BASE, is_default: true });
-    expect(dec.text).toBeNull();
-    expect(dec.errors.some(e => /\bis_default\b/.test(e.message))).toBe(true);
-  });
-
-  it('refuses when is_active is false — resaving would silently resurrect a deactivated row', () => {
-    const dec = decompileBracketTemplate({ ...BASE, is_active: false });
-    expect(dec.text).toBeNull();
-    expect(dec.errors.some(e => /\bis_active\b/.test(e.message))).toBe(true);
-  });
-
-  it('refuses when is_system is true — create_template always forces is_system=False server-side', () => {
-    const dec = decompileBracketTemplate({ ...BASE, is_system: true });
-    expect(dec.text).toBeNull();
-    expect(dec.errors.some(e => /\bis_system\b/.test(e.message))).toBe(true);
-  });
-
-  it('reports ALL offending fields at once when more than one is set', () => {
-    const dec = decompileBracketTemplate({ ...BASE, slug: 'x', is_system: true });
-    expect(dec.text).toBeNull();
-    expect(dec.errors.some(e => /\bslug\b/.test(e.message) && /\bis_system\b/.test(e.message))).toBe(true);
-  });
-
-  it('still decompiles fine for a realistic custom row where all 4 are at their create-default values', () => {
-    const dec = decompileBracketTemplate({
-      ...BASE, slug: null, is_default: false, is_active: true, is_system: false,
-    });
-    expect(dec.errors).toEqual([]);
-    expect(dec.text).toMatch(/^bracket\(/);
-    expect(dec.text).toMatch(/#name="Realistic Custom Bracket"/);
-    // Round-trips cleanly too — proves the predicate isn't over-eager and
-    // doesn't regress the ordinary (field-absent) compile->decompile path.
-    const recompiled = compile(dec.text);
-    expect(recompiled.ok).toBe(true);
-  });
-});
+// ── Sprint 8/18 — bracket(...) decompile→recompile round-trip — REMOVED
+//    2026-11 (Track 3, T3.4, Bracket/Template/GTT removal). `decompileBracket`,
+//    `_bracketUnexpressibleFields` and `compileBracketStmt` are all gone;
+//    `bracket(...)` is a hard compile error now, in every position, so a
+//    "compile a bracket then decompile it" round trip can never start.
+//    See agentsGrammar.test.js's "bracket(...) is a hard compile error"
+//    and "a stored {type:'bracket'} ... entry" describe blocks for the
+//    replacement coverage (rejection at compile time; hard decompile
+//    error for a pre-existing stored bracket action/preamble entry).
 
 // ── Sprint C (2026-10, Phase 2 "Automation redesign") — decompileToken(),
 //    the reverse of compileTokenStmt. Gives Edit→decompile→Console a real

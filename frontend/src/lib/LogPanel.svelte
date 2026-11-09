@@ -23,8 +23,6 @@
   import ActivityAccountSelect from '$lib/ActivityAccountSelect.svelte';
   import CardHeader from '$lib/CardHeader.svelte';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
-  import { toast } from '$lib/data/toastStore.svelte.js';
-  import { noteAttachObservation, noteHeldPendingRelease } from '$lib/data/templateAttachToast.js';
   import { noteOrderPollFills } from '$lib/data/orderFillDetector.js';
   import { userRole, userCaps, hasCap } from '$lib/rbac';
   import { groupPropFor } from '$lib/data/pulseDetached.svelte.js';
@@ -798,21 +796,16 @@
         });
       }
     }
+    // `legsByOrder` (order-attached GTT legs sourced from
+    // `attached_gtts_json`) removed 2026-11 (Track 3, T3.4,
+    // Bracket/Template/GTT removal) — that field was populated
+    // exclusively by the now-deleted Bracket/template-attach engine
+    // (T3.1/T3.2), so no new order can ever carry it again; the
+    // `'gtt'`/`'gtt_missing'` event kinds it fed are now permanently
+    // unreachable. `.unmatched` (standalone broker GTTs with no
+    // matching order — the genuinely independent GTT viewer, NOT
+    // Bracket-specific) is unaffected and still computed below.
     const _gm = matchGtts(filteredOrderRows, gttRows);
-    for (const [oid, legs] of _gm.legsByOrder) {
-      const o = filteredOrderRows.find(x => String(x.order_id || x.id || '') === oid);
-      const gts = o?.order_timestamp || o?.created_at || '';
-      for (const l of legs) {
-        events.push({
-          id:      `${oid}-gtt-${l.id || l.label}`,
-          ts:      gts,
-          kind:    l.missing ? 'gtt_missing' : 'gtt',
-          message: l.missing
-            ? `${l.label} GTT ${l.id || '-'} is missing at the broker`
-            : `${l.label} GTT ${l.id} is ${l.status}`,
-        });
-      }
-    }
     for (const r of _gm.unmatched) {
       events.push({
         id:      `gtt-broker-${r.gtt_id}`,
@@ -967,23 +960,6 @@
         // open_order_watchdog sweep, admin reconcile — none broadcast a
         // WS event today).
         noteOrderPollFills(merged);
-        // Trading-critical "template did not attach" toast (2026-09-30) —
-        // same wiring as OrderBook.svelte's _loadOrders; evaluated on the
-        // merged rows regardless of the currently-selected order-mode
-        // chip. See templateAttachToast.js for the live-only gate +
-        // time-based debounce.
-        //
-        // 2026-11-02 (PLAN.md item 4) — mirrors OrderBook.svelte's
-        // identical fix: a HELD-pending-release row gets its own,
-        // factually-correct wording instead of "did not attach".
-        for (const o of merged) {
-          const oid = o?.id ?? o?.order_id;
-          if (noteHeldPendingRelease(o)) {
-            toast.warning(`Order #${oid} Bracket pending — release from Held Orders`, { timeoutMs: 5000 });
-          } else if (noteAttachObservation(o)) {
-            toast.warning(`Order #${oid} Bracket did not attach — check Order Book`, { timeoutMs: 5000 });
-          }
-        }
       }
     } catch (_) { /* keep last-good */ }
     // Fire-and-forget: fetch order lifecycle events in parallel for the

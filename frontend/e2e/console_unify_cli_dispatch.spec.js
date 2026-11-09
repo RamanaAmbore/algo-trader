@@ -26,10 +26,11 @@
  *        followed by the Guide button on the SAME row — not the tab's
  *        own nav-strip label, which stays "Console".
  *      - the Guide button text no longer carries a trailing arrow.
- *      - a kind-selector (Action agent/Alert agent/Bracket/Order) sits
- *        above the textbox, defaults to "Action agent" (matching the
- *        Agents-tab dropdown's own default — 2026-11-01), and all four
- *        options are clickable.
+ *      - a kind-selector (Action agent/Alert agent/Order — 'Bracket'
+ *        removed 2026-11, Track 3 T3.4, Bracket/Template/GTT removal)
+ *        sits above the textbox, defaults to "Action agent" (matching
+ *        the Agents-tab dropdown's own default — 2026-11-01), and all
+ *        three options are clickable.
  *
  * Mocking: `/api/admin/exec` and `/api/orders/ticket` are intercepted
  * via `page.route()` — same convention as the sibling
@@ -274,7 +275,7 @@ test.describe('Console — Guide link + kind-selector dropdown, relocated to the
     await expect(page.locator('section').getByRole('tab', { name: 'Console' })).toBeVisible({ timeout: TIMEOUT });
   });
 
-  test('kind-selector dropdown defaults to "Action agent" (matching the Agents tab) and all four options are pickable', async ({ page }) => {
+  test('kind-selector dropdown defaults to "Action agent" (matching the Agents tab) and all three options are pickable', async ({ page }) => {
     // 2026-11-01 — operator: "the default in both cases is same ...
     // the sequence should also be same" — Console's default used to be
     // "Order" (a leftover from before the options were reordered to put
@@ -283,18 +284,17 @@ test.describe('Console — Guide link + kind-selector dropdown, relocated to the
     // Select.svelte's trigger text is "<label> ▾" (a trailing caret glyph,
     // .rbq-select-caret) — `toContainText` rather than an exact `toHaveText`
     // match, so the assertion isn't coupled to that decorative character.
+    // 'Bracket' removed 2026-11 (Track 3, T3.4, Bracket/Template/GTT
+    // removal, operator: "in automation, the brackets dropdown should
+    // not exist, as bracket are no longer available") — three options
+    // remain, not four.
     const trigger = page.getByRole('button', { name: 'Statement kind' });
     await expect(trigger).toBeVisible({ timeout: TIMEOUT });
     await expect(trigger).toContainText('Action agent');
 
-    // Picking Bracket (box empty) seeds a bracket(...) starter snippet.
     await trigger.click();
-    await page.getByRole('option', { name: 'Bracket' }).click();
-    await expect(trigger).toContainText('Bracket');
-    // Seed is a native placeholder now (2026-10-31: _consolePlaceholder), never
-    // written into the real value — the textarea stays empty.
-    await expect(page.locator('.agent-cli-textarea')).toHaveValue('');
-    await expect(page.locator('.agent-cli-textarea')).toHaveAttribute('placeholder', /^bracket\(/);
+    await expect(page.getByRole('option', { name: /^Bracket/ })).toHaveCount(0);
+    await page.keyboard.press('Escape');
 
     // Picking Action agent likewise seeds a WHEN... starter.
     // 2026-10-31 — relabeled from bare "Agent" (operator: "we can call
@@ -317,13 +317,28 @@ test.describe('Console — Guide link + kind-selector dropdown, relocated to the
 
   test('kind-selector reflects auto-detection once typed text resolves to a kind, without overwriting it', async ({ page }) => {
     const cli = page.locator('.agent-cli-textarea');
+    await cli.fill('order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)');
+    await page.waitForTimeout(500);
+
+    const trigger = page.getByRole('button', { name: 'Statement kind' });
+    await expect(trigger).toContainText('Order', { timeout: TIMEOUT });
+    // Text is untouched — the selector only reflects, never rewrites.
+    await expect(cli).toHaveValue('order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)');
+  });
+
+  // 'bracket(' removed 2026-11 (Track 3, T3.4, Bracket/Template/GTT
+  // removal) from `_detectKindHint` too — typing it no longer auto-
+  // selects any kind at all (it never compiled to a real, dispatchable
+  // kind to detect in the first place).
+  test('typing bracket(...) never auto-selects a kind — it is not in the detector\'s recognized leading tokens', async ({ page }) => {
+    const cli = page.locator('.agent-cli-textarea');
     await cli.fill('bracket(applies_to=buy_any, tp_pct=30, sl_pct=-20) #name="X"');
     await page.waitForTimeout(500);
 
     const trigger = page.getByRole('button', { name: 'Statement kind' });
-    await expect(trigger).toContainText('Bracket', { timeout: TIMEOUT });
-    // Text is untouched — the selector only reflects, never rewrites.
-    await expect(cli).toHaveValue('bracket(applies_to=buy_any, tp_pct=30, sl_pct=-20) #name="X"');
+    // Stays on whatever kind was last picked/defaulted — never "Bracket"
+    // (that option no longer exists).
+    await expect(trigger).not.toContainText('Bracket', { timeout: TIMEOUT });
   });
 
   test('the Agents tab has its own kind-dropdown and the Guide link, both in the header — 2026-11-01', async ({ page }) => {

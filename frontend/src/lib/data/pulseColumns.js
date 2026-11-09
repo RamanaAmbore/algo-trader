@@ -605,9 +605,10 @@ export function mkRightColDefs({
       // horizontally"). Mirrors the existing .ag-header-cell-spark
       // center-override pattern in app.css.
       headerClass: 'ag-header-cell-state',
-      headerTooltip: 'Position state: GTT (green) · Auto-paired (cyan) · Orphan (◇ amber). Click for info.',
-      // Shared priority logic (GTT > auto-paired > orphan) lives
-      // in positionStateBadge.js — PerformancePage.svelte's own St column
+      headerTooltip: 'Position state: Auto-paired (cyan) · Orphan (◇ amber). Click for info.',
+      // Shared priority logic (auto-paired > orphan — GTT branch removed
+      // 2026-11, Track 3 T3.4 Bracket/Template/GTT removal) lives in
+      // positionStateBadge.js — PerformancePage.svelte's own St column
       // now calls the same shared function too (converted 2026-10-18).
       cellStyle: (p) => {
         const badge = positionStateBadge(p.data);
