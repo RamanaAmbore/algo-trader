@@ -196,17 +196,21 @@ resolve.
 - Add an "Origin" chip to `OrderCard`'s existing chip row — reuses the
   established chip-list UI pattern already there (`tag`/`mode`/`engine`
   chips), not a new UI paradigm.
-- **Status-chip gap (real risk)**: OrderBook's five fixed chips
-  (Chase/Open/Filled/Rejected-Cancelled/GTT) make any other status
-  *silently invisible*, not misrendered. A new `armed` or `draft` row
-  would vanish rather than show up wrong — worse for debugging, not
-  better. Needs an explicit new chip (or folding into an existing one)
-  before these statuses ship, not an afterthought.
-- **GTT double-count risk**: the existing GTT chip already sources from
-  the broker's own GTT book (keyed `account:gtt_id`), not from
+- **Status-chip gap (real risk)**: OrderBook's fixed chips
+  (~~Chase/Open/Filled/Rejected-Cancelled/GTT~~ — the GTT chip was
+  REMOVED 2026-11, operator: "we don't need gtt count status pills";
+  four chips remain: Chase/Open/Filled/Rejected-Cancelled) make any
+  other status *silently invisible*, not misrendered. A new `armed` or
+  `draft` row would vanish rather than show up wrong — worse for
+  debugging, not better. Needs an explicit new chip (or folding into an
+  existing one) before these statuses ship, not an afterthought.
+- ~~**GTT double-count risk**: the existing GTT chip already sources
+  from the broker's own GTT book (keyed `account:gtt_id`), not from
   `AlgoOrder`. Promoting Sprint 1's new `armed` GTT rows into this grid
   without deduping against `gtt_order_id` would show every GTT twice —
-  once from the broker book, once from the new first-class row.
+  once from the broker book, once from the new first-class row.~~
+  (MOOT — the GTT chip itself was removed 2026-11; there is no longer a
+  chip to double-count against.)
 
 ### 4.2 LogPanel.svelte / OrderTimelineDrawer.svelte
 
