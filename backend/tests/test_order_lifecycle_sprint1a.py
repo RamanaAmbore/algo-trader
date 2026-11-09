@@ -248,7 +248,6 @@ def test_init_db_real_call_does_not_raise():
          patch("backend.api.algo.template_registry.migrate_and_retire_agent_fragments", new=AsyncMock()), \
          patch("backend.api.algo.template_registry.REGISTRY.reload", new=AsyncMock()), \
          patch("backend.shared.helpers.settings.seed_settings", new=AsyncMock()), \
-         patch("backend.api.algo.templates_seed.seed_templates", new=AsyncMock()), \
          patch("backend.api.routes.watchlist.seed_global_pinned", new=AsyncMock()), \
          patch("backend.shared.helpers.alert_utils.refresh_alert_recipients", new=AsyncMock()):
 
@@ -285,26 +284,27 @@ def test_al_place_resolve_params_carries_real_agent_id_and_slug():
     slug string and NO id at all, so _write_live_order's
     agent_id=getattr(agent, "id", None) always wrote NULL for live
     agent-placed orders. Post-fix: the shim must carry the REAL agent's
-    id and slug."""
+    id and slug.
+
+    `template_id`/`template_slug` dropped from the returned tuple
+    (Bracket/Template-GTT removal, T3.6, 2026-11) — the function now
+    returns an 8-tuple, not 10."""
     from backend.api.algo.actions_live import _al_place_resolve_params
 
     agent = MagicMock()
     agent.id = 42
     agent.slug = "loss-funds-negative"
 
-    shim, account, symbol, exchange, side, qty, price, product, template_id, template_slug = (
+    shim, account, symbol, exchange, side, qty, price, product = (
         _al_place_resolve_params(agent, {}, {
             "account": "ZG0790", "symbol": "NIFTY25OCTFUT", "exchange": "NFO",
             "transaction_type": "SELL", "quantity": 50, "product": "MIS",
-            "template_id": 9,
         })
     )
 
     assert shim.id == 42
     assert shim.slug == "loss-funds-negative"
     assert product == "MIS"
-    assert template_id == 9
-    assert template_slug is None
 
 
 def test_al_place_resolve_params_falls_back_when_agent_has_no_id():
@@ -325,11 +325,12 @@ def test_al_place_resolve_params_falls_back_when_agent_has_no_id():
 @pytest.mark.asyncio
 async def test_place_order_set_product_template_applies_product_only():
     """_place_order_set_product_template issues an UPDATE carrying
-    product for the given row id. template_id/template_slug/overrides
-    are accepted on the signature but silently ignored (Bracket/
-    Template-GTT removal, T3.1, 2026-11) — resolving/persisting them
-    served only the now-deleted fill-triggered template-attach
-    pipeline."""
+    product for the given row id.
+
+    `template_id`/`template_slug`/`overrides` params removed from the
+    signature entirely (Bracket/Template-GTT removal, T3.6, 2026-11) —
+    they used to be accepted but silently ignored (T3.1), and the
+    columns they would have written are now dropped."""
     from backend.api.algo.actions_live import _place_order_set_product_template
 
     captured: dict = {}
@@ -348,7 +349,7 @@ async def test_place_order_set_product_template_applies_product_only():
             captured["committed"] = True
 
     with patch("backend.api.database.async_session", side_effect=lambda: _FakeSession()):
-        await _place_order_set_product_template(123, "MIS", "9")
+        await _place_order_set_product_template(123, "MIS")
 
     assert captured.get("committed") is True
     # The compiled UPDATE carries only the product value — template_id
@@ -359,12 +360,12 @@ async def test_place_order_set_product_template_applies_product_only():
 
 
 @pytest.mark.asyncio
-async def test_place_order_set_product_template_noop_when_both_absent():
-    """No product and no template_id → no DB call at all (fast no-op)."""
+async def test_place_order_set_product_template_noop_when_product_absent():
+    """No product → no DB call at all (fast no-op)."""
     from backend.api.algo.actions_live import _place_order_set_product_template
 
     with patch("backend.api.database.async_session") as mock_session:
-        await _place_order_set_product_template(123, "", None)
+        await _place_order_set_product_template(123, "")
 
     mock_session.assert_not_called()
 
@@ -390,7 +391,7 @@ async def test_place_order_set_product_template_swallows_db_failure():
             pass
 
     with patch("backend.api.database.async_session", side_effect=lambda: _RaisingSession()):
-        await _place_order_set_product_template(123, "MIS", 9)  # must not raise
+        await _place_order_set_product_template(123, "MIS")  # must not raise
 
 
 def test_dispatch_live_action_passes_real_agent_to_place_order():

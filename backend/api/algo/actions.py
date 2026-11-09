@@ -1087,23 +1087,11 @@ async def execute(agent, actions: list, context: dict):
             )
 
 
-def _build_template_overrides(params: dict) -> dict:
-    """Build the override dict from action params (with legacy target_pct mapping)."""
-    overrides = {
-        "tp_pct":             params.get("tp_pct_override"),
-        "sl_pct":             params.get("sl_pct_override"),
-        "wing_premium_pct":   params.get("wing_premium_pct_override"),
-        "wing_strike_offset": params.get("wing_strike_offset_override"),
-    }
-    # Backward compat: target_pct (legacy v1 fractional) → tp_pct (% units)
-    if overrides["tp_pct"] is None and params.get("target_pct") is not None:
-        try:
-            overrides["tp_pct"] = float(params["target_pct"]) * 100.0
-        except (TypeError, ValueError):
-            pass
-    return overrides
-
-
+# `_build_template_overrides` removed (Bracket/Template-GTT removal,
+# T3.6, 2026-11) — its only caller, `actions_live._al_place_build_
+# overrides`, was removed in the same commit; both built the override
+# dict for `AlgoOrder.template_overrides_json`, a dropped column.
+#
 # `_al_apply_template`/`_maybe_attach_template_from_action` removed
 # (Bracket/Template-GTT removal, T3.1, 2026-11) — both called
 # `apply_template_to_order`, which was deleted along with
@@ -1111,11 +1099,10 @@ def _build_template_overrides(params: dict) -> dict:
 # agents reference `template_id`/`template_slug` in their actions or
 # preamble (prod + dev DB check) before removing this. The generic
 # `template_id`/`template_slug`/override params on `place_order`/`order`
-# actions themselves are left in place (schema/grammar cleanup is a
-# later sub-sprint) — a caller that still supplies them now gets no
-# template attach, silently, same policy as the ticket/basket paths.
-# `_build_template_overrides` above is kept — `actions_live.py` still
-# calls it (its result is simply unused now).
+# actions were removed from the grammar schema in T3.2, and the dead
+# `params.get(...)` reads that fed them were finally removed from
+# `actions_live.py` in T3.6 (2026-11) — see `_build_template_overrides`'s
+# own removal note above.
 
 
 async def _write_live_order(agent, action_type: str, resolved: dict,

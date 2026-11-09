@@ -1,16 +1,18 @@
-"""Tests for the MCP template-slug support, mcp_request_id audit-to-order
-linkage, and the new get_order_events MCP tool.
+"""Tests for the MCP mcp_request_id audit-to-order linkage, and the
+get_order_events MCP tool.
 
-Covers three narrow gaps closed in one sprint:
-  1. MCP place_order gained `template_slug` — resolved server-side (in
-     backend.api.routes.lab) to a template_id before the ticket is
-     built, since TicketOrderRequest itself has no slug field.
-  2. AlgoOrder.mcp_request_id links an mcp_audit row to the order it
+Covers two narrow gaps closed in one sprint:
+  1. AlgoOrder.mcp_request_id links an mcp_audit row to the order it
      created — additive migration + threading through both ticket-persist
      code paths (live + paper).
-  3. backend.mcp.kite_server.get_order_events wraps the existing
+  2. backend.mcp.kite_server.get_order_events wraps the existing
      GET /api/orders/{id}/events endpoint — a thin HTTP passthrough, same
      as every other read-only tool in that file.
+
+(The original item 1 — MCP place_order's `template_slug` support — was
+removed along with the parameter itself; Bracket/Template-GTT removal,
+T3.6, 2026-11. See test_bracket_removal_t3_6.py for its own-absence
+coverage.)
 """
 from __future__ import annotations
 
@@ -22,130 +24,18 @@ import pytest
 import backend.api.database as dbmod
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# 1a. _res_resolve_template_slug — the resolver helper
-# ═══════════════════════════════════════════════════════════════════════════
-
-@pytest.mark.asyncio
-async def test_resolve_template_slug_passthrough_when_id_given():
-    """An explicit template_id always wins — slug is ignored, no DB hit.
-    Slug resolution itself was removed (Bracket/Template-GTT removal,
-    T3.1, 2026-11) — template_attach.load_template_for_slug_or_id no
-    longer exists, so there is nothing left to assert "must not be
-    called" against; the passthrough behaviour is unchanged."""
-    from backend.api.routes.lab import _res_resolve_template_slug
-
-    resolved, err = await _res_resolve_template_slug(9, "default-bull")
-
-    assert resolved == 9
-    assert err is None
-
-
-@pytest.mark.asyncio
-async def test_resolve_template_slug_none_when_neither_given():
-    """No id, no slug → template-less order, not an error."""
-    from backend.api.routes.lab import _res_resolve_template_slug
-
-    resolved, err = await _res_resolve_template_slug(None, None)
-
-    assert resolved is None
-    assert err is None
-
-
-@pytest.mark.asyncio
-async def test_resolve_template_slug_now_silently_ignored():
-    """Slug resolution removed (Bracket/Template-GTT removal, T3.1,
-    2026-11) — a template_slug with no template_id now resolves to
-    (None, None): the slug is silently dropped, never an error, matching
-    the ticket/basket "strip the field, never refuse the order" policy."""
-    from backend.api.routes.lab import _res_resolve_template_slug
-
-    resolved, err = await _res_resolve_template_slug(None, "default-bull")
-
-    assert resolved is None
-    assert err is None
+# Section 1 (_res_resolve_template_slug + end-to-end MCP place_order
+# template_slug coverage) removed entirely (Bracket/Template-GTT
+# removal, T3.6, 2026-11) — `_res_resolve_template_slug`, `PlaceOrderRequest
+# .template_slug`, and `TicketOrderRequest.template_id` were all removed
+# in this sub-sprint. See test_bracket_removal_t3_6.py for the
+# replacement coverage (confirms the parameter/attribute/function no
+# longer exist, and that `McpController.place_order` still forwards
+# mcp_request_id correctly with no template concept at all).
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 1b. End-to-end through McpController.place_order
-# ═══════════════════════════════════════════════════════════════════════════
-
-def _mk_place_request():
-    from backend.api.routes.lab import PlaceOrderRequest
-    return PlaceOrderRequest(
-        confirm_token="tok123",
-        account="ZG0790",
-        tradingsymbol="NIFTY25OCTFUT",
-        side="BUY",
-        quantity=1,
-        mode="paper",
-        template_slug="default-bull",
-    )
-
-
-@pytest.mark.asyncio
-async def test_place_order_with_template_slug_now_ignores_it_and_sets_mcp_request_id():
-    """A real MCP place_order call with template_slug set: slug resolution
-    was removed (Bracket/Template-GTT removal, T3.1, 2026-11), so the
-    slug is now silently dropped — the built TicketOrderRequest carries
-    template_id=None, but still a non-empty mcp_request_id, and is
-    forwarded unmodified to OrdersController.ticket_order."""
-    from backend.api.routes.lab import McpController
-
-    ctrl = McpController(owner=None)
-    data = _mk_place_request()
-    fake_request = MagicMock()
-
-    captured: dict = {}
-
-    class _FakeTicketResponse:
-        order_id = "555"
-        mode = "paper"
-        status = "OPEN"
-        detail = "placed"
-
-    async def _fake_ticket_order_handler(data, request):
-        captured["ticket"] = data
-        return _FakeTicketResponse()
-
-    # McpController.place_order calls OrdersController.ticket_order.fn,
-    # which itself locally imports and delegates to
-    # orders_place.ticket_order_handler — patch THAT (the real delegate),
-    # not the `.fn` property (a read-only Litestar descriptor, can't be
-    # patched directly).
-    with patch(
-        "backend.api.routes.lab._consume_token", return_value=None,
-    ), patch(
-        "backend.api.routes.lab._user_id", return_value=1,
-    ), patch(
-        "backend.api.routes.lab._res_mcp_audit", new=AsyncMock(),
-    ), patch(
-        "backend.api.routes.lab._res_place_telegram_ping",
-    ), patch(
-        "backend.api.routes.orders_place.ticket_order_handler",
-        new=_fake_ticket_order_handler,
-    ):
-        resp = await McpController.place_order.fn(
-            ctrl, data=data, request=fake_request,
-        )
-
-    assert resp.order_id == "555"
-    ticket = captured["ticket"]
-    assert ticket.template_id is None
-    assert ticket.mcp_request_id is not None
-    assert len(ticket.mcp_request_id) == 12  # token_hex(6)
-    assert ticket.source == "mcp"
-
-
-# test_place_order_unknown_template_slug_422_and_no_token_burned removed
-# (Bracket/Template-GTT removal, T3.1, 2026-11) — slug resolution (and
-# its 422-on-unknown-slug error path) no longer exists; an unresolvable
-# slug is now silently ignored rather than rejected (see
-# test_resolve_template_slug_now_silently_ignored above).
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# 2a. Migration — additive, idempotent
+# 1. Migration — additive, idempotent
 # ═══════════════════════════════════════════════════════════════════════════
 
 class _FakeResult:
@@ -219,7 +109,7 @@ def test_init_db_calls_mcp_request_id_migration_inside_begin_block():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 2b. mcp_request_id persists end-to-end on both ticket-persist paths
+# 2. mcp_request_id persists end-to-end on both ticket-persist paths
 # ═══════════════════════════════════════════════════════════════════════════
 
 class _FakeAlgoOrderRow:

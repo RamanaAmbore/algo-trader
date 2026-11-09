@@ -263,44 +263,11 @@ def test_exchange_gate_passes_closed_exchange_blocked():
         assert "NSE" in reason
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# _build_template_overrides tests
-# ─────────────────────────────────────────────────────────────────────────────
-
-def test_build_template_overrides_all_fields():
-    """Template override params → dict."""
-    from backend.api.algo.actions import _build_template_overrides
-
-    params = {
-        "tp_pct_override": 5.0,
-        "sl_pct_override": 2.0,
-        "wing_premium_pct_override": 1.5,
-        "wing_strike_offset_override": 2,
-    }
-    overrides = _build_template_overrides(params)
-    assert overrides["tp_pct"] == 5.0
-    assert overrides["sl_pct"] == 2.0
-    assert overrides["wing_premium_pct"] == 1.5
-    assert overrides["wing_strike_offset"] == 2
-
-
-def test_build_template_overrides_legacy_target_pct():
-    """Legacy target_pct (fractional) → tp_pct (% units)."""
-    from backend.api.algo.actions import _build_template_overrides
-
-    params = {"target_pct": 0.05}  # 5% in fractional form
-    overrides = _build_template_overrides(params)
-    assert overrides["tp_pct"] == 5.0  # converted to % units
-
-
-def test_build_template_overrides_empty():
-    """Empty params → all None."""
-    from backend.api.algo.actions import _build_template_overrides
-
-    overrides = _build_template_overrides({})
-    assert all(v is None for v in overrides.values())
-
-
+# _build_template_overrides tests removed (Bracket/Template-GTT
+# removal, T3.6, 2026-11) — the function itself was deleted; its only
+# caller (`actions_live._al_place_build_overrides`) was removed in the
+# same commit.
+#
 # _maybe_attach_template_from_action tests removed (Bracket/
 # Template-GTT removal, T3.1, 2026-11) — _maybe_attach_template_from_action
 # and _al_apply_template (actions.py) were deleted; both called

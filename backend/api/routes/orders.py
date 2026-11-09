@@ -52,8 +52,6 @@ from backend.api.schemas import (
     SpreadCheckResponse,
     TicketOrderRequest,
     TicketOrderResponse,
-    TicketPreviewRequest,
-    TicketPreviewResponse,
 )
 from backend.brokers.connections import Connections
 from backend.shared.helpers.date_time_utils import timestamp_display
@@ -392,8 +390,6 @@ def _chase_row_to_info(
         target_abs=(float(r.target_abs) if r.target_abs is not None else None),
         parent_order_id=r.parent_order_id,
         basket_tag=r.basket_tag,
-        template_id=r.template_id,
-        attached_gtts_json=r.attached_gtts_json,
         hold_json=getattr(r, "hold_json", None),
         filled_quantity=(int(r.filled_quantity) if r.filled_quantity is not None else None),
         child_order_ids=child_map.get(r.id, []),
@@ -982,30 +978,13 @@ async def _rco_kill_live_mode(row) -> str:
         return f"broker cancel failed: {e}"
 
 
-def _rco_preview_empty_plan(data) -> dict:
-    """Build a stub plan dict when apply_template_to_order returns None."""
-    return {
-        "template_id":   None,
-        "template_name": "(none)",
-        "template_slug": None,
-        "parent_account":    data.account,
-        "parent_symbol":     (data.tradingsymbol or "").upper(),
-        "parent_side":       (data.side or "").upper(),
-        "parent_qty":        data.quantity,
-        "parent_exchange":   data.exchange,
-        "parent_fill_price": float(data.reference_price or 0.0),
-        "gtts": [],
-        "wing": None,
-        "notes": [],
-    }
-
-
-# `_rco_preview_degraded_message`/`_preview_check_broker_gates`/
-# `_preview_template_meta` removed (Bracket/Template-GTT removal, T3.1,
-# 2026-11) — all three served only `ticket_preview`'s now-deleted
-# template-resolve branch (`apply_template_to_order`, deleted along with
-# `backend/api/algo/template_attach.py`). `_rco_preview_empty_plan`
-# above is kept — `ticket_preview` still returns it unconditionally.
+# `_rco_preview_empty_plan`/`_rco_preview_degraded_message`/
+# `_preview_check_broker_gates`/`_preview_template_meta` removed
+# (Bracket/Template-GTT removal, T3.1 + T3.6, 2026-11) — all four served
+# only the `/orders/ticket/preview` route (`ticket_preview`), itself
+# deleted in T3.6 along with `TicketPreviewRequest`/`TicketPreviewResponse`
+# (schemas.py) — confirmed zero remaining callers (frontend's own caller
+# was removed in T3.3/T3.4).
 
 
 _PB_RAW_PAYLOAD_SENSITIVE_KEYS = ("dhanClientId",)
@@ -2228,22 +2207,13 @@ class OrdersController(Controller):
         }, paired_orders=paired_legs)
         return result
 
-    @post("/ticket/preview")
-    async def ticket_preview(self, data: TicketPreviewRequest, request: Request) -> TicketPreviewResponse:
-        """
-        Template engine removed (Bracket/Template-GTT removal, T3.1,
-        2026-11) — this route is STUBBED, not deleted, because the
-        unchanged frontend (`OrderTicket.svelte`) still calls it on
-        every relevant Chain-tab field change until its own removal
-        sub-sprint (T3.3/T3.4) lands; deleting the route outright would
-        turn every one of those calls into a 404. Always returns an
-        empty plan (no gtts, no wing) now — the resolver cluster this
-        used to call (`_preview_check_broker_gates`,
-        `_rco_preview_resolve_qty`, `apply_template_to_order`,
-        `_preview_template_meta`, `_rco_preview_degraded_message`) was
-        deleted along with `backend/api/algo/template_attach.py`.
-        """
-        return TicketPreviewResponse(plan=_rco_preview_empty_plan(data))
+    # `/orders/ticket/preview` (ticket_preview) removed (Bracket/
+    # Template-GTT removal, T3.6, 2026-11) — it was stubbed to an empty
+    # plan since T3.1, kept only because the then-unmodified frontend
+    # (`OrderTicket.svelte`) still called it on every Chain-tab field
+    # change. That caller was removed in T3.3/T3.4 (confirmed zero
+    # remaining callers via grep of `frontend/`), so the stub had no
+    # remaining purpose.
 
     @get("/spread-check")
     async def spread_check(

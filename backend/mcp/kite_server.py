@@ -698,7 +698,6 @@ async def place_order(
     variety: str = "regular",
     chase: bool = True,
     chase_aggressiveness: str = "low",
-    template_slug: str | None = None,
 ) -> dict:
     """Place an order via the operator's broker pipeline. REQUIRES a
     valid confirm_token minted by the operator from the MCP page
@@ -747,14 +746,6 @@ async def place_order(
         chase:                True (default) → engine re-quotes the limit
                               each tick until filled or unfilled.
         chase_aggressiveness: low (default) / med / high.
-        template_slug:        Optional OrderTemplate slug (e.g.
-                              "default-bull") to attach TP/SL/wing exit
-                              protection once this order fills. Resolved
-                              server-side; an unknown slug returns a 422
-                              before the order is placed. NOT bound into
-                              the confirm token's purpose hash — the
-                              operator's token confirms account/symbol/
-                              side/qty/price/mode but not template choice.
 
     Returns:
         {order_id, mode, status, detail} from the underlying ticket
@@ -775,7 +766,6 @@ async def place_order(
         "variety":              variety,
         "chase":                chase,
         "chase_aggressiveness": chase_aggressiveness,
-        "template_slug":        template_slug,
     }
     return await _post("/api/mcp/place-order", body)
 

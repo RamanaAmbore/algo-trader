@@ -158,7 +158,6 @@ def test_init_db_real_call_does_not_raise_with_cli_source_step():
          patch("backend.api.algo.template_registry.migrate_and_retire_agent_fragments", new=AsyncMock()), \
          patch("backend.api.algo.template_registry.REGISTRY.reload", new=AsyncMock()), \
          patch("backend.shared.helpers.settings.seed_settings", new=AsyncMock()), \
-         patch("backend.api.algo.templates_seed.seed_templates", new=AsyncMock()), \
          patch("backend.api.routes.watchlist.seed_global_pinned", new=AsyncMock()), \
          patch("backend.shared.helpers.alert_utils.refresh_alert_recipients", new=AsyncMock()):
 

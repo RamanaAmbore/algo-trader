@@ -114,11 +114,9 @@ class AgentInfo(msgspec.Struct):
     cli_source:            str | None = None
     # `legacy_template_id`/`bracket_config` field exposure removed
     # (Bracket/Template-GTT removal, T3.1, 2026-11) — `AgentInfo` no
-    # longer serialises these two columns. `Agent.legacy_template_id`/
-    # `Agent.bracket_config` stay on the ORM model (schema drop is a
-    # later sub-sprint); the frontend adapter that reconstructs an
-    # `OrderTemplateOut`-shaped row from them is frontend cleanup, out
-    # of scope here.
+    # longer serialises these two columns. Both columns themselves were
+    # later dropped from the ORM model and the DB schema entirely
+    # (T3.6, the final sub-sprint).
     # RamboQL Part 2 (2026-10) — server-evaluated GIVEN bindings, a list
     # of `{"name","expr"}` dicts for every OPERATOR-BASED GIVEN the CLI
     # compiler emitted (pure-alias bindings never reach here — see

@@ -17,7 +17,10 @@ Covers:
   1. `_migrate_agents_given` issues the right SQL (ADD COLUMN IF NOT
      EXISTS, nullable JSONB, lock_timeout guard, no CONCURRENTLY).
   2. The step is wired into `init_db()` inside the `engine.begin()`
-     transaction, after `_migrate_agents_bracket_columns`.
+     transaction, after `_migrate_agents_group_name` (its immediate
+     predecessor in the call sequence — `_migrate_agents_bracket_columns`,
+     the original anchor here, was removed along with `order_templates`
+     itself; Bracket/Template-GTT removal, T3.6, 2026-11).
   3. A real (mocked-I/O) call to `init_db()` does not raise with the
      new step wired in, and `init_db()` genuinely calls
      `migrate_order_action_type_rename()` exactly once (closes the
@@ -123,10 +126,13 @@ def test_migrate_agents_given_statement_shape():
 
 
 # ═══════════════════════════════════════════════════════════════════════
-#  2 — wired inside the engine.begin() block, after bracket_columns
+#  2 — wired inside the engine.begin() block, after group_name
 # ═══════════════════════════════════════════════════════════════════════
 
-def test_init_db_calls_given_migration_inside_begin_block_after_bracket_columns():
+def test_init_db_calls_given_migration_inside_begin_block_after_group_name():
+    """Anchor updated to `_migrate_agents_group_name` (Bracket/
+    Template-GTT removal, T3.6, 2026-11) — the original anchor,
+    `_migrate_agents_bracket_columns`, no longer exists."""
     src = inspect.getsource(dbmod.init_db)
     lines = src.splitlines()
     begin_idx = next(
@@ -134,9 +140,9 @@ def test_init_db_calls_given_migration_inside_begin_block_after_bracket_columns(
     )
     begin_indent = len(lines[begin_idx]) - len(lines[begin_idx].lstrip())
 
-    bracket_idx = next(
+    group_name_idx = next(
         i for i, l in enumerate(lines)
-        if "_migrate_agents_bracket_columns(conn)" in l and "async def" not in l
+        if "_migrate_agents_group_name(conn)" in l and "async def" not in l
     )
     given_idx = next(
         i for i, l in enumerate(lines)
@@ -148,9 +154,9 @@ def test_init_db_calls_given_migration_inside_begin_block_after_bracket_columns(
         "_migrate_agents_given(conn) must be called INSIDE the "
         "engine.begin() transactional block."
     )
-    assert given_idx > bracket_idx, (
+    assert given_idx > group_name_idx, (
         "_migrate_agents_given(conn) must run after "
-        "_migrate_agents_bracket_columns(conn)"
+        "_migrate_agents_group_name(conn)"
     )
 
 
@@ -181,7 +187,6 @@ def test_init_db_real_call_does_not_raise_with_given_step_and_calls_order_migrat
          patch("backend.api.algo.template_registry.migrate_and_retire_agent_fragments", new=AsyncMock()), \
          patch("backend.api.algo.template_registry.REGISTRY.reload", new=AsyncMock()), \
          patch("backend.shared.helpers.settings.seed_settings", new=AsyncMock()), \
-         patch("backend.api.algo.templates_seed.seed_templates", new=AsyncMock()), \
          patch("backend.api.routes.watchlist.seed_global_pinned", new=AsyncMock()), \
          patch("backend.shared.helpers.alert_utils.refresh_alert_recipients", new=AsyncMock()):
 

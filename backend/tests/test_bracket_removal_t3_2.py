@@ -310,12 +310,19 @@ class TestSchemasCleanedUp:
         for name in ("GttRow", "GttListResponse", "GttCancelResponse"):
             assert hasattr(s, name), f"schemas.{name} must NOT be removed"
 
+    # `TicketPreviewRequest` dropped from this parametrize list (Bracket/
+    # Template-GTT removal, T3.6, 2026-11) — the struct itself no longer
+    # exists, along with the `/orders/ticket/preview` route it served;
+    # see test_bracket_removal_t3_6.py for its own-absence coverage.
+    #
+    # `template_id` moved from "DELIBERATELY KEPT" (T3.2) to "removed"
+    # (T3.6) — the frontend/MCP sub-sprints that were the stated reason
+    # to keep it (T3.3/T3.4/T3.6's own lab.py edit) have all landed.
     @pytest.mark.parametrize("struct_name,ctor_kwargs", [
         ("TicketOrderRequest", dict(mode="paper", side="BUY", tradingsymbol="X", quantity=1)),
-        ("TicketPreviewRequest", dict(mode="paper", side="BUY", tradingsymbol="X", quantity=1)),
         ("BasketLeg", dict(tradingsymbol="X", exchange="NFO", transaction_type="BUY", quantity=1)),
     ])
-    def test_override_fields_removed_but_template_id_kept(self, struct_name, ctor_kwargs):
+    def test_override_and_template_id_fields_removed(self, struct_name, ctor_kwargs):
         import backend.api.schemas as s
 
         cls = getattr(s, struct_name)
@@ -325,13 +332,10 @@ class TestSchemasCleanedUp:
             "wing_strike_offset_override", "sl_trail_pct_override",
             "tp_scales_json_override", "hold_template_exit",
             "tp_order_type_override", "wing_max_spread_pct_override",
+            "template_id",
         }
         assert fields.isdisjoint(removed), (
-            f"{struct_name} still has override field(s): {fields & removed}"
-        )
-        assert "template_id" in fields, (
-            f"{struct_name}.template_id must be KEPT — the frontend/MCP "
-            "may still send it until a later sub-sprint"
+            f"{struct_name} still has removed field(s): {fields & removed}"
         )
         # Must still construct cleanly with no override kwargs.
         cls(**ctor_kwargs)

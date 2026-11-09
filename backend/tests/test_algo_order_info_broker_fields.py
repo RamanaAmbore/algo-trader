@@ -27,8 +27,7 @@ def _make_row(**overrides):
         current_limit=None, fill_price=None, attempts=0,
         status="OPEN", engine="live", mode="live", detail=None,
         created_at=None, target_pct=None, target_abs=None,
-        parent_order_id=None, basket_tag=None, template_id=None,
-        attached_gtts_json=None, filled_quantity=None,
+        parent_order_id=None, basket_tag=None, filled_quantity=None,
         interval_seconds=None, last_attempt_at=None, next_attempt_at=None,
         broker_order_id=None, source=None, agent_id=None,
     )

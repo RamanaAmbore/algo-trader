@@ -11,10 +11,12 @@ Covers:
   4. A no-op request (value already matches) writes nothing and
      audits nothing.
   5. Response reflects the post-write effective values.
-  6. expiry_close_hold_enabled / template_exit_hold_enabled surface the
-     existing `hold.expiry_close_released` / `hold.template_exit_released`
-     settings — INVERTED (storage `released=True` means operator-facing
-     `hold_enabled=False`) — on both GET and PATCH, in both directions.
+  6. expiry_close_hold_enabled surfaces the existing
+     `hold.expiry_close_released` setting — INVERTED (storage
+     `released=True` means operator-facing `hold_enabled=False`) — on
+     both GET and PATCH, in both directions. (`template_exit_hold_enabled`
+     was the sibling switch here; removed Bracket/Template-GTT removal,
+     T3.6, 2026-11.)
   7. expiry_close_lead_minutes_mcx / _nfo surface `hold.lead_minutes_mcx`
      / `hold.lead_minutes_nfo`; negative values are rejected; a PATCH to
      one hold field does not touch the other existing switches; the
@@ -29,9 +31,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from backend.api.routes.admin import AdminController, GlobalSwitchesRequest
-from backend.api.algo.order_hold_gate import (
-    EXPIRY_CLOSE_RELEASED_KEY, TEMPLATE_EXIT_RELEASED_KEY,
-)
+from backend.api.algo.order_hold_gate import EXPIRY_CLOSE_RELEASED_KEY
 
 
 def _handler_fn(handler):
@@ -206,21 +206,19 @@ async def test_get_global_switches_reads_current_values():
 
 
 # ---------------------------------------------------------------------------
-# expiry_close_hold_enabled / template_exit_hold_enabled — inversion tests
+# expiry_close_hold_enabled — inversion tests
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_get_global_switches_hold_fields_inverted_correctly():
     """storage released=True -> response hold_enabled=False (and the
-    reverse), for BOTH expiry_close and template_exit — the one place a
-    naming mismatch could silently flip the meaning."""
+    reverse) for expiry_close — the one place a naming mismatch could
+    silently flip the meaning."""
     controller = AdminController.__new__(AdminController)
 
     def _get_bool(key, default=False):
         if key == EXPIRY_CLOSE_RELEASED_KEY:
             return True    # released -> NOT held
-        if key == TEMPLATE_EXIT_RELEASED_KEY:
-            return False   # not released -> held
         return default
 
     with patch("backend.shared.helpers.settings.get_bool", side_effect=_get_bool), \
@@ -229,7 +227,6 @@ async def test_get_global_switches_hold_fields_inverted_correctly():
         result = await _handler_fn(AdminController.get_global_switches)(controller)
 
     assert result.expiry_close_hold_enabled is False
-    assert result.template_exit_hold_enabled is True
     assert result.expiry_close_lead_minutes_mcx == 30
     assert result.expiry_close_lead_minutes_nfo == 15
 
@@ -325,35 +322,9 @@ async def test_patch_expiry_close_hold_enabled_noop_when_already_matching():
     _rc.assert_not_awaited()
 
 
-@pytest.mark.asyncio
-async def test_patch_template_exit_hold_enabled_true_writes_released_false():
-    """Same inversion contract as expiry_close, applied to the sibling
-    template-exit hold switch."""
-    session_factory, session = _mock_session({})
-    controller = AdminController.__new__(AdminController)
-    data = GlobalSwitchesRequest(template_exit_hold_enabled=True)
-    request = _fake_request()
-
-    def _get_bool(key, default=False):
-        if key == TEMPLATE_EXIT_RELEASED_KEY:
-            return True
-        return default
-
-    with patch("backend.api.routes.admin.async_session", session_factory), \
-         patch("backend.shared.helpers.settings.get_bool", side_effect=_get_bool), \
-         patch("backend.shared.helpers.settings.get_string", return_value="paper"), \
-         patch("backend.shared.helpers.settings.get_int", side_effect=lambda k, d=0: d), \
-         patch("backend.shared.helpers.settings.upsert_setting", new=AsyncMock()) as _up, \
-         patch("backend.shared.helpers.settings.reload_cache", new=AsyncMock()):
-        await _handler_fn(AdminController.update_global_switches)(controller, data, request)
-
-    assert session.add.call_count == 1
-    audit_row = session.add.call_args_list[0][0][0]
-    assert audit_row.target_id == TEMPLATE_EXIT_RELEASED_KEY
-    assert audit_row.summary == f"{TEMPLATE_EXIT_RELEASED_KEY}: 'true' -> 'false'"
-    args, kwargs = _up.call_args
-    assert args[1] == "false"
-    assert kwargs.get("category") == "hold"
+# `test_patch_template_exit_hold_enabled_true_writes_released_false`
+# removed (Bracket/Template-GTT removal, T3.6, 2026-11) —
+# `template_exit_hold_enabled` no longer exists on `GlobalSwitchesRequest`.
 
 
 # ---------------------------------------------------------------------------

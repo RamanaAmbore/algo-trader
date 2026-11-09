@@ -504,12 +504,9 @@ class BasketLeg(msgspec.Struct):
     price: Optional[float] = None
     trigger_price: Optional[float] = None
     variety: str = "regular"
-    # `template_id` kept (Bracket/Template-GTT removal, T3.2, 2026-11) —
-    # unlike the override fields below, it is still accepted and silently
-    # dropped before persist (same policy as TicketOrderRequest.template_id
-    # — see that field's own comment), since the still-unmodified frontend
-    # may still send it until its own removal sub-sprint lands.
-    template_id: Optional[int] = None
+    # `template_id` removed (Bracket/Template-GTT removal, T3.6, 2026-11)
+    # — the frontend stopped sending it in T3.3, and `orders_basket.py`
+    # never read it even while it was still accepted.
     # Per-leg chase + aggressiveness used by the basket-placement route.
     chase: bool = True
     chase_aggressiveness: str = "low"
@@ -659,12 +656,12 @@ class TicketOrderRequest(msgspec.Struct):
     # When present and no template is supplied, the handler auto-maps
     # it to tp_pct_override so the same downstream attach pipeline fires.
     target_pct: Optional[float] = None
-    # `template_id` kept (Bracket/Template-GTT removal, T3.2, 2026-11) —
-    # the still-unmodified frontend may still send it on every ticket
-    # submission until its own removal sub-sprint lands; it is accepted
-    # and silently dropped before persist (see
-    # `orders_place.py:_ticket_persist_live_algo_order`'s own comment),
-    # never acted on. `tp_pct_override`/`sl_pct_override`/
+    # `template_id` removed (Bracket/Template-GTT removal, T3.6, 2026-11)
+    # — the still-unmodified-at-the-time frontend sent it on every ticket
+    # submission through T3.2, but it was already silently dropped before
+    # persist and never acted on (see `orders_place.py:
+    # _ticket_persist_live_algo_order`'s own comment); the frontend
+    # stopped sending it in T3.3. `tp_pct_override`/`sl_pct_override`/
     # `wing_premium_pct_override`/`wing_strike_offset_override`/
     # `tp_order_type_override`/`wing_max_spread_pct_override`/
     # `sl_trail_pct_override`/`tp_scales_json_override` removed — the
@@ -672,7 +669,6 @@ class TicketOrderRequest(msgspec.Struct):
     # template_attach.py`) was deleted in the prior sub-sprint (T3.1), and
     # their one remaining reader (`orders_helpers._ticket_overrides_dict`/
     # `_build_overrides_json`) was removed in this one.
-    template_id: Optional[int] = None
     # Lot-size hint from OrderTicket UI. Frontend already resolved
     # _lotSize from the instruments cache; shipping it here lets the
     # backend cross-check against its own cache lookup and use the
@@ -763,43 +759,12 @@ class TicketOrderResponse(msgspec.Struct):
     template_attachment: Optional[dict] = None
 
 
-class TicketPreviewRequest(msgspec.Struct):
-    """Same shape as TicketOrderRequest — what would happen if this
-    were submitted. No side effects. Returns the resolved TemplatePlan
-    so the OrderTicket can show "Will place TP @ ₹X · SL @ ₹Y · Wing
-    -500CE" inline before the operator hits Submit.
-
-    `quantity` follows the same v2 convention as TicketOrderRequest:
-    LOTS for F&O exchanges (NFO/MCX/CDS/BFO/BCD/NCO), raw shares for
-    equity. Backend converts to contracts internally before feeding
-    the template resolver."""
-    mode: str
-    side: str
-    tradingsymbol: str
-    quantity: int           # LOTS for F&O; raw shares for equity
-    exchange: str = "NFO"
-    product: str = "NRML"
-    account: str = ""
-    # The preview needs a reference price — UI passes the current LTP
-    # or the operator's typed limit. Defaults to 0 (preview returns
-    # only the structural plan; numeric trigger values come back as 0).
-    reference_price: float = 0.0
-    # `template_id` kept — see TicketOrderRequest.template_id's own
-    # comment (Bracket/Template-GTT removal, T3.2, 2026-11). Every
-    # override field that used to sit here was removed in the same
-    # round; `ticket_preview` is already stubbed to return an empty
-    # plan regardless (`orders.py:_rco_preview_empty_plan`, reads none
-    # of them).
-    template_id: Optional[int] = None
-    # Backward compat — legacy target_pct (fractional) also accepted
-    # here so OrderTicket can preview without separating the two paths.
-    target_pct: Optional[float] = None
-
-
-class TicketPreviewResponse(msgspec.Struct):
-    plan: dict                          # TemplatePlan.to_dict()
-    wing_feasible: Optional[bool] = None  # None = no wing in template
-    gtt_trigger_errors: list = []         # non-empty → block submit
+# `TicketPreviewRequest`/`TicketPreviewResponse` removed (Bracket/
+# Template-GTT removal, T3.6, 2026-11) along with the `/orders/ticket/
+# preview` route itself (`orders.py:ticket_preview`) — the template
+# resolver they fed was stubbed to an empty plan since T3.1, and the
+# frontend's own caller was removed in T3.3/T3.4 (confirmed zero
+# remaining callers via grep). Nothing else constructed either struct.
 
 
 class SpreadCheckResponse(msgspec.Struct):

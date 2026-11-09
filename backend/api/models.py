@@ -803,16 +803,11 @@ class AlgoOrder(Base):
     parent_order_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("algo_orders.id", ondelete="SET NULL"), nullable=True, index=True,
     )
-    # Template attachment — captured at submit time so the postback
-    # handler can fire apply_plan_live(template, actual_fill_price)
-    # when the parent flips to FILLED. Without this column the LIVE
-    # path computed a TemplatePlan at submit-time but never sent it
-    # to the broker, so the operator had no GTTs / wings attached even
-    # though the UI showed a template was picked.
-    template_id: Mapped[Optional[int]] = mapped_column(
-        Integer, ForeignKey("order_templates.id", ondelete="SET NULL"),
-        nullable=True, index=True,
-    )
+    # `template_id` removed (Bracket/Template-GTT removal, T3.6,
+    # 2026-11) along with the `order_templates` table it pointed at —
+    # it used to be captured at submit time so the postback handler
+    # could fire `apply_plan_live(template, actual_fill_price)` when
+    # the parent flips to FILLED; that pipeline was deleted in T3.1.
     # Parent product code — needed at template-attach time so exit
     # GTTs inherit the right product. NRML for F&O / commodity carry,
     # MIS for intraday equity / F&O, CNC for cash-equity delivery.
@@ -823,12 +818,10 @@ class AlgoOrder(Base):
     product: Mapped[str] = mapped_column(
         String(8), nullable=False, default="NRML", server_default="NRML",
     )
-    # JSON list of {broker, gtt_id, label} dicts returned by
-    # apply_plan_live after the parent fills. Used to cancel the
-    # attached GTTs when the parent is manually closed and for
-    # /admin/templates audit reporting. NULL means "no attach yet"
-    # (parent not yet filled, or no template was picked).
-    attached_gtts_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # `attached_gtts_json` removed (Bracket/Template-GTT removal, T3.6,
+    # 2026-11) — it used to carry the JSON list of {broker, gtt_id,
+    # label} dicts returned by `apply_plan_live` after the parent
+    # filled; that pipeline was deleted in T3.1.
     # 2026-10-23 chase robustness — JSON list[str] of every broker_order_id
     # this row has ever superseded via cancel-and-replace, oldest-first.
     # Written directly (chase.py:_ch_append_superseded_id) at cancel-confirm
@@ -841,20 +834,19 @@ class AlgoOrder(Base):
     # OLD id is already flagged here. NULL/empty for a never-chased or
     # single-attempt row.
     superseded_broker_order_ids_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # `template_hold_override` removed (Bracket/Template-GTT removal,
+    # T3.6, 2026-11) — it used to be a per-ticket override for the
+    # template-exit hold gate (True held, False released, None = global
+    # switch); that gate (`HoldCategory.TEMPLATE_EXIT`) was removed in
+    # T3.1.
     # Hold state for automated orders (see order_hold.py): JSON with category,
     # reason, override, price policy, and held_at. NULL for orders never held.
-    # Per-ticket template exit hold: True held, False released, None = global switch.
-    template_hold_override: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     hold_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    # Per-order template parameter overrides — JSON dict with keys
-    # tp_pct / sl_pct / wing_premium_pct / wing_strike_offset. Set
-    # by the basket / ticket route when the operator tweaks the
-    # shell-level "On fill" inputs at submit. The postback handler
-    # reads it back and passes it as `overrides` to
-    # apply_template_to_order so the actual GTTs reflect the
-    # operator's per-submit tweaks even though the template row
-    # itself stays untouched. NULL when no overrides were supplied.
-    template_overrides_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # `template_overrides_json` removed (Bracket/Template-GTT removal,
+    # T3.6, 2026-11) — it used to carry per-order template parameter
+    # overrides (tp_pct / sl_pct / wing_premium_pct / wing_strike_offset)
+    # read back by the postback handler and passed to
+    # `apply_template_to_order`; that pipeline was deleted in T3.1.
     # basket_tag groups the legs of a single basket submission.  Carried
     # through to kite.place_order(tag=…) so the broker also groups them.
     basket_tag: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
@@ -1262,36 +1254,20 @@ class Agent(Base):
     )
 
     # ── Sprint E (Agent/Bracket/Template unification phase) — Brackets
-    #    become `Agent(kind='bracket')` rows ───────────────────────────
+    #    became `Agent(kind='bracket')` rows ──────────────────────────
     #
-    # `AlgoOrder.template_id` is a REAL Postgres FK to `order_templates.id`
-    # (ondelete="SET NULL") written from at least three live-order-fill
-    # call sites — it stays the CANONICAL value stored there; renumbering
-    # history or re-pointing that FK at `Agent.id` risks a numeric
-    # `Agent.id`/`OrderTemplate.id` collision silently arming the WRONG
-    # bracket on a live fill. `legacy_template_id` is the back-reference
-    # in the OPPOSITE direction: given a `template_id` read off an
-    # `AlgoOrder` row, look up the `Agent(kind='bracket')` row whose
-    # `legacy_template_id` equals it. UNIQUE — at most one bracket Agent
-    # row may mirror a given `OrderTemplate` row. NULL for every
-    # non-bracket Agent row.
-    legacy_template_id: Mapped[Optional[int]] = mapped_column(
-        Integer, ForeignKey("order_templates.id", ondelete="SET NULL"),
-        nullable=True, unique=True, index=True,
-    )
-    # `bracket_config` — the TP/SL/Wing exit-rule payload for a
-    # kind='bracket' row, synchronously mirrored (same DB transaction,
-    # never best-effort) from the owning `OrderTemplate` row by
-    # `backend.api.algo.bracket_registry` on every create/update/seed.
-    # Keys: tp_pct, sl_pct, wing_premium_pct, wing_strike_offset,
-    # wing_max_spread_pct, tp_order_type, tp_scales_json, sl_trail_pct,
-    # applies_to, is_default. NULL for every non-bracket Agent row.
-    # `order_templates` stays the real FK anchor / id-stability table
-    # (kept in place, not dropped, per Sprint E's brief); this Agent row
-    # is what the live order-fill path (`template_attach.
-    # load_template_for_slug_or_id`) actually reads, so the two writes
-    # are kept atomic to avoid a stale-mirror arming the wrong exits.
-    bracket_config: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    # `legacy_template_id` (a UNIQUE FK to `order_templates.id`) and
+    # `bracket_config` (the mirrored TP/SL/Wing JSONB payload) are both
+    # removed (Bracket/Template-GTT removal, T3.6, 2026-11) along with
+    # the `order_templates` table itself — the stale note that used to
+    # live here ("order_templates stays the real FK anchor... kept in
+    # place, not dropped, per Sprint E's brief") no longer applies now
+    # that Bracket is fully gone. Any pre-existing `kind='bracket'`
+    # Agent row is left in place by this removal (not deleted), but
+    # carries neither column anymore and is no longer kept in sync with
+    # anything, since `backend.api.algo.bracket_registry` (the mirror
+    # writer) and `template_attach.load_template_for_slug_or_id` (the
+    # live order-fill reader) were both deleted in T3.1.
 
     # ── Alert hierarchy / noise reduction (Sprint 1, May 2026) ─────────
     #
@@ -1651,131 +1627,16 @@ class Setting(Base):
 
 
 # ---------------------------------------------------------------------------
-# Order templates — exit-rule presets attached at OrderTicket submit time.
-#
-# An OrderTemplate carries the TP / SL / Wing config the operator wants
-# applied to every order using it. At submit:
-#   - the entry order goes to the broker
-#   - the template's TP / SL translate to a broker-native GTT
-#   - the template's Wing (SELL options only) becomes a paired basket leg
-#
-# The model is intentionally flat (one row per template) because templates
-# are a closed vocabulary — TP%, SL%, Wing%. Future fields (trailing-stop
-# rules, time-based exits) join as nullable columns.
-#
-# Industry analogue: NinjaTrader ATM Strategy template. Operator picks one
-# from a dropdown at order entry; saved templates are reusable + bulk-editable.
+# `OrderTemplate` (the `order_templates` table) removed in full (Bracket/
+# Template-GTT removal, T3.6, 2026-11, the final sub-sprint of a 6-part
+# removal — see T3.1-T3.5 for everything that stopped reading/writing it
+# first). It used to carry the TP/SL/Wing exit-rule presets the operator
+# picked at OrderTicket submit time; that whole template-attach pipeline
+# (`backend/api/algo/template_attach.py`) was deleted in T3.1. The table
+# and the 6 `AlgoOrder`/`Agent` columns that pointed at or mirrored it are
+# dropped via the idempotent `_migrate_drop_order_templates_and_bracket_
+# columns` migration (`database.py`).
 # ---------------------------------------------------------------------------
-
-class OrderTemplate(Base):
-    __tablename__ = "order_templates"
-
-    id: Mapped[int]            = mapped_column(primary_key=True, autoincrement=True)
-    # Stable identifier — system templates use a short slug ("default-bull").
-    # Operator templates leave slug NULL and use `name` as the visible label.
-    slug: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, unique=True)
-    name: Mapped[str]          = mapped_column(String(128), nullable=False)
-    description: Mapped[str]   = mapped_column(Text, nullable=False, default="")
-    # 'buy_any'      — applies to BUY orders (any instrument)
-    # 'sell_option'  — applies to SELL option orders (CE / PE)
-    # 'both'         — applies to any order side
-    applies_to: Mapped[str]    = mapped_column(String(16), nullable=False, default="both")
-    # TP/SL/Wing — nullable so a "no TP, just SL" template is expressible.
-    # Values are signed percentages: +30.0 means tp at fill*1.30, -20.0
-    # means sl at fill*0.80.
-    tp_pct: Mapped[Optional[float]]   = mapped_column(Numeric(8, 4), nullable=True)
-    sl_pct: Mapped[Optional[float]]   = mapped_column(Numeric(8, 4), nullable=True)
-    # Two alternative ways to size a protective wing: by % of the SELL
-    # premium (e.g. 10.0 → buy a wing whose premium is ~10% of the short
-    # leg's premium) OR by strike offset (e.g. 500 → buy a wing at strike
-    # +500 for CE, -500 for PE). One of the two; never both.
-    wing_premium_pct: Mapped[Optional[float]]   = mapped_column(Numeric(8, 4), nullable=True)
-    wing_strike_offset: Mapped[Optional[int]]   = mapped_column(Integer, nullable=True)
-    # Pre-submission spread% threshold for the Chain-tab gate
-    # (backend.api.algo.spread_check). NULL = fall back to the global
-    # admin setting `templates.wing_max_spread_pct` (default 0.5 —
-    # the same number `_pick_wing_by_premium`'s own liquidity filter
-    # reads). Distinct from that filter: this value is never used to
-    # pick a different strike, only to warn before submit when the
-    # ALREADY-resolved parent or wing leg's live spread is too wide.
-    wing_max_spread_pct: Mapped[Optional[float]] = mapped_column(Numeric(8, 4), nullable=True)
-    # Order type fired by the TP GTT when its trigger crosses. Default
-    # 'LIMIT' matches the historical behaviour. 'MARKET' lets operators
-    # express "take what the book gives me at +X% — don't risk a missed
-    # fill". NinjaTrader / IBKR Bracket Order both let the operator
-    # pick this; ours mirrored that. SL legs stay LIMIT — a MARKET SL
-    # is functionally a stop-market which we surface via a separate
-    # field if needed in Phase 3.
-    tp_order_type: Mapped[str] = mapped_column(
-        String(8), nullable=False, default="LIMIT",
-        server_default="LIMIT",
-    )
-    # Scale-out targets (Phase 3A). JSON list of {at_pct, close_pct}
-    # entries — e.g. [{"at_pct": 30, "close_pct": 50},
-    #                  {"at_pct": 60, "close_pct": 50}] means "close 50 %
-    # of the position at +30 % gain, the remaining 50 % at +60 %".
-    # When set, supersedes tp_pct (operator builds the full TP ladder
-    # here). N separate single GTTs are placed at submit time, one
-    # per scale, each for its fraction of parent_qty. Sum of close_pct
-    # must be <= 100 (validated at PATCH/POST); the remainder stays
-    # open with no TP. Industry analogue: NinjaTrader ATM Strategy
-    # multiple targets, IBKR Bracket Order auto-scale.
-    tp_scales_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    # Trailing stop distance (Phase 3B). When set, the background
-    # `_task_trail_stop` poller watches every attached SL GTT and
-    # ratchets its trigger toward the highest LTP seen (long parent)
-    # or lowest LTP seen (short parent). New trigger = high × (1 −
-    # sl_trail_pct/100) for longs, low × (1 + sl_trail_pct/100) for
-    # shorts. Trigger only moves favorably — never against the
-    # operator. Locks in profits as the underlying runs without
-    # forcing the operator to manually drag the stop. Industry
-    # standard "trailing stop" — NinjaTrader Trail, IBKR Trailing
-    # Stop, Kite GTT modify cadence. Independent of sl_pct: if both
-    # are set, sl_pct is the floor (trail never pulls trigger lower
-    # than the initial sl_pct level on a long).
-    sl_trail_pct: Mapped[Optional[float]] = mapped_column(
-        Numeric(8, 4), nullable=True,
-    )
-    # Marks the operator's default pick — surfaced in OrderTicket as the
-    # pre-selected option. Only one default per applies_to scope; the
-    # seeder enforces a single is_default=True row for each scope.
-    is_default: Mapped[bool]  = mapped_column(Boolean, nullable=False, default=False)
-    # System templates ship from code on every boot. Operators can edit
-    # values (tp_pct / sl_pct / wing_*) but cannot delete them — same
-    # contract as AgentFragment system rows.
-    is_system: Mapped[bool]   = mapped_column(Boolean, nullable=False, default=False)
-    is_active: Mapped[bool]   = mapped_column(Boolean, nullable=False, default=True)
-    # NULL for system templates (no owner). Operator-created templates
-    # carry their owner so /api/admin/templates filters per-user when
-    # the route layer cares.
-    owner_user_id: Mapped[Optional[int]] = mapped_column(
-        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True,
-    )
-
-    # ── Sprint 7 (CLI-grammar effort, `#group=...` / `#tag=...`) ────────
-    # group_name — organisational grouping, same semantics + reserved-
-    # keyword rationale as Agent.group_name above. NULL = ungrouped.
-    # Unused by any route as of this sprint — Sprint 8 wires up
-    # OrderTemplateController's request/response schemas.
-    group_name: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    # tags — mirrors Agent.tags exactly: JSONB list, NOT NULL, default
-    # empty list. Free-form labels for filtering/organising templates.
-    tags: Mapped[list] = mapped_column(JSONB, nullable=False, default=list,
-                                        server_default="[]")
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False,
-        default=lambda: datetime.now(timezone.utc),
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False,
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
-    )
-
-    __table_args__ = (
-        UniqueConstraint('owner_user_id', 'name', name='uq_order_template_per_owner'),
-    )
 
 
 # ---------------------------------------------------------------------------

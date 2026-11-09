@@ -163,12 +163,12 @@ async def test_action_place_order_ltp_fetched_via_helper():
 
     # chase_order called — LTP fetch succeeded and preflight didn't block.
     mock_chase.assert_called_once()
-    # product/template_id follow-up write was attempted for the intent row.
-    # (2026-10 fix: _place_order_set_product_template now also takes
-    # template_slug= / overrides= kwargs — this params dict has neither.)
-    mock_set_pt.assert_called_once_with(
-        42, "NRML", None, template_slug=None, overrides=None,
-    )
+    # product follow-up write was attempted for the intent row.
+    # (Bracket/Template-GTT removal, T3.6, 2026-11:
+    # _place_order_set_product_template's signature is now (row_id,
+    # product) only — the template_id/template_slug/overrides kwargs it
+    # used to accept and silently ignore are gone.)
+    mock_set_pt.assert_called_once_with(42, "NRML")
 
 
 # ---------------------------------------------------------------------------

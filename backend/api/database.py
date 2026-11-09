@@ -264,11 +264,11 @@ async def _migrate_audit_and_request(conn) -> None:
         "CREATE INDEX IF NOT EXISTS ix_algo_orders_request_id "
         "ON algo_orders (request_id)"
     ))
-    await conn.execute(text(
-        "CREATE INDEX IF NOT EXISTS ix_algo_orders_trail_stop "
-        "ON algo_orders (mode, status) "
-        "WHERE attached_gtts_json IS NOT NULL"
-    ))
+    # `ix_algo_orders_trail_stop` removed (Bracket/Template-GTT removal,
+    # T3.6, 2026-11) — a partial index on `algo_orders (mode, status)
+    # WHERE attached_gtts_json IS NOT NULL`. It served `_task_trail_stop`,
+    # removed in T3.2; `attached_gtts_json` itself is dropped below, so
+    # creating an index predicated on it would raise on a future boot.
     await conn.execute(text(
         "CREATE INDEX IF NOT EXISTS ix_news_headlines_published_at "
         "ON news_headlines (published_at DESC)"
@@ -381,7 +381,17 @@ async def _migrate_slice_l(conn) -> None:
 
 
 async def _migrate_slice_m(conn) -> None:
-    """Slice M — perf indexes + basket-order columns (Jun 2026)."""
+    """Slice M — perf indexes + basket-order columns (Jun 2026).
+
+    Four statements that used to live in this tuple (the
+    `algo_orders.template_id` ADD COLUMN + its FK + index, and
+    `algo_orders.attached_gtts_json`/`template_overrides_json` ADD
+    COLUMN) and three that targeted `order_templates`
+    (`tp_order_type`/`tp_scales_json`/`sl_trail_pct`) were removed
+    (Bracket/Template-GTT removal, T3.6, 2026-11) — the columns/table
+    they added are dropped by
+    `_migrate_drop_order_templates_and_bracket_columns` below. Every
+    other statement in this function is unrelated and unchanged."""
     from sqlalchemy import text
     await conn.execute(text(
         "CREATE INDEX IF NOT EXISTS ix_algo_orders_basket_tag "
@@ -406,20 +416,9 @@ async def _migrate_slice_m(conn) -> None:
         "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS basket_tag VARCHAR(64)",
         "CREATE INDEX IF NOT EXISTS ix_algo_orders_parent_order_id "
         "ON algo_orders (parent_order_id)",
-        "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS template_id INTEGER "
-        "REFERENCES order_templates(id) ON DELETE SET NULL",
-        "CREATE INDEX IF NOT EXISTS ix_algo_orders_template_id "
-        "ON algo_orders (template_id)",
-        "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS attached_gtts_json TEXT",
-        "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS template_overrides_json TEXT",
         "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS current_limit DOUBLE PRECISION",
         "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS product "
         "VARCHAR(8) NOT NULL DEFAULT 'NRML'",
-        "ALTER TABLE order_templates ADD COLUMN IF NOT EXISTS tp_order_type "
-        "VARCHAR(8) NOT NULL DEFAULT 'LIMIT'",
-        "ALTER TABLE order_templates ADD COLUMN IF NOT EXISTS tp_scales_json TEXT",
-        "ALTER TABLE order_templates ADD COLUMN IF NOT EXISTS sl_trail_pct "
-        "NUMERIC(8, 4)",
         "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS filled_quantity "
         "INTEGER NOT NULL DEFAULT 0",
         "CREATE INDEX IF NOT EXISTS ix_algo_orders_mode_status "
@@ -431,7 +430,12 @@ async def _migrate_slice_m(conn) -> None:
 
 
 async def _migrate_grammar_source_and_schema_version(conn) -> None:
-    """Idempotent: token source location and the agent rule-format version."""
+    """Idempotent: token source location and the agent rule-format version.
+
+    The final statement (`algo_orders.template_hold_override` ADD
+    COLUMN) was removed (Bracket/Template-GTT removal, T3.6, 2026-11) —
+    that column is dropped by
+    `_migrate_drop_order_templates_and_bracket_columns` below."""
     from sqlalchemy import text
     await conn.execute(text("ALTER TABLE grammar_tokens ADD COLUMN IF NOT EXISTS source JSONB"))
     await conn.execute(text(
@@ -442,9 +446,6 @@ async def _migrate_grammar_source_and_schema_version(conn) -> None:
     ))
     await conn.execute(text(
         "ALTER TABLE agents ADD COLUMN IF NOT EXISTS seed_version INTEGER NOT NULL DEFAULT 0"
-    ))
-    await conn.execute(text(
-        "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS template_hold_override BOOLEAN"
     ))
 
 
@@ -874,6 +875,90 @@ async def _migrate_drop_position_pairs_table(conn) -> None:
     await conn.execute(_text("DROP TABLE IF EXISTS position_pairs"))
 
 
+async def _migrate_drop_order_templates_and_bracket_columns(conn) -> None:
+    """One-time drop of the retired `order_templates` table and the 6
+    `algo_orders`/`agents` columns that pointed at or mirrored it
+    (Bracket/Template-GTT removal, T3.6, 2026-11 — the final sub-sprint
+    of a 6-part removal; see T3.1-T3.5's own code for everything that
+    stopped reading/writing these first).
+
+    Idempotent teardown counterpart to the retired feature's own schema
+    footprint, matching `_migrate_drop_position_pairs_table`'s exact
+    precedent: a deployment that still has the table/columns gets them
+    dropped on next startup; a fresh deployment never creates any of
+    them in the first place (the `OrderTemplate` ORM model and every
+    column declaration below are gone from `models.py`, so `create_all`
+    has nothing left to emit for them either). Safe to run forever —
+    every statement is `IF EXISTS`/`IF NOT EXISTS`, a no-op once already
+    applied.
+
+    Order matters, and is NOT arbitrary:
+      1. Drop the two REAL foreign-key columns first
+         (`algo_orders.template_id`, `agents.legacy_template_id`).
+         Dropping a column drops any index/constraint that depends on
+         it alone (confirmed live on this Postgres version via a direct
+         `pg_constraint` check on prod and dev before writing this
+         function) — no separate `DROP CONSTRAINT`/`DROP INDEX` step is
+         needed for either FK, its matching index, or `agents`'
+         `uq_agents_legacy_template_id` UNIQUE constraint.
+      2. Drop the remaining `algo_orders` columns
+         (`attached_gtts_json`, `template_overrides_json`,
+         `template_hold_override`) and `agents.bracket_config`. None of
+         these carry a constraint of their own, but dropping
+         `attached_gtts_json` also drops `ix_algo_orders_trail_stop`
+         (the old trail-stop partial index predicated on it), the same
+         way.
+      3. `DROP TABLE IF EXISTS order_templates` LAST, with no CASCADE —
+         by this point nothing in the schema should still reference it.
+         A live `pg_constraint` check against prod and dev (run before
+         writing this function) confirmed the ONLY two constraints with
+         `confrelid = order_templates` were the two FKs dropped in step
+         1 — so a plain `DROP TABLE` (no CASCADE) is expected to
+         succeed outright; if some other, unexpected dependent exists,
+         a bare `DROP TABLE` fails loudly instead of silently cascading
+         away a dependent this function's own author didn't know about.
+
+    `SET LOCAL lock_timeout` bounds how long each step can wait behind
+    any in-flight row lock, matching the Sprint 1a precedent
+    (`_migrate_algo_orders_sprint1a_columns`) — a `DROP COLUMN`/
+    `DROP TABLE` that collides with a live chase/postback `FOR UPDATE`
+    lock fails loudly with a clear `lock_timeout` error instead of
+    hanging the whole API startup indefinitely.
+
+    Deliberately NOT touched (confirmed by name, not by accident):
+    `algo_orders.hold_json` (generic, shared across every hold
+    category — `EXPIRY_CLOSE`/`AGENT_ORDER`/`AGENT_CLOSE`) and
+    `algo_orders.superseded_broker_order_ids_json` (chase-owned,
+    2026-10-23, unrelated to Bracket). Neither is referenced by this
+    function at all.
+    """
+    from sqlalchemy import text
+
+    await conn.execute(text("SET LOCAL lock_timeout = '5s'"))
+
+    # Step 1 — the two real FK columns. Dropping each also drops its
+    # own FK constraint, its own index, and (for legacy_template_id)
+    # the uq_agents_legacy_template_id UNIQUE constraint.
+    await conn.execute(text(
+        "ALTER TABLE algo_orders DROP COLUMN IF EXISTS template_id"
+    ))
+    await conn.execute(text(
+        "ALTER TABLE agents DROP COLUMN IF EXISTS legacy_template_id"
+    ))
+
+    # Step 2 — the remaining plain columns.
+    for stmt in (
+        "ALTER TABLE algo_orders DROP COLUMN IF EXISTS attached_gtts_json",
+        "ALTER TABLE algo_orders DROP COLUMN IF EXISTS template_overrides_json",
+        "ALTER TABLE algo_orders DROP COLUMN IF EXISTS template_hold_override",
+        "ALTER TABLE agents DROP COLUMN IF EXISTS bracket_config",
+    ):
+        await conn.execute(text(stmt))
+
+    # Step 3 — the table itself, last, no CASCADE.
+    await conn.execute(text("DROP TABLE IF EXISTS order_templates"))
+
+
 async def _migrate_algo_orders_gtt_order_id(conn) -> None:
     """Add gtt_order_id column to algo_orders if not present."""
     from sqlalchemy import text
@@ -926,21 +1011,14 @@ async def _migrate_app_messages_table(conn) -> None:
         await conn.execute(_text(stmt))
 
 
-async def _migrate_order_templates_wing_max_spread_pct(conn) -> None:
-    """Add wing_max_spread_pct column to order_templates (idempotent).
-
-    Per-template default for the Chain-tab pre-submission spread gate
-    (backend.api.algo.spread_check.resolve_max_spread_pct). NULL falls
-    back to the global `templates.wing_max_spread_pct` admin setting —
-    same default value `_pick_wing_by_premium`'s liquidity filter uses,
-    deliberately, per the operator's brief that the global setting's
-    current value is the starting default for this new per-order field.
-    """
-    from sqlalchemy import text
-    await conn.execute(text(
-        "ALTER TABLE order_templates ADD COLUMN IF NOT EXISTS "
-        "wing_max_spread_pct NUMERIC(8, 4)"
-    ))
+# `_migrate_order_templates_wing_max_spread_pct` removed (Bracket/
+# Template-GTT removal, T3.6, 2026-11) — it added a column to
+# `order_templates`, now dropped entirely by
+# `_migrate_drop_order_templates_and_bracket_columns` below. Calling
+# `ALTER TABLE order_templates ADD COLUMN IF NOT EXISTS ...` against a
+# table that no longer exists raises — `IF NOT EXISTS` guards the
+# column, not the table — so this had to be removed, not just stop
+# being called, or the very next boot after the drop would crash.
 
 
 async def _migrate_algo_orders_sprint1a_columns(conn) -> None:
@@ -1197,72 +1275,22 @@ async def _migrate_agents_require_release(conn) -> None:
     ))
 
 
-async def _migrate_agents_bracket_columns(conn) -> None:
-    """Additive migration — `agents.legacy_template_id` +
-    `agents.bracket_config` (Sprint E, Agent/Bracket/Template
-    unification phase). Mirrors `_migrate_agents_group_name`'s exact
-    pattern: runs inside init_db's normal `engine.begin()` transaction,
-    `SET LOCAL lock_timeout` bounds how long this can wait behind any
-    in-flight row lock on `agents`. `legacy_template_id` is a plain
-    nullable `INTEGER` with a `UNIQUE` constraint and a real FK to
-    `order_templates.id` (`ON DELETE SET NULL`) — added via a separate
-    `ADD CONSTRAINT ... UNIQUE` statement (guarded by a catalog check,
-    since Postgres has no `ADD CONSTRAINT IF NOT EXISTS`) so a repeat
-    boot never double-adds it. `bracket_config` is a nullable `JSONB`,
-    no default, no backfill — NULL for every pre-existing (non-bracket)
-    row, same "additive, no backfill" contract every other Sprint 1/7
-    migration in this file already uses."""
-    from sqlalchemy import text
-    await conn.execute(text("SET LOCAL lock_timeout = '5s'"))
-    await conn.execute(text(
-        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS legacy_template_id INTEGER"
-    ))
-    await conn.execute(text(
-        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS bracket_config JSONB"
-    ))
-    has_constraint = (await conn.execute(text(
-        "SELECT 1 FROM pg_constraint WHERE conname = 'uq_agents_legacy_template_id'"
-    ))).scalar_one_or_none()
-    if not has_constraint:
-        await conn.execute(text(
-            "ALTER TABLE agents ADD CONSTRAINT uq_agents_legacy_template_id "
-            "UNIQUE (legacy_template_id)"
-        ))
-    has_fk = (await conn.execute(text(
-        "SELECT 1 FROM pg_constraint WHERE conname = 'fk_agents_legacy_template_id'"
-    ))).scalar_one_or_none()
-    if not has_fk:
-        await conn.execute(text(
-            "ALTER TABLE agents ADD CONSTRAINT fk_agents_legacy_template_id "
-            "FOREIGN KEY (legacy_template_id) REFERENCES order_templates(id) "
-            "ON DELETE SET NULL"
-        ))
-
-
-async def _migrate_order_templates_group_and_tags(conn) -> None:
-    """Additive migration — `order_templates.group_name` +
-    `order_templates.tags` (Sprint 7 of the CLI/text grammar effort,
-    `#group=...` / `#tag=...` directives). Mirrors
-    `_migrate_agents_group_name`'s exact pattern: runs inside init_db's
-    normal `engine.begin()` transaction, `SET LOCAL lock_timeout` bounds
-    how long this can wait behind any in-flight row lock on
-    `order_templates`. `group_name` is a plain nullable `ADD COLUMN IF
-    NOT EXISTS` (no default, no backfill). `tags` mirrors `agents.tags`'s
-    own migration shape exactly (`_migrate_agents_columns`) — JSONB, NOT
-    NULL, `DEFAULT '[]'::jsonb` — required because `order_templates`
-    already has system rows seeded on every boot, so a NOT NULL column
-    without a default would fail the ALTER against those existing rows.
-    Unused by any route as of this sprint — OrderTemplateController's
-    request/response schemas are Sprint 8's job."""
-    from sqlalchemy import text
-    await conn.execute(text("SET LOCAL lock_timeout = '5s'"))
-    for stmt in (
-        "ALTER TABLE order_templates ADD COLUMN IF NOT EXISTS "
-        "group_name VARCHAR(64)",
-        "ALTER TABLE order_templates ADD COLUMN IF NOT EXISTS "
-        "tags JSONB NOT NULL DEFAULT '[]'::jsonb",
-    ):
-        await conn.execute(text(stmt))
+# `_migrate_agents_bracket_columns` removed (Bracket/Template-GTT
+# removal, T3.6, 2026-11) — it added `agents.legacy_template_id` +
+# `agents.bracket_config`, both dropped by
+# `_migrate_drop_order_templates_and_bracket_columns` below, plus a FK
+# constraint referencing `order_templates(id)`, a table also dropped
+# there. Leaving this function in place would have silently RE-ADDED
+# both columns on every future boot (its `ADD COLUMN IF NOT EXISTS`
+# only guards against re-adding an already-present column, not against
+# recreating a column this project has deliberately removed), and its
+# FK-ADD statement would raise outright once `order_templates` is gone.
+#
+# `_migrate_order_templates_group_and_tags` removed (Bracket/
+# Template-GTT removal, T3.6, 2026-11) — it added columns to
+# `order_templates`, which no longer exists. Same "ALTER TABLE ...
+# ADD COLUMN IF NOT EXISTS raises against a dropped table" hazard as
+# `_migrate_order_templates_wing_max_spread_pct` above.
 
 
 # Sprint 1a — CREATE INDEX CONCURRENTLY statements for the three new
@@ -1354,13 +1382,10 @@ async def init_db() -> None:
         await _migrate_algo_orders_superseded_ids(conn)
         await _migrate_exchange_schedule_table(conn)
         await _migrate_app_messages_table(conn)
-        await _migrate_order_templates_wing_max_spread_pct(conn)
         await _migrate_algo_orders_sprint1a_columns(conn)
         await _migrate_algo_orders_mcp_request_id(conn)
         await _migrate_agents_cli_source(conn)
         await _migrate_agents_group_name(conn)
-        await _migrate_order_templates_group_and_tags(conn)
-        await _migrate_agents_bracket_columns(conn)
         await _migrate_agents_given(conn)
         await _migrate_agents_preamble(conn)
         await _migrate_agents_preamble_alert_cooldown(conn)
@@ -1370,6 +1395,10 @@ async def init_db() -> None:
         await _migrate_agents_require_release(conn)
         await _migrate_drop_position_pairs_table(conn)
         await _migrate_market_special_sessions_source(conn)
+        # MUST run LAST in this transaction — drops order_templates and
+        # the 6 AlgoOrder/Agent columns that pointed at it. See the
+        # function's own docstring for the full rationale and ordering.
+        await _migrate_drop_order_templates_and_bracket_columns(conn)
     logger.info("Database: tables verified")
 
     # Sprint 1a — CONCURRENTLY index creation. MUST run after the
@@ -1436,18 +1465,19 @@ async def init_db() -> None:
     from backend.shared.helpers.settings import seed_settings
     await seed_settings()
 
-    # Seed system OrderTemplate rows (Default Bull / Default Bear /
-    # Default Short Vol / None). Refreshes mutable metadata on
-    # existing rows; preserves the operator's tuned numeric values.
-    from backend.api.algo.templates_seed import seed_templates
-    await seed_templates()
-
-    # Sprint E's OrderTemplate -> Agent(kind='bracket') mirror sync
-    # (`bracket_registry.migrate_order_templates_to_bracket_agents()`) is
-    # removed (Bracket/Template-GTT removal, T3.1, 2026-11) along with
-    # `bracket_registry.py` itself. Existing `kind='bracket'` Agent rows
-    # are left in place (schema drop is a later, deliberately separate
-    # sub-sprint) but are no longer kept in sync with `order_templates`.
+    # `templates_seed.seed_templates()` (system OrderTemplate rows —
+    # Default Bull / Default Bear / Default Short Vol / None) and Sprint
+    # E's OrderTemplate -> Agent(kind='bracket') mirror sync
+    # (`bracket_registry.migrate_order_templates_to_bracket_agents()`)
+    # are both removed (Bracket/Template-GTT removal, T3.1/T3.6, 2026-11)
+    # along with `templates_seed.py` and `bracket_registry.py` themselves.
+    # The `order_templates` table itself (and the AlgoOrder/Agent columns
+    # that pointed at it) is dropped in the same T3.6 sub-sprint, via a
+    # dedicated idempotent migration inside this file's own
+    # `engine.begin()` block above. Any pre-existing `kind='bracket'`
+    # Agent row is left in place (it is not deleted by this removal) but
+    # is no longer kept in sync with anything, since there is nothing
+    # left to sync from.
 
     # Seed the single shared 'Pinned' watchlist + migrate any per-user
     # Pinned/Default rows into it. Idempotent.

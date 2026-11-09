@@ -159,9 +159,11 @@ class MintTokenRequest(msgspec.Struct):
     new order, MODIFY #1234, CANCEL #5678, ACTIVATE a different
     agent, or DEACTIVATE the same agent (different kind).
 
-    `template_slug` (place only) is bound into the place hash, so a
-    token minted for one exit template cannot be redeemed with a
-    different template or with none."""
+    `template_slug` removed (Bracket/Template-GTT removal, T3.6,
+    2026-11) — it used to be bound into the place hash so a token
+    minted for one exit template couldn't be redeemed with a
+    different template or with none; there is no longer any template
+    concept to bind."""
     account:           str = ""
     kind:              str = "place"     # place / cancel / modify / activate / deactivate / update
     tradingsymbol:     str = ""
@@ -171,7 +173,6 @@ class MintTokenRequest(msgspec.Struct):
     order_type:        str = "LIMIT"
     price:             float | None = None
     trigger_price:     float | None = None
-    template_slug:     str | None = None  # place only — bound into the hash when set
     order_id:          str = ""           # cancel / modify only
     agent_slug:        str = ""           # activate / deactivate / update only
     # update kind only — JSON blob of the fields the LLM plans to push.
@@ -241,14 +242,6 @@ class PlaceOrderRequest(msgspec.Struct):
     variety:              str = "regular"
     chase:                bool = True
     chase_aggressiveness: str = "low"
-    # Optional OrderTemplate attachment by slug (e.g. "default-bull") —
-    # alternative to template_id, which this request shape has never
-    # exposed. Resolved server-side to a template_id via
-    # load_template_for_slug_or_id before the ticket is built; an unknown
-    # slug is a 422, not a silent no-template fallback. BOUND into
-    # _purpose_hash_place's fingerprint: the confirm token only redeems
-    # for the exact slug the operator minted with (None/omitted = no template).
-    template_slug:        str | None = None
 
 
 class PlaceOrderResponse(msgspec.Struct):
@@ -448,18 +441,17 @@ _confirm_tokens: dict[str, dict[str, Any]] = {}
 
 
 def _purpose_hash_place(account: str, symbol: str, side: str, qty: int,
-                  order_type: str, mode: str, price: Any, trigger_price: Any,
-                  template_slug: str | None = None) -> str:
+                  order_type: str, mode: str, price: Any, trigger_price: Any) -> str:
     """Identity fingerprint for a PLACE order. Includes every field the
-    LLM passes so it can't swap the symbol / side / qty / price / exit
-    template.
+    LLM passes so it can't swap the symbol / side / qty / price.
 
-    `template_slug` uses an omit-when-absent sentinel: when it is None or
-    "" the parts list is exactly the pre-template 9-part list, so every
-    token minted for a template-less order keeps its original hash
-    bit-for-bit. A non-empty slug appends one extra `template:<slug>`
-    part, which cannot collide with a template-less fingerprint (the
-    template-less join has no trailing part to match)."""
+    `template_slug` parameter removed (Bracket/Template-GTT removal,
+    T3.6, 2026-11) — it used to optionally append a `template:<slug>`
+    part. The remaining 9-part list is byte-identical to the pre-removal
+    template-less fingerprint, so every already-minted token for a
+    template-less order (the only kind that ever existed in practice —
+    see the removed `_res_resolve_template_slug`'s own docstring) keeps
+    its hash unchanged."""
     parts = [
         "place",
         (account or "").upper().strip(),
@@ -471,8 +463,6 @@ def _purpose_hash_place(account: str, symbol: str, side: str, qty: int,
         f"{float(price or 0):.4f}",
         f"{float(trigger_price or 0):.4f}",
     ]
-    if template_slug:
-        parts.append(f"template:{template_slug}")
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
 
@@ -638,13 +628,12 @@ def _mint_place_hash_and_purpose(data: "MintTokenRequest", acct: str,
         raise HTTPException(status_code=400,
             detail="tradingsymbol and quantity > 0 are required for place")
     ph = _purpose_hash_place(acct, sym, side, qty, order_type, mode,
-                             data.price, data.trigger_price, data.template_slug)
+                             data.price, data.trigger_price)
     price_chunk = (
         f" @₹{data.price:g}" if data.price else
         (f" trig=₹{data.trigger_price:g}" if data.trigger_price else "")
     )
-    tpl_chunk = f" · template={data.template_slug}" if data.template_slug else ""
-    purpose = f"PLACE [{mode.upper()}] · {side} {qty} {sym}{price_chunk}{tpl_chunk} · acct={acct}"
+    purpose = f"PLACE [{mode.upper()}] · {side} {qty} {sym}{price_chunk} · acct={acct}"
     return ph, purpose
 
 
@@ -1058,35 +1047,24 @@ async def _res_cancel_paper(
     return SimpleOrderResponse(order_id=oid, detail="cancelled (paper)")
 
 
-async def _res_resolve_template_slug(
-    template_id: int | None, template_slug: str | None,
-) -> tuple[int | None, str | None]:
-    """Resolve an optional place_order `template_slug` to a template_id.
-
-    Returns (resolved_template_id, error_detail) — `error_detail` is
-    always None now. Slug resolution was removed (Bracket/Template-GTT
-    removal, T3.1, 2026-11) — it called
-    `template_attach.load_template_for_slug_or_id`, deleted along with
-    `backend/api/algo/template_attach.py`. A `template_slug` the caller
-    supplies is silently dropped (never refused — the order itself is
-    still valid without it), matching the ticket/basket policy. A
-    directly-supplied `template_id` passes through unchanged (it is
-    stripped later, at persist, same as every other path).
-    """
-    return template_id, None
+# `_res_resolve_template_slug` removed (Bracket/Template-GTT removal,
+# T3.6, 2026-11) — it resolved an optional place_order `template_slug`
+# to a `template_id`. Slug resolution itself was already a no-op since
+# T3.1 (it called `template_attach.load_template_for_slug_or_id`,
+# deleted along with `backend/api/algo/template_attach.py`), and the
+# `template_slug` parameter it resolved no longer exists anywhere on
+# `PlaceOrderRequest`/`MintTokenRequest` as of this sub-sprint.
 
 
 def _res_make_place_ticket(
     mode: str, side: str, sym: str, qty: int, data: Any, acct: str, order_type: str,
-    request_id: str, template_id: int | None = None,
+    request_id: str,
 ) -> Any:
     """Build a TicketOrderRequest from place_order inputs.
 
-    Extracted from place_order to reduce CC there. `template_id` is the
-    SERVER-RESOLVED id (see _res_resolve_template_slug) — never data's own
-    raw template_slug field, since TicketOrderRequest has no such field.
-    `request_id` carries this call's mcp_audit request_id onto the created
-    AlgoOrder row (AlgoOrder.mcp_request_id) for audit-to-order linkage."""
+    Extracted from place_order to reduce CC there. `request_id` carries
+    this call's mcp_audit request_id onto the created AlgoOrder row
+    (AlgoOrder.mcp_request_id) for audit-to-order linkage."""
     from backend.api.schemas import TicketOrderRequest
     return TicketOrderRequest(
         mode=mode, side=side, tradingsymbol=sym, quantity=qty,
@@ -1096,7 +1074,6 @@ def _res_make_place_ticket(
         account=acct, chase=data.chase,
         chase_aggressiveness=data.chase_aggressiveness,
         source="mcp",
-        template_id=template_id,
         mcp_request_id=request_id,
     )
 
@@ -1651,7 +1628,7 @@ class McpController(Controller):
         # validator checks this against the token's stored hash.
         acct, sym, side, qty, order_type, mode = _res_normalize_place_inputs(data)
         ph = _purpose_hash_place(acct, sym, side, qty, order_type, mode,
-                                 data.price, data.trigger_price, data.template_slug)
+                                 data.price, data.trigger_price)
 
         # Redact + persist the call before doing anything risky.
         request_id = _secrets.token_hex(6)
@@ -1662,23 +1639,11 @@ class McpController(Controller):
             "quantity": qty, "mode": mode, "order_type": order_type,
             "price": data.price, "trigger_price": data.trigger_price,
             "had_token": bool(data.confirm_token),
-            "template_slug": data.template_slug,
         }
 
         async def _audit(status_: str, summary: str) -> None:
             await _res_mcp_audit("place_order", user_id, _place_args,
                                  status_, summary, request_id)
-
-        # Resolve template_slug → template_id before the token gate, so a
-        # typo'd slug fails fast (422) without burning the operator's
-        # single-use confirm token. template_slug is bound into ph above,
-        # so a slug that differs from the minted one fails the token gate.
-        resolved_template_id, _tpl_err = await _res_resolve_template_slug(
-            None, data.template_slug,
-        )
-        if _tpl_err:
-            await _audit("error", _tpl_err)
-            raise HTTPException(status_code=422, detail=_tpl_err)
 
         # Token gate.
         err = _consume_token(data.confirm_token or "", user_id, ph)
@@ -1693,7 +1658,7 @@ class McpController(Controller):
 
         ticket = _res_make_place_ticket(
             mode, side, sym, qty, data, acct, order_type,
-            request_id, resolved_template_id,
+            request_id,
         )
         try:
             ctrl = OrdersController(owner=None)

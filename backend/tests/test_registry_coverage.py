@@ -485,23 +485,11 @@ class TestPriceBrokerMethods:
         with pytest.raises(NotImplementedError):
             pb.cancel_order("123")
 
-    def test_price_broker_place_gtt_raises(self):
-        """PriceBroker.place_gtt() raises NotImplementedError."""
-        from backend.brokers.registry import PriceBroker
-
-        mock_broker = MagicMock()
-        pb = PriceBroker(brokers=[mock_broker])
-        with pytest.raises(NotImplementedError):
-            pb.place_gtt()
-
-    def test_price_broker_modify_gtt_raises(self):
-        """PriceBroker.modify_gtt() raises NotImplementedError."""
-        from backend.brokers.registry import PriceBroker
-
-        mock_broker = MagicMock()
-        pb = PriceBroker(brokers=[mock_broker])
-        with pytest.raises(NotImplementedError):
-            pb.modify_gtt("123")
+    # test_price_broker_place_gtt_raises / test_price_broker_modify_gtt_raises
+    # removed (Bracket/Template-GTT removal, T3.6, 2026-11) — the two
+    # stub methods they covered (`PriceBroker.place_gtt`/`modify_gtt`)
+    # were removed; the real per-account adapter methods they pointed
+    # callers at were already removed in T3.1.
 
     def test_price_broker_cancel_gtt_raises(self):
         """PriceBroker.cancel_gtt() raises NotImplementedError."""

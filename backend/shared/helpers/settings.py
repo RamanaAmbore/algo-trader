@@ -511,9 +511,12 @@ SEEDS: list[tuple] = [
     ("hold",        "hold.expiry_close_released",   "bool", False,
      "Release automated expiry closes. Off = closes are held for review.",
      "", None),
-    ("hold",        "hold.template_exit_released",  "bool", False,
-     "Release template exit GTTs after the entry fills. Off = exits are held.",
-     "", None),
+    # `hold.template_exit_released` removed (Bracket/Template-GTT
+    # removal, T3.6, 2026-11) — its one reader, `template_exit_held()`,
+    # was removed in T3.1. Removing it from SEEDS is enough: the
+    # already-seeded `settings` row is auto-dropped by this function's
+    # own `_prune_retired_keys()` call on the next boot, no dedicated
+    # migration needed.
     ("hold",        "hold.lead_minutes_nfo",        "int", 15,
      "Minutes before the NFO close at which expiry closes are created.",
      "min", {"min": 0, "max": 120, "step": 1}),

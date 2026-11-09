@@ -201,8 +201,6 @@ def _chase_snapshot_algo_row(row, broker_order_id: str) -> dict:
         "target_pct":        row.target_pct,
         "target_abs":        row.target_abs,
         "parent_order_id":   row.parent_order_id,
-        "template_id":       row.template_id,
-        "template_overrides_json": getattr(row, "template_overrides_json", None),
         "account":           str(row.account or ""),
         "symbol":            str(row.symbol or broker_order_id),
         "exchange":          str(row.exchange or "NFO"),
@@ -309,21 +307,17 @@ async def _chase_terminal_update_db(
 
 
 def _ch_maybe_fire_auto_tp(snap: dict, final_price: float) -> None:
-    """Fire legacy single-target TP shim when template_id IS NULL.
+    """Fire the legacy single-target TP shim.
 
-    `template_overrides_json` exclusion mirrors the identical Sprint 8
-    fix in orders_postback._pb_wants_take_profit_arm — prevents a row
-    carrying both a legacy target_pct AND a v2 override field from
-    being double-armed by this shim AND the ad-hoc template-attach
-    path (`_ch_maybe_fire_template_attach` below).
+    `template_id`/`template_overrides_json` exclusions removed (Bracket/
+    Template-GTT removal, T3.6, 2026-11) along with those two
+    `AlgoOrder` columns and `_chase_snapshot_algo_row`'s own snapshot of
+    them — there is no longer any template concept that could
+    double-arm this shim alongside a second path.
     """
     if not (snap.get("target_pct") or snap.get("target_abs")):
         return
     if snap.get("parent_order_id") is not None:
-        return
-    if snap.get("template_id") is not None:
-        return
-    if snap.get("template_overrides_json"):
         return
     from backend.api.routes.orders import _arm_take_profit
     # 2026-09-27 audit fix (finding #5/#1 bundle): pass the parent's real

@@ -530,16 +530,14 @@ class PriceBroker(Broker):
     # GTT calls are account-specific (a GTT belongs to one Kite account)
     # so the failover wrapper has nothing meaningful to do here. Force
     # the caller to target a specific account.
-
-    def place_gtt(self, **kwargs: Any) -> str:
-        raise NotImplementedError(
-            "PriceBroker.place_gtt() not supported — use get_broker(account).place_gtt()."
-        )
-
-    def modify_gtt(self, gtt_id: str, **kwargs: Any) -> str:
-        raise NotImplementedError(
-            "PriceBroker.modify_gtt() not supported — use get_broker(account).modify_gtt()."
-        )
+    #
+    # `place_gtt`/`modify_gtt` stubs removed (Bracket/Template-GTT
+    # removal, T3.6, 2026-11) — the real per-account adapter methods
+    # they pointed callers at (`get_broker(account).place_gtt()`/
+    # `.modify_gtt()`) were already removed from `base.py` and all 3
+    # adapters in T3.1, confirmed zero callers. `cancel_gtt`/`get_gtts`
+    # are KEPT below — `backend/api/routes/orders_gtt.py`'s
+    # confirmed-independent standalone broker-GTT viewer depends on them.
 
     def cancel_gtt(self, gtt_id: str, *, exchange: str | None = None) -> str:
         raise NotImplementedError(

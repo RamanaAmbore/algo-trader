@@ -1070,14 +1070,9 @@ class AlgoOrderInfo(msgspec.Struct, kw_only=True):
     target_abs: float | None = None
     parent_order_id: int | None = None
     basket_tag: str | None = None
-    # Phase 2 — surface template attachment so the chase panel +
-    # /orders log can show a "Tmpl ✓" chip on rows that picked up
-    # auto-brackets at submit. attached_gtts_json is the post-fill
-    # JSON list of {kind, label, id} dicts persisted by
-    # _fire_template_attach_on_fill. Both null on legacy rows or on
-    # rows that picked the 'none' template.
-    template_id: int | None = None
-    attached_gtts_json: str | None = None
+    # `template_id`/`attached_gtts_json` removed (Bracket/Template-GTT
+    # removal, T3.6, 2026-11) along with the AlgoOrder columns they
+    # mirrored — see models.py.
     # Hold state from AlgoOrder.hold_json (see order_hold.hold_record); None when not held.
     hold_json: str | None = None
     # Sprint B — broker's running cumulative filled quantity. Lets the

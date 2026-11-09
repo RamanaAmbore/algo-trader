@@ -662,21 +662,17 @@ async def _pb_write_timeline_events(
 
 
 def _pb_wants_take_profit_arm(_r) -> bool:
-    """Parent fill with a TP target and no template (saved OR ad-hoc)
-    attached wants the legacy take-profit arm dispatched.
+    """Parent fill with a TP target wants the legacy take-profit arm
+    dispatched.
 
-    `_r.template_overrides_json` exclusion added alongside the Sprint 8
-    ad-hoc-template fix in `_pb_wants_template_attach` below — without
-    it, a row carrying BOTH a legacy `target_pct` AND a v2 override
-    field (e.g. `sl_pct_override`) with no `template_id` would get
-    double-armed: this legacy shim's own single TP AND the ad-hoc
-    template-attach path's TP/SL/Wing.
+    `template_id`/`template_overrides_json` exclusions removed (Bracket/
+    Template-GTT removal, T3.6, 2026-11) along with those two
+    `AlgoOrder` columns — there is no longer any template concept that
+    could double-arm this shim alongside a second path.
     """
     return bool(
         (_r.target_pct or _r.target_abs)
         and _r.parent_order_id is None
-        and _r.template_id is None
-        and not _r.template_overrides_json
         and _r.fill_price
     )
 

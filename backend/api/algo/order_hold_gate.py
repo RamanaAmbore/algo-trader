@@ -9,15 +9,16 @@ from backend.api.algo.order_hold import HoldCategory, effective_hold, hold_recor
 logger = get_logger(__name__)
 
 EXPIRY_CLOSE_RELEASED_KEY = "hold.expiry_close_released"
-# `TEMPLATE_EXIT_RELEASED_KEY` is kept (not in the brief's named-function
-# removal list) — `backend/api/routes/admin.py`'s `/admin/settings`
-# toggle still reads/writes this settings key by name. It is now
-# functionally inert: nothing in this module checks it anymore, since
-# `template_exit_held()` (the only reader) was removed along with
-# `HoldCategory.TEMPLATE_EXIT` (Bracket/Template-GTT removal, T3.1,
-# 2026-11). Removing the admin-settings toggle itself is frontend/admin
-# cleanup, out of scope for this sub-sprint.
-TEMPLATE_EXIT_RELEASED_KEY = "hold.template_exit_released"
+# `TEMPLATE_EXIT_RELEASED_KEY` removed (Bracket/Template-GTT removal,
+# T3.6, 2026-11) — `backend/api/routes/admin.py`'s `/admin/settings`
+# toggle that read/wrote this settings key by name is removed in the
+# same commit. It was already functionally inert: nothing in this
+# module checked it, since `template_exit_held()` (the only reader) was
+# removed along with `HoldCategory.TEMPLATE_EXIT` in T3.1. The orphaned
+# `hold.template_exit_released` settings row itself is auto-pruned by
+# `seed_settings()`'s existing `_prune_retired_keys()` sweep once the
+# seed tuple is removed from `settings.py:SEEDS` (same commit) — no
+# dedicated migration needed.
 
 
 def held_for(category: HoldCategory, override: bool | None = None) -> bool:
