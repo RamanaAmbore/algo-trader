@@ -931,18 +931,21 @@
         // `_rowOrigin` stamped here is the explicit origin flag
         // `_isOpenBroker` below reads instead of the old `!o?.mode`
         // heuristic — mirrors OrderBook.svelte's identical fix.
-        // 2026-11-02 (PLAN.md items 2/4) — `template_id`/`attached_gtts_json`/
-        // `hold_json` added to the passthrough, mirroring OrderBook.svelte's
-        // identical fix. A broker-fetched row never carries any of these
-        // (Bracket/hold bookkeeping lives only on the AlgoOrder row); without
-        // this, OrderCard's paired Bracket chip and the held-pending-release
-        // toast both silently read `undefined` the instant a live, chased
-        // order reached the broker book.
+        // 2026-11-02 (PLAN.md items 2/4) — `hold_json` added to the
+        // passthrough, mirroring OrderBook.svelte's identical fix. A
+        // broker-fetched row never carries it (hold bookkeeping lives
+        // only on the AlgoOrder row); without this, the held-pending-
+        // release toast silently read `undefined` the instant a live,
+        // chased order reached the broker book.
+        // `template_id`/`attached_gtts_json` were part of this same
+        // passthrough until 2026-11 (Track 3, T3.6, Bracket/Template/GTT
+        // removal) dropped both columns from AlgoOrder/AlgoOrderInfo —
+        // removed here as the now-permanently-dead fields they'd become.
         const merged = [
           ...brokerRows.map(o => {
             const _m = _algoByBrokerId.get(String(o?.order_id || ''));
             return _m
-              ? { ...o, _rowOrigin: 'broker', attempts: _m.attempts, current_limit: _m.current_limit, next_attempt_at: _m.next_attempt_at, agent_origin: _m.agent_origin, template_id: _m.template_id, attached_gtts_json: _m.attached_gtts_json, hold_json: _m.hold_json }
+              ? { ...o, _rowOrigin: 'broker', attempts: _m.attempts, current_limit: _m.current_limit, next_attempt_at: _m.next_attempt_at, agent_origin: _m.agent_origin, hold_json: _m.hold_json }
               : { ...o, _rowOrigin: 'broker' };
           }),
           ...algoOnly.map(o => ({ ...o, _rowOrigin: 'algo' })),

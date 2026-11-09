@@ -14,10 +14,6 @@
  *   new `.ag-theme-algo .ag-cell.ag-col-fill.ag-col-acct` override rule
  *   (4-class compound, `!important`) that wins on specificity.
  *
- * Also covers the companion OrderBook.svelte GTT-card fix: `.oc-acct`
- * (shared with OrderCard.svelte) needs `--acct-color` set inline — it was
- * missing on the GTT card, so the stripe rendered transparent.
- *
  * Test 1 is a DETERMINISTIC synthetic-DOM check (injects real markup
  * shapes into a live page that already loaded app.css) — it does not
  * depend on the operator's book having NavBreakdown data, so it can't be
@@ -34,8 +30,9 @@
  * Test 3 confirms BrokerHealthBadge's live rendering is unchanged by
  * this fix (it never carries `ag-col-fill`).
  *
- * Test 4 covers the OrderBook GTT-card stripe fix with mocked data,
- * reusing orderbook_gtt_chip.spec.js's auth + route-mock idiom.
+ * Test 4 (OrderBook GTT-card stripe fix) was removed 2026-11 (Track 3,
+ * Bracket/Template/GTT removal) along with the GTT chip/card feature it
+ * covered — see git history for the original test.
  *
  * Five quality dimensions:
  *   1. SSOT   — asserts the actual computed CSS result of app.css's cascade,
@@ -45,8 +42,8 @@
  *   3. Stale  — explicitly checks the NOT-touched cases (BrokerHealthBadge,
  *               header cells) alongside the fixed case, so a future
  *               regression that over-broadens the new selector is caught
- *   4. Reuse  — loginAsAdmin fixture + the account_marker.spec.js /
- *               orderbook_gtt_chip.spec.js established idioms
+ *   4. Reuse  — loginAsAdmin fixture + account_marker.spec.js's
+ *               established idioms
  *   5. UX     — verifies the actual rendered colour (alpha + hue), not just
  *               presence of a CSS class
  *
@@ -272,101 +269,3 @@ test.describe('MarketPulse account-cell font-weight (700 -> 600 consistency fix)
   });
 });
 
-// ── OrderBook GTT-card stripe fix ──────────────────────────────────────
-// Mirrors orderbook_gtt_chip.spec.js's auth + route-mock idiom exactly.
-const _AUTH_USER = process.env.PLAYWRIGHT_USER || 'rambo';
-const _AUTH_PASS = process.env.PLAYWRIGHT_PASS || 'admin1234';
-let _cachedAuth = null;
-
-async function authOnce(page) {
-  if (!_cachedAuth) {
-    const envToken = process.env.PLAYWRIGHT_AUTH_TOKEN;
-    let tok = envToken || null;
-    if (!tok) {
-      for (const delay of [0, 20000, 65000]) {
-        if (delay) await new Promise((r) => setTimeout(r, delay));
-        const resp = await page.request.post('/api/auth/login', {
-          data: { username: _AUTH_USER, password: _AUTH_PASS },
-        });
-        if (resp.ok()) { tok = (await resp.json()).access_token; break; }
-        if (resp.status() !== 429) throw new Error(`authOnce: /api/auth/login ${resp.status()}`);
-      }
-    }
-    if (!tok) throw new Error('authOnce: login rate-limited');
-    _cachedAuth = { token: tok, user_id: _AUTH_USER };
-  }
-  const { token, user_id } = _cachedAuth;
-  await page.goto('/');
-  await page.evaluate(({ tok, usr }) => {
-    sessionStorage.setItem('ramboq_token', tok);
-    sessionStorage.setItem('ramboq_user', JSON.stringify({
-      user_id: usr, username: usr, role: 'admin', display_name: usr,
-    }));
-  }, { tok: token, usr: user_id });
-  await page.context().setExtraHTTPHeaders({ Authorization: `Bearer ${token}` });
-}
-
-const _NOW_ISO = '2026-09-30T04:30:00.000Z';
-const _GTT_ROWS = [
-  { gtt_id: '9501', account: 'T1', broker_id: 'kite', status: 'active',
-    trigger_type: 'single', tradingsymbol: 'RBQ-STRIPE', exchange: 'NSE',
-    trigger_values: [101.5], last_price: 100.2, orders: [], created_at: '2026-09-30T08:30:00' },
-];
-
-async function mockGttEndpoints(page) {
-  await page.route('**/api/orders/**', async (route) => {
-    const req = route.request();
-    if (req.method() !== 'GET') { await route.continue(); return; }
-    const url = req.url();
-    if (url.includes('/orders/gtts')) {
-      await route.fulfill({
-        status: 200, contentType: 'application/json',
-        body: JSON.stringify({ gtts: _GTT_ROWS, count: _GTT_ROWS.length }),
-      });
-      return;
-    }
-    if (url.includes('/orders/algo/recent')) {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([]) });
-      return;
-    }
-    if (/\/api\/orders\/?(\?.*)?$/.test(url)) {
-      await route.fulfill({
-        status: 200, contentType: 'application/json',
-        body: JSON.stringify({ rows: [], refreshed_at: new Date().toISOString() }),
-      });
-      return;
-    }
-    await route.continue();
-  });
-}
-
-test.describe('OrderBook GTT card — account stripe colour', () => {
-  test.setTimeout(60_000);
-
-  test('.oc-acct on the GTT card shows a real colour, not transparent', async ({ page }) => {
-    await authOnce(page);
-    await page.clock.setFixedTime(new Date(_NOW_ISO));
-    await mockGttEndpoints(page);
-
-    await page.goto('/orders');
-    await page.waitForLoadState('domcontentloaded');
-    await page.waitForSelector('.ob-status-bar', { timeout: 15_000 });
-
-    const gttChip = page.locator('.ob-status-bar .ob-sc', { has: page.locator('.ob-sc-l', { hasText: /^GTT$/ }) });
-    await expect(gttChip).toHaveCount(1);
-    await gttChip.click();
-
-    const stripe = page.locator('.gtt-card .oc-acct').first();
-    await expect(stripe).toBeVisible({ timeout: 10_000 });
-
-    const { bw, bc } = await stripe.evaluate((el) => {
-      const cs = getComputedStyle(el);
-      return { bw: cs.borderLeftWidth, bc: cs.borderLeftColor };
-    });
-
-    expect(bw).toBe('2px');
-    // Must be a real palette colour, never transparent/currentColor-on-nothing.
-    expect(['rgba(0, 0, 0, 0)', 'transparent']).not.toContain(bc);
-    expect(PALETTE_RGB.has(bc), `borderLeftColor ${bc} not in ACCT_PALETTE`).toBe(true);
-  });
-});

@@ -22,7 +22,7 @@
    *                    setFastPollMs() pair in marketDataStores.svelte.js
    *                    (out of scope for this change) plus the same
    *                    re-arm-on-resolve treatment.
-   *   statusFilter?  — 'chase'|'open'|'complete'|'rejected_cancelled'|'gtt' —
+   *   statusFilter?  — 'chase'|'open'|'complete'|'rejected_cancelled' —
    *                    INERT for the no-chip-clicked default (2026-09-30):
    *                    both existing call sites pass 'open' as a literal
    *                    default, indistinguishable from not passing it at
@@ -30,12 +30,17 @@
    *                    filter" without defeating the first-non-zero-chip
    *                    default below. Kept declared (back-compat, still
    *                    type-checked at call sites) but no longer read by
-   *                    `_activeStatus` — see `_defaultActiveId`.
+   *                    `_activeStatus` — see `_defaultActiveId`. The 'gtt'
+   *                    variant was removed (2026-11, standalone broker-GTT
+   *                    viewer removed from this card per operator: "we
+   *                    don't need gtt count status pills") — orders_gtt.py
+   *                    itself is untouched, this just drops the only
+   *                    frontend caller of it.
    */
   import { onMount, onDestroy, untrack } from 'svelte';
   import { visibleInterval, formatDualTz, withGuard } from '$lib/stores';
   import { isCurrentTradingSession } from '$lib/dateFormat.js';
-  import { fetchOrders, fetchAlgoOrdersRecent, cancelOrder, reconcileSingleOrder, fetchGtts, cancelGtt, fetchOrderEventsById } from '$lib/api';
+  import { fetchOrders, fetchAlgoOrdersRecent, cancelOrder, reconcileSingleOrder, fetchOrderEventsById } from '$lib/api';
   import { priceFmt } from '$lib/format';
   import { acctColor } from '$lib/account';
   import OrderCard from '$lib/order/OrderCard.svelte';
@@ -57,7 +62,7 @@
    *   accountFilter?: string[],
    *   title?: string,
    *   pollMs?: number,
-   *   statusFilter?: 'chase'|'open'|'complete'|'rejected_cancelled'|'gtt',
+   *   statusFilter?: 'chase'|'open'|'complete'|'rejected_cancelled',
    *   onSymbolClick?: ((ord: any) => void) | null,
    *   isFullscreen?: boolean,
    * }} */
@@ -66,7 +71,7 @@
     accountFilter = /** @type {string[]} */ ([]),
     title         = 'Order Book',
     pollMs        = 5000,
-    statusFilter  = /** @type {'chase'|'open'|'complete'|'rejected_cancelled'|'gtt'} */ ('open'),
+    statusFilter  = /** @type {'chase'|'open'|'complete'|'rejected_cancelled'} */ ('open'),
     onSymbolClick = /** @type {((ord: any) => void) | null} */ (null),
     isFullscreen  = $bindable(false),
   } = $props();
@@ -333,18 +338,21 @@
         // same stale poll data that already decided this row belongs in
         // `brokerRowsVisible` in the first place (see that function's
         // own comment for why re-checking stale data can never fire).
-        // 2026-11-02 (PLAN.md items 2/4) — `template_id`/`attached_gtts_json`/
-        // `hold_json` added to the passthrough. A broker-fetched row never
-        // carries any of these (Bracket/hold bookkeeping lives only on the
-        // AlgoOrder row); without this, OrderCard's paired Bracket chip and
-        // the held-pending-release toast both silently read `undefined` the
-        // instant a live, chased order reached the broker book — the exact
-        // same gap the pre-existing attempts/current_limit/next_attempt_at
-        // fields were added here to close.
+        // 2026-11-02 (PLAN.md items 2/4) — `hold_json` added to the
+        // passthrough. A broker-fetched row never carries it (hold
+        // bookkeeping lives only on the AlgoOrder row); without this, the
+        // held-pending-release toast silently read `undefined` the
+        // instant a live, chased order reached the broker book — the
+        // exact same gap the pre-existing attempts/current_limit/
+        // next_attempt_at fields were added here to close.
+        // `template_id`/`attached_gtts_json` were part of this same
+        // passthrough until 2026-11 (Track 3, T3.6, Bracket/Template/GTT
+        // removal) dropped both columns from AlgoOrder/AlgoOrderInfo —
+        // removed here as the now-permanently-dead fields they'd become.
         ...brokerRowsVisible.map(o => {
           const _m = _algoByBrokerId.get(String(o?.order_id || ''));
           return _m
-            ? { ...o, _rowOrigin: 'broker', attempts: _m.attempts, current_limit: _m.current_limit, next_attempt_at: _m.next_attempt_at, _algoId: _m.id, agent_origin: _m.agent_origin, template_id: _m.template_id, attached_gtts_json: _m.attached_gtts_json, hold_json: _m.hold_json }
+            ? { ...o, _rowOrigin: 'broker', attempts: _m.attempts, current_limit: _m.current_limit, next_attempt_at: _m.next_attempt_at, _algoId: _m.id, agent_origin: _m.agent_origin, hold_json: _m.hold_json }
             : { ...o, _rowOrigin: 'broker' };
         }),
         ...algoOnly.map(o => ({ ...o, _rowOrigin: 'algo' })),
@@ -366,23 +374,6 @@
     } catch (_) { /* keep last-good */ } finally {
       _loading = false;
     }
-  }
-
-  // ── Standalone broker GTTs ("GTT" chip) ────────────────────────────────
-  // A DIFFERENT concept from the per-filled-order attached-exit-GTT bits
-  // OrderCard already renders (`attached_gtts_json`) — this is whatever's
-  // independently resting at the broker right now, regardless of how it
-  // got there. Loaded + polled separately from `_loadOrders` (own
-  // try/catch, own freeze-to-last-good) so a GTT-route hiccup never
-  // blanks the order grid and vice versa.
-  let _gttRows = $state(/** @type {any[]} */ ([]));
-
-  async function _loadGtts() {
-    try {
-      const resp = await fetchGtts();
-      const rows = Array.isArray(resp?.gtts) ? resp.gtts : [];
-      _gttRows = rows;
-    } catch (_) { /* keep last-good — same staleness-freeze convention as _loadOrders */ }
   }
 
   // ── Per-order timeline drawer ───────────────────────────────────────
@@ -423,29 +414,6 @@
   }
 
   function _downloadCsv() {
-    if (_activeStatus === 'gtt') {
-      const rows = _filteredGttRows;
-      if (!rows.length) return;
-      const headers = ['gtt_id','account','symbol','exchange','status','trigger_values','last_price','created_at'];
-      const csv = [
-        headers.join(','),
-        ...rows.map(r => [
-          JSON.stringify(r.gtt_id ?? ''),
-          JSON.stringify(r.account ?? ''),
-          JSON.stringify(r.tradingsymbol ?? ''),
-          JSON.stringify(r.exchange ?? ''),
-          JSON.stringify(r.status ?? ''),
-          JSON.stringify((r.trigger_values || []).join('/')),
-          JSON.stringify(r.last_price ?? ''),
-          JSON.stringify(r.created_at ?? ''),
-        ].join(','))
-      ].join('\n');
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
-      a.download = 'gtts.csv';
-      a.click();
-      return;
-    }
     const rows = filteredOrderRows;
     if (!rows.length) return;
     const headers = ['order_id','symbol','exchange','transaction_type','quantity','price','status','timestamp'];
@@ -478,23 +446,18 @@
     // in-flight when the next visibleInterval tick fired, stacking a
     // second concurrent fetch for the same resource. Mirrors LogPanel's
     // `_every()` (LogPanel.svelte:392-404): the immediate call and every
-    // interval tick share the SAME guarded instance. Two independent
-    // guards (own `_running` flag each, per withGuard's contract) so a
-    // slow GTT fetch never blocks the orders poll and vice versa — they
-    // already have separate freeze-to-last-good semantics.
+    // interval tick share the SAME guarded instance.
     //
     // Manual triggers (_cancelRow/_reconcileRow's post-action reload,
-    // _cancelGttRow's post-cancel reload, CardHeader's onRefresh button)
-    // deliberately keep calling the RAW _loadOrders/_loadGtts below, NOT
-    // these guarded wrappers — an operator-initiated refresh must never be
-    // silently dropped (guarded call returns undefined, no-op) just
-    // because a routine poll tick happens to be in-flight at that instant.
+    // CardHeader's onRefresh button) deliberately keep calling the RAW
+    // _loadOrders below, NOT this guarded wrapper — an operator-initiated
+    // refresh must never be silently dropped (guarded call returns
+    // undefined, no-op) just because a routine poll tick happens to be
+    // in-flight at that instant.
     const _guardedLoadOrders = withGuard(_loadOrders);
-    const _guardedLoadGtts = withGuard(_loadGtts);
     _guardedLoadOrders();
-    _guardedLoadGtts();
     if (pollMs > 0 && typeof document !== 'undefined') {
-      const teardown = visibleInterval(() => { _guardedLoadOrders(); _guardedLoadGtts(); }, pollMs);
+      const teardown = visibleInterval(() => { _guardedLoadOrders(); }, pollMs);
       _intervals.push(teardown);
     }
   });
@@ -560,9 +523,6 @@
     // 2026-09-30 (the `statusFilter` prop always supplied a real value).
     if (filter == null) return [];
     if (filter === 'chase') return rows.filter(_isChaseInFlight);
-    // GTT rows live in `_gttRows`/`_filteredGttRows`, not `orderRows` —
-    // the GTT chip never matches an order row.
-    if (filter === 'gtt') return [];
     const pred = _STATUS_PREDICATES[filter];
     if (!pred) return rows;
     return rows.filter(o => pred((o?.status || '').toUpperCase()));
@@ -583,26 +543,6 @@
     rows = _applyOrderIdFilter(rows, orderId);
     return rows;
   });
-
-  // Kite's GTT book (and Dhan/Groww's normalised mirror of it) can return
-  // historical rows that already fired or were cancelled/expired/disabled
-  // at the broker — those aren't "standing" GTTs and must NOT inflate the
-  // GTT chip's count (which would also wrongly make GTT the first-non-zero
-  // default, or let Cancel render on an already-dead GTT). Unknown/blank
-  // status values are treated as live (fail-open towards showing data the
-  // operator might still need to act on, same spirit as other predicates
-  // in this file keeping unclassifiable rows visible rather than hiding
-  // them).
-  const _GTT_TERMINAL_STATUSES = new Set(['triggered', 'cancelled', 'deleted', 'disabled', 'expired']);
-  function _isLiveGtt(/** @type {any} */ g) {
-    return !_GTT_TERMINAL_STATUSES.has((g?.status || '').toLowerCase());
-  }
-
-  // GTT rows filtered the same way orders are (account scope — GTTs aren't
-  // subject to the order-id / status-predicate filters above) PLUS the
-  // live-only filter above.
-  const _filteredGttRows = $derived.by(() =>
-    _applyAccountFilter(_gttRows || [], accountFilter).filter(_isLiveGtt));
 
   // ── Cancel / Modify / Reconcile actions (mirrors LogPanel) ────────────
   /** @type {Set<string>} */
@@ -730,8 +670,7 @@
   // Reads the ACCOUNT-FILTERED rows (not raw orderRows) — already
   // session-boundary-filtered in _loadOrders — so every count here is
   // scoped to today's session AND the current account filter, matching
-  // the grid it labels AND `_filteredGttRows` (also account-filtered).
-  // Without this, selecting an account could default-highlight a chip
+  // the grid it labels. Without this, selecting an account could default-highlight a chip
   // (e.g. Chase) whose only rows belong to a DIFFERENT account, showing
   // an empty list underneath.
   const _countScopedOrderRows = $derived.by(() => _applyAccountFilter(orderRows, accountFilter));
@@ -752,9 +691,9 @@
     rejected_cancelled:  _countScopedOrderRows.filter(o => !isDraftOrderRow(o) && _STATUS_PREDICATES.rejected_cancelled((o.status || '').toUpperCase())).length,
   }));
 
-  // Display counts (draft-EXCLUDED, same as `_statusCounts`) + gtt, for
+  // Display counts (draft-EXCLUDED, same as `_statusCounts`), for
   // the FIRST default-resolution pass below.
-  const _displayCountsById = $derived.by(() => ({ ..._statusCounts, gtt: _filteredGttRows.length }));
+  const _displayCountsById = $derived.by(() => ({ ..._statusCounts }));
 
   // Raw (draft-INCLUSIVE) counts — second-pass FALLBACK for default-chip
   // resolution only, never for the displayed badge numbers. Without this
@@ -769,25 +708,22 @@
     open:               _countScopedOrderRows.filter(o => _STATUS_PREDICATES.open((o.status || '').toUpperCase())).length,
     complete:           _countScopedOrderRows.filter(o => _STATUS_PREDICATES.complete((o.status || '').toUpperCase())).length,
     rejected_cancelled: _countScopedOrderRows.filter(o => _STATUS_PREDICATES.rejected_cancelled((o.status || '').toUpperCase())).length,
-    gtt:                _filteredGttRows.length,
   }));
 
   // ── Default chip resolution (2026-09-30, extended 2026-10 for Held) ────
-  // Fixed display order for the 6 chips. When nothing has been explicitly
+  // Fixed display order for the 5 chips. When nothing has been explicitly
   // clicked (`_internalStatus === null`), the SINGLE chip highlighted +
   // shown is the first one in this order whose count is non-zero — not a
-  // union of every non-zero chip. Both `_statusCounts` and
-  // `_filteredGttRows.length` are `$derived`, so `_countsById` and
-  // `_defaultActiveId` recompute automatically on every poll tick/status
-  // change with no extra wiring — e.g. Open emptying while Filled still
-  // has rows moves the highlight+list to Filled on the very next tick.
-  // `held` sits FIRST — a possibly-still-live, unprotected order (HELD /
-  // CANCEL_FAILED) outranks every other bucket for default visibility.
-  const CHIP_ORDER = ['held', 'chase', 'open', 'complete', 'rejected_cancelled', 'gtt'];
-  // Gated on `_loading` (the ORDERS fetch flag) so the default can't
-  // transiently resolve to 'gtt' purely because the independent GTT poll
-  // happened to land before the first orders poll — `_loading` clears
-  // only once `_loadOrders` has run at least once (success or freeze-on-
+  // union of every non-zero chip. `_statusCounts` is `$derived`, so
+  // `_countsById` and `_defaultActiveId` recompute automatically on every
+  // poll tick/status change with no extra wiring — e.g. Open emptying
+  // while Filled still has rows moves the highlight+list to Filled on the
+  // very next tick. `held` sits FIRST — a possibly-still-live, unprotected
+  // order (HELD / CANCEL_FAILED) outranks every other bucket for default
+  // visibility.
+  const CHIP_ORDER = ['held', 'chase', 'open', 'complete', 'rejected_cancelled'];
+  // Gated on `_loading` (the ORDERS fetch flag) — `_loading` clears only
+  // once `_loadOrders` has run at least once (success or freeze-on-
   // failure), by which point these counts are trustworthy for picking
   // the first-non-zero chip.
   //
@@ -810,45 +746,6 @@
   // otherwise fall back to the single first-non-zero chip above. Never
   // reads the `statusFilter` prop (see its JSDoc).
   const _activeStatus = $derived(_internalStatus ?? _defaultActiveId);
-
-  // ── Cancel a standalone broker GTT ──────────────────────────────────────
-  /** @type {Set<string>} */
-  let _cancellingGtt = $state(new Set());
-  /** @type {string} */
-  let _gttCancelErr = $state('');
-
-  async function _cancelGttRow(/** @type {any} */ g) {
-    const key = `${g.account}:${g.gtt_id}`;
-    if (!g?.gtt_id || _cancellingGtt.has(key)) return;
-    _cancellingGtt = new Set([..._cancellingGtt, key]);
-    _gttCancelErr = '';
-    try {
-      await cancelGtt(g.gtt_id, g.account, g.exchange);
-      await _loadGtts();
-    } catch (e) {
-      _gttCancelErr = /** @type {any} */ (e)?.message || 'cancel failed';
-      setTimeout(() => { _gttCancelErr = ''; }, 3000);
-    } finally {
-      const next = new Set(_cancellingGtt);
-      next.delete(key);
-      _cancellingGtt = next;
-    }
-  }
-
-  /** GTT status → chip-style `data-status` tint, mirroring OrderCard's
-   *  `_statusDataAttr` idiom (active/resting → running amber, triggered →
-   *  complete green, cancelled/deleted → rejected_cancelled's red,
-   *  disabled/expired → inactive grey). `_filteredGttRows` already drops
-   *  every terminal status via `_isLiveGtt`, so in practice this always
-   *  returns 'running' for what actually renders — kept defensive (not
-   *  dead code removed) in case a row's status races between polls. */
-  function _gttStatusDataAttr(/** @type {string} */ status) {
-    const s = (status || '').toLowerCase();
-    if (s === 'triggered') return 'complete';
-    if (s === 'cancelled' || s === 'deleted') return 'error';
-    if (s === 'disabled' || s === 'expired') return 'inactive';
-    return 'running'; // active / unknown — still resting at the broker
-  }
 
   // ── Symbol panel / chart modal / context menu state ───────────────────
   let _symPanelSym  = $state('');
@@ -879,15 +776,11 @@
 <!-- Header -->
 <CardHeader title={title} showSearch={false} bind:isFullscreen
   detectOverflow={false}
-  onRefresh={() => { _loadOrders(); _loadGtts(); }}
+  onRefresh={() => { _loadOrders(); }}
   onDownload={_downloadCsv}
 >
   {#snippet left()}
-    {#if _activeStatus === 'gtt'}
-      <span class="ob-count">{_filteredGttRows.length} gtt{_filteredGttRows.length !== 1 ? 's' : ''}</span>
-    {:else}
-      <span class="ob-count">{filteredOrderRows.length} order{filteredOrderRows.length !== 1 ? 's' : ''}</span>
-    {/if}
+    <span class="ob-count">{filteredOrderRows.length} order{filteredOrderRows.length !== 1 ? 's' : ''}</span>
   {/snippet}
 </CardHeader>
 
@@ -904,7 +797,6 @@
       { id: 'open',               label: 'Open',               status: 'running', count: _statusCounts.open },
       { id: 'complete',           label: 'Filled',             status: 'active',  count: _statusCounts.complete },
       { id: 'rejected_cancelled', label: 'Rejected/Cancelled', status: 'error',   count: _statusCounts.rejected_cancelled },
-      { id: 'gtt',                label: 'GTT',                status: 'gtt',     count: _filteredGttRows.length },
     ] as f}
       <button type="button" class="ob-sc" class:is-active={_activeStatus === f.id}
         data-status={f.status}
@@ -915,59 +807,7 @@
     {/each}
   </div>
 <div class="ob-scroll">
-  {#if _activeStatus === 'gtt'}
-    {#if _filteredGttRows.length}
-      <div class="oc-book-grid">
-        {#each _filteredGttRows as g (`${g.account}:${g.gtt_id}`)}
-          {@const _gKey = `${g.account}:${g.gtt_id}`}
-          <div class="algo-status-card gtt-card text-left p-2.5" data-status={_gttStatusDataAttr(g.status)}>
-            <div class="flex items-center justify-start gap-2 mb-0.5">
-              <span class="font-semibold text-xs min-w-0 truncate">
-                <!-- `.oc-acct` (shared with OrderCard.svelte) reads
-                     --acct-color inline, same pattern as OrderCard's own
-                     span (order/OrderCard.svelte ~line 173) — without
-                     this inline style the stripe falls back to
-                     `transparent` and never shows a colour (2026-09-30
-                     consistency-pass fix). -->
-                <span class="oc-acct" style={g.account ? `--acct-color: ${acctColor(g.account) || 'transparent'};` : ''}>{g.account}</span>
-                <span class="text-[var(--algo-slate)]">{g.tradingsymbol || '—'}</span>
-              </span>
-              <span class="algo-status-pill ml-auto flex-shrink-0">{(g.status || '').toUpperCase() || 'GTT'}</span>
-            </div>
-            <div class="flex flex-wrap items-center gap-y-1">
-              {#if g.exchange}<span class="log-chip"><span class="log-chip-key">ex:</span>{g.exchange}</span>{/if}
-              <span class="log-chip"><span class="log-chip-key">trigger:</span>{(g.trigger_values || []).map(v => priceFmt(v)).join(' / ') || '—'}</span>
-              {#if g.last_price}<span class="log-chip"><span class="log-chip-key">ltp:</span>{priceFmt(g.last_price)}</span>{/if}
-              {#if g.trigger_type}<span class="log-chip"><span class="log-chip-key">type:</span>{g.trigger_type}</span>{/if}
-            </div>
-            <div class="lp-oc-actions mt-1" role="group" aria-label="GTT actions">
-              <button type="button" class="lp-oc-btn lp-oc-cancel"
-                title="Cancel GTT"
-                aria-label="Cancel"
-                disabled={_cancellingGtt.has(_gKey)}
-                onclick={(e) => { e.stopPropagation(); _cancelGttRow(g); }}>
-                <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                  <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.8"
-                        stroke-linecap="round"/>
-                </svg>
-              </button>
-            </div>
-          </div>
-        {/each}
-        {#if _gttCancelErr}
-          <div class="log-row log-agent-failed">{_gttCancelErr}</div>
-        {/if}
-      </div>
-    {:else}
-      <div class="log-debug py-2 text-center">
-        {#if _loading}
-          Loading…
-        {:else}
-          No standing GTT orders.
-        {/if}
-      </div>
-    {/if}
-  {:else if filteredOrderRows.length}
+  {#if filteredOrderRows.length}
     <div class="oc-book-grid">
       {#each filteredOrderRows as o (o.order_id ?? o.id)}
         {@const _oKey = String(o.order_id || o.id || '')}
@@ -1185,13 +1025,11 @@
   /* Backstop (belt-and-suspenders) — even with the minmax(0, 1fr) track
      fix above, a grid ITEM's own default `min-width: auto` can still
      floor it at content size in edge cases (e.g. a future non-wrapping
-     addition to the card). Pin both grid-item shapes this grid ever
-     renders (OrderCard's `.order-card` and OrderBook's own inline GTT
-     card `.gtt-card`) to `min-width: 0` directly, matching LogPanel's
-     `.lp-multicol .log-row { min-width: 0 }` convention for the
-     identical CSS-grid-intrinsic-sizing trap. */
-  .ob-scroll :global(.oc-book-grid .order-card),
-  .ob-scroll :global(.oc-book-grid .gtt-card) {
+     addition to the card). Pin the grid-item shape this grid renders
+     (OrderCard's `.order-card`) to `min-width: 0` directly, matching
+     LogPanel's `.lp-multicol .log-row { min-width: 0 }` convention for
+     the identical CSS-grid-intrinsic-sizing trap. */
+  .ob-scroll :global(.oc-book-grid .order-card) {
     min-width: 0;
   }
 
@@ -1297,24 +1135,10 @@
       linear-gradient(180deg, #2c3a5a 0%, #1a2740 100%);
     border-color: rgba(125, 211, 252, 0.55);
   }
-  /* GTT chip — cyan tint (2026-09-30), the one existing palette color not
-     already claimed by a sibling chip (amber=Open, green=Filled,
-     red=Rejected/Cancelled, sky=Chase) — standing broker-side GTTs are a
-     structurally distinct concept (not an AlgoOrder status at all) so they
-     read as neither "resting order" (sky) nor "filled" (green). */
-  .ob-sc[data-status="gtt"] {
-    background:
-      linear-gradient(180deg,
-        rgba(34, 211, 238, 0.18) 0%,
-        rgba(34, 211, 238, 0.05) 60%,
-        rgba(0, 0, 0, 0.08) 100%),
-      linear-gradient(180deg, #2c3a5a 0%, #1a2740 100%);
-    border-color: rgba(34, 211, 238, 0.55);
-  }
   /* Held/Attention chip — violet tint (audit fix, 2026-10), the one
      remaining palette color not already claimed by a sibling chip
-     (sky=Chase, amber=Open, green=Filled, red=Rejected/Cancelled,
-     cyan=GTT). Covers HELD (operator-review hold) and CANCEL_FAILED (a
+     (sky=Chase, amber=Open, green=Filled, red=Rejected/Cancelled).
+     Covers HELD (operator-review hold) and CANCEL_FAILED (a
      cancel request failed — order may still be live at the broker): both
      need an unmistakably distinct, attention-grabbing color since they
      represent orders needing operator action, not a routine resting or
@@ -1348,7 +1172,6 @@
   .ob-sc[data-status="active"]    .ob-sc-n { color: var(--c-long, #4ade80); }
   .ob-sc[data-status="error"]     .ob-sc-n { color: var(--c-short, #f87171); }
   .ob-sc[data-status="chase"]     .ob-sc-n { color: var(--algo-sky, #7dd3fc); }
-  .ob-sc[data-status="gtt"]       .ob-sc-n { color: var(--algo-cyan, #22d3ee); }
   .ob-sc[data-status="held"]      .ob-sc-n { color: var(--algo-violet, #c084fc); }
 
   /* No overflow/text-overflow/max-width here (2026-10-23 fix, removed) —
@@ -1365,7 +1188,7 @@
     white-space: nowrap;
   }
 
-  /* 6 status chips (Held-Attn/Chase/Open/Filled/Rejected-Cancelled/GTT) —
+  /* 5 status chips (Held-Attn/Chase/Open/Filled/Rejected-Cancelled) —
      below 600px, tighten padding + letter-spacing so more of the
      horizontally-scrolling row is visible before the operator needs to
      swipe; the row itself now absorbs any remaining width via
