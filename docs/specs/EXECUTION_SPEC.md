@@ -222,22 +222,26 @@ Before registering an order with PaperTradeEngine, the action handler runs prefl
 
 | Guard | Applies to | Action |
 |---|---|---|
-| G1 (LOT_MULTIPLE) | F&O | Qty must be multiple of lot_size (removed from ticket handler, exists as sync check in `apply_plan_live` GTT layer) |
+| G1 (LOT_MULTIPLE) | F&O | Qty must be multiple of lot_size (removed from ticket handler; the GTT-layer sync check this row used to also name is gone — see note below) |
 | G2 (FAT_FINGER) | Equity + F&O | 5-lot cap NSE, 20-lot cap MCX (bypassable via intent="close") |
 | Margin validation | All | Sufficient margin required (shadow mode validates only) |
 
-**G1 clarification**: G1 was removed from the ticket handler boundary but still
-exists as a synchronous guard at the top of `apply_plan_live()` in the GTT layer
-(`backend/api/algo/template_attach.py`) before any broker call. These are two
-distinct checkpoints.
+**G1 clarification**: G1 was removed from the ticket handler boundary. It used to also exist as a
+synchronous guard at the top of `apply_plan_live()` in the GTT layer
+(`backend/api/algo/template_attach.py`) before any broker call — that second checkpoint is
+*(RETIRED — `apply_plan_live`/`template_attach.py` deleted, Bracket/Template-GTT removal, T3.1,
+2026-11)*. G1 at the ticket boundary remains removed-by-design (see "G1 guards on close paths" in
+CLAUDE.md); there is no longer a second GTT-layer checkpoint to distinguish it from.
 
 **G2 bypass**: Close orders (intent="close") skip the FAT_FINGER cap to allow position exit.
 
 **50-lot adapter ceiling**: The adapter ceiling in `kite.py:place_order` (50-lot
 cap on Kite) is bypassed when `intent='close'` — close orders of any size are
-allowed through; the ceiling only guards new open orders. Note: `place_gtt` in
-`kite.py` has a separate, unconditional ceiling with no intent bypass — close GTT
-orders go through the ceiling check regardless of intent.
+allowed through; the ceiling only guards new open orders. *(The note that used to follow here —
+`place_gtt` in `kite.py` has a separate, unconditional ceiling with no intent bypass — is
+RETIRED: `place_gtt`/`modify_gtt` are deleted from the Broker ABC and every adapter, Bracket/
+Template-GTT removal, T3.1, 2026-11. `get_gtts`/`cancel_gtt` are kept, unrelated, and carry no
+such ceiling.)*
 
 ### Chase fill criteria
 
@@ -377,4 +381,5 @@ Orders appear in the Order grid with `mode='shadow'` tag. No fill history or pos
 
 | Date | Change |
 |---|---|
+| 2026-11-09 | Doc-sync for Bracket/Template/GTT removal (T3.1–T3.6, 2026-11; spec-only, no code change). §8 "Chase Loop and Fill Logic": the G1 table row and "G1 clarification" note no longer claim a live second GTT-layer checkpoint in `apply_plan_live()`/`template_attach.py` — both deleted. The "50-lot adapter ceiling" note's claim about a separate unconditional ceiling in `kite.py:place_gtt` is retired — `place_gtt`/`modify_gtt` are deleted from the Broker ABC and every adapter; `get_gtts`/`cancel_gtt` survive, unrelated, with no such ceiling. |
 | 2026-07-11 | v1.0 initial spec from codebase audit |

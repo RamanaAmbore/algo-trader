@@ -21,7 +21,7 @@ Alerts were sent directly from the code that detected the event.
 | Error alerts | `ErrorAlertHandler` on the logging queue, with its own repeat gate (3 in 15 min, 15 min cooldown, `alert_now` bypass). Sent from its own thread. |
 | Fills | `fill_notify.notify_fills` called the sender directly after each FILLED transition. |
 | Order failures | `send_order_failure_alert` called from ~8 sites. Redis cooldown (`ramboq:order_alert:*`) and an in-process fallback. Telegram, ntfy, email. |
-| Template attach | Direct `_alert_route` and `send_ntfy_alert` calls from `template_attach.py` and `orders_place.py`. |
+| Template attach | Direct `_alert_route` and `send_ntfy_alert` calls from `template_attach.py` and `orders_place.py`. *(Module since deleted — `template_attach.py` was removed in the Bracket/Template-GTT removal, T3.1, 2026-11. Historical row only.)* |
 | Chase | Direct ntfy in `chase.py` for cancel-unconfirmed. |
 | Rich agent alerts | `_v2_send_rich_alert` built rows, then called `_dispatch` in a thread. |
 | Summaries | `send_summary` called `_dispatch` directly. Callers in `background.py`, `actions_live.py`, `actions.py`. |
@@ -94,15 +94,27 @@ time and survives log→event-agent replay via `agent_id` in `extra` dict.
 | Condition | Label | Meaning |
 |---|---|---|
 | `agent_id is None` + `source not in {"template_wing", "template_wing_chase"}` | Manual | Operator-placed order (no agent) |
-| `agent_id is None` + `source in {"template_wing", "template_wing_chase"}` | Manual Bracket | Template/Bracket exit on operator-placed parent |
+| `agent_id is None` + `source in {"template_wing", "template_wing_chase"}` | Manual Bracket | Template/Bracket exit on operator-placed parent *(unreachable — see note below)* |
 | `agent_id is not None` + `source not in {"template_wing", "template_wing_chase"}` | Agent | Agent-fired order |
-| `agent_id is not None` + `source in {"template_wing", "template_wing_chase"}` | Agent Bracket | Bracket exit on agent-fired parent |
+| `agent_id is not None` + `source in {"template_wing", "template_wing_chase"}` | Agent Bracket | Bracket exit on agent-fired parent *(unreachable — see note below)* |
+
+**Bracket rows now unreachable (Bracket/Template-GTT removal, T3.1, 2026-11).** `template_attach.py`
+— the only producer that could ever set `source` to `"template_wing"` or `"template_wing_chase"` —
+is deleted, so the two Bracket rows above can never match in practice. The classifier itself,
+`_classify_order_origin_label()` and its `_BRACKET_SOURCES` set
+(`backend/shared/helpers/alert_utils.py:1398`), was NOT deleted — it is still live code, still
+covered by tests (`test_order_failure_alert_origin_labels.py`), and still correctly resolves
+"Manual"/"Agent" for the two reachable rows above. This is residual dead code, not a bug: no
+producer in the current codebase can ever supply one of the two Bracket-shaped `source` values, so
+those two branches are inert. Flagged here as historical design rationale for inert code, not
+removed from this doc or from `alert_utils.py`.
 
 **Threading**: `agent_id` parameter passes through `send_order_failure_alert()`
 kwarg (call sites: chase.py, template_attach.py, order_hold_gate.py,
 ExpiryEngine, background.py recovery sweep) and reaches the renderer via
 `event_agents._render_order_failure()` reading it back from the replayed
-record's `extra` dict.
+record's `extra` dict. *(`template_attach.py` is one of the listed call sites but no longer
+exists — removed, T3.1, 2026-11. The other four call sites are live and unaffected.)*
 
 ### 3.3 Event agents (seeded)
 
@@ -977,7 +989,7 @@ retired detector's `source_slug`, so all three channel agents show the same labe
 | `error_alerts.py` | `ErrorAlertHandler` removed. `RepeatGate` and `SharedRepeatGate` |
 | `alert_utils.py` | `dispatch_payload`, `_email_message`, `_send_email_to_recipients` split out of `_dispatch`. `order_failure_messages`. Summary and order failure record instead of send |
 | `fill_notify.py` | Records instead of sends |
-| `chase.py`, `template_attach.py`, `orders_place.py` | Record instead of send |
+| `chase.py`, `template_attach.py`, `orders_place.py` | Record instead of send *(`template_attach.py` since deleted — Bracket/Template-GTT removal, T3.1, 2026-11. Historical row only; `chase.py`/`orders_place.py` unaffected.)* |
 | `agent_engine.py` | Rich alert records instead of `_dispatch` |
 | `background.py` | Deploy-sync and summary record. Cross-loop market save |
 | `lab.py` | MCP pings record |

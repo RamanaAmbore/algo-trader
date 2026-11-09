@@ -3,7 +3,7 @@
 Single source of truth for `backend/brokers/` — the vendor-agnostic broker abstraction layer.
 Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.34 — 2026-10-23  
+**Version**: 1.35 — 2026-11-09  
 **Owner**: Platform  
 **Linked files**: `backend/brokers/base.py` · `backend/brokers/registry.py` · `backend/brokers/connections.py` · `backend/brokers/kite_ticker.py` · `backend/brokers/mmap_ticker.py` · `backend/brokers/adapters/` · `backend/brokers/service/` · `backend/brokers/client/`
 
@@ -39,8 +39,8 @@ Code, tests, and documentation must stay in sync with this file.
 7.5 [SSE Quote Stream — Server Version Handshake](#75-sse-quote-stream--server-version-handshake-sep-2026)
 8. [Adapter Implementations](#8-adapter-implementations)
 8.1 [Order Placement Guards & Intent Bypass](#81-order-placement-guards--intent-bypass)
-8.2 [GTT Exchange Validation & MCX Broker Restrictions](#82-gtt-exchange-validation--mcx-broker-restrictions)
-8.3 [GTT Template Attachment System Enhancements](#83-gtt-template-attachment-system-enhancements-jul-2026)
+8.2 [GTT Exchange Validation & MCX Broker Restrictions](#82-gtt-exchange-validation--mcx-broker-restrictions) *(historical/removed — Bracket/Template-GTT removal, T3.1, 2026-11)*
+8.3 [GTT Template Attachment System Enhancements](#83-gtt-template-attachment-system-enhancements-jul-2026) *(historical/removed — Bracket/Template-GTT removal, T3.1, 2026-11)*
 8.4 [Broker Postback Fill-Status Mapping](#84-broker-postback-fill-status-mapping)
 8.5 [Orders Fetching Resilience & Chase Timeouts](#85-orders-fetching-resilience--chase-timeouts)
 8.5.1 [Canonical Broker-Truth Accessor (2026-10-23)](#851-canonical-broker-truth-accessor-2026-10-23)
@@ -1729,7 +1729,7 @@ carry no PII).
 
 ### KiteBroker
 - `translate_qty` inherited from base; no adapter-specific overrides
-- Every GTT leg AND wing MUST call `translate_qty` before `place_gtt()` — `place_gtt` does NOT auto-translate (incident 2026-07-02)
+- Every GTT leg AND wing MUST call `translate_qty` before `place_gtt()` — `place_gtt` does NOT auto-translate (incident 2026-07-02). *(Historical — `place_gtt`/`modify_gtt` were removed from the Broker ABC and every adapter in the Bracket/Template-GTT removal, T3.1, 2026-11; `translate_qty` itself is still live and still required for every regular order placement, see I2/I13 below.)*
 - `place_order(qty, ...)` has a 50-lot adapter ceiling; bypassed for `intent="close"`
 - `_truncate_tag(kwargs)` — defensive 20-char tag truncation before every `place_order`
 
@@ -1750,6 +1750,10 @@ carry no PII).
   `cancel_forever`, `get_forever`) now use the `"orders"` rate-limit bucket (`_sdk_orders`)
   instead of the default no-bucket category (`_sdk`). This aligns GTT operations with
   regular order placement under the same rate-limit ceiling (20 orders/s).
+  *(Partially historical — `DhanBroker.place_gtt`/`modify_gtt` (which called `place_forever`/
+  `modify_forever`) were removed in the Bracket/Template-GTT removal, T3.1, 2026-11. `cancel_gtt`/
+  `get_gtts` — the standalone "view/cancel any broker GTT" feature — are still live and still call
+  `cancel_forever`/`get_forever` under this same `_sdk_orders` bucket.)*
 - **Request stagger to avoid 429s** (Aug 2026): `_DhanSDKProxy` stagger delay (50ms per request)
   built into SDK call retry logic to avoid triggering Dhan's 429 rate-limit during burst periods.
 - **Order type UNKNOWN_CAPS fallback** (Aug 2026): `_dhan_normalise_one_order()` now has a
@@ -1757,7 +1761,9 @@ carry no PII).
   response is unrecognised, the adapter returns `"UNKNOWN_CAPS"` string instead of raising.
   Allows order-book grids to display unknown order types gracefully rather than crashing.
 - `historical_data()` returns `[]` by design — excluded from `get_historical_brokers()`
-- `place_gtt()` raises `NotImplementedError` for MCX/NCO
+- `place_gtt()` raised `NotImplementedError` for MCX/NCO. *(Historical — `place_gtt`/`modify_gtt`
+  were removed from the Broker ABC and this adapter in the Bracket/Template-GTT removal, T3.1,
+  2026-11. Nothing calls this path anymore.)*
 
 ### GrowwBroker
 - **Groww `translate_qty` contracts-only override with validation** (Sep 2026): Groww positions API returns quantities 
@@ -1785,7 +1791,7 @@ The close-intent bypass fix must verify intent ONCE and propagate the verified v
 
 1. **Verification point**: `_ticket_enforce_lot_and_fat_finger()` calls `_verify_close_intent()` to check whether `intent="close"` matches the real broker position (sign match: BUY reduces SHORT or SELL reduces LONG; magnitude OK: `qty ≤ open_qty`)
 2. **Propagation**: `_ticket_enforce_lot_and_fat_finger()` mutates `data.intent` in place to the server-verified result — either `"close"` (if verification passed) or `None` (if verification failed or intent was not close originally)
-3. **Downstream reads**: Every subsequent consumer (`_ticket_check_mcx_size_cap`, `_ticket_run_preflight`, broker.place_order/GTT calls) reads from the same mutated `data.intent` field, guaranteed to see the verified value
+3. **Downstream reads**: Every subsequent consumer (`_ticket_check_mcx_size_cap`, `_ticket_run_preflight`, broker.place_order/GTT calls) reads from the same mutated `data.intent` field, guaranteed to see the verified value. *(The "GTT calls" half is historical — the template/GTT-attach path that could reach a GTT call from here was removed, T3.1, 2026-11. `broker.place_order` is still live and still reads the verified `data.intent`.)*
 
 **Basket path (`/api/orders/basket` — Chain tab order placement)**
 
@@ -1803,6 +1809,16 @@ The close-intent bypass fix must verify intent ONCE and propagate the verified v
 Non-close orders remain subject to all guards. The verification check is strict — fake close claims (wrong sign or magnitude) fail silently without raising.
 
 **Constants consolidation**: Previously, MCX/FO lot-cap literals (`20`, `5`) were hardcoded independently in three locations. Now unified: `MCX_MAX_LOTS` and `FO_FAT_FINGER_LOT_CAP` defined once in `backend/api/algo/actions_preflight.py` and imported by both route files.
+
+> **REMOVED — Bracket/Template/GTT (T3.1–T3.6, 2026-11).** Historical record only; do not
+> reintroduce without a new design decision. `backend/api/algo/template_attach.py`,
+> `bracket_registry.py`, the `order_templates` DB table, and `AlgoOrder.template_id` /
+> `.attached_gtts_json` / `.template_overrides_json` / `.template_hold_override` /
+> `Agent.legacy_template_id` / `.bracket_config` are all deleted. `Broker.place_gtt`/`modify_gtt`
+> are deleted from the Broker ABC and every adapter. `Broker.get_gtts`/`cancel_gtt` are KEPT — a
+> separate, still-live "view/cancel any broker GTT regardless of how it got there" feature,
+> confirmed independent of Bracket (see `backend/api/routes/orders_gtt.py`). The whole span below,
+> through the end of §8.2, describes the deleted system as it stood before removal.
 
 ## 8.3. GTT Template Attachment System Enhancements (Jul 2026)
 
@@ -1988,6 +2004,15 @@ This gate prevents misconfigured GTT templates from reaching the exchange. The p
 (50-lot adapter ceiling in `kite.py:place_order`) provides last-line defence; this pre-flight 
 check stops obviously broken plans early with a diagnostic message.
 
+> **REMOVED — Bracket/Template/GTT (T3.1–T3.6, 2026-11).** Historical record only; do not
+> reintroduce without a new design decision. (Separate TOC anchor from the §8.3 banner above — a
+> reader jumping straight here needs this note too.) The `apply_plan_live`/`apply_template_to_order`
+> call sites this section describes are deleted along with `template_attach.py`. The
+> `validate_gtt_exchange(exchange)` method itself is NOT deleted — it remains defined on the
+> `Broker` base class and on the Dhan/Groww adapters (`backend/brokers/base.py`,
+> `backend/brokers/adapters/dhan.py`, `backend/brokers/adapters/groww.py`), and `RemoteBroker`
+> still forwards it to conn_service. It simply has no live caller anymore.
+
 ## 8.2. GTT Exchange Validation & MCX Broker Restrictions
 
 **`validate_gtt_exchange(exchange)` method** (commit b8b1214c): New method on the `Broker` base class (`backend/brokers/base.py`, line 222). Default is a no-op (all exchanges allowed). Called at the top of `apply_plan_live` in `template_attach.py` before lot-size resolution, plan resolution, or any broker call.
@@ -2025,7 +2050,12 @@ open.
 
 ### Fill-Status Mapping
 
-Per-broker mapping of fill-completion status tokens used to gate template-attach fan-out (#13):
+Per-broker mapping of fill-completion status tokens used to gate template-attach fan-out (#13).
+*(The "gate template-attach fan-out" purpose is historical — `template_attach.py` and the attach
+fan-out it gated were removed in the Bracket/Template-GTT removal, T3.1, 2026-11. The mapping
+below, and `_broker_is_fill_status()`, remain live: they now drive the general broker-status →
+FILLED/CANCELLED/REJECTED/UNFILLED transition in `orders_postback.py` for the whole order
+lifecycle, not only template attach.)*
 
 | Broker | Fill token | Notes |
 |---|---|---|
@@ -2034,7 +2064,12 @@ Per-broker mapping of fill-completion status tokens used to gate template-attach
 | Groww | `COMPLETE` | Via postback webhook |
 | (default) | `COMPLETE` | Fallback for unknown brokers |
 
-Template attach only fires when `_broker_is_fill_status(broker_id, status)` returns True. Non-fill terminal statuses (CANCELLED, REJECTED, EXPIRED) are blocked even if routed through `_BROKER_STATUS_MAP` to FILLED. This prevents attaching GTT exits on non-fill events.
+`_broker_is_fill_status(broker_id, status)` resolves whether a broker-specific status token counts
+as a fill confirmation. Non-fill terminal statuses (CANCELLED, REJECTED, EXPIRED) are blocked even
+if routed through `_BROKER_STATUS_MAP` to FILLED. *(The second sentence's original framing —
+"this prevents attaching GTT exits on non-fill events" — is historical; there is no GTT-exit
+attach left to gate. The function itself still governs the row's own FILLED transition and is
+still live.)*
 
 ### Postback Authentication (2026-09)
 
@@ -3035,7 +3070,7 @@ Virtual symbols (`CRUDEOIL`, `CRUDEOIL_NEXT`, `USDINR`, etc.) are never sent raw
 
 **I1 — Kite-only for historical data**: `ohlcv_store._broker_fetch_sync` and `intraday_store._broker_fetch_sync` MUST use `get_historical_brokers()[0]`. Violation: silent empty bars (incident 2026-07-11).
 
-**I2 — `translate_qty` before every GTT leg (unified base class)**: `apply_plan_live` MUST call `broker.translate_qty(exchange, raw_qty, lot_size)` for every GTT leg AND wing before `broker.place_gtt()` (incident 2026-07-02: 1-lot MCX = 100 lots sent). As of Aug 2026, `translate_qty` is implemented in the base class with `@exchange_qty_convention` decorator handling MCX/NCO contracts→lots conversion; all adapters (Kite, Dhan, Groww) inherit this unified rule instead of duplicating it. RemoteBroker must still override to delegate via `_call()` to the conn-service.
+**I2 — `translate_qty` before every GTT leg (unified base class)**: `apply_plan_live` MUST call `broker.translate_qty(exchange, raw_qty, lot_size)` for every GTT leg AND wing before `broker.place_gtt()` (incident 2026-07-02: 1-lot MCX = 100 lots sent). As of Aug 2026, `translate_qty` is implemented in the base class with `@exchange_qty_convention` decorator handling MCX/NCO contracts→lots conversion; all adapters (Kite, Dhan, Groww) inherit this unified rule instead of duplicating it. RemoteBroker must still override to delegate via `_call()` to the conn-service. *(GTT half moot — `apply_plan_live`/`broker.place_gtt` were removed in the Bracket/Template-GTT removal, T3.1, 2026-11. The base-class `translate_qty` rule and the RemoteBroker-delegation half still govern every regular order placement — see I13.)*
 
 **I3 — Token cache atomicity**: `tempfile + os.replace()` under `fcntl.flock(LOCK_EX)`. No direct JSON writes.
 
@@ -3084,21 +3119,21 @@ and `special_sessions=`. See CLAUDE.md "Market open/close determination" for the
 
 **I14 — Closed-hours snapshot query combines latest + prior-session CTEs and filters qty by date**: `_positions_snapshot()` in `backend/api/routes/positions.py` uses a single SQL query with `latest_batch` (today's most recent capture per account) and `prev_batch` CTEs (prior-session's most recent row per account/symbol). The `prev_batch` window is anchored on `captured_at < max_at AND captured_at >= max_at - INTERVAL '7 days'` to survive UTC/IST date-column edge cases; `prev_close_val` prefers yesterday's `prev_ltp` (from daily_book) FIRST, falling back to snapshot's `previous_close` only when `prev_ltp` is absent/zero. Rationale: after MCX closes at 23:30 IST the broker sets `previous_close = today_settlement`, which would collapse Day P&L to 0. Using yesterday's LTP preserves the correct close price through the closed window. Off-hours query uses refined filter `AND (db.qty != 0 OR db.date = :today_ist)` (commits cef00739, 5ac11f56): positions closed intraday (qty=0, captured today IST) appear in the snapshot with 'closed' chip + opacity decoration in derivatives legs grid; next morning before market opens, yesterday's closed legs are absent (db.date != today_ist), only carried-overnight open positions show, matching broker book when gate opens.
 
-**I15 — Template attach only on full fill**: Template attach fires when `filled_qty >= qty` (parent order fully filled). Partial fills are logged but do NOT trigger GTT placement. The remaining open qty must be left without premature stops.
+**I15 — Template attach only on full fill**: Template attach fires when `filled_qty >= qty` (parent order fully filled). Partial fills are logged but do NOT trigger GTT placement. The remaining open qty must be left without premature stops. *(RETIRED — `template_attach.py` and the attach fan-out it gated were removed, Bracket/Template-GTT removal T3.1, 2026-11. No live caller.)*
 
-**I16 — GTT trigger direction vs parent side**: GTT trigger validation confirms BUY TP > fill, SELL TP < fill, BUY SL < fill, SELL SL > fill. Triggers must be strictly positive. Circuit band check: trigger must not deviate >50% from LTP when known. Validation fires at preview (422) and logs CRITICAL at apply-at-fill if violated.
+**I16 — GTT trigger direction vs parent side**: GTT trigger validation confirms BUY TP > fill, SELL TP < fill, BUY SL < fill, SELL SL > fill. Triggers must be strictly positive. Circuit band check: trigger must not deviate >50% from LTP when known. Validation fires at preview (422) and logs CRITICAL at apply-at-fill if violated. *(RETIRED — `TicketPreviewResponse`/`gtt_trigger_errors` and the apply-at-fill validation were removed with the template system, T3.1–T3.6, 2026-11.)*
 
-**I17 — Per-broker fill-status token resolution**: Template attach gate checks broker-specific fill tokens via `_broker_is_fill_status(broker_id, status)`. Kite: COMPLETE, Dhan: TRADED, Groww: COMPLETE. Non-fill terminal statuses (CANCELLED, REJECTED, EXPIRED) block attach even if routed through `_BROKER_STATUS_MAP` to FILLED.
+**I17 — Per-broker fill-status token resolution**: Template attach gate checks broker-specific fill tokens via `_broker_is_fill_status(broker_id, status)`. Kite: COMPLETE, Dhan: TRADED, Groww: COMPLETE. Non-fill terminal statuses (CANCELLED, REJECTED, EXPIRED) block attach even if routed through `_BROKER_STATUS_MAP` to FILLED. *(Partially moot — the "template attach gate" framing is historical, T3.1, 2026-11. `_broker_is_fill_status()` and the fill-token resolution itself remain live: they drive the general FILLED-status transition in `orders_postback.py` for the whole order lifecycle, not only template attach.)*
 
-**I18 — Postback attach TOCTOU protection**: Idempotency check re-fetches `attached_gtts_json` INSIDE the per-parent-order async lock (`_get_template_attach_lock`). Prevents postback handler + reconcile path from both passing the `is None` check simultaneously and double-placing GTTs.
+**I18 — Postback attach TOCTOU protection**: Idempotency check re-fetches `attached_gtts_json` INSIDE the per-parent-order async lock (`_get_template_attach_lock`). Prevents postback handler + reconcile path from both passing the `is None` check simultaneously and double-placing GTTs. *(RETIRED — `attached_gtts_json`, `_get_template_attach_lock` and the attach fan-out are all removed, T3.1–T3.6, 2026-11.)*
 
-**I19 — LIMIT TP slippage offset per exchange**: LIMIT TP legs apply exchange-specific tick offsets to improve fill probability. NFO/BFO/CDS: 0.05 (default). Futures/others: 0.5 (default). Config keys: `template.tp_limit_tick_offset_nfo`, `template.tp_limit_tick_offset_default`. SL legs always remain at trigger with no offset. Both trigger prices and LIMIT offset prices snap to the instrument's tick grid (see section 8.3 "GTT price tick-grid snap").
+**I19 — LIMIT TP slippage offset per exchange**: LIMIT TP legs apply exchange-specific tick offsets to improve fill probability. NFO/BFO/CDS: 0.05 (default). Futures/others: 0.5 (default). Config keys: `template.tp_limit_tick_offset_nfo`, `template.tp_limit_tick_offset_default`. SL legs always remain at trigger with no offset. Both trigger prices and LIMIT offset prices snap to the instrument's tick grid (see section 8.3 "GTT price tick-grid snap"). *(RETIRED — TP/SL leg construction was removed with `template_attach.py`, T3.1, 2026-11.)*
 
-**I20 — Scale-out rounding to lot multiple**: Scale-out GTT qtys rounded UP to nearest lot multiple; last entry trimmed to cap total at parent_qty. Qty lost to rounding is noted in `plan.notes`. Ensures no sub-lot GTT leg reaches the broker.
+**I20 — Scale-out rounding to lot multiple**: Scale-out GTT qtys rounded UP to nearest lot multiple; last entry trimmed to cap total at parent_qty. Qty lost to rounding is noted in `plan.notes`. Ensures no sub-lot GTT leg reaches the broker. *(RETIRED — scale-out GTT construction was removed with `template_attach.py`, T3.1, 2026-11.)*
 
-**I21 — Wing feasibility in preview**: `TicketPreviewResponse` includes `wing_feasible=False` when wing template required but no liquid strike found. Operator can adjust settings or skip wing before submit. Prevents silent wing-skip surprises at fill time.
+**I21 — Wing feasibility in preview**: `TicketPreviewResponse` includes `wing_feasible=False` when wing template required but no liquid strike found. Operator can adjust settings or skip wing before submit. Prevents silent wing-skip surprises at fill time. *(RETIRED — `TicketPreviewResponse` and the wing-attach preview were removed with the template system, T3.1–T3.6, 2026-11; `ticket_preview` is now a stub, per CLAUDE.md.)*
 
-**I22 — Template attach blocked on close/offset orders**: When an order would close or reduce an existing position, `template_id` is cleared at three layers: (1) ticket submit via `_is_offsetting_position()` position-book check + explicit `intent="close"` guard, (2) reconcile via `_opl_reconcile_attach_eligible()` intent/flag check, (3) postback via `_pb_wants_template_attach()` + `_pb_check_and_fire_template_attach()` async position check. Frontend also hides TemplateBar and clears `templateId` when `action === 'close'`. Ensures exit GTTs are never attached to close orders — a close order IS the exit; attaching stops to it creates nested/phantom positions.
+**I22 — Template attach blocked on close/offset orders**: When an order would close or reduce an existing position, `template_id` is cleared at three layers: (1) ticket submit via `_is_offsetting_position()` position-book check + explicit `intent="close"` guard, (2) reconcile via `_opl_reconcile_attach_eligible()` intent/flag check, (3) postback via `_pb_wants_template_attach()` + `_pb_check_and_fire_template_attach()` async position check. Frontend also hides TemplateBar and clears `templateId` when `action === 'close'`. Ensures exit GTTs are never attached to close orders — a close order IS the exit; attaching stops to it creates nested/phantom positions. *(RETIRED — `template_id`, `_opl_reconcile_attach_eligible()`, `_pb_wants_template_attach()` and `_pb_check_and_fire_template_attach()` are all removed, Bracket/Template-GTT removal T3.1, 2026-11. `_is_offsetting_position()` itself survives as a general, non-Bracket-specific helper — see §8.1 — but no longer clears a `template_id`, since that field no longer exists.)*
 
 **I23 — Snapshot orphan deletion on broker response**: After each per-account positions UPSERT in `snapshot_daily_book()`, `_delete_orphan_positions()` removes stale `daily_book` rows (kind='positions') whose symbol is absent from the current broker response. Broker response is marked with sentinel: `positions = None` (call failed, skip cleanup) vs `positions = []` or `[...]` (call succeeded, cleanup proceeds). Kite removes settled/squared-off positions from `broker.positions()` after settlement; orphan deletion prevents closed positions from persisting in the UI all night. Cleanup is idempotent and safe to re-run.
 
@@ -3692,3 +3727,4 @@ broker to prefetch during the quiet window without polluting snapshots.
 | 2026-10-19 | v1.33 API-side local tick poller self-heal (commit 7bf11fac): §7 documents `MmapTickReader.check_and_heal()` (dead poll task restarted via `ensure_started()`, `[MMAP-WATCHDOG]` critical log per dead→alive transition, escalation at ≥3 heals per 600 s) and the conn-service scope of `_task_ticker_watchdog`. §9.1 new subsection "API-Side Local Tick Poller Supervision" with the snapshot-lifecycle table (`_snapshot_unsub_nonmcx` / `_snapshot_stop_ticker` no-op, `_snapshot_restart_ticker` heals instead of restarting the broker ticker); replaces stale `_task_ticker_watchdog` early-return example. §5.4 08:00 row qualified for conn-service mode. New I32 invariant. Browser-side symptom documented in PULSE_SPEC §31.1. Tests: `test_mmap_ticker.py`, `test_bg_ticker_watchdog.py`, `test_bg_snapshot_ticker_lifecycle.py`. |
 | 2026-10-07 | v1.32 Active-chase registry prevents false "untracked order" aborts (commits cc353596, c5322d53): Added §8.5 subsection "Active-chase registry prevents false untracked order aborts" documenting in-process registry pattern. Module-level `_ACTIVE_CHASE_REFCOUNT` dict (`backend/api/algo/chase.py` line 648) tracks in-flight chases; `chase_order()` calls `mark_chase_active(algo_order_id)` at entry (line 660, increments refcount) and `unmark_chase_active()` at exit in try/finally (lines 672–676). Kite postback, Dhan/Groww postback, and `_chase_process_live_row()` reconcile finalizer (`orders.py` line 225) check `is_chase_active()` before writing non-FILLED terminal status — if active, withhold write (log + continue), allowing active chase to finish naturally. FILLED always applies. **Causal chain**: (1) Chase places order (T0). (2) Seconds later, postback arrives REJECTED. (3) Old code: `_sync_algo_order_id()` (line 1064) correctly refused update on FINAL row but loop still aborted with false "untracked" alert (saw final row, had no way to know postback caused it vs another race). (4) Registry: postback checks `is_chase_active(row.id)` — if active, skips status write. (5) Chase loop's `_emit_chase_terminal()` completes naturally, reads genuinely-REJECTED order, terminates correctly (not false "untracked" abort). Root cause fix for cc353596's original guard. Files: `backend/api/algo/chase.py` (functions `mark_chase_active`, `unmark_chase_active`, `is_chase_active`, `_sync_algo_order_id`); `backend/api/routes/orders_postback.py` (Kite/Dhan/Groww postback handlers); `backend/api/routes/orders.py` (`_chase_process_live_row`). |
 | 2026-10-23 | v1.34 Chase robustness overhaul + order-poll consolidation (commits `06c4ee45`, `8c0d5180`). **HTTP CONTRACT CHANGES** on `POST /api/orders/algo/reconcile` (`missing` now means "broker unavailable, row untouched", not "gone, marked UNFILLED") and `POST /api/orders/{broker_order_id}/reconcile` (502 on broker fetch failure replaced by 200 with `truth.available=false`). Added §8.5.1 canonical `get_broker_order_truth` / `apply_order_truth` accessor, superseding the four divergent reconcile implementations (SUPERSEDED table kept). Added §8.5.2 chase robustness (30 s per-call ceiling, ambiguous-abort path, stuck detector, `CANCEL_FAILED` as the unknown-fate abort marker, binary ntfy gate, `superseded_broker_order_ids_json`). Added §8.7 `order_poll.py` (shared wrapper, chase-active no-op gate, `bg-order-poll` sweep, 5 s postback follow-up verify, prior-day OPEN tradeoff, `order_correction` alert). §8.4.1 "does NOT get this guard" sentence AMENDED: admin reconcile now receives the final-status guard. §9.1 standing-task note. I33, I34 invariants. Test map rows added. |
+| 2026-11-09 | v1.35 Doc-sync for Bracket/Template/GTT removal (T3.1–T3.6, 2026-11; no code change, spec-only). The codebase removal predates this entry by several days — this is the overdue doc catch-up. Marked §8.3 "GTT Template Attachment System Enhancements", §8.3.1 "GTT Pre-flight Lot-Size Validation" and §8.2 "GTT Exchange Validation & MCX Broker Restrictions" with `REMOVED` banners (historical record only, content kept, not deleted); annotated their TOC entries `(historical/removed)`. Added inline historical notes to the live §8.1/§8 adapter bullets that referenced `place_gtt`/`modify_gtt` (Kite, Dhan GTT-rate-limit bucket, Dhan `NotImplementedError`, the "/GTT calls" phrase in §8.1 item 3). Clarified §8.4 "Fill-Status Mapping": its stated purpose ("gate template-attach fan-out") is moot, but `_broker_is_fill_status()`/`_BROKER_STATUS_MAP` remain live for the general FILLED-status transition — NOT banner-removed. §8.4's "Postback Authentication" subsection is unrelated to Bracket and untouched. Invariants I15, I16, I18, I19, I20, I21, I22 marked RETIRED (fully moot); I2 and I17 marked partially moot (GTT/template-attach half retired, `translate_qty`/RemoteBroker half and `_broker_is_fill_status()` half respectively remain live). `validate_gtt_exchange()` noted as a surviving but now-callerless method on the Broker base class and the Dhan/Groww adapters. No invariant number was renumbered or deleted — zero cross-references to I15–I22 were found elsewhere in this file's own invariants list (I2's new note explicitly forward-references I13, which is live and unaffected). |

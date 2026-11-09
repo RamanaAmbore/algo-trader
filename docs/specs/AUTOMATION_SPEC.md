@@ -18,7 +18,9 @@ and run-in-simulator testing.
 4. [Agent Lifespan and Status](#4-agent-lifespan-and-status)
 5. [Action Types and Dispatch](#5-action-types-and-dispatch)
 6. [Notification Channels](#6-notification-channels)
-7. [Templates and GTT Rules](#7-templates-and-gtt-rules)
+7. [Templates and GTT Rules](#7-templates-and-gtt-rules) *(mostly historical/removed —
+   Bracket/Template-GTT removal, T3.1–T3.6, 2026-11; the "Take-profit auto-attach" bullet
+   describes a separate, still-live mechanism — see the note at the top of §7)*
 8. [Run-in-Simulator Testing](#8-run-in-simulator-testing)
 9. [Cooldown, Debounce, and Suppression](#9-cooldown-debounce-and-suppression)
 10. [Edge Cases](#10-edge-cases)
@@ -308,6 +310,19 @@ order/agent grammars are similarly externalized.
 
 ## 7. Templates and GTT Rules
 
+> **REMOVED — Bracket/Template/GTT (T3.1–T3.6, 2026-11).** Historical record only; do not
+> reintroduce without a new design decision. `TemplatePlan`, the GTT attachment pipeline
+> (`apply_plan_live`, `backend/api/algo/template_attach.py`), `broker.place_gtt()`, the
+> `order_templates` DB table, `backend/api/routes/templates.py`, and the automation page's
+> Brackets tab/kind-card are ALL deleted. The "TemplatePlan"/"GTT attachment"/"UI surface"
+> bullets below describe the deleted system as it stood before removal.
+>
+> **One exception, still live:** the "Take-profit auto-attach" bullet below describes a
+> SEPARATE mechanism — the v1 fractional `target_pct`/`target_abs` auto-target shim
+> (`AlgoOrder.target_pct`/`.target_abs`/`.basket_tag`/`.parent_order_id`) — which survived the
+> removal intact. It was never part of the Bracket/Template/GTT system; it just happened to be
+> documented in the same section.
+
 **TemplatePlan** (saved rule set):
 - `symbol`, `side`, `entry_price_hint`, `qty`, `lot_size`
 - Attach to incoming order (parent_order_id)
@@ -322,13 +337,14 @@ order/agent grammars are similarly externalized.
    - Call `broker.place_gtt()`
 4. Adapter ceiling (50-lot MCX, other guards per broker)
 
-**Take-profit auto-attach**:
+**Take-profit auto-attach** *(still live — see the exception note above)*:
 - On parent fill: auto-create reverse order with target_pct=0.30 (default)
 - Fields: `parent_order_id`, `target_pct`, `target_abs`, `basket_tag`
 - Skipped if parent order rejected or stays PENDING
 
 **UI surface**: Brackets tab at `/automation?tab=brackets`. **API surface**: `/api/admin/templates/`
-(list/get demo-readable; create/update/delete admin-only).
+(list/get demo-readable; create/update/delete admin-only). *(Removed — see banner above.
+`?tab=brackets` now redirects to the Agents card; there is no separate Brackets card.)*
 
 ---
 
@@ -436,8 +452,9 @@ order/agent grammars are similarly externalized.
 | `/api/agents/{slug}/delete` | DELETE | Admin | Delete agent |
 | `/api/agents/{slug}/events` | GET | Required | Agent fire history |
 | `/api/agents/interpret` | POST | Required | Terminal command parser |
-| `/api/admin/templates/` | GET | Demo | List saved GTT templates |
-| `/api/admin/templates/` | POST | Admin | Create Order Template |
+
+*(Two rows removed here — `/api/admin/templates/` GET/POST — along with
+`backend/api/routes/templates.py`, Bracket/Template-GTT removal T3.1–T3.6, 2026-11.)*
 
 **Agent create/update payload**:
 ```json
@@ -485,7 +502,10 @@ order/agent grammars are similarly externalized.
 - **Condition tree edit**: Add leaf (metric, scope, op, value); delete node; toggle all/any/not
 - **Agent activation**: Inactive → Active → Triggered (after market event); status persists
 - **Run-in-Simulator**: Select agent, click button, verify SIM order in Activity log
-- **Template attachment**: Fill parent order → auto-attach take-profit + trail-stop
+- **Template attachment**: Fill parent order → auto-attach take-profit + trail-stop *(removed —
+  Bracket/Template-GTT removal, T3.1–T3.6, 2026-11. The take-profit half of this row's claim is
+  the separate, still-live v1 `target_pct` shim noted in §7; trail-stop/wing attachment itself is
+  gone.)*
 - **Notification preview**: Configure agent, see Telegram/Email preview in edit form
 
 ### Backend — pytest
@@ -496,6 +516,8 @@ order/agent grammars are similarly externalized.
 - **Debounce**: Condition true for < debounce_min doesn't fire; ≥ fires
 - **Lifespan n_fires**: Agent fires N times, then auto-deactivates (status → completed)
 - **GTT attach**: Parent fill triggers `apply_plan_live`, wings placed with correct qty translation
+  *(removed — `apply_plan_live` and `template_attach.py` were deleted, Bracket/Template-GTT
+  removal, T3.1, 2026-11.)*
 - **Suppression**: Parent agent suppresses child agent events during blackout window
 
 ---
@@ -504,6 +526,7 @@ order/agent grammars are similarly externalized.
 
 | Date | Change |
 |---|---|
+| 2026-11-09 | Doc-sync for Bracket/Template/GTT removal (T3.1–T3.6, 2026-11; spec-only, no code change). Banner-marked §7 "Templates and GTT Rules" `REMOVED` (historical record kept, not deleted), except the "Take-profit auto-attach" bullet, which documents a separate, still-live v1 `target_pct`/`target_abs` shim unaffected by the removal — flagged explicitly as the one live exception. Removed the two dead `/api/admin/templates/` rows from §11's API Contract table (the route file itself, `backend/api/routes/templates.py`, is deleted). Marked the "Template attachment" Playwright row and "GTT attach" pytest row in §12 as removed. Annotated the §7 TOC entry. |
 | 2026-10-17 | Legacy Console CLI fallback removed entirely (operator-confirmed deletion): `frontend/src/lib/order/CommandLineTab.svelte`, `frontend/src/lib/CommandBar.svelte`, and `frontend/src/lib/command/grammars/orders.js` (plus its `orders.yaml` symlink) deleted, along with all routing/dispatch code that existed only to support them. `consoleDispatch.js:classifyConsoleStatement` now returns `'agents'\|'unsupported'\|'empty'` (was `'agents'\|'orders'\|'legacy'\|'empty'`); `dispatchConsoleStatement`'s `onLegacyFallback` handler renamed `onUnsupported`. `ConsoleTab.svelte` no longer mounts CommandLineTab headless — text that doesn't classify as agent-family shows an inline "Unsupported syntax" hint instead of falling back to the positional buy/sell/modify/cancel grammar, `agent list`/`agent status` interpret, or raw `/api/admin/exec` shell passthrough (all of which are gone, by explicit operator decision — not migrated or reimplemented elsewhere). |
 | 2026-10-08 | CLI chase token now reaches order submission (`dd31a029`): `CommandLineTab.svelte:_buildOrderLeg` had hardcoded `chaseAgg: 'low'` regardless of typed `chase=HIGH|MED|LOW` token, discarding the operator's choice. Fixed: `buildOrderPayload()` now carries `chase_level` field (raw uppercase token) and `_buildOrderLeg` reads it, falling back to 'low' only when untyped. |
 | 2026-10-08 | Agent order actions DB-write fail-closed (`3aac91e6`): place_order / close_position / chase_close_positions previously placed real live orders even when the AlgoOrder row write failed (exception in `_write_live_order` or `_place_order_write_intent`). Same incident class as AlgoOrder #1088 (fixed for manual-ticket path). Fixed: actions_live.py now has shared `_on_algo_order_write_failure()` helper (logs ERROR + fires alert) and action handlers raise RuntimeError instead of proceeding to `chase_order()`. For `_action_live_chase_close_positions`, per-position loop skips (alerts + continue) only failed positions so already-queued chases proceed, then raises after all positions evaluated — outcome is `action_failure`, not false success. |
