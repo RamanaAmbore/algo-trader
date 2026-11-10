@@ -4004,6 +4004,8 @@ now caches + returns a `stale` flag; `/api/nav/by-account` masks `errors` for no
 | Update macro data | `backend/config/backend_config.yaml` |
 | Day P&L formula | `backend/api/algo/pnl_math.py` (`current_total_profit`, `baseline_diff_day_pnl`) + `frontend/src/lib/data/nav.js` (`baseDayPnlForPosition`, `currentTotalProfit`) |
 | Day P&L rollup stores (positions) | `frontend/src/lib/data/portfolioStore.svelte.js` (account/symbol/total rollups); per-row `prev_settlement_pnl` backfilled in route-level responses |
+| Lifetime P&L % column (Pulse Positions / derivatives Legs) | `frontend/src/lib/data/pulseColumns.js:_pnlPctValueGetter` (`pnl_pct`) + `frontend/src/lib/data/derivativesMath.js:legPnlPct` — both read the same `|avg × qty|` cost-basis formula, confirmed to agree deliberately |
+| Capt % column (lifetime P&L as a % of theoretical Exp P&L) | `frontend/src/lib/data/pulseColumns.js:mkCaptPctCol` (Pulse Positions grid) + `frontend/src/lib/data/derivativesMath.js:legCaptPct` (derivatives Legs grid, wired via `CAND_COLUMN_SPECS`/`CandidateLegRow.svelte`) — null-guarded on near-zero/absent Exp P&L, never Infinity/NaN; Holdings and summary/TOTAL rows deliberately excluded (2026-11 scope decision, not a gap) |
 | Baseline query (Day P&L snapshot path) | `backend/api/routes/positions.py:_SESSION_ANCHOR_CUTOFF_TS_SQL` + `_fetch_baseline_pnl_map` (derives 08:00 IST session boundary from `captured_at`, not `date` column; handles holdings-sold CNC split via `kind IN ('positions','holdings')`) |
 | Market daily window / WebSocket lifecycle | `backend/api/background.py` + `backend/brokers/kite_ticker.py` |
 | Market open/closed check | `backend/shared/helpers/date_time_utils.py:_segment_is_open` (YAML config) or `is_market_open` (gate-shaped dicts) |
