@@ -113,6 +113,48 @@ export function legCost(c, lg) {
   return c.avg_cost != null ? c.avg_cost : (lg ? lg.avg_cost : null);
 }
 
+/**
+ * P&L as a % of cost basis (|avg × qty|) — same ratio Pulse's
+ * `_pnlPctValueGetter` computes (`pulseColumns.js`, `_cost_basis = avg ×
+ * qty`), so the two surfaces agree on this formula rather than two
+ * independently-derived ones that happen to share a label. Null when
+ * either input is unknown, or the cost basis itself is 0 (no exposure to
+ * divide against).
+ * @param {number|null|undefined} pnl
+ * @param {number|null|undefined} cost - legCost(c, lg)
+ * @param {number|null|undefined} displayQty - legDisplayQty(c)
+ * @returns {number|null}
+ */
+export function legPnlPct(pnl, cost, displayQty) {
+  if (pnl == null || cost == null || displayQty == null) return null;
+  const p = Number(pnl);
+  const costBasis = Math.abs(Number(cost) * Number(displayQty));
+  if (!Number.isFinite(p) || !Number.isFinite(costBasis) || costBasis === 0) return null;
+  return (p / costBasis) * 100;
+}
+
+// Below this magnitude (rupees), Exp P&L is treated as "no meaningful
+// theoretical payoff yet" — same epsilon convention as
+// pulseColumns.js:mkCaptPctCol so the two surfaces blank the same cases.
+const _CAPT_PCT_EPSILON = 1;
+
+/**
+ * Capt % — lifetime P&L as a % of theoretical Exp P&L (how much of the
+ * eventual expiry payoff has already been captured). Null when either
+ * input is unknown, or |expPnl| is below the epsilon (e.g. a freshly
+ * opened ATM leg with ~zero theoretical payoff).
+ * @param {number|null|undefined} pnl
+ * @param {number|null|undefined} expPnl - _legExpPnlLive(c) / the Exp P&L cell's own value
+ * @returns {number|null}
+ */
+export function legCaptPct(pnl, expPnl) {
+  if (pnl == null || expPnl == null) return null;
+  const p = Number(pnl);
+  const e = Number(expPnl);
+  if (!Number.isFinite(p) || !Number.isFinite(e) || Math.abs(e) < _CAPT_PCT_EPSILON) return null;
+  return (p / e) * 100;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared filter factories (eliminate repeated closure boilerplate)
 // ─────────────────────────────────────────────────────────────────────────────

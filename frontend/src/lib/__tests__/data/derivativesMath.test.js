@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { annotateOptionCandidates, computeExpiryBands, rollupByUnderlying, perRootReduce, buildStrategyMatcher, interpAt, legPnlDisplay, legPnlTotal, isFOSymbol, equityLinearLeg, curveBasisEqValue, isDraftLegIncluded } from '$lib/data/derivativesMath.js';
+import { annotateOptionCandidates, computeExpiryBands, rollupByUnderlying, perRootReduce, buildStrategyMatcher, interpAt, legPnlDisplay, legPnlTotal, isFOSymbol, equityLinearLeg, curveBasisEqValue, isDraftLegIncluded, legPnlPct, legCaptPct } from '$lib/data/derivativesMath.js';
 import { legExtrinsicDisplay } from '$lib/data/expiryPnl.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1107,5 +1107,77 @@ describe('isDraftLegIncluded', () => {
   it('tolerates a null/undefined map (never throws) and defaults to included', () => {
     expect(isDraftLegIncluded({ source: 'draft' }, null, 'NIFTY')).toBe(true);
     expect(isDraftLegIncluded({ source: 'draft' }, undefined, 'NIFTY')).toBe(true);
+  });
+});
+
+describe('legPnlPct — P&L as a % of cost basis (|avg × qty|), same ratio Pulse computes', () => {
+  it('computes pnl / |cost * qty| * 100 for a simple long position', () => {
+    expect(legPnlPct(500, 200, 50)).toBeCloseTo(5, 6); // 500 / 10000 * 100
+  });
+
+  it('uses the ABSOLUTE value of cost * qty, so a short position (negative qty) still yields a positive-scale % for a positive pnl', () => {
+    expect(legPnlPct(500, 200, -50)).toBeCloseTo(5, 6);
+  });
+
+  it('returns null when pnl is null/undefined', () => {
+    expect(legPnlPct(null, 200, 50)).toBeNull();
+    expect(legPnlPct(undefined, 200, 50)).toBeNull();
+  });
+
+  it('returns null when cost is null/undefined', () => {
+    expect(legPnlPct(500, null, 50)).toBeNull();
+  });
+
+  it('returns null when displayQty is null/undefined', () => {
+    expect(legPnlPct(500, 200, null)).toBeNull();
+  });
+
+  it('returns null (never Infinity/NaN) when cost basis is exactly 0', () => {
+    expect(legPnlPct(500, 0, 50)).toBeNull();
+    expect(legPnlPct(500, 200, 0)).toBeNull();
+  });
+
+  it('returns null when pnl is not a finite number', () => {
+    expect(legPnlPct(NaN, 200, 50)).toBeNull();
+    expect(legPnlPct(Infinity, 200, 50)).toBeNull();
+  });
+
+  it('handles a losing position (negative pnl) correctly', () => {
+    expect(legPnlPct(-300, 200, 50)).toBeCloseTo(-3, 6); // -300 / 10000 * 100
+  });
+});
+
+describe('legCaptPct — lifetime P&L as a % of theoretical Exp P&L ("captured so far")', () => {
+  it('computes pnl / expPnl * 100 for a simple case', () => {
+    expect(legCaptPct(450, 900)).toBeCloseTo(50, 6);
+  });
+
+  it('returns null when pnl is null/undefined', () => {
+    expect(legCaptPct(null, 900)).toBeNull();
+    expect(legCaptPct(undefined, 900)).toBeNull();
+  });
+
+  it('returns null when expPnl is null/undefined', () => {
+    expect(legCaptPct(450, null)).toBeNull();
+    expect(legCaptPct(450, undefined)).toBeNull();
+  });
+
+  it('returns null (never Infinity) when |expPnl| is below the epsilon — e.g. a freshly opened ATM leg with ~zero theoretical payoff', () => {
+    expect(legCaptPct(450, 0)).toBeNull();
+    expect(legCaptPct(450, 0.5)).toBeNull();
+    expect(legCaptPct(450, -0.5)).toBeNull();
+  });
+
+  it('a negative expPnl (losing theoretical payoff) still divides correctly, not null-guarded just for being negative', () => {
+    expect(legCaptPct(-450, -900)).toBeCloseTo(50, 6);
+  });
+
+  it('returns null when pnl/expPnl are not finite numbers', () => {
+    expect(legCaptPct(NaN, 900)).toBeNull();
+    expect(legCaptPct(450, Infinity)).toBeNull();
+  });
+
+  it('can exceed 100% when the position has already captured more than the current theoretical payoff implies (e.g. decayed from a higher peak)', () => {
+    expect(legCaptPct(1000, 500)).toBeCloseTo(200, 6);
   });
 });

@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs';
 // and _dayPnlPctValueGetter computes from row fields) — the vi.mock()
 // calls that used to stand in for those imports were removed as dead code.
 
-import { mkRightColDefs, mkPrevCol, dirCls, mkPnlCellClass, mkPosSummaryCols, mkHoldSummaryCols, mkDeltaCol, mkThetaCol, mkLtpCol, mkAcctColTrailing, ltpHeatVs, ltpHeatClasses } from '../../data/pulseColumns.js';
+import { mkRightColDefs, mkPrevCol, dirCls, mkPnlCellClass, mkPosSummaryCols, mkHoldSummaryCols, mkDeltaCol, mkThetaCol, mkLtpCol, mkAcctColTrailing, ltpHeatVs, ltpHeatClasses, mkCaptPctCol } from '../../data/pulseColumns.js';
 import { mergePositionRows, finalizeRows } from '../../data/pulseUnified.js';
 import { baseDayPnlForPosition } from '../../data/nav.js';
 import { directional, pctFmtGrid as realPctFmtGrid } from '../../format.js';
@@ -1216,5 +1216,63 @@ describe('mkRightColDefs — pos_state anchor-row tooltip (D6, 2026-10-20)', () 
     const result = col.cellRenderer({ data: { is_orphan: true, quantity: 10 } });
     expect(result).toContain('data-pos-state="orphan"');
     expect(result).not.toContain('front-month future contract');
+  });
+});
+
+describe('mkCaptPctCol — lifetime P&L as a % of theoretical Exp P&L ("Capt %")', () => {
+  it('headerName is "Capt %" with colId capt_pct and a tooltip explaining the formula', () => {
+    const col = mkCaptPctCol(() => ({ exp_pnl: 900, extrinsic: null }));
+    expect(col.headerName).toBe('Capt %');
+    expect(col.colId).toBe('capt_pct');
+    expect(col.headerTooltip).toMatch(/Exp P&L/);
+  });
+
+  it('a non-total, non-derivative row (no qty_pos) returns null — never shows a bogus % for equity/holdings', () => {
+    const col = mkCaptPctCol(() => ({ exp_pnl: 900, extrinsic: null }));
+    expect(col.valueGetter({ data: { pnl: 450, qty_pos: 0 } })).toBeNull();
+    expect(col.valueGetter({ data: { pnl: 450 } })).toBeNull();
+  });
+
+  it('a derivative row (qty_pos truthy) reads getExpPnlForRow(row).exp_pnl and computes pnl/exp_pnl*100', () => {
+    const getExpPnlForRow = (row) => ({ exp_pnl: row.symbol === 'X' ? 900 : null, extrinsic: null });
+    const col = mkCaptPctCol(getExpPnlForRow);
+    const value = col.valueGetter({ data: { pnl: 450, qty_pos: 1, symbol: 'X' } });
+    expect(value).toBeCloseTo(50, 6);
+  });
+
+  it('a TOTAL row reads its own pre-summed pnl/exp_pnl fields directly, not getExpPnlForRow', () => {
+    const getExpPnlForRow = () => { throw new Error('must not be called for a TOTAL row'); };
+    const col = mkCaptPctCol(getExpPnlForRow);
+    const value = col.valueGetter({ data: { _isTotal: true, pnl: 1000, exp_pnl: 500 } });
+    expect(value).toBeCloseTo(200, 6);
+  });
+
+  it('returns null when exp_pnl is null/undefined (no theoretical payoff to divide against)', () => {
+    const col = mkCaptPctCol(() => ({ exp_pnl: null, extrinsic: null }));
+    expect(col.valueGetter({ data: { pnl: 450, qty_pos: 1 } })).toBeNull();
+  });
+
+  it('returns null when |exp_pnl| is below the epsilon — a freshly opened ATM leg with ~zero theoretical payoff', () => {
+    const col = mkCaptPctCol(() => ({ exp_pnl: 0.5, extrinsic: null }));
+    expect(col.valueGetter({ data: { pnl: 450, qty_pos: 1 } })).toBeNull();
+  });
+
+  it('returns null when pnl itself is not a finite number', () => {
+    const col = mkCaptPctCol(() => ({ exp_pnl: 900, extrinsic: null }));
+    expect(col.valueGetter({ data: { pnl: NaN, qty_pos: 1 } })).toBeNull();
+    expect(col.valueGetter({ data: { qty_pos: 1 } })).toBeNull();
+  });
+
+  it('is gated behind getExpPnlForRow in mkRightColDefs — absent entirely when no accessor is supplied', () => {
+    const defs = mkRightColDefs(makeOpts());
+    expect(defs.find((d) => d.colId === 'capt_pct')).toBeUndefined();
+  });
+
+  it('is present in mkRightColDefs, right after pnl_pct, when getExpPnlForRow IS supplied', () => {
+    const defs = mkRightColDefs({ ...makeOpts(), getExpPnlForRow: () => ({ exp_pnl: null, extrinsic: null }) });
+    const pnlPctIdx = defs.findIndex((d) => d.colId === 'pnl_pct');
+    const captPctIdx = defs.findIndex((d) => d.colId === 'capt_pct');
+    expect(pnlPctIdx).toBeGreaterThanOrEqual(0);
+    expect(captPctIdx).toBe(pnlPctIdx + 1);
   });
 });

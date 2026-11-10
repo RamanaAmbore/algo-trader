@@ -55,7 +55,7 @@
   import { priceFmt, pctFmt, aggCompact, fmtPctFraction, ltpDayClass } from '$lib/format';
   import { todayIST, isCurrentTradingSession } from '$lib/dateFormat.js';
   import { lotsForRow, fmtLots, legLotsValue } from '$lib/data/lotsForRow';
-  import { legIsClosed, legLiveLtp, legChgPct, legDisplayQty, legCost, legPnlDisplay } from '$lib/data/derivativesMath.js';
+  import { legIsClosed, legLiveLtp, legChgPct, legDisplayQty, legCost, legPnlDisplay, legPnlPct, legCaptPct } from '$lib/data/derivativesMath.js';
   import { createColumnSort } from '$lib/data/columnSort.svelte.js';
   import { composeDisplayedCandidates } from '$lib/data/candidateRowComposition.js';
   import {
@@ -2770,7 +2770,35 @@
         return legPnlDisplay(c, ltp, cost, qty, ltpFromFallback, c._residualQty != null);
       },
     },
+    // pnlPct/captPct reuse the exact same pnl/cost/qty accessor chain the
+    // `pnl`/`expPnl` keys above build — see CandidateLegRow.svelte's own
+    // `pnlPct`/`captPct` $derived for the identical accessor-cell pairing
+    // (legPnlPct/legCaptPct in derivativesMath.js are the shared SSOT).
+    pnlPct: {
+      type: 'number',
+      accessor: (c) => {
+        const lg = legAnalyticsBySymbol[c.symbol];
+        const ltp = _candSortLtp(c);
+        const cost = legCost(c, lg);
+        const qty = legIsClosed(c) ? 0 : legDisplayQty(c);
+        const ltpFromFallback = !!(lg && lg.ltp_source === 'avg_cost');
+        const pnl = legPnlDisplay(c, ltp, cost, qty, ltpFromFallback, c._residualQty != null);
+        return legPnlPct(pnl, cost, qty);
+      },
+    },
     expPnl: { type: 'number', accessor: (c) => _legExpPnlLive(c) },
+    captPct: {
+      type: 'number',
+      accessor: (c) => {
+        const lg = legAnalyticsBySymbol[c.symbol];
+        const ltp = _candSortLtp(c);
+        const cost = legCost(c, lg);
+        const qty = legIsClosed(c) ? 0 : legDisplayQty(c);
+        const ltpFromFallback = !!(lg && lg.ltp_source === 'avg_cost');
+        const pnl = legPnlDisplay(c, ltp, cost, qty, ltpFromFallback, c._residualQty != null);
+        return legCaptPct(pnl, _legExpPnlLive(c));
+      },
+    },
     extrinsic: { type: 'number', accessor: (c) => legExtrinsicDisplay(c, Number(c?.underlying_ltp) || 0) },
     acct: { type: 'text', accessor: (c) => c.account },
     iv: { type: 'number', accessor: (c) => legAnalyticsBySymbol[c.symbol]?.iv ?? null },
@@ -6185,11 +6213,25 @@
               P&amp;L{@render _candSortGlyph('pnl')}
             </span>
             <span class="num" role="columnheader" tabindex="0" class:cand-hdr-disabled={legsTab === 'expiry'}
+                  title="P&L as a % of cost basis (avg × qty)."
+                  aria-sort={candSort.ariaSort('pnlPct')}
+                  onclick={() => _toggleCandSort('pnlPct')}
+                  onkeydown={(e) => _candSortKeydown(e, 'pnlPct')}>
+              P&amp;L %{@render _candSortGlyph('pnlPct')}
+            </span>
+            <span class="num" role="columnheader" tabindex="0" class:cand-hdr-disabled={legsTab === 'expiry'}
                   title="P&L if every contract expired RIGHT NOW at the current underlying spot — intrinsic value minus cost basis. Futures + equity track spot 1:1, so this matches their P&L. Options strip out time value and show only intrinsic settlement."
                   aria-sort={candSort.ariaSort('expPnl')}
                   onclick={() => _toggleCandSort('expPnl')}
                   onkeydown={(e) => _candSortKeydown(e, 'expPnl')}>
               Exp P&amp;L{@render _candSortGlyph('expPnl')}
+            </span>
+            <span class="num" role="columnheader" tabindex="0" class:cand-hdr-disabled={legsTab === 'expiry'}
+                  title="Lifetime P&L as a % of theoretical Exp P&L — how much of the eventual payoff has been captured so far."
+                  aria-sort={candSort.ariaSort('captPct')}
+                  onclick={() => _toggleCandSort('captPct')}
+                  onkeydown={(e) => _candSortKeydown(e, 'captPct')}>
+              Capt %{@render _candSortGlyph('captPct')}
             </span>
             <span class="num" role="columnheader" tabindex="0" class:cand-hdr-disabled={legsTab === 'expiry'}
                   title="Extrinsic value in P&L terms — Exp P&amp;L minus (ltp−avg)×qty. Positive = time value still in the option premium."
@@ -6292,10 +6334,12 @@
               <span class="num"></span>
               <span class="num"></span>
               <span class="num">{legsUnderlyingAnchor.close != null ? priceFmt(legsUnderlyingAnchor.close) : '—'}</span>
-              <span class="num"></span>
-              <span class="num"></span>
-              <span class="num"></span>
-              <span class="num"></span>
+              <span class="num"></span><!-- day pnl -->
+              <span class="num"></span><!-- pnl -->
+              <span class="num"></span><!-- P&L % — not a tradable leg -->
+              <span class="num"></span><!-- exp pnl -->
+              <span class="num"></span><!-- Capt % — not a tradable leg -->
+              <span class="num"></span><!-- extrinsic -->
               <span></span>
               <span class="num"></span>
               <span class="num"></span>
@@ -6441,6 +6485,10 @@
                     title="Σ P&L across every enabled leg (unaffected by the search box) = strip's P chip for these accounts">
                 {aggCompact(_totalPnl)}
               </span>
+              <!-- P&L % — not a meaningful sum across legs with different
+                   cost bases; left blank, same as IV/Acct below. Scope
+                   explicitly excludes TOTAL/summary rows (see Task 2 plan). -->
+              <span class="num"></span>
               <!-- This is the Legs-tab TOTAL row — expiry-picker-filtered,
                    what-if aware (leg checkboxes / drafts), scoped to
                    selectedUnderlying only. The Snapshot grid's row for this
@@ -6457,6 +6505,9 @@
                     title="Σ Exp P&L across every selected leg — strategy expiry-day P&L at current spot.">
                 {aggCompact(_legsExpPnlTotal)}
               </span>
+              <!-- Capt % — not a meaningful sum across legs; left blank,
+                   same as P&L % above. Scope excludes TOTAL/summary rows. -->
+              <span class="num"></span>
               <span class="num tf-cell cand-pnl {_legsExtrinsicTotal > 0 ? 'cell-pos' : _legsExtrinsicTotal < 0 ? 'cell-neg' : 'cell-flat'}"
                     title="Σ Extrinsic value across every selected leg — time value remaining, same scope as Exp P&L above.">
                 {aggCompact(_legsExtrinsicTotal)}
@@ -8223,7 +8274,9 @@
       minmax(72px, max-content)            /* prev close */
       minmax(46px, max-content)            /* day pnl - today */
       minmax(54px, max-content)            /* pnl - cumulative */
+      minmax(50px, max-content)            /* pnl % - lifetime P&L as % of cost basis */
       minmax(54px, max-content)            /* exp pnl @ current spot */
+      minmax(50px, max-content)            /* capt % - pnl as % of exp pnl */
       minmax(54px, max-content)            /* extrinsic (time value in P&L terms) */
       minmax(max-content, max-content)     /* account */
       minmax(52px, max-content)            /* iv */

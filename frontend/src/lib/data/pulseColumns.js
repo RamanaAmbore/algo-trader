@@ -14,7 +14,7 @@
 // closures. Accessors ensure the closures see the current $state value
 // on every ag-Grid redraw — not the stale binding captured at mount.
 
-import { aggCompact, ltpDayClass } from '$lib/format.js';
+import { aggCompact, ltpDayClass, pctFmtGrid as _pctFmtGrid } from '$lib/format.js';
 import { dayChangePct } from '$lib/data/nav.js';
 import { positionStateBadge } from '$lib/data/positionStateBadge.js';
 
@@ -720,6 +720,7 @@ export function mkRightColDefs({
       valueGetter: _pnlPctValueGetter,
       valueFormatter: pctFmtGrid,
       headerTooltip: 'P&L as % of cost basis.' },
+    ...(getExpPnlForRow ? [mkCaptPctCol(getExpPnlForRow, { RA: /** @type {string} */ (RA), numericHdr })] : []),
     { field: 'pnl_per_share', headerName: 'P&L/sh', colId: 'pnl_per_share',
       width: 78, minWidth: 60, maxWidth: 96,
       type: 'numericColumn', headerClass: numericHdr,
@@ -896,6 +897,52 @@ export function mkExtrinsicCol(getExpPnlForRow, { RA = /** @type {string} */ ('a
     cellClass: `${raStr} cell-muted`,
     valueFormatter: p => p.value != null ? aggCompact(p.value) : '',
     headerTooltip: 'Extrinsic value in P&L terms — Exp P&L minus mark-to-market P&L (ltp−avg)×qty. Positive when time value remains in the premium.',
+  };
+}
+
+// ─── Capt % column (P&L as a % of theoretical Exp P&L) ──────────────
+
+// Below this magnitude (rupees), Exp P&L is treated as "no meaningful
+// theoretical payoff yet" (e.g. a position just opened ATM with near-zero
+// intrinsic value) — same null-guard convention as _pnlPctValueGetter's
+// own `!(cost > 0)` cost-basis guard, just epsilon-based since exp_pnl can
+// be negative.
+const _CAPT_PCT_EPSILON = 1;
+
+/**
+ * Capt % column — lifetime P&L as a % of theoretical Exp P&L (how much of
+ * the eventual expiry payoff has already been captured). Reads
+ * `getExpPnlForRow(row).exp_pnl`, same accessor shape as mkExpPnlCol.
+ * Blank for non-derivative rows (no exp_pnl) and when exp_pnl is
+ * null/near-zero. TOTAL rows read their own pre-summed pnl/exp_pnl fields
+ * directly, mirroring mkExpPnlCol's `_isTotal` branch.
+ * @param {(row: any) => {exp_pnl: number|null, extrinsic: number|null}|null} getExpPnlForRow
+ */
+export function mkCaptPctCol(getExpPnlForRow, { RA = /** @type {string} */ ('ag-right-aligned-cell'), numericHdr = '' } = {}) {
+  const raStr = /** @type {string} */ (RA);
+  return {
+    headerName: 'Capt %',
+    colId: 'capt_pct',
+    width: 64,
+    type: 'numericColumn',
+    headerClass: numericHdr,
+    valueGetter: p => {
+      const pnl = Number(p.data?.pnl);
+      if (!Number.isFinite(pnl)) return null;
+      let expPnl;
+      if (p.data?._isTotal) {
+        expPnl = Number(p.data?.exp_pnl);
+      } else if (!p.data?.qty_pos) {
+        return null;
+      } else {
+        expPnl = Number(getExpPnlForRow(p.data)?.exp_pnl);
+      }
+      if (!Number.isFinite(expPnl) || Math.abs(expPnl) < _CAPT_PCT_EPSILON) return null;
+      return (pnl / expPnl) * 100;
+    },
+    cellClass: p => `${raStr} ${dirCls(p.value)}`,
+    valueFormatter: p => _pctFmtGrid(p),
+    headerTooltip: 'Lifetime P&L as a % of theoretical Exp P&L — how much of the eventual payoff has been captured so far.',
   };
 }
 

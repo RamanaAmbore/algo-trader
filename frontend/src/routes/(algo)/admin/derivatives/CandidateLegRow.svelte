@@ -40,7 +40,7 @@
   import { getProxyRow }            from '$lib/data/hedgeProxies';
   import { priceFmt, pctFmt, aggCompact, ltpDayClass, qtyFmt } from '$lib/format';
   import { longPress }              from '$lib/actions/longPress.js';
-  import { legPnlDisplay, legIsClosed, legLiveLtp, legChgPct, legDisplayQty, legCost } from '$lib/data/derivativesMath.js';
+  import { legPnlDisplay, legIsClosed, legLiveLtp, legChgPct, legDisplayQty, legCost, legPnlPct, legCaptPct } from '$lib/data/derivativesMath.js';
   import { positionStateBadge }     from '$lib/data/positionStateBadge.js';
   import InfoHint                   from '$lib/InfoHint.svelte';
 
@@ -150,6 +150,16 @@
       ? null
       : legPnlDisplay(c, ltp, cost, displayQty, _ltpFromFallback, c._residualQty != null)
   );
+
+  // pnlPct — P&L as a % of cost basis (avg × qty). Same ratio Pulse's
+  // own P&L % column computes (pulseColumns.js:_pnlPctValueGetter) —
+  // extracted into derivativesMath.js:legPnlPct so both surfaces agree.
+  const pnlPct = $derived(legPnlPct(pnl, cost, displayQty));
+  // captPct — lifetime P&L as a % of theoretical Exp P&L ("how much of
+  // the eventual payoff has been captured so far"). `_expPnlLeg` is the
+  // SAME prop value the Exp P&L cell below renders, so this can never
+  // disagree with what's on screen.
+  const captPct = $derived(legCaptPct(pnl, _expPnlLeg));
 
   // Shared priority logic (GTT > auto-paired > orphan) — see
   // positionStateBadge.js. Null state renders no badge/button at all
@@ -576,9 +586,17 @@
   <span class="num tf-cell cand-pnl {pnl == null ? '' : pnl > 0 ? 'cell-pos' : pnl < 0 ? 'cell-neg' : 'cell-flat'}">
     {pnl == null ? '—' : aggCompact(pnl)}
   </span>
+  <span class="num {pnlPct == null ? 'cell-flat' : pnlPct > 0 ? 'cell-pos' : pnlPct < 0 ? 'cell-neg' : 'cell-flat'}"
+        title="P&L as % of cost basis (avg × qty).">
+    {pnlPct == null ? '—' : pctFmt(pnlPct) + '%'}
+  </span>
   <span class="num tf-cell cand-pnl {_expPnlLeg == null ? '' : _expPnlLeg > 0 ? 'cell-pos' : _expPnlLeg < 0 ? 'cell-neg' : 'cell-flat'}"
         title="P&L if expired now at spot. Intrinsic value minus cost basis × qty.">
     {_expPnlLeg == null ? '—' : aggCompact(_expPnlLeg)}
+  </span>
+  <span class="num {captPct == null ? 'cell-flat' : captPct > 0 ? 'cell-pos' : captPct < 0 ? 'cell-neg' : 'cell-flat'}"
+        title="Lifetime P&L as a % of theoretical Exp P&L — how much of the eventual payoff has been captured so far.">
+    {captPct == null ? '—' : pctFmt(captPct) + '%'}
   </span>
   <span class="num tf-cell cand-pnl {_extrinsicLeg == null ? 'cell-flat' : _extrinsicLeg > 0 ? 'cell-pos' : _extrinsicLeg < 0 ? 'cell-neg' : 'cell-flat'}"
         title="Extrinsic value in P&L terms — Exp P&L minus (ltp−avg)×qty. Positive = paid/received more than current mark-to-market.">
