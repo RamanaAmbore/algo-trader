@@ -287,7 +287,7 @@ describe('canonical examples — decompile→recompile round-trip', () => {
 
   it('6. always + nop', () => {
     const { dec } = roundTrip('WHEN always DO order(account="ZG0790", symbol="BANKNIFTY25JULFUT", side="BUY", lots=2)');
-    expect(dec.text).toContain('WHEN always ');
+    expect(dec.text).toContain('WHEN always\nDO\n');
   });
 });
 
@@ -308,7 +308,7 @@ describe('ALERT/DO omission and reordering — decompiled output stays canonical
     expect(first.ok).toBe(true);
     const dec = decompile(first.agent);
     expect(dec.errors).toEqual([]);
-    expect(dec.text).toMatch(/^WHEN .* DO log\(/);
+    expect(dec.text).toMatch(/^WHEN .*\nDO\nlog\(/);
     expect(dec.text).not.toContain('alert(');
     const second = compile(dec.text);
     expect(second.ok).toBe(true);
@@ -320,7 +320,7 @@ describe('ALERT/DO omission and reordering — decompiled output stays canonical
     expect(first.ok).toBe(true);
     const dec = decompile(first.agent);
     expect(dec.errors).toEqual([]);
-    expect(dec.text).toMatch(/DO alert\(telegram\)$/);
+    expect(dec.text).toMatch(/DO\nalert\(telegram\)$/);
     const second = compile(dec.text);
     expect(second.ok).toBe(true);
     expect(second.agent).toEqual(first.agent);
@@ -355,7 +355,7 @@ describe('real builtin agents — never authored via the CLI', () => {
     };
     const dec = decompile(agentJson);
     expect(dec.errors).toEqual([]);
-    expect(dec.text).toMatch(/^WHEN always DO alert\(/);
+    expect(dec.text).toMatch(/^WHEN always\nDO\nalert\(/);
     const recompiled = compile(dec.text);
     expect(recompiled.ok).toBe(true);
     expect(recompiled.agent.conditions).toEqual(ALWAYS_LEAF);
@@ -638,7 +638,7 @@ describe('hand-constructed shapes (JSON-textarea / AI-draft style authorship)', 
     };
     const dec = decompile(agentJson);
     expect(dec.errors).toEqual([]);
-    expect(dec.text).toContain('WHEN is_itm_bool@positions.total DO alert(telegram)');
+    expect(dec.text).toContain('WHEN is_itm_bool@positions.total\nDO\nalert(telegram)');
     const recompiled = compile(dec.text);
     expect(recompiled.ok).toBe(true);
     expect(recompiled.agent).toEqual(agentJson);
@@ -682,7 +682,7 @@ describe('hand-constructed shapes (JSON-textarea / AI-draft style authorship)', 
     };
     const dec = decompile(agentJson);
     expect(dec.errors).toEqual([]);
-    expect(dec.text).toContain('alert(telegram), deactivate_agent');
+    expect(dec.text).toContain('alert(telegram)\ndeactivate_agent');
     expect(dec.text).not.toContain('deactivate_agent(');
     const recompiled = compile(dec.text);
     expect(recompiled.ok).toBe(true);
@@ -1330,7 +1330,7 @@ describe('Wave 2 — event-agent decompile round-trip (real seeded agent shapes)
   it('decompiles to the expected WHEN log(...) DO alert(...), render(...) CLI text, including the action-level gate=true', () => {
     const dec = decompileEvent(ERROR_AGENT_LIKE);
     expect(dec.errors).toEqual([]);
-    expect(dec.text).toBe('WHEN log(tag=error, min_level=ERROR) DO alert(telegram, ntfy), render(render=error, gate=true) #name="Error alert"');
+    expect(dec.text).toBe('WHEN log(tag=error, min_level=ERROR)\nDO\nalert(telegram, ntfy)\nrender(render=error, gate=true) #name="Error alert"');
   });
 
   it('recompiles back to the IDENTICAL conditions/events/actions JSON (round-trip), gate:true included', () => {
@@ -1472,7 +1472,7 @@ describe('Wave 2 — event-agent decompile round-trip (real seeded agent shapes)
     const dec = decompileEvent(agentJson);
     expect(dec.errors).toEqual([]);
     expect(dec.text).not.toContain('alert(');
-    expect(dec.text).toContain('DO render(render=breach)');
+    expect(dec.text).toContain('DO\nrender(render=breach)');
     const recompiled = compile(dec.text);
     expect(recompiled.ok).toBe(true);
     expect(recompiled.agent.conditions).toEqual(agentJson.conditions);

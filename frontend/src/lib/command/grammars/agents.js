@@ -8021,7 +8021,7 @@ export function decompileActions(actions, catalog, opts = {}) {
     parts.push(_appendNotifyArgText(r.text, notifyArgText));
   }
   if (errors.length) return { text: null, errors };
-  return { text: parts.join(', '), errors: [] };
+  return { text: parts.join(', '), errors: [], parts };
 }
 
 /** Decompile a full agent `{conditions, events, actions}` to its
@@ -8253,11 +8253,11 @@ export function decompileAgent({ conditions, events, actions, given = undefined,
   const preambleBlock = preambleLines.length ? `${preambleLines.join('\n')}\n` : '';
   let whenBlock = '';
   if (hasConditional) {
-    const doParts = [];
-    if (eventsResult.text !== 'nop') doParts.push(`alert(${eventsResult.text})`);
-    if (actionsResult.text !== 'nop') doParts.push(actionsResult.text);
-    const doText = doParts.length ? doParts.join(', ') : 'nop';
-    whenBlock = `WHEN ${condResult.text} DO ${doText}`;
+    const doLines = [];
+    if (eventsResult.text !== 'nop') doLines.push(`alert(${eventsResult.text})`);
+    if (actionsResult.text !== 'nop') doLines.push(...(actionsResult.parts || [actionsResult.text]));
+    const doText = doLines.length ? doLines.join('\n') : 'nop';
+    whenBlock = `WHEN ${condResult.text}\nDO\n${doText}`;
   }
   const text = `${preambleBlock}${whenBlock}${metaSuffix}`.replace(/^\n+/, '');
   const roundTrip = compileAgentCliStatement(text, catalog, opts);
