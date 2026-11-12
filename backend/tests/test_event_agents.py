@@ -164,11 +164,14 @@ async def test_registered_renderer_is_used(monkeypatch, senders):
     await event_agents.dispatch([_rec()], [agent])
     # 2026-10-31 — trailing action-agent/alert-agent tag line appended
     # by `_send_channel` (see that function's own comment). `_rec()`'s
-    # default `extra` has no `agent_id`/`agent_name` -> "manual"; its
-    # `alert_event="filled"` resolves via the real
-    # `ALERT_EVENT_DISPATCH` table to the fill detector's own slug.
-    # 2026-11-06 — 4th slot is `_rec()`'s own default level ("info").
-    assert senders["ntfy"] == [("T", "B\n#manual #fill_alert #info")]
+    # default `extra` has NEITHER an `agent_id` NOR an `agent_name` KEY
+    # at all -> genuinely unknown, no fabricated "manual" (2026-11-08
+    # audit fix — see `resolve_source()`'s own docstring); the action
+    # slot is simply absent. Its `alert_event="filled"` resolves via the
+    # real `ALERT_EVENT_DISPATCH` table to the fill detector's own slug
+    # (via_-prefixed, item 10). 2026-11-06 — 4th slot is `_rec()`'s own
+    # default level ("info").
+    assert senders["ntfy"] == [("T", "B\n#via_fill_alert #info")]
 
 
 @pytest.mark.asyncio
@@ -697,7 +700,7 @@ async def test_breach_record_sends_only_its_stored_channels(monkeypatch):
     # entry (that table only covers the 16 collapsed post-2026-10-25
     # detector specs), so the fallback to `agent.slug` applies here.
     # 2026-11-06 — 4th slot is the record's own level ("info").
-    _tag = "\n#account_funds_gone_negative #cycle_breach_alert #info"
+    _tag = "\n#account_funds_gone_negative #via_cycle_breach_alert #info"
     assert sent["tg"] == [f"Alert — Account funds gone negative{_tag}"]
     assert sent["ntfy"] == [(
         "Account funds gone negative",
@@ -1045,7 +1048,7 @@ def test_generic_notice_agents_are_every_spec_in_the_shared_table():
     built_slugs = {ea._build_generic_notice_agent(spec)["slug"] for spec in ea._GENERIC_NOTICE_SPECS}
     assert built_slugs == {
         "gtt-asymmetric-alert", "oco-double-fire-alert", "ticker-recovered-alert",
-        "ticker-degraded-alert", "visitor-report-alert",
+        "ticker-degraded-alert", "visitor-report-alert", "app-message-alert",
     }
     # 2026-10-25 alert-channel collapse: 4 of these 5 built specs
     # (gtt_asymmetric/oco_double_fire/ticker_recovered/ticker_degraded)
@@ -1063,12 +1066,17 @@ def test_generic_notice_agents_are_every_spec_in_the_shared_table():
     # was kept standalone rather than folded into the heavily-pinned
     # 16/18-entry collapsed table). 2026-11 alert-agent audit fix —
     # DRAFT_SWEEP_AGENT is a THIRD such standalone user, same reasoning.
+    # 2026-11-08 audit fix (item 9) — APP_MESSAGE_AGENT is built from
+    # `_GENERIC_NOTICE_SPECS` too (unlike the other three, which are
+    # standalone literals outside the table), so it shows up here for a
+    # different reason: it's a genuinely new, non-collapsed table entry.
     standalone_generic_notice_slugs = {
         spec["slug"] for spec in ea.SEEDED_AGENTS
         if any(isinstance(a, dict) and a.get("render") == "generic_notice" for a in spec.get("actions") or [])
     } - {ea.UNROUTED_ALERT_AGENT["slug"], ea.USER_REGISTERED_AGENT["slug"]}
     assert standalone_generic_notice_slugs == {
         "visitor-report-alert", "gtt-orphan-cancelled-alert", "draft-sweep-alert",
+        "app-message-alert",
     }
     for alert_event, source_slug in [
         ("gtt_asymmetric", "gtt-asymmetric-alert"), ("oco_double_fire", "oco-double-fire-alert"),
@@ -1643,13 +1651,13 @@ class TestSafeTruncateMessage:
         leading '#'."""
         from backend.api.algo import event_agents as ea
         prefix = "x" * 180
-        s = f"{prefix} #market_status #market_status_alert"
+        s = f"{prefix} #market_status #via_market_status_alert"
         # The cut at 200 lands right after "...#market_status #" (the
         # dangling second tag's bare '#').
         result = ea._safe_truncate_message(s, 200)
         assert result == f"{prefix} #market_status"
         assert not result.endswith("#")
-        assert "#market_status_alert" not in result
+        assert "#via_market_status_alert" not in result
 
     def test_cut_landing_mid_word_with_no_hashtag_is_a_plain_hard_cut(self):
         """A cut that does NOT land inside a '#'-prefixed word is left
@@ -1706,8 +1714,8 @@ class TestAgentTagLineOwnLine:
 
         sent_body = senders["tg"][0][1]
         assert "\n\n" not in sent_body, "tag must not sit in its own blank paragraph"
-        assert sent_body == "Body text\n#manual #some_agent"
-        assert sent_body.splitlines()[-1] == "#manual #some_agent"
+        assert sent_body == "Body text\n#manual #via_some_agent"
+        assert sent_body.splitlines()[-1] == "#manual #via_some_agent"
 
 
 class TestAgentTagLineDeduped:
@@ -1751,12 +1759,12 @@ class TestAgentTagLineDeduped:
 
         sent_body = senders["tg"][0][1]
         tag_line = sent_body.splitlines()[-1]
-        assert tag_line == "#manual #some_agent", f"expected both distinct tags, got {tag_line!r}"
+        assert tag_line == "#manual #via_some_agent", f"expected both distinct tags, got {tag_line!r}"
 
     @pytest.mark.asyncio
     async def test_system_alert_stamping_its_own_agent_id_dedupes_by_id_not_string(self, senders):
         """2026-11-06 live operator report: "market status alert shows
-        #market_status and #market_status_alert which are very
+        #market_status and #via_market_status_alert which are very
         similar". A system/scheduled alert (market status, deploy sync)
         stamps its OWN agent_id/name as the record's action-agent
         identity — `resolve_origin` reads `agent_name` ("Market
@@ -1776,7 +1784,7 @@ class TestAgentTagLineDeduped:
 
         sent_body = senders["tg"][0][1]
         tag_line = sent_body.splitlines()[-1]
-        assert tag_line == "#market_status_alert", f"expected one deduped-by-id tag, got {tag_line!r}"
+        assert tag_line == "#via_market_status_alert", f"expected one deduped-by-id tag, got {tag_line!r}"
 
     @pytest.mark.asyncio
     async def test_different_agent_ids_are_never_deduped_even_if_labels_would_collide(self, senders):
@@ -1794,7 +1802,7 @@ class TestAgentTagLineDeduped:
 
         sent_body = senders["tg"][0][1]
         tag_line = sent_body.splitlines()[-1]
-        assert tag_line == "#chase_close_positions #market_status_alert", f"got {tag_line!r}"
+        assert tag_line == "#chase_close_positions #via_market_status_alert", f"got {tag_line!r}"
 
 
 class TestAlertAgentTagPrefersHumanReadableName:
@@ -1808,7 +1816,7 @@ class TestAlertAgentTagPrefersHumanReadableName:
     id 62, DB `name` "Agent alert"). Before this fix,
     `_alert_agent_source_slug`'s fallback preferred `agent.slug` over
     `agent.name`, so every rich-alert breach — this loss-guard alert
-    included — carried a trailing `#agent_alert_rich` tag: a raw
+    included — carried a trailing `#via_agent_alert_rich` tag: a raw
     kebab-case internal slug, not something an operator recognizes as
     meaningful. `Agent.name` is the column this codebase documents as
     "the human-readable display name shown in alerts" (see
@@ -1842,7 +1850,7 @@ class TestAlertAgentTagPrefersHumanReadableName:
         assert "rich" not in tag_line, (
             f"alert-agent tag must not leak the internal 'agent-alert-rich' "
             f"slug fragment, got {tag_line!r}")
-        assert tag_line == "#positions_total_loss_guardrail #agent_alert #critical", (
+        assert tag_line == "#positions_total_loss_guardrail #via_agent_alert #critical", (
             f"got {tag_line!r}")
 
     @pytest.mark.asyncio
@@ -1927,7 +1935,7 @@ class TestBareTwoTupleRenderersSendAgentLabelAtTop:
             "the redundant title must not be prepended ahead of the real origin line"
         )
         # Tags on their own line, not glued onto "Order id: 7".
-        assert "Order id: 7\n#manual #fill_alert" in sent
+        assert "Order id: 7\n#manual #via_fill_alert" in sent
         assert "Order id: 7 #manual" not in sent
 
     @pytest.mark.asyncio

@@ -672,7 +672,10 @@ async def test_dispatch_groups_messageless_channels_into_one_record():
     assert extra["condition_text"] == "pnl > 1000"
     assert extra["telegram_body"] == extra["ntfy_body"]
     assert "Condition: pnl > 1000" in extra["telegram_body"]
-    assert extra["email_subject"] == "RamboQuant Agent: Test Agent"
+    # 2026-11-08 audit fix (item 6) — subject now matches the
+    # "Agent: X | ts" shape and carries a real timestamp (not frozen
+    # in this test file), so only the shape is checked.
+    assert extra["email_subject"].startswith("Agent: Test Agent | ")
     assert "<p><b>Condition:</b> pnl > 1000</p>" in extra["email_body"]
     assert extra["sim_mode"] is False
 
@@ -753,7 +756,9 @@ async def test_dispatch_splits_custom_message_channels_into_their_own_records():
     # real firing condition, regardless of which group rendered the body.
     assert custom["condition_text"] == "pnl > 1000"
     # email_subject never depends on the message override (only the body does).
-    assert custom["email_subject"] == shared["email_subject"] == "RamboQuant Agent: Test Agent"
+    # 2026-11-08 audit fix (item 6) — same shape change as above.
+    assert custom["email_subject"] == shared["email_subject"]
+    assert shared["email_subject"].startswith("Agent: Test Agent | ")
 
 
 @pytest.mark.asyncio

@@ -54,6 +54,11 @@ def _render_fill(rec: dict) -> tuple[str, str, str]:
         exchange=extra.get("exchange"), transaction_type=extra.get("transaction_type"),
         quantity=extra.get("quantity"), fill_price=extra.get("fill_price"), product=extra.get("product"),
         engine=extra.get("engine"), agent_name=extra.get("agent_name"),
+        # 2026-11-08 audit fix (item 8) — `agent_id` now rides along too
+        # (see `fill_notify.notify_fills()`'s own comment). Without it,
+        # a real agent whose name failed to resolve rendered as the
+        # false "manual" instead of the honest "Agent #{id}".
+        agent_id=extra.get("agent_id"),
     )
     when = rec.get("ts")
     if when is not None and when.tzinfo is None:
@@ -246,7 +251,7 @@ def _render_order_failure(rec: dict) -> tuple:
         masked=x["masked"], symbol=x["symbol"], exchange=x["exchange"], side=x["side"],
         qty=x["qty"], mode=x["mode"], source=x["source"], error=x["error"],
         suppressed_count=x["suppressed_count"], ist_disp=x["ist_disp"],
-        agent_id=x.get("agent_id"),
+        agent_id=x.get("agent_id"), agent_name=x.get("agent_name"),
     )
     return f"Order Rejected: {x['symbol']} {x['side']}", tg_body, tg_body, (subject, email_body)
 
@@ -435,14 +440,35 @@ def _render_order_correction(rec: dict) -> tuple[str, str, str]:
 def _render_mcp_ping(rec: dict) -> tuple[str, str, str]:
     """An MCP tool call performed an audited action (place/cancel/modify/...).
 
-    2026-10 plain-text reversal: `extra["tg"]` is now plain text, built
-    once (origin header + body) at the single `lab.py:_mcp_ping()`
-    chokepoint every MCP-ping call site funnels through — no
-    `_html_to_plain` pass here, since there is no longer any markup to
-    decode and a raw `<`/`>` in the body (unlikely, but not impossible)
-    would otherwise be silently stripped."""
-    tg = (rec.get("extra") or {}).get("tg") or ""
-    return "MCP", tg, tg
+    2026-11-08 audit fix (item 3) — header (identity + timestamp) is now
+    built HERE, not by the producer (`lab.py:_mcp_ping()`), matching
+    every other renderer's convention (`_render_deploy_sync`,
+    `_render_chase_cancel`, etc.): a renderer builds its own header at
+    RENDER time (so the timestamp is current at send time, not log
+    time), reading `source_type`/`source_name` back out of the record's
+    own `extra` dict rather than trusting a producer-pre-built partial
+    header. An MCP tool call has no agent concept at all — it's an
+    external-client-triggered PROCESS event — so this always classifies
+    `source_type="process", source_name="MCP"` (falling back to that
+    literal default only if a producer somehow omits it), with
+    `trigger_known=_order_scope_trigger_known(x)` so it never fabricates
+    "triggered manually/by {agent}" for a record that carries no real
+    trigger key at all.
+
+    2026-10 plain-text reversal: `extra["body"]` is plain text — no
+    `_html_to_plain` pass, since there is no markup to decode and a raw
+    `<`/`>` in the body (unlikely, but not impossible) would otherwise
+    be silently stripped."""
+    from backend.shared.helpers.alert_utils import format_notification_header
+    x = rec.get("extra") or {}
+    body_content = x.get("body") or ""
+    header = format_notification_header(
+        None, None, source_type=x.get("source_type") or "process",
+        source_name=x.get("source_name") or "MCP",
+        trigger_known=_order_scope_trigger_known(x),
+    )
+    full = f"{header}\n{body_content}"
+    return "MCP", full, full
 
 
 def _render_deploy_sync(rec: dict) -> tuple[str, str, str]:
@@ -632,9 +658,22 @@ def _render_market_status(rec: dict) -> tuple:
     has_process_identity = bool(source_type) and bool(source_name)
     if has_agent_identity or has_process_identity:
         from backend.shared.helpers.alert_utils import format_notification_header
+        # 2026-11-08 fix (found by the background.py/action_send_market_
+        # status.py sibling fix going inert) — this producer ALWAYS sets
+        # source_type/source_name, so `has_process_identity` is always
+        # True and `trigger_known=not has_process_identity` was always
+        # False. That silently dropped a real `agent_id`/`agent_name`
+        # the producer DID attach (an agent-invoked `send_market_status()`
+        # call) — `_source_extra()` only forwards those keys into
+        # `resolve_source()` when `trigger_known=True`. Fixed to the
+        # same key-presence check every order-scoped renderer in this
+        # file already uses (`_order_scope_trigger_known`): the
+        # scheduled cron call (no agent_id/agent_name keys at all) still
+        # correctly shows no trigger; an agent-invoked call now shows
+        # "Source: Market status report triggered by {agent}".
         origin_header = format_notification_header(
             agent_name, agent_id, source_type=source_type, source_name=source_name,
-            trigger_known=not has_process_identity,
+            trigger_known=_order_scope_trigger_known(x),
         )
         body = f"{origin_header}\n{body}"
     return title, body, body
@@ -646,11 +685,15 @@ def _render_agent_close_hold(rec: dict) -> tuple:
     `require_release` agent's `close_position` staged for operator
     review instead of placed live.
 
-    Plain `(title, body, tg)` passthrough, no separate origin header —
-    `body` (built by `actions_live.py:_al_agent_close_hold_message`)
-    already leads with the firing agent's own identity via
-    `format_notification_header()`, so a second header here would just
-    redundantly repeat the identity line. Channel selection comes from
+    2026-11-08 audit fix (item 4) — the header (identity + timestamp)
+    is built HERE now, not by the producer
+    (`actions_live.py:_al_agent_close_hold_message`), which used to
+    discard the timestamp via `.splitlines()[0]`. This is agent-scoped
+    (a `require_release` hold always has a real firing Agent row — the
+    `agent_id`/`agent_name` the producer already logs alongside
+    `body`), so the header is built unconditionally, same convention as
+    `_render_order_cancelled`'s "every order/agent alert always shows
+    who" pattern. Channel selection comes from
     `alert_routing.resolve_channels()`'s per-slug override for
     `agent-close-hold-alert`, resolved the normal way by
     `_dispatch_agent()` — not a per-record `out[4]` override (2026-11
@@ -658,9 +701,12 @@ def _render_agent_close_hold(rec: dict) -> tuple:
     now-retired generic `ACTION_NOTIFY_AGENT`/`_render_action_notify`,
     which carried its own hardcoded channel list).
     """
+    from backend.shared.helpers.alert_utils import format_notification_header
     x = rec.get("extra") or {}
     title = x.get("title") or "Agent close held"
-    body = x.get("body") or ""
+    header = format_notification_header(x.get("agent_name"), x.get("agent_id"))
+    body_content = x.get("body") or ""
+    body = f"{header}\n{body_content}"
     return title, body, body
 
 
@@ -1123,8 +1169,8 @@ def _resolve_tag_labels(agent, rec: dict) -> "list[tuple[str, str]]":
 
 def _agent_tag_line(agent, rec: dict) -> str:
     """Trailing plain-text tag line for Telegram/ntfy:
-    '#<action> #<process> #<alert> #<level>' — any slot that doesn't
-    apply to this record is omitted, never blanked/placeholder'd.
+    '#<action> #<process> #via_<alert> #<level>' — any slot that
+    doesn't apply to this record is omitted, never blanked/placeholder'd.
 
     2026-11-05 live fix (operator: "same tag is repeating multiple
     places. show only unique tags in alerts") — the action-agent and
@@ -1133,12 +1179,38 @@ def _agent_tag_line(agent, rec: dict) -> str:
     alert agent). Deduped so a record never shows "#x #x" — the second,
     redundant copy is dropped rather than the first, so tag order
     (action, process, alert, level) is preserved among whichever remain.
+    Dedup compares the RAW label (inside `_resolve_tag_labels`), before
+    the `via_` prefix below is applied, so it is unaffected by this
+    prefix — "Manual" vs "manual" still collapses the same way it did
+    before 2026-11-08.
 
     2026-11-06 — rebuilt around `resolve_source()`'s 4 independent slots
     (see `_resolve_tag_labels`'s own docstring for the by-id special
-    case this generalizes from 2 positions to 4)."""
-    tokens = [_tag_token(label) for _key, label in _resolve_tag_labels(agent, rec)]
+    case this generalizes from 2 positions to 4).
+
+    2026-11-08 audit fix (item 10, operator: "add action agent name, and
+    alert agent name in the alert... this should be ssot functionality")
+    — the alert-agent slot's own hashtag is now prefixed `via_`
+    (`#via_<slug>` instead of a bare `#<slug>`), so a reader can tell at
+    a glance which tag is "who/what caused this" (action/process) vs.
+    "which agent actually SENT this" (alert agent) — previously
+    visually indistinguishable from the other three bare hashtags."""
+    tokens = [
+        (f"via_{_tag_token(label)}" if key == "alert" else _tag_token(label))
+        for key, label in _resolve_tag_labels(agent, rec)
+    ]
     return " ".join(f"#{t}" for t in tokens)
+
+
+# 2026-11-08 audit fix (item 10) — explicit, human-readable labels for
+# the email pill row. Deliberately narrow: ONLY the alert-agent slot's
+# label changes (to "Alert agent", distinct from the action-agent's
+# "Agent:" and process' "Source:" labels this codebase already uses
+# elsewhere for the exact same two concepts). "action"/"process"/
+# "level" keep their existing lowercase literal labels — relabeling
+# those too was not asked for and risks silently drifting from a
+# convention nothing else in this function enforces.
+_ALERT_SLOT_PILL_LABEL = "Alert agent"
 
 
 def _agent_pill_html(agent, rec: dict) -> str:
@@ -1148,14 +1220,21 @@ def _agent_pill_html(agent, rec: dict) -> str:
     so the readable form reads better), as small inline-styled badges.
     Inline `style=` only — email clients strip `<style>` blocks and
     external CSS, so this can't reuse the app's own `.algo-status-pill`
-    class."""
+    class.
+
+    2026-11-08 audit fix (item 10) — the alert-agent pill now carries
+    its own explicit "Alert agent: {name}" label (via
+    `_ALERT_SLOT_PILL_LABEL`), visually distinct from the bare `alert:`
+    label it showed before — see that constant's own comment for why
+    the other three slots are deliberately left as-is."""
     pill_style = (
         "display:inline-block;padding:2px 8px;margin:2px 4px 2px 0;"
         "border-radius:10px;background:#eef1f5;color:#44546a;"
         "font-size:12px;font-family:monospace;"
     )
     badges = "".join(
-        f'<span style="{pill_style}">{key}: {html.escape(label)}</span>'
+        f'<span style="{pill_style}">'
+        f'{_ALERT_SLOT_PILL_LABEL if key == "alert" else key}: {html.escape(label)}</span>'
         for key, label in _resolve_tag_labels(agent, rec)
     )
     return f'<div style="margin-top:10px">{badges}</div>'
@@ -1795,8 +1874,23 @@ def _emit_unrouted_self_alert(rec: dict) -> None:
         # condition (now tag="alert") still matches. See that agent's own
         # dict comment above for why this one, unlike RICH_ALERT_AGENT/
         # BREACH_AGENT, is safe to unify.
+        #
+        # 2026-11-08 audit fix (item 2) — this self-alert carried NO
+        # identity at all, so `resolve_source()`/`_resolve_tag_labels()`
+        # used to fall back to a fabricated "manual" (branch 2's old
+        # unconditional behavior; see `resolve_source()`'s own docstring
+        # for the general fix). It genuinely IS a process event — the
+        # catch-all SCAN itself observed an unrouted record, not any
+        # human or agent action — so it now carries a real
+        # `source_type`/`source_name` pair. Deliberately NOT
+        # "Unrouted alert catch-all" (that's `UNROUTED_ALERT_AGENT`'s
+        # own `.name`, the agent that DISPATCHES this alert) — using the
+        # same string for both the process and the alert-agent label
+        # would make `_dedup_source_labels()` collapse the alert-agent's
+        # own distinct "via_" tag into the process tag.
         extra={"tags": ["agent", "alert"], "alert_event": _UNROUTED_ALERT_EVENT,
-              "title": "Unrouted alertable record", "body": msg},
+              "title": "Unrouted alertable record", "body": msg,
+              "source_type": "process", "source_name": "Alert dispatch scan"},
     )
 
 
@@ -2171,6 +2265,19 @@ _GENERIC_NOTICE_SPECS: tuple[dict, ...] = (
     {"slug": "visitor-report-alert", "name": "Visitor report",
      "tag": "visitor", "min_level": "INFO", "alert_event": "visitor_report",
      "priority": "info", "description": "Sends the periodic site-visitor traffic report."},
+    # 2026-11-08 audit fix (item 9) — see `app_message.py:_route_sinks()`'s
+    # own docstring for the root cause this closes: a CRITICAL
+    # `AppMessage` matched `ERROR_AGENT`'s catch-all condition (enough to
+    # look "routed"), but `_error_agent_self_alerted()` then refused to
+    # let ERROR_AGENT actually send it — a silent, total drop. `tier`
+    # "high" (not "critical") deliberately, since this is a catch-all
+    # for ANY `AppMessage` that opts into alerting (error/critical level,
+    # or a deploy/alert tag), not exclusively critical-severity events.
+    {"slug": "app-message-alert", "name": "App message alert",
+     "tag": "alert", "min_level": "WARNING", "alert_event": "app_message",
+     "priority": "high",
+     "description": "Catch-all delivery for any AppMessage (error/critical "
+                     "infra event) logged via the unified AppMessage dispatcher."},
 )
 
 
@@ -2199,6 +2306,7 @@ OCO_DOUBLE_FIRE_AGENT = _build_generic_notice_agent(_GENERIC_NOTICE_SPECS[1])
 TICKER_RECOVERED_AGENT = _build_generic_notice_agent(_GENERIC_NOTICE_SPECS[2])
 TICKER_DEGRADED_AGENT = _build_generic_notice_agent(_GENERIC_NOTICE_SPECS[3])
 VISITOR_REPORT_AGENT = _build_generic_notice_agent(_GENERIC_NOTICE_SPECS[4])
+APP_MESSAGE_AGENT = _build_generic_notice_agent(_GENERIC_NOTICE_SPECS[5])
 
 # `generic_notice_identity_extra()` / `_GENERIC_NOTICE_IDENTITY` (2026-11-03
 # -> 2026-11-06) — DELETED. That mechanism resolved a fake-agent identity
@@ -2815,7 +2923,7 @@ SEEDED_AGENTS = (
     ERROR_AGENT, DEPLOY_SYNC_AGENT, RICH_ALERT_AGENT, SUMMARY_AGENT, BREACH_AGENT,
     VISITOR_REPORT_AGENT, UNROUTED_ALERT_AGENT, MARKET_STATUS_ALERT_AGENT,
     ORDER_CANCELLED_AGENT, GTT_ORPHAN_CANCELLED_AGENT, AGENT_CLOSE_HOLD_ALERT_AGENT,
-    DRAFT_SWEEP_AGENT,
+    DRAFT_SWEEP_AGENT, APP_MESSAGE_AGENT,
     TELEGRAM_CHANNEL_AGENT, NTFY_CHANNEL_AGENT, EMAIL_CHANNEL_AGENT,
 )
 

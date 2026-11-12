@@ -1958,22 +1958,26 @@ async def _al_agent_close_recently_cancelled_this_session(
 
 
 def _al_agent_close_hold_message(
-    agent, account: str, symbol: str, exchange: str, side: str, qty: int, reason: str,
+    account: str, symbol: str, exchange: str, side: str, qty: int, reason: str,
 ) -> str:
-    """Build the action-required alert body. The account is masked
-    explicitly here — `_AccountMaskFilter` (log_store.py) masks only
-    `record.msg`/`exc_text`, never an `extra` dict's own values, and
-    this body is passed through `extra['body']`, not the logged message
-    string. `mask_account` is called exactly once (it is not
-    idempotent — a double-mask of an already-masked value is wrong)."""
-    from backend.shared.helpers.alert_utils import format_notification_header
+    """Build the action-required alert body (content only — no header).
+
+    2026-11-08 audit fix (item 4) — this used to build its own origin
+    header via `format_notification_header(...).splitlines()[0]`, which
+    discarded the timestamp line. Header construction is now the
+    renderer's job (`event_agents.py:_render_agent_close_hold`), the
+    same producer/renderer split every other converted alert in this
+    file follows, so the full header (identity + timestamp) survives.
+
+    The account is masked explicitly here — `_AccountMaskFilter`
+    (log_store.py) masks only `record.msg`/`exc_text`, never an `extra`
+    dict's own values, and this body is passed through `extra['body']`,
+    not the logged message string. `mask_account` is called exactly
+    once (it is not idempotent — a double-mask of an already-masked
+    value is wrong)."""
     from backend.shared.helpers.utils import mask_account
-    origin_header = format_notification_header(
-        getattr(agent, "name", None), getattr(agent, "id", None),
-    ).splitlines()[0]
     masked_account = mask_account(account)
     return (
-        f"{origin_header}\n"
         f"{masked_account} {side} {qty} {symbol} ({exchange}) staged for "
         f"release, not placed — {reason}"
     )
@@ -2004,7 +2008,7 @@ async def _al_send_agent_close_hold_alert(
         from backend.shared.helpers.alert_utils import _DISPATCH_LOGGER
         agent_key = getattr(agent, "slug", None) or getattr(agent, "id", None) or "unknown"
         message = _al_agent_close_hold_message(
-            agent, account, symbol, exchange, side, qty, reason,
+            account, symbol, exchange, side, qty, reason,
         )
         _DISPATCH_LOGGER.warning(
             f"[AGENT-CLOSE-HOLD] {message}",

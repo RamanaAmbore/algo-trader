@@ -6333,21 +6333,32 @@ async def _watchdog_check_market_open(
 
 
 async def _watchdog_handle_recovery(ticker: object, status: dict) -> None:
-    """Send a recovery alert when a previously-degraded ticker reconnects."""
+    """Send a recovery alert when a previously-degraded ticker reconnects.
+
+    2026-11 alert-identity audit fix — the body used to add its own
+    "TickerWatchdog{branch_tag} — recovered" title line and a
+    "Time: {ts}" line on top of the shared header's own
+    "Source: Ticker watchdog" identity + timestamp
+    (`_render_deploy_sync`/`format_notification_header()`, called by the
+    renderer, never by this producer) — duplicating both. The body now
+    carries only the actual message content, matching the established
+    `_ds_tick_draft_sweep` precedent (its body also carries no
+    branch_tag — verified: `format_notification_header()` itself has no
+    branch concept at all; only `dispatch_payload()`'s separate
+    rich-alert/summary flow computes one). A non-main branch therefore
+    no longer shows a `[branch]` marker on this specific alert, same as
+    `draft-sweep-alert` already doesn't — flagged here, not silently
+    dropped, in case an operator wants it back as body content later.
+    """
     _ticker_alert_state["alert_active"] = False
     now_ts = _time.time()
     duration_min = int((now_ts - _ticker_alert_state["incident_start"]) / 60)
-    branch = config.get("deploy_branch", "main")
-    branch_tag = f" [{branch}]" if branch != "main" else ""
-    ts = timestamp_display()
     from backend.shared.helpers.utils import mask_account
     raw_acct = status.get("account", ticker.current_account() or "?")  # type: ignore[union-attr]
     connected_acct = mask_account(raw_acct) if raw_acct and raw_acct != "?" else "?"
     msg = (
-        f"TickerWatchdog{branch_tag} — recovered\n"
         f"Ticker connected on {connected_acct}\n"
-        f"Duration of incident: {duration_min} min\n"
-        f"Time: {ts}"
+        f"Duration of incident: {duration_min} min"
     )
     logger.info(f"ticker watchdog: recovered on {connected_acct} after {duration_min} min")
     try:
@@ -6401,11 +6412,24 @@ def _bg_build_degraded_msg(
     current: Optional[str],
     is_refire: bool,
 ) -> str:
-    """Build the Telegram message for a ticker-degraded incident."""
+    """Build the alert body for a ticker-degraded incident.
+
+    2026-11 alert-identity audit fix — this used to add its own
+    "TickerWatchdog{branch_tag} — degraded" title line and a
+    "Time: {ts}" line on top of the shared header's own
+    "Source: Ticker watchdog" identity + timestamp
+    (`_render_deploy_sync`/`format_notification_header()`, called by the
+    renderer, never by this producer) — duplicating both. The body now
+    carries only the actual message content, matching the established
+    `_ds_tick_draft_sweep` precedent (its body also carries no
+    branch_tag — verified: `format_notification_header()` itself has no
+    branch concept at all; only `dispatch_payload()`'s separate
+    rich-alert/summary flow computes one). A non-main branch therefore
+    no longer shows a `[branch]` marker on this specific alert, same as
+    `draft-sweep-alert` already doesn't — flagged here, not silently
+    dropped, in case an operator wants it back as body content later.
+    """
     from backend.shared.helpers.utils import mask_account
-    branch = config.get("deploy_branch", "main")
-    branch_tag = f" [{branch}]" if branch != "main" else ""
-    ts = timestamp_display()
     disconnected_s = ticker.seconds_since_disconnect()  # type: ignore[union-attr]
     acct_list = ", ".join(
         mask_account(b_acct) for b in eligible
@@ -6414,12 +6438,10 @@ def _bg_build_degraded_msg(
     current_masked = mask_account(current) if current else "?"
     refire_note = " (re-alert)" if is_refire else ""
     return (
-        f"TickerWatchdog{branch_tag} — degraded{refire_note}\n"
-        f"Both Kite accounts in failover cool-off.\n"
+        f"Degraded{refire_note}: both Kite accounts in failover cool-off.\n"
         f"Disconnect: {current_masked} → {acct_list} (all blocked)\n"
         f"Sparkline degrading to broker.ltp() polling.\n"
-        f"Disconnected for: {disconnected_s:.0f}s\n"
-        f"Time: {ts}"
+        f"Disconnected for: {disconnected_s:.0f}s"
     )
 
 
@@ -8470,11 +8492,10 @@ async def _task_deploy_sync_check() -> None:
 
     If they diverge and the divergence persists past a 10-min grace window
     (avoids false-positives during a deploy's own normal build/restart
-    time), fires one ntfy alert per divergence episode via the existing
-    `send_ntfy_alert` path — the same helper used elsewhere for
-    order-failure / unprotected-position alerts. Alert-only; does not
-    auto-redeploy. See module docstring above for the incident this
-    guards against.
+    time), fires one alert per divergence episode via the log-record +
+    event-agent pipeline (`DEPLOY_SYNC_AGENT`, dedicated `telegram_deploy`
+    channel). Alert-only; does not auto-redeploy. See module docstring
+    above for the incident this guards against.
 
     Skips entirely (not just "no alert" — no comparison at all) when the
     locally checked-out branch doesn't match `deploy_branch` in
@@ -8484,8 +8505,6 @@ async def _task_deploy_sync_check() -> None:
     construction and false-page the operator. A real deploy target's
     checkout always matches its own configured `deploy_branch` (`deploy.sh`
     writes both from the same `$BRANCH` value)."""
-    from backend.shared.helpers.alert_utils import send_ntfy_alert
-
     await asyncio.sleep(120)  # startup settle — let the process finish booting
 
     while True:
@@ -8519,13 +8538,17 @@ async def _task_deploy_sync_check() -> None:
                     _DEPLOY_SYNC_STATE.update(new_state)
 
                     if should_alert:
+                        # 2026-11 alert-identity audit fix — this used to
+                        # append `{timestamp_display()}` on top of what the
+                        # shared header (`format_notification_header()`/
+                        # `dispatch_payload()`) already supplies. The body
+                        # now carries only the actual message content.
                         message = (
                             f"Local HEAD {local_head[:8]} != origin/{branch} "
                             f"HEAD {remote_head[:8]} for longer than "
                             f"{_DEPLOY_SYNC_GRACE_SECONDS // 60} min — webhook "
                             f"delivery may have been missed. Manual fallback: "
-                            f"sudo -u www-data /etc/webhook/dispatch.sh refs/heads/{branch}\n"
-                            f"{timestamp_display()}"
+                            f"sudo -u www-data /etc/webhook/dispatch.sh refs/heads/{branch}"
                         )
                         logger.warning(
                             f"[DEPLOY-SYNC] {message}",

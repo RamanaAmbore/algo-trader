@@ -263,6 +263,26 @@
     ]
   },
   {
+    "slug": "app-message-alert",
+    "name": "App message alert",
+    "conditions": {
+      "log": {
+        "tag": "alert",
+        "min_level": "WARNING",
+        "where": {
+          "alert_event": "app_message"
+        }
+      }
+    },
+    "events": [],
+    "actions": [
+      {
+        "type": "render",
+        "render": "generic_notice"
+      }
+    ]
+  },
+  {
     "slug": "alert-channel-telegram",
     "name": "Alert channel: Telegram",
     "conditions": {

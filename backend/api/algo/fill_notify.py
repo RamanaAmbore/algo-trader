@@ -134,6 +134,19 @@ async def notify_fills(rows: list) -> None:
                     "fill_price": row.fill_price,
                     "product": row.product,
                     "engine": getattr(row, "engine", None),
+                    # 2026-11-08 audit fix (item 8) — `agent_id` now
+                    # rides along too, not just `agent_name`. Before
+                    # this, a `_resolve_agent_names()` DB-lookup failure
+                    # (returns `{}`) made `names.get(agent_id)` resolve
+                    # to `None` for every row — and since this extra
+                    # dict never carried `agent_id` at all,
+                    # `_render_fill` (event_agents.py) rebuilt a row
+                    # with NEITHER key, which `resolve_origin()` reads
+                    # as "manual" even for a genuinely real agent whose
+                    # name just failed to resolve. Threading `agent_id`
+                    # through lets a lookup failure degrade to the
+                    # honest "Agent #{id}" form instead.
+                    "agent_id": agent_id,
                     "agent_name": names.get(agent_id),
                     # 2026-10-23 chase robustness (fix #4) — a fill is
                     # FYI, never action-required: Telegram/email/log for

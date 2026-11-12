@@ -187,3 +187,29 @@ async def test_no_agent_ids_skips_the_db_query_entirely(logged):
     # DB, not issue a WHERE id IN () query.
     await fill_notify.notify_fills([_row(agent_id=None)])
     assert logged[0][1]["extra"]["agent_name"] is None
+
+
+@pytest.mark.asyncio
+async def test_agent_id_rides_along_even_when_name_lookup_fails(monkeypatch, logged):
+    """2026-11-08 audit fix (item 8) regression guard. A real agent's
+    order (agent_id=42) whose name lookup fails (DB error -> _resolve_
+    agent_names returns {}) must log `agent_id` alongside the resulting
+    `agent_name=None`, not just the name. Before the fix, `extra` never
+    carried `agent_id` at all, so `_render_fill`/`resolve_origin` read a
+    row with NEITHER key and rendered the false "manual" for a genuinely
+    real agent whose name simply failed to resolve."""
+    from unittest.mock import patch
+
+    with patch.object(fill_notify, "_resolve_agent_names", return_value={}):
+        await fill_notify.notify_fills([_row(agent_id=42)])
+    extra = logged[0][1]["extra"]
+    assert extra["agent_id"] == 42
+    assert extra["agent_name"] is None
+
+    # End-to-end: the renderer must resolve this to "Agent #42", never "manual".
+    from backend.api.algo import event_agents as ea
+
+    rec = {"extra": extra, "ts": None}
+    _title, body, _tg = ea._render_fill(rec)
+    assert "Agent #42" in body
+    assert "manual" not in body.lower()

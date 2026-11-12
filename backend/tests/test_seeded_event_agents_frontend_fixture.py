@@ -75,10 +75,13 @@ def test_fixture_has_all_13_agents_and_covers_both_log_and_any_shapes():
     # alert-agent audit fix (SEED_VERSION 9 -> 10): 14 -> 15 —
     # `draft-sweep-alert`, a brand-new standalone dedicated agent
     # (`background.py:_ds_tick_draft_sweep()` no longer calls
-    # `alert_utils._send_telegram_info()` directly).
+    # `alert_utils._send_telegram_info()` directly). 2026-11-08 audit
+    # fix (item 9): 15 -> 16 — `app-message-alert`, a brand-new
+    # standalone dedicated agent closing the CRITICAL AppMessage
+    # silent-drop gap (`app_message.py:_route_sinks()`).
     with open(_FIXTURE_PATH, "r", encoding="utf-8") as f:
         fixture = json.load(f)
-    assert len(fixture) == 15
+    assert len(fixture) == 16
     has_plain_log = any("log" in a["conditions"] for a in fixture)
     has_any_of_logs = any("any" in a["conditions"] for a in fixture)
     has_nonempty_events = any(a["events"] for a in fixture)

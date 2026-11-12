@@ -145,3 +145,46 @@ async def test_action_live_send_market_status_no_per_record_channels_override():
     extra = mock_logger.info.call_args.kwargs["extra"]
     assert extra["alert_event"] == "market_status"
     assert "channels" not in extra
+
+
+@pytest.mark.asyncio
+async def test_action_live_send_market_status_cron_call_has_no_trigger_keys():
+    """2026-11 audit fix — `_ds_tick_market_status_report` (background.py)
+    calls this handler directly with `context={}` for the scheduled
+    05:35 IST cron case. No `agent_id`/`agent_name` key must be present
+    on the record at all (key-presence, not truthiness — a fabricated
+    `None` would make `resolve_source()` render "triggered manually" for
+    a genuinely un-caused scheduled job)."""
+    now = datetime(2026, 10, 24, 5, 35, tzinfo=IST)  # Saturday — both closed
+    with patch("backend.shared.helpers.date_time_utils.timestamp_indian", return_value=now), \
+         patch("backend.brokers.broker_apis.fetch_holidays", return_value=set()), \
+         patch("backend.brokers.broker_apis.fetch_special_sessions_async", new=AsyncMock(return_value=[])), \
+         patch("backend.shared.helpers.alert_utils._DISPATCH_LOGGER") as mock_logger:
+        await _action_live_send_market_status({}, {})
+    extra = mock_logger.info.call_args.kwargs["extra"]
+    assert extra["source_type"] == "process"
+    assert extra["source_name"] == "Market status report"
+    assert "agent_id" not in extra
+    assert "agent_name" not in extra
+
+
+@pytest.mark.asyncio
+async def test_action_live_send_market_status_threads_real_agent_trigger_through():
+    """When a custom agent's own `DO send_market_status()` call reaches
+    this handler via `actions.py:execute()`, `context` carries the REAL
+    firing agent's `agent_id`/`agent_name` (the same mechanism
+    `send_summary()`/`action_send_summary.py` already use) — this must
+    be threaded through onto the record, alongside the unconditional
+    `source_type="process"`, rather than discarded."""
+    now = datetime(2026, 10, 24, 5, 35, tzinfo=IST)
+    context = {"agent_id": 42, "agent_name": "custom-market-watcher"}
+    with patch("backend.shared.helpers.date_time_utils.timestamp_indian", return_value=now), \
+         patch("backend.brokers.broker_apis.fetch_holidays", return_value=set()), \
+         patch("backend.brokers.broker_apis.fetch_special_sessions_async", new=AsyncMock(return_value=[])), \
+         patch("backend.shared.helpers.alert_utils._DISPATCH_LOGGER") as mock_logger:
+        await _action_live_send_market_status(context, {})
+    extra = mock_logger.info.call_args.kwargs["extra"]
+    assert extra["source_type"] == "process"
+    assert extra["source_name"] == "Market status report"
+    assert extra["agent_id"] == 42
+    assert extra["agent_name"] == "custom-market-watcher"

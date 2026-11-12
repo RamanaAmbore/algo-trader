@@ -64,6 +64,16 @@ class AlertEvent(msgspec.Struct):
     channels_sent: list[str]  # e.g. ["telegram", "email", "websocket"]
     sim_mode: bool
     detail: str         # truncated to 240 chars
+    # New, LogEvent-only fields (2026-11 audit fix) — defaulted so the
+    # AgentEvent branch (which has no `tags` column and resolves its
+    # `agent_name` from a real `Agent` row, not `resolve_source()`)
+    # needs no change at all. `tags` — the raw `LogEvent.tags` array,
+    # for a future Alerts-tab filter/badge. `source_name` — the real
+    # process name when `agent_name` above was resolved via
+    # `resolve_source()`'s "Source: ..." branch, `None` otherwise
+    # (including for every AgentEvent-sourced row).
+    tags: list[str] = msgspec.field(default_factory=list)
+    source_name: "Optional[str]" = None
 
 
 # ---------------------------------------------------------------------------
@@ -180,9 +190,10 @@ def _build_log_alert_stmt(effective_limit: int, since_dt: Optional[datetime]):
 
 
 def _log_event_agent_label(logger_name: Optional[str]) -> str:
-    """Best-effort `agent_name` for a LogEvent-sourced row — there is no
-    real Agent row behind a log-tag alert, so this is the last dotted
-    segment of the producing logger's name (e.g. "chase" for
+    """Best-effort `agent_name` for a LogEvent-sourced row carrying NO
+    identity info at all (see `_log_event_to_alert`) — there is no real
+    Agent row behind a log-tag alert, so this is the last dotted segment
+    of the producing logger's name (e.g. "chase" for
     `backend.api.algo.chase`), matching `log_store.py:tags_for()`'s own
     logger-name fallback convention. Falls back to the literal "system"
     when even that's empty (defensive; every real logger name is
@@ -191,22 +202,64 @@ def _log_event_agent_label(logger_name: Optional[str]) -> str:
     return name or "system"
 
 
+def _log_event_has_identity(extra: dict) -> bool:
+    """True when `extra` carries enough for `resolve_source()` to
+    compute a real (non-fabricated) identity — a `source_type` +
+    `source_name` pair, or an `agent_id`/`agent_name` KEY (checked via
+    presence, not truthiness — a bare `None` value for either still
+    means "explicitly manual", per `resolve_source()`'s own contract;
+    see CLAUDE.md's "Alert identity SSOT" entry). `False` means
+    "genuinely unknown" — the record predates this convention entirely
+    (e.g. a bare `logger.error(...)` with no `source_type`/`agent_id`
+    at all) — and must fall back to the logger-name label rather than
+    let `resolve_source()` fabricate "manual" for it."""
+    return bool(
+        (extra.get("source_type") and extra.get("source_name"))
+        or "agent_id" in extra
+        or "agent_name" in extra
+    )
+
+
 def _log_event_to_alert(event: LogEvent) -> AlertEvent:
     """Map one `LogEvent` row into the same `AlertEvent` struct the
     AgentEvent query returns, so `LogPanel.svelte`'s Alerts tab needs no
     frontend change at all — it already consumes whatever AlertEvent-
-    shaped rows this endpoint returns, by field name."""
+    shaped rows this endpoint returns, by field name.
+
+    2026-11 audit fix — this used to derive `agent_name` from the last
+    dotted segment of the producing logger's name unconditionally, so
+    every row logged through `_DISPATCH_LOGGER` (whose logger name is
+    `backend.api.algo.events` — order_failure, summary, order_cancelled,
+    agent_close_hold, market_status, draft_sweep, app_message, …) showed
+    the generic label "events" instead of its real identity. Now calls
+    the shared `resolve_source()` (the one SSOT every other alert
+    renderer uses) whenever the record actually carries identity info,
+    and only falls back to the logger-name label when it genuinely
+    doesn't — never fabricating "manual" for a record that simply
+    predates this convention (`_log_event_has_identity`'s own contract).
+    """
     extra = event.extra or {}
+    source_name: Optional[str] = None
+    if _log_event_has_identity(extra):
+        from backend.shared.helpers.alert_utils import resolve_source
+        label_word, label_sentence, process_tag, _action_tag = resolve_source(extra)
+        agent_name = label_sentence
+        if label_word == "Source":
+            source_name = process_tag
+    else:
+        agent_name = _log_event_agent_label(event.logger)
     return AlertEvent(
         id=-event.id,
         agent_id=_LOG_ALERT_AGENT_ID_SENTINEL,
-        agent_name=_log_event_agent_label(event.logger),
+        agent_name=agent_name,
         event_type=_LOG_ALERT_EVENT_TYPE,
         triggered_at=format_dual_tz(event.ts),
         conditions_summary=_truncate(event.message, 200),
         channels_sent=[],
         sim_mode=bool(extra.get("sim_mode", False)),
         detail=_truncate(event.message),
+        tags=list(event.tags or []),
+        source_name=source_name,
     )
 
 

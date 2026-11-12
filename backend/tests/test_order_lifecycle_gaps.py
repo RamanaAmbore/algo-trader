@@ -134,3 +134,63 @@ class TestCancelAlertSendsWithoutTypeError:
         }}
         title, body, tg = _render_order_cancelled(rec)
         assert body.splitlines()[0] == "Source: postback triggered manually"
+
+
+class TestRenderMarketStatusTriggerKnownFix:
+    """2026-11-08 fix — `_render_market_status` always sets
+    `source_type`/`source_name` (its one real producer,
+    `actions_live._action_live_send_market_status`, carries it on every
+    call), so `has_process_identity` was always True and the old
+    `trigger_known=not has_process_identity` was always False. That
+    silently dropped a real `agent_id`/`agent_name` the producer DID
+    attach — exactly the gap the sibling agent found once their own fix
+    (threading a real agent identity into the record for an
+    agent-invoked `send_market_status()` call) went inert on arrival
+    here. Fixed to `trigger_known=_order_scope_trigger_known(x)` — the
+    same key-presence check every other order/process-scoped renderer
+    in this file already uses."""
+
+    def test_scheduled_cron_call_shows_no_trigger(self):
+        """No `agent_id`/`agent_name` keys at all (the real 05:35 IST
+        cron shape) — must still show no trigger, never a fabricated
+        one."""
+        from backend.api.algo.event_agents import _render_market_status
+
+        rec = {"extra": {
+            "title": "Market Status",
+            "body": "NSE/Equity: OPEN 09:15–15:30 IST\nMCX/Commodity: OPEN 09:00–23:30 IST",
+            "source_type": "process", "source_name": "Market status report",
+        }}
+        title, body, tg = _render_market_status(rec)
+        assert body.splitlines()[0] == "Source: Market status report"
+
+    def test_agent_invoked_call_shows_the_real_agent(self):
+        """An agent-invoked `send_market_status()` call carries a real
+        `agent_id`/`agent_name` pair alongside the process identity —
+        this must now surface as "triggered by {agent}", not be
+        silently dropped."""
+        from backend.api.algo.event_agents import _render_market_status
+
+        rec = {"extra": {
+            "title": "Market Status",
+            "body": "NSE/Equity: OPEN 09:15–15:30 IST\nMCX/Commodity: OPEN 09:00–23:30 IST",
+            "source_type": "process", "source_name": "Market status report",
+            "agent_id": 42, "agent_name": "custom-agent",
+        }}
+        title, body, tg = _render_market_status(rec)
+        assert body.splitlines()[0] == "Source: Market status report triggered by custom-agent"
+
+    def test_agent_invoked_manual_sentinel_shows_triggered_manually(self):
+        """A caller that explicitly resolved "manual" (agent_id/agent_name
+        keys present, values None) still shows "triggered manually",
+        not a dropped/absent trigger."""
+        from backend.api.algo.event_agents import _render_market_status
+
+        rec = {"extra": {
+            "title": "Market Status",
+            "body": "NSE/Equity: OPEN 09:15–15:30 IST",
+            "source_type": "process", "source_name": "Market status report",
+            "agent_id": None, "agent_name": None,
+        }}
+        title, body, tg = _render_market_status(rec)
+        assert body.splitlines()[0] == "Source: Market status report triggered manually"

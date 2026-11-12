@@ -162,26 +162,41 @@ async def _route_sinks(msg: AppMessage) -> None:
     tagged record instead of sending directly — no direct sender call
     remains in this module.
 
-    `tags_for()` (`log_store.py`) already stamps every record's own
-    level name as a tag (and, for CRITICAL, also "error"), so an
-    error/critical AppMessage reaches `ERROR_AGENT`'s catch-all
-    (`tag="error", min_level="ERROR"`) for free, with no synthetic tag
-    added here. Deliberately NOT adding an "alert" tag unconditionally:
-    doing so would make every error/critical AppMessage also look
-    "alert-shaped" to `event_agents.py:_looks_alert_shaped()` and
-    double-fire through the unrouted-catch-all self-alert on top of
-    `ERROR_AGENT`. A caller that wants deploy/alert-style routing sets
-    its own `tags` on the `AppMessage` (e.g. `["deploy"]`) — forwarded
-    verbatim below — which, combined with WARNING+ level, is still
-    picked up by `UNROUTED_ALERT_AGENT`'s catch-all the same way any
-    other unmatched alert-shaped record is. No live caller passes such
-    tags today (see this module's own docstring), so this is a
-    correctly-shaped path for a future caller, not a currently
-    exercised one. No dedicated seeded agent is added for
-    `alert_event="app_message"` for the same reason — nothing fires at
-    error/critical today, so there is nothing yet for a dedicated
-    agent to cover beyond what `ERROR_AGENT`'s existing catch-all
-    already provides.
+    2026-11-08 audit fix (item 9) — a CRITICAL `AppMessage` was
+    confirmed silently NEVER reaching any channel. Root cause:
+    `tags_for()` (`log_store.py`) stamps every CRITICAL record with
+    "error" too, so `ERROR_AGENT`'s blanket catch-all
+    (`tag="error", min_level="ERROR"`) condition always MATCHED a
+    CRITICAL `AppMessage` — which is enough to satisfy
+    `_record_matches_any_agent()`'s "is this record routed to
+    SOMETHING" check, so `_run_unrouted_catch_all()` never fired its own
+    self-alert either. But `ERROR_AGENT`'s OWN dispatch then refused to
+    actually send, because `event_agents._error_agent_self_alerted()`
+    treats any CRITICAL record carrying a truthy `alert_event` as
+    "already routed to its own dedicated agent" — an assumption that
+    held for every OTHER CRITICAL producer in this codebase (chase's
+    `cancel_unconfirmed`, the GTT wing agents), each of which really
+    does have its own dedicated agent, but was FALSE for
+    `alert_event="app_message"`, which had none. Both "this looks
+    routed" signals fired on a record nothing actually delivered.
+
+    Fixed with a real dedicated agent
+    (`event_agents.APP_MESSAGE_AGENT`, slug `app-message-alert`,
+    matching `tag="alert", min_level="WARNING",
+    where={"alert_event": "app_message"}` — the same shape every other
+    migrated `generic_notice` agent uses) PLUS `self_alerted: True` on
+    every record this sink emits (the SAME opt-out
+    chase.py/actions_live.py already use for their own dedicated CRITICAL
+    paths) — the self-alerted flag is what stops `ERROR_AGENT` from
+    ALSO firing for the same record once the dedicated agent exists
+    (`_error_agent_self_alerted` keys on that flag OR the CRITICAL+
+    alert_event combination, and is scoped to `ERROR_AGENT`'s own slug
+    only, so no other agent is affected). The "alert" tag is now added
+    so the new agent's `tag="alert"` condition can match — the
+    argument against adding it unconditionally (doubling through the
+    unrouted catch-all) no longer applies, because a real dedicated
+    agent now matches this record first, which is exactly what
+    `_record_matches_any_agent()` checks.
     """
     tag_set = frozenset(msg.tags or [])
     should_alert = msg.level in ("error", "critical") or bool(tag_set & _NTFY_TAGS)
@@ -190,10 +205,17 @@ async def _route_sinks(msg: AppMessage) -> None:
     try:
         title = msg.title or (msg.tags[0].capitalize() if msg.tags else msg.level.upper())
         level_no = _LEVEL_TO_LOGGING.get(msg.level, logging.INFO)
+        tags = list(msg.tags or [])
+        if "alert" not in tags:
+            tags.append("alert")
         logger.log(
             level_no, "AppMessage: %s", msg.body,
-            extra={"tags": list(msg.tags or []), "alert_event": "app_message",
-                   "title": title, "body": msg.body},
+            extra={"tags": tags, "alert_event": "app_message",
+                   "title": title, "body": msg.body,
+                   # Stops ERROR_AGENT's blanket catch-all from
+                   # double-firing alongside APP_MESSAGE_AGENT — see
+                   # this function's own docstring above.
+                   "self_alerted": True},
         )
     except Exception as exc:
         logger.debug("AppMessage: log-and-dispatch sink failed: %s", exc)

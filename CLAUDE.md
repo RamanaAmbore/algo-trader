@@ -741,7 +741,8 @@ The fix:
   for a log line with no agent. A caller that attaches a real `agent_id` gets the real name.
 - *Amended 2026-10-25 (commit `17a1c85a`) — the line-1 invariant below does not hold for every
   producer.* `generic_notice` bodies (the five `background.py` sites, plus deploy-sync and
-  visitor-report) carry no origin line. Summary dispatches are agent-less by design. See "Alert
+  visitor-report) carry no origin line. Summary dispatches were agent-less by design at that date.
+  Superseded 2026-11-08: summaries now carry `Source: Market summary` or the firing agent. See "Alert
   message format" below for the verified scope.
 - Invariant: origin is always line 1 of every outbound message. A manual order shows the same origin
   on every alert for that order, never `manual` on one and `[Agent]` on another.
@@ -878,12 +879,25 @@ must split plain and HTML slots. It must never hand a tagged body to an escape-f
 **Alert message format — plain text everywhere, origin line first, dedicated deploy channel, forced email for action-required, Alerts tab merges `alert`-tagged log rows (2026-10-25; commit `17a1c85a`; test-only follow-up `368c98a8`)** — Three standardisation changes and one surface change, all in the alert pipeline.
 - **Plain text, no HTML in Telegram or ntfy.** `alert_utils._send_telegram()` ([alert_utils.py:218](backend/shared/helpers/alert_utils.py#L218)) sends no `parse_mode` unless a caller passes one explicitly, and nothing does (payload at [:264-266](backend/shared/helpers/alert_utils.py#L264)). `_send_telegram_info()` ([:276](backend/shared/helpers/alert_utils.py#L276)) never sets one. `dispatch_payload()` builds `telegram_msg` without `<b>`/`<code>` and without `html.escape()` ([:682-685](backend/shared/helpers/alert_utils.py#L682)). The event-path senders `_send_telegram_html` ([event_agents.py:452](backend/api/algo/event_agents.py#L452)) and `_send_telegram_info_html` ([:501](backend/api/algo/event_agents.py#L501)) are now bare pass-throughs. Their `_html` suffix is kept for name stability only. `_html_to_plain()` ([alert_utils.py:319](backend/shared/helpers/alert_utils.py#L319)) has no production caller left. Email keeps its HTML body (`_email_message`).
 - **`webhook/notify_deploy.py` is Telegram-only.** Its ntfy send is gone, the email path stays retired ([notify_deploy.py:106-110](webhook/notify_deploy.py#L106)), and no `parse_mode` is sent. Its `tg_body` is plain text ([:77-87](webhook/notify_deploy.py#L77)).
-- **Origin line first.** `format_notification_header()` ([alert_utils.py:587](backend/shared/helpers/alert_utils.py#L587)) emits `Agent: {origin}` as line 1, then the dual-tz timestamp. *Amended 2026-11-02:* on the Telegram and ntfy path,
-  `dispatch_payload()` now puts the agent line and the timestamp on one pipe-separated line. The bare
-  `format_notification_header()` output is still two lines. See "Alert header consolidation" below. The
+- **Origin line first.** `format_notification_header()` ([alert_utils.py:587](backend/shared/helpers/alert_utils.py#L587)) emits `Agent: {origin}` as line 1, then the dual-tz timestamp. *Amended 2026-11-03 (reverted the 2026-11-02 one-line merge):* Telegram and ntfy put the identity
+  on line 1 and the timestamp on line 2 again. See "Alert header layout" below. The
   event renderers that build their own text lead with it: `_render_chase_cancel` ([event_agents.py:94](backend/api/algo/event_agents.py#L94)), `_render_partial_gtt` ([:113](backend/api/algo/event_agents.py#L113)), `_render_template_attach` ([:144](backend/api/algo/event_agents.py#L144)), `_render_order_correction` ([:268](backend/api/algo/event_agents.py#L268)), `_render_gtt_not_accepted` ([:380](backend/api/algo/event_agents.py#L380)) and `_render_error` ([:411](backend/api/algo/event_agents.py#L411)). `_render_order_failure` gets its header from `order_failure_messages()` ([alert_utils.py:1085](backend/shared/helpers/alert_utils.py#L1085), header call at [:1126](backend/shared/helpers/alert_utils.py#L1126)). MCP pings get theirs at the single chokepoint `lab.py` ([routes/lab.py:1141-1143](backend/api/routes/lab.py#L1141)).
-  - **Deliberate exception — agent-less summaries.** `dispatch_payload()` adds the agent line only when both `agent_name` and `agent_id` are given ([alert_utils.py:666-668](backend/shared/helpers/alert_utils.py#L666)). Open and close summaries therefore lead with the title line `… — <dual-tz>` and carry no origin line ([:682-685](backend/shared/helpers/alert_utils.py#L682)).
-  - **Known gap — `generic_notice` producers do not lead with origin.** `_render_deploy_sync` ([event_agents.py:293](backend/api/algo/event_agents.py#L293)) is a pass-through of `extra["body"]`. Its five `background.py` producers build a bare `msg` with no `Agent:` line: gtt-asymmetric ([background.py:5290-5300](backend/api/background.py#L5290)), oco-double-fire, ticker-recovered, ticker-degraded, and visitor-report ([:7232-7246](backend/api/background.py#L7232)). Deploy-sync also builds its own `message` ([:8999-9001](backend/api/background.py#L8999)). None of these carry an origin line. This is stated here, not fixed.
+  - **Summaries lead with a process or agent identity, not a title line (corrected 2026-11-08; the
+    earlier "agent-less by design" wording is superseded).** The scheduled close-summary cron calls
+    `send_summary(..., source_type="process", source_name="Market summary")` ([background.py:8725-8730](backend/api/background.py#L8725)),
+    so it leads with `Source: Market summary` and no "triggered" phrase. The `send_summary` DSL action
+    ([grammar_tokens/action_send_summary.py:35-49](backend/api/algo/grammar_tokens/action_send_summary.py#L35))
+    forwards the firing agent's `agent_name`/`agent_id`, so that summary leads with `Agent: {name} (#{id})`.
+    Only a `dispatch_payload()` call with neither pair falls back to the title line `… — <dual-tz>`
+    ([alert_utils.py:1005-1008](backend/shared/helpers/alert_utils.py#L1005)).
+  - **`generic_notice` producers lead with identity when they carry one.** `_render_deploy_sync`
+    ([event_agents.py:474](backend/api/algo/event_agents.py#L474)) serves every `generic_notice` agent. It
+    prepends `format_notification_header()` when a producer sets an agent pair or `source_type`/`source_name`.
+    Only a producer that sets neither stays header-less. The gtt-asymmetric and oco-double-fire producers
+    named in earlier revisions no longer exist. Ticker recovered/degraded, visitor report and deploy sync now
+    set `source_type="process"` ([background.py:6377](backend/api/background.py#L6377),
+    [:6489](backend/api/background.py#L6489), [:6788](backend/api/background.py#L6788),
+    [:8563](backend/api/background.py#L8563)).
 - **Visitor report is plain text.** The Telegram body is `_summary_text()` ([backend/scripts/visitor_report.py:770](backend/scripts/visitor_report.py#L770)), not the HTML `summary_for_telegram()` builder ([:780](backend/scripts/visitor_report.py#L780)). The 2026-10-23 `generic_notice` HTML leak entry above is therefore moot. Its HTML split no longer exists.
 - **`telegram_deploy` channel.** `CHANNELS["telegram_deploy"]` ([event_agents.py:563](backend/api/algo/event_agents.py#L563)) posts through `_send_telegram_deploy_html()` ([:508-523](backend/api/algo/event_agents.py#L508)). It reads secrets `telegram_bot_token_deploy`/`telegram_chat_id_deploy` and falls back to `telegram_bot_token`/`telegram_chat_id`. That is the same credential pair and fallback `notify_deploy.py` already used ([notify_deploy.py:90-91](webhook/notify_deploy.py#L90)). The only rule that names it is `deploy-sync-alert` ([alert_routing.py:117-119](backend/api/algo/alert_routing.py#L117)), with `gate: False`. It is explicitly not the generic `telegram` channel, not ntfy and not email.
 - **Two rows gained `telegram`; one did not.** `partial-gtt-alert` ([alert_routing.py:70-73](backend/api/algo/alert_routing.py#L70)) and `template-attach-high` ([:80-83](backend/api/algo/alert_routing.py#L80)) now list `telegram` ahead of ntfy. `gtt-not-accepted-alert` ([:153-155](backend/api/algo/alert_routing.py#L153)) is still ntfy-only.
@@ -893,7 +907,7 @@ must split plain and HTML slots. It must never hand a tagged body to an escape-f
   - **Which records are tagged.** The additive `alert` catalog token ([agent_grammar.yaml:1534](backend/config/grammars/agent_grammar.yaml#L1534)) is on alert-worthy lines in `fill_notify.py` ([:101](backend/api/algo/fill_notify.py#L101)), `order_poll.py` ([:217](backend/api/algo/order_poll.py#L217)), `template_attach.py` (**REMOVED — Bracket/Template/GTT, T3.1–T3.4, 2026-11** — this file no longer exists), `chase.py` ([:2769](backend/api/algo/chase.py#L2769)), `orders_place.py` ([:1174](backend/api/routes/orders_place.py#L1174)), `lab.py` ([:1144](backend/api/routes/lab.py#L1144)) and `alert_utils.py` ([:1198](backend/shared/helpers/alert_utils.py#L1198)). `rich_alert` and `breach` are deliberately not tagged. Their firings already exist as `AgentEvent` rows, and tagging them would double each one.
   - **Fixed same day, commit `492fd988` — this was NOT just an Alerts-tab visibility gap, it was zero channel delivery.** `alert_utils` is in `_SKIP_PREFIXES` ([log_store.py:29](backend/shared/helpers/log_store.py#L29)). `LogStoreHandler.emit()` returns before queueing when `record.name.startswith(_SKIP_PREFIXES)` ([:217](backend/shared/helpers/log_store.py#L217)). `_send_order_failure_messages()` ([alert_utils.py:1193](backend/shared/helpers/alert_utils.py#L1193)) and `send_summary()` ([:918](backend/shared/helpers/alert_utils.py#L918)) both logged through `alert_utils.py`'s own module `logger` — so their records never reached `log_events`, never reached `event_agents.dispatch()`, and `ORDER_FAILURE_AGENT`/the summary agent could never fire. **Confirmed via git history: zero Telegram/ntfy/email delivery for order failures and market-open/close summaries for ~19 days**, since `_SKIP_PREFIXES` gained this entry on 2026-10-06 (`54860caa`) — three months after `5f0a6d5c` (2026-07-23) had already migrated both functions off direct `_send_telegram()`/`send_email()` calls onto this log-and-dispatch model. The two changes, three months apart, silently combined into this gap; neither commit's own test suite caught it because tests mock the dispatch layer directly rather than exercising the real skip-list end-to-end. Fix: both functions now log through a new `_DISPATCH_LOGGER` ([alert_utils.py:93](backend/shared/helpers/alert_utils.py#L93), name `backend.api.algo.events` — the exact same non-skip-listed logger name `event_agents.py`'s own `_EVENTS_LOGGER` already uses for this identical purpose) instead of the skip-listed `logger`. The skip-list itself is untouched — it still correctly protects this module's genuine internal diagnostics (Redis/Telegram/email send status). Regression test in `test_log_store.py::test_order_failure_and_summary_records_reach_the_queue` attaches a real `LogStoreHandler` to the real logger and proves the record survives `emit()` — not a mocked call. Invariant: any log call meant to trigger event-agent dispatch must use a logger name outside `_SKIP_PREFIXES`; `_DISPATCH_LOGGER`/`_EVENTS_LOGGER` is that one, shared convention — never log-and-dispatch through a module's own skip-listed `logger`.
 - Test-only commit `368c98a8` adds [backend/tests/test_alert_agent_dsl_examples.py](backend/tests/test_alert_agent_dsl_examples.py). It is illustrative DSL-to-dispatch fixtures and changes no runtime code.
-- Invariant: an outbound Telegram or ntfy message is plain text with no markup. The origin line is line 1 of every event-renderer message, with the agent-less summary as the one named exception. A deploy-sync notice reaches only `telegram_deploy`. An action-required record always reaches email. An Alerts-tab row never collides with an `AgentEvent` id.
+- Invariant: an outbound Telegram or ntfy message is plain text with no markup. The identity line is line 1 of every event-renderer message. The only header-less fallback is a `dispatch_payload()` call with neither an agent pair nor a process pair. A deploy-sync notice reaches only `telegram_deploy`. An action-required record always reaches email. An Alerts-tab row never collides with an `AgentEvent` id.
 
 **Every alert carries a trailing action-agent + alert-agent tag — "manual"/real agent name, plus
 which dispatching agent sent it (2026-10-31, operator: "action agent take actions... alert agent...
@@ -949,37 +963,39 @@ sent this Telegram/ntfy/email) fired — that identity existed only as internal 
   collapsed alert type's 3 generic channel agents always agree on the SAME alert-agent label for one
   record, via `source_slug`, never 3 different ones.
 
-**Alert header consolidation — one pipe-separated identity line on Telegram and ntfy, "Alert:" label,
-email subject reshaped, email table overflow fixed (2026-11-02, uncommitted this session)** — Presentation
-changes in [alert_utils.py](backend/shared/helpers/alert_utils.py). The scope is deliberately narrow.
-- **One line, not two (Telegram and ntfy).** `dispatch_payload()`
-  ([alert_utils.py:781-830](backend/shared/helpers/alert_utils.py#L781)) used to send `Agent: {name} (#{id})`
-  and a separate `Agent — {ts}` line. It now sends one line, `Alert: {name} (#{id}) | {IST} | {EST}`, with
-  any branch and mode tag before the pipe. The generic `tg_prefix_full` ("Agent", "SIMULATOR Agent",
-  "REPLAY Agent") is dropped in this branch. The SIM/REPLAY bracket and the warning banner still carry
-  that fact.
-- **Label scope.** "Agent" becomes "Alert" only in this merged line (via `_relabel_agent_label_to_alert()`)
-  and in the email subject and body header paragraphs. `format_notification_header()` is unchanged. Every
-  other `Agent: {origin}` label still says "Agent:". That covers the order-display `agent_origin` chip and
-  the fill, failure, chase-cancel and template-attach renderers. This is not a global rename.
-- **Email subject.** Was `RamboQuant Agent: {name} (#{id})` with no timestamp. It is now
-  `Alert: {name} (#{id}){branch_tag}{mode_tag} | {IST}`
-  ([alert_utils.py:481](backend/shared/helpers/alert_utils.py#L481)). An early draft silently dropped the
-  PAPER and branch tags from the subject. That would have broken the "every alert must explicitly show
-  paper/sim/replay mode" invariant. It was caught and fixed before shipping.
-- **Email body.** The two-paragraph structure is unchanged, per operator instruction not to merge it. Only
-  the word "Agent" became "Alert" inside both paragraphs.
-- **Table overflow (bundled).** The `<td>` cells in `_email_alert_body()`
-  ([alert_utils.py:1724](backend/shared/helpers/alert_utils.py#L1724)) use
-  `white-space:normal;word-break:break-word;overflow-wrap:break-word` instead of `nowrap`. The table is
-  `width:100%`, and long cell content was overflowing its container. `<th>` keeps `nowrap`, because its
-  labels are short and fixed.
-- Tests: [test_alert_golden.py](backend/tests/test_alert_golden.py) (subject and header, around :962),
+**Alert header layout — two lines on Telegram and ntfy, `Agent:`/`Source:` labels only, email subject
+without a doubled timestamp (2026-11-02 one-line trial, reverted 2026-11-03/04; subject de-dup
+2026-11-08)** — Describes the code as it is now in [alert_utils.py](backend/shared/helpers/alert_utils.py).
+The one-line `Alert: {name} (#{id}) | {IST} | {EST}` form and the `Alert:` label from 2026-11-02 were both
+reverted. Do not re-apply them without a fresh operator decision.
+- **Telegram and ntfy: two lines.** `dispatch_payload()`
+  ([alert_utils.py:997-1008](backend/shared/helpers/alert_utils.py#L997)) puts the identity on line 1: the
+  first line of `format_notification_header()` plus `branch_tag`. That line is `Agent: {name} (#{id})`,
+  `Agent: manual`, `Agent #{id}`, or `Source: {process}[ triggered manually|by {agent}]`. Line 2 carries the
+  `[SIM]`/`[REPLAY]` bracket, the dual-tz timestamp and the warning banner. The tag table follows after a
+  blank line. With neither an agent pair nor a process pair, the message falls back to a title line,
+  `{prefix}{branch_tag} — {ist}` ([:1005-1008](backend/shared/helpers/alert_utils.py#L1005)).
+- **No `Alert:` label anywhere.** `_relabel_agent_label_to_alert()`
+  ([alert_utils.py:752](backend/shared/helpers/alert_utils.py#L752)) is a no-op kept as a single place to
+  change. Every label is `Agent:` or `Source:`. `format_notification_header()`
+  ([alert_utils.py:775-839](backend/shared/helpers/alert_utils.py#L775)) returns `"{header}\n{timestamp}"`,
+  which is the same two-line shape `dispatch_payload()` uses.
+- **Email subject.** `_email_message()` ([alert_utils.py:482-492](backend/shared/helpers/alert_utils.py#L482))
+  builds `{Agent|Source}: {subject_detail}{branch_tag}{ mode_tag}` when an identity is known. It appends
+  ` | {ist}` only when `ist_display` is not already inside `subject_detail`. A summary's subject already
+  carries the timestamp, so it is not doubled (2026-11-08). The branch and mode tags stay in the subject, so
+  PAPER/SIM/REPLAY remains visible there. The body's two header paragraphs use the same `Agent:`/`Source:`
+  label.
+- **Email table overflow.** Data `<td>` cells wrap:
+  `white-space:normal;word-break:break-word;overflow-wrap:break-word`
+  ([alert_utils.py:2060-2063](backend/shared/helpers/alert_utils.py#L2060)). `<th>` keeps `nowrap`
+  ([:2046](backend/shared/helpers/alert_utils.py#L2046)), because its labels are short and fixed.
+- Tests: [test_alert_golden.py](backend/tests/test_alert_golden.py),
   [test_dispatch_payload_title_and_subject.py](backend/tests/test_dispatch_payload_title_and_subject.py),
-  [test_rich_alert_custom_message.py](backend/tests/test_rich_alert_custom_message.py).
-- Invariant: on Telegram and ntfy, the agent identity and the timestamp share one line. "Alert:" labels only
-  that line and the email headers. The origin line stays first. Every other `Agent:` origin label is
-  unchanged.
+  [test_rich_alert_custom_message.py](backend/tests/test_rich_alert_custom_message.py),
+  [test_alert_header_identity_2026_11_03.py](backend/tests/test_alert_header_identity_2026_11_03.py).
+- Invariant: on Telegram and ntfy, identity is line 1 and the timestamp is line 2. The only identity labels
+  are `Agent:` and `Source:`. The email subject never carries the timestamp twice.
 
 **Alert-agent audit, all 4 waves — every remaining direct-send alert path converted to log+dispatch
 (2026-11-03; commits `2a9388e2`, `38cafa51`, `30cb90d9`, `7885223c`)** — Operator instruction: "audit
@@ -1051,6 +1067,51 @@ slug; version gating only matters when an EXISTING row's shape changes.
   `alert_utils.py`'s own low-level senders and `event_agents.py`'s channel dispatch. A future alert
   path must follow this same log-then-dispatch pattern, never add a new direct-send call site.
 
+**No fabricated "manual" identity; `APP_MESSAGE_AGENT` ends a silent CRITICAL drop; explicit
+alert-agent label (2026-11-08, uncommitted)** — Three changes to the identity and dispatch path.
+- **Unknown is not manual.** `resolve_source()` branch 2 ([alert_utils.py:745-749](backend/shared/helpers/alert_utils.py#L745))
+  returns `("Agent", "unknown", None, None)` when the record carries neither an `agent_id` nor an
+  `agent_name` KEY. It used to fall back to `resolve_origin()`'s `"manual"`. The header then reads
+  `Agent: unknown` with no action tag. The explicit-manual case is unchanged: a key present with a `None`
+  value still means "manual". The two producers that used to hit the fabricated branch now carry a real
+  process identity (see "Known gaps" in "Alert identity SSOT"). Tests:
+  [test_resolve_source_2026_11_06.py](backend/tests/test_resolve_source_2026_11_06.py).
+- **`APP_MESSAGE_AGENT` (`app-message-alert`).** A CRITICAL `AppMessage` matched `ERROR_AGENT`'s catch-all
+  condition. `_error_agent_self_alerted()` ([event_agents.py:2006](backend/api/algo/event_agents.py#L2006))
+  then skipped it, because it carries `alert_event`. No other seeded agent matched `alert_event="app_message"`,
+  so the record reached no channel at all. The fix is a dedicated `generic_notice` agent
+  ([event_agents.py:2276-2280](backend/api/algo/event_agents.py#L2276), [:2309](backend/api/algo/event_agents.py#L2309)),
+  tag `alert`, min_level WARNING, priority high. `_route_sinks()` ([app_message.py:145-220](backend/shared/helpers/app_message.py#L145))
+  now adds the `alert` tag and `self_alerted: True` to every alert-worthy record it logs (error/critical
+  level, or a `deploy`/`alert` tag). An ERROR-level app message therefore does not double-fire through
+  `ERROR_AGENT` either. Test:
+  [test_app_message_critical_delivery.py](backend/tests/test_app_message_critical_delivery.py).
+- **Explicit alert-agent label.** `_resolve_tag_labels()` ([event_agents.py:1131](backend/api/algo/event_agents.py#L1131))
+  gives the dispatching agent its own slot, and the slot's form now differs by channel.
+  - *Telegram and ntfy:* `#via_<slug>`, e.g. `#via_market_status_alert`. `_tag_token()`
+    ([event_agents.py:1016](backend/api/algo/event_agents.py#L1016)) lowercases and turns any non-alphanumeric
+    run into `_`. The `via_` prefix is applied in `_agent_tag_line()` ([:1198-1202](backend/api/algo/event_agents.py#L1198)).
+  - *Email:* a pill labelled `Alert agent: {name}` via `_ALERT_SLOT_PILL_LABEL`
+    ([event_agents.py:1213](backend/api/algo/event_agents.py#L1213), [:1235-1240](backend/api/algo/event_agents.py#L1235)).
+    The other slots keep their lowercase `action:`/`process:`/`level:` labels.
+  - `_dedup_source_labels()` still collapses a duplicate value across all four slots, so `#via_x` is never
+    repeated next to an identical action or process token.
+- **Deliberately kept, currently unreachable (not a defect).** These seeded agents have no backend producer
+  (grep of non-test code finds only the `SEEDED_AGENTS` spec and, where present, the renderer):
+  `template_guard` ([event_agents.py:2134](backend/api/algo/event_agents.py#L2134), renderer [:292](backend/api/algo/event_agents.py#L292)),
+  `template_attach_fail` ([:2145](backend/api/algo/event_agents.py#L2145), renderer [:363](backend/api/algo/event_agents.py#L363)),
+  `partial_gtt` ([:2073](backend/api/algo/event_agents.py#L2073), renderer [:146](backend/api/algo/event_agents.py#L146)),
+  `gtt_not_accepted` ([:2330](backend/api/algo/event_agents.py#L2330), renderer [:764](backend/api/algo/event_agents.py#L764)),
+  `gtt_orphan_cancelled` ([:2590](backend/api/algo/event_agents.py#L2590)),
+  `gtt_asymmetric` and `oco_double_fire` ([:2254-2257](backend/api/algo/event_agents.py#L2254)).
+  Their producers went with the Bracket/Template/GTT removal (T3.1–T3.4, 2026-11). They stay seeded and
+  renderable. No live code path reaches them. `order_correction` is not in this list: it is live
+  ([order_poll.py:213](backend/api/algo/order_poll.py#L213)).
+- Invariant: an identity is never fabricated. A record with no identity key renders `unknown`, and only a
+  key present with a `None` value renders `manual`. A CRITICAL `alert_event` record always has a seeded
+  agent that matches it. The alert-agent label is resolved by `_resolve_tag_labels()` only, never by a
+  second lookup.
+
 **Alert identity SSOT — `resolve_source()` separates "who triggered it" from "which process produced
 it"; background processes stop borrowing a fake agent; trailing tag becomes four slots (2026-11-06
 IST; commits `631777aa` foundation, `a65b0a66` 8 background producers, `17e55448` order-scoped
@@ -1085,7 +1146,8 @@ action_tag)`. It has two branches.
     name in the HEADER. The trailing tag keeps the plain process name.
 
   The trigger is folded into ONE sentence. It is never a second line.
-- **Branch 2, everything else.** Today's behaviour, byte-for-byte. The label is `"Agent"`, the
+- **Branch 2, everything else.** Amended 2026-11-08: a record with neither identity KEY renders
+  `unknown`, never `manual`. See the no-fabricated-manual entry above. Otherwise the behaviour is unchanged. The label is `"Agent"`, the
   sentence is `resolve_origin(agent_id, agent_name)`, and there is no process tag.
 
 **Header composition.** `format_notification_header()`
@@ -1133,26 +1195,29 @@ line, which the header already shows. The log message is now the body's only con
 operator: "the process's own log message is the central message of the alert". An error record is
 never claimed to be "manual" unless it actually carries a real `agent_id` or `agent_name`.
 
-**Eight background producers stop borrowing a fake agent.** The producers below previously called
+**Background producers stop borrowing a fake agent.** The producers below previously called
 `get_agent_id_by_slug()` to borrow a seeded `Agent` row's identity. They now log a literal
 `source_type="process"` plus a real `source_name` at the call site. `generic_notice_identity_extra()`
-and `_GENERIC_NOTICE_IDENTITY` in [event_agents.py](backend/api/algo/event_agents.py) (~L2105) were
-deleted. The producers and their call sites are:
-- GTT reconciler: [background.py:5702](backend/api/background.py#L5702), [:6550](backend/api/background.py#L6550).
-- OCO watcher: [background.py:6205](backend/api/background.py#L6205).
-- Ticker watchdog: [background.py:7555](backend/api/background.py#L7555), [:7655](backend/api/background.py#L7655).
-- Visitor report: [background.py:7955](backend/api/background.py#L7955).
-- Deploy sync: [background.py:9729](backend/api/background.py#L9729).
-- Market status report: [action_send_market_status.py:212](backend/api/algo/grammar_tokens/action_send_market_status.py#L212).
-- Market summary: `send_summary()` at [alert_utils.py:1230](backend/shared/helpers/alert_utils.py#L1230)
-  and the producer at [background.py:9895](backend/api/background.py#L9895).
+and `_GENERIC_NOTICE_IDENTITY` in [event_agents.py](backend/api/algo/event_agents.py) were deleted.
+The producers that remain (verified by grep 2026-11-08) are:
+- Ticker recovered / degraded: [background.py:6377](backend/api/background.py#L6377), [:6489](backend/api/background.py#L6489).
+- Visitor report: [background.py:6788](backend/api/background.py#L6788).
+- Deploy sync: [background.py:8563](backend/api/background.py#L8563).
+- Market summary (scheduled close cron): [background.py:8725-8730](backend/api/background.py#L8725),
+  which calls `send_summary()` ([alert_utils.py:1212](backend/shared/helpers/alert_utils.py#L1212)).
+- Market status report: [action_send_market_status.py:237](backend/api/algo/grammar_tokens/action_send_market_status.py#L237).
 
-The producers never pass a trigger key. They omit `agent_id` and `agent_name` from their `extra`
-dict entirely. The renderer computes `trigger_known` from that: `has_process_identity` is true,
-so `trigger_known = not has_process_identity` is False
-([event_agents.py:456](backend/api/algo/event_agents.py#L456) for the generic-notice path,
-[:566](backend/api/algo/event_agents.py#L566) for market status). The result is `Source: Ticker
-watchdog` with no "triggered" phrase and no action tag. A producer that omits the keys never renders
+The GTT reconciler and OCO watcher producers that earlier revisions listed no longer exist in the
+codebase. Their `gtt_asymmetric`/`oco_double_fire` agents are covered in "Alert header layout" and the
+no-fabricated-manual entry below.
+
+The producers never pass a trigger key. They omit `agent_id` and `agent_name` from their `extra` dict
+entirely. The renderer decides `trigger_known` by key presence (`_order_scope_trigger_known()`,
+[event_agents.py:1028](backend/api/algo/event_agents.py#L1028)). So a producer that omits both keys renders
+the process name with no "triggered" phrase and no action tag, for example `Source: Ticker watchdog`.
+`_render_market_status()` ([event_agents.py:674-677](backend/api/algo/event_agents.py#L674)) used
+`trigger_known = not has_process_identity` until 2026-11-08. That was always False for its producer, and it
+dropped a real agent trigger. It now uses the key-presence check too. A producer that omits the keys never renders
 "triggered manually". The `trigger_known` decision lives in the renderer, not in the producer.
 User registration ([routes/auth.py:289](backend/api/routes/auth.py#L289)) gained a real identity for
 the first time. Previously it had none at all.
@@ -1209,7 +1274,7 @@ carries `self_alerted=True`. Without it, `tags_for()` auto-tags a CRITICAL recor
 written).**
 - "Alert-agent audit, all 4 waves", Wave 0: `generic_notice_identity_extra()` /
   `_GENERIC_NOTICE_IDENTITY` and the `get_agent_id_by_slug()` identity lookup it fed. Both are deleted.
-  The 8 background producers now log a literal `source_type` + `source_name`, not a borrowed agent.
+  The background producers now log a literal `source_type` + `source_name`, not a borrowed agent.
 - "Every alert leads with its origin", the "Known imprecision" bullet: `_render_error()` reading
   `Agent: manual` for a generic ERROR+ line. It now reads `Source: {logger name} (error)`.
 - "Every alert carries a trailing action-agent + alert-agent tag" (2026-10-31): the two-slot
@@ -1219,18 +1284,27 @@ written).**
   order-scoped or process-scoped alert now leads with `Source: ... triggered ...` instead, so line 1
   is no longer always `Agent: ...`.
 
-**Known gaps, deliberately not fixed in this pass:**
-- `routes/lab.py` `_mcp_ping` ([lab.py:1169](backend/api/routes/lab.py#L1169)) still calls
-  `format_notification_header(None, None)` for every MCP tool-call ping. An MCP tool call is arguably a
-  distinct "external client" actor. Classifying it needs an explicit operator decision, not a guess.
-- `_emit_unrouted_self_alert()` ([event_agents.py:1670](backend/api/algo/event_agents.py#L1670)) is a
-  genuine meta/diagnostic process event. It is a candidate for `source_type="process"` in a later pass.
-- `_render_order_failure` ([event_agents.py:234](backend/api/algo/event_agents.py#L234)),
-  `_render_template_guard` ([:254](backend/api/algo/event_agents.py#L254)) and `_render_attach_fail`
-  ([:286](backend/api/algo/event_agents.py#L286)) are the same process-scoped shape as the six converted
-  renderers. They already route through `format_notification_header()`, so they are not broken. They
-  still show `Agent: ...` rather than the new `Source: ... triggered ...` sentence. This is an
-  inconsistent rollout, not a defect.
+**Known gaps and their status (updated 2026-11-08):**
+- **Fixed — `routes/lab.py` `_mcp_ping`** ([lab.py:1119](backend/api/routes/lab.py#L1119)). It no longer
+  calls `format_notification_header(None, None)`. The producer sets `source_type="process"`,
+  `source_name="MCP"`, and `_render_mcp_ping()` ([event_agents.py:440](backend/api/algo/event_agents.py#L440))
+  builds the header. The earlier "needs an operator decision" note is resolved: an MCP tool call is a
+  process event, not a named agent.
+- **Fixed — `_emit_unrouted_self_alert()`** ([event_agents.py:1847](backend/api/algo/event_agents.py#L1847)).
+  It now carries `source_type="process"` with `source_name="Alert dispatch scan"`, which is distinct from
+  the dispatching `UNROUTED_ALERT_AGENT`'s own name. Before this it fell through to a fabricated "manual".
+- **Residual — `_mcp_ping` parameter name.** The producer's parameter is still called `tg_html`, a leftover
+  from before the 2026-10 plain-text reversal. Its call sites in `routes/lab.py` pass plain text with no
+  markup, and the renderer ships it without `_html_to_plain`. This is a naming-only residual, not a
+  rendering defect.
+- **Order failure now shows the process form.** `_render_order_failure`
+  ([event_agents.py:239](backend/api/algo/event_agents.py#L239)) gets its header from `order_failure_messages()`
+  ([alert_utils.py:1498-1499](backend/shared/helpers/alert_utils.py#L1498)). That producer sets
+  `source_type="process"`, `source_name="Order failure"` and passes `agent_name` through when the caller
+  has it. The result is `Source: Order failure triggered manually|by {agent}`. The earlier note that it
+  still said `Agent: ...` is superseded.
+- **Dead renderers are kept on purpose.** See the "Deliberately kept, currently unreachable" bullet in the
+  no-fabricated-manual entry above. They are not a rollout gap.
 
 Invariant: every alert identity line and every trailing tag is resolved by `resolve_source()` and
 `resolve_origin()`. No renderer or producer may compose a second, independent identity. A background

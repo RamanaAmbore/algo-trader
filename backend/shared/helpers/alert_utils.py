@@ -481,7 +481,15 @@ def _email_message(
     the HTML body header paragraphs."""
     if agent_line:
         _mode_sfx = f" {mode_tag}" if mode_tag else ""
-        subject = f"{label_word}: {subject_detail}{branch_tag}{_mode_sfx} | {ist_display}"
+        # 2026-11-08 audit fix (item 5) — `subject_detail` for a summary
+        # (`send_summary()`'s own `f"{label} — {ist_display}"`) already
+        # embeds the dual-tz timestamp. Since 2026-11-06, a summary
+        # carries a process/agent identity, so it now reaches this
+        # branch too — appending `| {ist_display}` unconditionally would
+        # duplicate the timestamp in the subject. Only append it when
+        # `subject_detail` doesn't already carry it.
+        _ts_sfx = "" if ist_display in subject_detail else f" | {ist_display}"
+        subject = f"{label_word}: {subject_detail}{branch_tag}{_mode_sfx}{_ts_sfx}"
     else:
         subj_pfx = f"{email_prefix_full}{branch_tag}{(' ' + mode_tag) if mode_tag else ''}"
         subject = (
@@ -696,10 +704,21 @@ def resolve_source(extra: dict) -> "tuple[str, str, str | None, str | None]":
     = None` and a trigger-free sentence/tag set — never a fabricated
     "triggered manually".
 
-    Branch 2 — everything else: today's exact behavior, unchanged.
-    `label_word` is always "Agent", `label_sentence` is
-    `resolve_origin(agent_id, agent_name)` (the real agent name or the
-    literal "manual"), and there is no process tag.
+    Branch 2 — everything else: `label_word` is "Agent". When the
+    caller's `extra` dict carries NEITHER an `agent_id` NOR an
+    `agent_name` KEY at all (checked via `in extra`, not truthiness —
+    same convention as branch 1's `has_trigger_key`), nothing is known
+    about who triggered this, so `label_sentence` is the literal
+    "unknown" and `action_tag` is `None` — never the fabricated
+    "manual" fallback (2026-11-08 audit fix: this general-purpose guard
+    closes the gap for ANY future record with no identity key at all,
+    independent of the two concrete producers — the unrouted self-alert
+    and the MCP ping — that are fixed at their own source elsewhere).
+    When at least one of the two keys IS present (even with a `None`
+    value — the genuine "explicitly manual" case every order-scoped
+    alert already relies on via `resolve_origin(None, None) ==
+    "manual"`), `label_sentence` is `resolve_origin(agent_id,
+    agent_name)` exactly as before.
     """
     source_type = extra.get("source_type")
     source_name = extra.get("source_name")
@@ -723,6 +742,9 @@ def resolve_source(extra: dict) -> "tuple[str, str, str | None, str | None]":
             # "Bare, uncategorized error" template.
             label_sentence = f"{label_sentence} (error)"
         return "Source", label_sentence, process_tag, action_tag
+    has_trigger_key = "agent_id" in extra or "agent_name" in extra
+    if not has_trigger_key:
+        return "Agent", "unknown", None, None
     action_tag = resolve_origin(agent_id, agent_name)
     return "Agent", action_tag, None, action_tag
 
@@ -1429,7 +1451,7 @@ def _classify_order_origin_label(source: str, agent_id: "int | None") -> str:
 def order_failure_messages(
     *, masked: str, symbol: str, exchange: str, side: str, qty: int, mode: str,
     source: str, error: str, suppressed_count: int, ist_disp: str,
-    agent_id: "int | None" = None,
+    agent_id: "int | None" = None, agent_name: "str | None" = None,
 ) -> tuple[str, str, str]:
     """Telegram body, email subject and email HTML for an order rejection. Pure."""
     from backend.api.algo.grammar_tokens.format_html_table import _html_table
@@ -1455,20 +1477,27 @@ def order_failure_messages(
     # (that tag-strip regex is exactly what used to require escaping
     # here in the first place).
 
-    # No agent NAME reaches this call site (callers only carry the bare
-    # `agent_id` int off an AlgoOrder row — resolving the name would need
-    # a DB round-trip per alert across every chase/template_attach/
-    # orders_place call site). `format_notification_header` degrades to
-    # "Agent: manual" / "Agent #{id}" via `resolve_origin()` in that
-    # case — the existing [Manual]/[Agent]/[Agent Bracket] `origin_label`
-    # above still carries the bracket distinction this literal origin
-    # text doesn't.
+    # 2026-11-08 audit fix (item 7) — `agent_name` is OPTIONAL (most
+    # callers still only carry the bare `agent_id` int off an AlgoOrder
+    # row — resolving the name would need a DB round-trip per alert
+    # across every chase/template_attach/orders_place call site, out of
+    # scope here); when a caller DOES have it, this now passes it
+    # through instead of always falling back to the bare "Agent #{id}"
+    # form. `source_type="process"/source_name="Order failure"` makes
+    # the renderer pick up the "Source: Order failure triggered
+    # manually/by {agent}" sentence, same as every other converted
+    # order-scoped renderer (`_render_chase_cancel` etc.) — the existing
+    # [Manual]/[Agent]/[Agent Bracket] `origin_label` above still carries
+    # the bracket distinction this header text doesn't.
     #
     # 2026-10 audit fix: moved to the FIRST line of the message (was line
     # 2, after the bold "Order rejected" title) — operator requirement
     # that every alert shows "who/what triggered this" before anything
     # else.
-    header_line = format_notification_header(None, agent_id, ist_display=ist_disp)
+    header_line = format_notification_header(
+        agent_name, agent_id, ist_display=ist_disp,
+        source_type="process", source_name="Order failure",
+    )
 
     tg_body = (
         f"{header_line}\n"
@@ -1514,14 +1543,16 @@ def order_failure_messages(
 def _send_order_failure_messages(
     *, masked: str, symbol: str, exchange: str, side: str, qty: int, mode: str,
     source: str, error: str, suppressed_count: int, ist_disp: str,
-    agent_id: "int | None" = None,
+    agent_id: "int | None" = None, agent_name: "str | None" = None,
 ) -> None:
     """Record an order rejection for the order-failure event agent (no direct send).
 
-    `agent_id` rides along in `extra` so it survives the log→event-agent
-    pipeline — `event_agents.py:_render_order_failure` reads it back out
-    of the replayed record's `extra` dict and passes it straight through
-    to `order_failure_messages()` for the Manual/Agent/Bracket label.
+    `agent_id`/`agent_name` ride along in `extra` so they survive the
+    log→event-agent pipeline — `event_agents.py:_render_order_failure`
+    reads them back out of the replayed record's `extra` dict and
+    passes them straight through to `order_failure_messages()` for the
+    Manual/Agent/Bracket label AND the new "Source: Order failure
+    triggered ..." header.
 
     2026-10-25 fix: this used to log through this module's own `logger`
     (name `backend.shared.helpers.alert_utils`, one of `log_store.py`'s
@@ -1545,7 +1576,7 @@ def _send_order_failure_messages(
             "symbol": symbol, "exchange": exchange, "side": side, "qty": qty,
             "mode": mode, "source": source, "error": error,
             "suppressed_count": suppressed_count, "ist_disp": ist_disp,
-            "agent_id": agent_id,
+            "agent_id": agent_id, "agent_name": agent_name,
             "branch": config.get("deploy_branch", "main"),
             # 2026-10-23 chase robustness (fix #4) — every order-failure
             # alert is, by definition, action-required: the operator
@@ -1572,6 +1603,7 @@ def send_order_failure_alert(
     error: str,
     detail: dict | None = None,
     agent_id: "int | None" = None,
+    agent_name: "str | None" = None,
     bypass_gates: bool = False,
 ) -> None:
     """
@@ -1597,6 +1629,13 @@ def send_order_failure_alert(
     or "Agent"/"Agent Bracket" (agent_id is set) — see
     `_classify_order_origin_label`. Callers with no row context (a plain
     manual ticket placement) omit it, correctly defaulting to "Manual".
+
+    `agent_name` — optional; pass the resolved agent name alongside
+    `agent_id` when a caller already has it in scope, so the "Source:
+    Order failure triggered by {agent}" header line shows the real name
+    instead of the bare "Agent #{id}" fallback. No current caller in
+    this codebase resolves a name (that needs a DB round-trip this
+    function's hot path doesn't take); omitted, it degrades honestly.
 
     `bypass_gates` (2026-10-23 chase robustness, fix #7) — when True,
     skips BOTH the market-hours suppression and the dedup cooldown check
@@ -1658,6 +1697,7 @@ def send_order_failure_alert(
             side=side, qty=qty, mode=mode, source=source,
             error=error, suppressed_count=suppressed_count,
             ist_disp=timestamp_display(), agent_id=agent_id,
+            agent_name=agent_name,
         )
     except Exception as _top_e:
         logger.error(f"send_order_failure_alert internal error: {_top_e}")

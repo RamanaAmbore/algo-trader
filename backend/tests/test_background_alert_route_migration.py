@@ -99,6 +99,33 @@ class TestTickerRecoveredAlert:
         src = inspect.getsource(bg._watchdog_handle_recovery)
         assert "try:" in src and "except Exception" in src
 
+    @pytest.mark.asyncio
+    async def test_body_carries_no_duplicate_title_or_timestamp(self, monkeypatch):
+        """2026-11 alert-identity audit fix — the body used to add its
+        own "TickerWatchdog — recovered" title line and a "Time: {ts}"
+        line on top of what the shared header (`format_notification_
+        header()`, built by the renderer `_render_deploy_sync` from this
+        record's `source_type`/`source_name`) already supplies. The
+        body logged here must carry only the actual content."""
+        captured = {}
+
+        def _fake_info(msg, *args, **kwargs):
+            if kwargs.get("extra", {}).get("alert_event") == "ticker_recovered":
+                captured["extra"] = kwargs["extra"]
+
+        monkeypatch.setattr(bg.logger, "info", _fake_info)
+        bg._ticker_alert_state["alert_active"] = True
+        bg._ticker_alert_state["incident_start"] = bg._time.time() - 60
+
+        ticker = SimpleNamespace(current_account=lambda: "ZG0790")
+        await bg._watchdog_handle_recovery(ticker, {"account": "ZG0790"})
+
+        body = captured["extra"]["body"]
+        assert "TickerWatchdog" not in body
+        assert "Time:" not in body
+        assert "Ticker connected on" in body
+        assert "Duration of incident" in body
+
 
 class TestTickerDegradedAlert:
     @pytest.mark.asyncio
@@ -136,6 +163,35 @@ class TestTickerDegradedAlert:
         into the ticker watchdog loop."""
         src = inspect.getsource(bg._watchdog_alert_degraded)
         assert "try:" in src and "except Exception" in src
+
+    @pytest.mark.asyncio
+    async def test_body_carries_no_duplicate_title_or_timestamp(self, monkeypatch):
+        """2026-11 alert-identity audit fix — the body used to add its
+        own "TickerWatchdog — degraded" title line and a "Time: {ts}"
+        line on top of what the shared header (built by the renderer
+        from this record's `source_type`/`source_name`) already
+        supplies. The body logged here must carry only the actual
+        content."""
+        captured = {}
+
+        def _fake_warning(msg, *args, **kwargs):
+            if kwargs.get("extra", {}).get("alert_event") == "ticker_degraded":
+                captured["extra"] = kwargs["extra"]
+
+        monkeypatch.setattr(bg.logger, "warning", _fake_warning)
+        bg._ticker_alert_state["alert_active"] = False
+        bg._ticker_alert_state["incident_start"] = 0.0
+        bg._ticker_alert_state["last_alerted_at"] = 0.0
+
+        ticker = SimpleNamespace(seconds_since_disconnect=lambda: 42.0)
+        eligible = [SimpleNamespace(account="ZG0790"), SimpleNamespace(account="ZG0791")]
+        await bg._watchdog_alert_degraded(ticker, eligible, "ZG0790", alert_refire_s=600)
+
+        body = captured["extra"]["body"]
+        assert "TickerWatchdog" not in body
+        assert "Time:" not in body
+        assert "failover cool-off" in body
+        assert "Disconnected for" in body
 
 
 class TestVisitorReportAlert:

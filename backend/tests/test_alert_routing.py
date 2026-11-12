@@ -220,6 +220,7 @@ def test_frozen_oracle_covers_every_migrated_agent_exactly():
             event_agents.ORDER_CANCELLED_AGENT["slug"],
             event_agents.GTT_ORPHAN_CANCELLED_AGENT["slug"],
             event_agents.DRAFT_SWEEP_AGENT["slug"],
+            event_agents.APP_MESSAGE_AGENT["slug"],
         )
     }
     assert migrated_slugs == set(_FROZEN_ORACLE)

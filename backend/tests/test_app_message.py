@@ -298,9 +298,15 @@ class TestRouteSinks:
     @pytest.mark.asyncio
     async def test_route_sinks_logs_tagged_record_on_error(self):
         """An error-level message is logged with `alert_event=
-        'app_message'` and its own tags forwarded verbatim — `tags_for()`
-        (log_store.py) separately stamps the "error" level tag, which is
-        what lets `ERROR_AGENT`'s catch-all pick this up for free."""
+        'app_message'`, its own tags forwarded PLUS an additive "alert"
+        tag (2026-11-08 audit fix, item 9) — needed so the dedicated
+        `APP_MESSAGE_AGENT` (tag="alert") can match this record.
+        `self_alerted=True` is also set, which is what stops
+        `ERROR_AGENT`'s own blanket catch-all from ALSO firing for the
+        same record (see `_route_sinks()`'s own docstring for the root
+        cause this closes — a CRITICAL `AppMessage` used to look
+        "routed" to ERROR_AGENT's condition while that agent's own
+        self-alerted gate silently refused to actually send it)."""
         try:
             from backend.shared.helpers.app_message import AppMessage, _route_sinks, logger
         except ImportError:
@@ -314,7 +320,8 @@ class TestRouteSinks:
         assert args[0] == 40  # logging.ERROR
         extra = kwargs["extra"]
         assert extra["alert_event"] == "app_message"
-        assert extra["tags"] == ["system"]
+        assert extra["tags"] == ["system", "alert"]
+        assert extra["self_alerted"] is True
         assert extra["title"] == "Auth Error"
         assert extra["body"] == "broker auth failed"
 
@@ -338,13 +345,15 @@ class TestRouteSinks:
     @pytest.mark.asyncio
     async def test_route_sinks_logs_tagged_record_on_deploy_tag(self):
         """A deploy-tagged info-level message still satisfies the
-        pre-existing gate and is logged (at INFO) — its own "deploy" tag
-        is forwarded verbatim, not synthesized into "alert" (see
-        `_route_sinks`'s own docstring for why injecting "alert" here
-        would risk a double-fire alongside ERROR_AGENT for error/
-        critical messages — this message is info-level so that specific
-        risk doesn't apply, but the module deliberately uses one
-        consistent rule: forward the caller's own tags, never add one)."""
+        pre-existing gate and is logged (at INFO). 2026-11-08 audit fix
+        (item 9) reverses the old "forward tags verbatim, never add
+        one" rule — "alert" is now ALWAYS added (additively, alongside
+        the caller's own tags), so the dedicated `APP_MESSAGE_AGENT`
+        (tag="alert") can match every `alert_event="app_message"`
+        record uniformly, regardless of level. The old rationale (risk
+        of double-firing `ERROR_AGENT`) no longer applies: `self_alerted
+        =True` on every such record is what actually prevents that, not
+        withholding the tag."""
         try:
             from backend.shared.helpers.app_message import AppMessage, _route_sinks, logger
         except ImportError:
@@ -358,7 +367,8 @@ class TestRouteSinks:
         assert args[0] == 20  # logging.INFO
         extra = kwargs["extra"]
         assert extra["alert_event"] == "app_message"
-        assert extra["tags"] == ["deploy", "system"]
+        assert extra["tags"] == ["deploy", "system", "alert"]
+        assert extra["self_alerted"] is True
 
     @pytest.mark.asyncio
     async def test_route_sinks_no_log_for_info_system(self):

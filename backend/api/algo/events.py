@@ -56,7 +56,16 @@ def _build_dispatch_email_body(
     condition_text: str,
     sim_mode: bool,
 ) -> str:
-    """Build the HTML email body for an agent dispatch notification."""
+    """Build the HTML email body for an agent dispatch notification.
+
+    2026-11-08 audit fix (item 6) — the bold `{sim_tag}Alert{branch_tag}
+    — {agent_name}` lead paragraph used to sit ABOVE the real identity
+    line, pushing it to line 2 and duplicating the agent name (once in
+    the bold lead, once again in `header_html`). Removed — the real
+    identity line (built via `format_notification_header()`, carrying
+    both "Agent: {name} (#{id})" AND the dual-tz timestamp) is now the
+    lead paragraph, matching every other renderer's "identity is line
+    1" convention."""
     import html as _html
     from backend.shared.helpers.alert_utils import format_notification_header
     sim_banner = (
@@ -70,19 +79,22 @@ def _build_dispatch_email_body(
         f"border-radius:4px'>⚠ <b>Branch: {branch}</b></p>"
         if branch != "main" else ""
     )
-    # format_notification_header's output replaces the bare ist_display
-    # paragraph — it carries both the new "Agent: {name} (#{id})" line
-    # AND the same dual-tz timestamp that used to be the only content
-    # here, so nothing is lost and the timestamp isn't shown twice.
-    header_html = "<br>".join(
-        _html.escape(line)
-        for line in format_notification_header(agent_name, agent_id, ist_display=ist_display).splitlines()
-    )
+    # format_notification_header's output carries both the "Agent:
+    # {name} (#{id})" identity line AND the dual-tz timestamp — the one
+    # and only identity mention in this body now. `branch_tag` is
+    # appended to the FIRST (identity) line only — matching
+    # `dispatch_payload()`'s own convention (branch_tag on the identity
+    # line, mode/warning on the timestamp line) — so a non-main branch
+    # is still visible here, now that the old bold lead paragraph (the
+    # only other place it used to appear) is gone.
+    header_lines = format_notification_header(agent_name, agent_id, ist_display=ist_display).splitlines()
+    if header_lines:
+        header_lines[0] = f"{header_lines[0]}{branch_tag}"
+    header_html = "<br>".join(_html.escape(line) for line in header_lines)
     return (
         f"<html><body style='font-family:sans-serif'>"
         f"{sim_banner}{branch_banner}"
-        f"<p><b>{sim_tag}Alert{branch_tag} — {agent_name}</b></p>"
-        f"<p style='color:#666'>{header_html}</p>"
+        f"<p><b style='color:#666'>{header_html}</b></p>"
         f"<p><b>Condition:</b> {condition_text}</p>"
         f"</body></html>"
     )
@@ -99,19 +111,29 @@ def _build_dispatch_bodies(
     through identical formatting logic — only the one line that used to
     always be `condition_text` changes.
 
-    The old "When:" line is replaced by format_notification_header's
-    output — it still carries the same dual-tz ist_display (reused via the
-    ist_display= kwarg so telegram/ntfy/email all share one timestamp
-    instead of each calling timestamp_display() a moment apart) PLUS the
-    "Agent: {name} (#{id})" identity line.
+    2026-11-08 audit fix (item 6) — this used to build its own home-made
+    `{sim_tag}Alert{branch_tag} — {agent.name}` lead line, pushing the
+    real identity line (from `format_notification_header()`) down to
+    line 2 and duplicating the agent name. The telegram/ntfy body now
+    routes through `alert_utils.dispatch_payload()` — the shared
+    builder every other renderer in this codebase (rich alerts,
+    summaries) already uses — so the real identity line genuinely IS
+    line 1, with no duplicate. The email SUBJECT is taken from
+    `dispatch_payload()`'s own output too, so it matches the
+    `"Agent: {name} | {ts}"` shape used elsewhere and carries a
+    timestamp for the first time. The email BODY is still built by
+    `_build_dispatch_email_body()` (this file's own distinctly-styled
+    banners, NOT `dispatch_payload()`'s), so its colors stay unchanged —
+    `dispatch_payload()`'s own `email_html` output is deliberately
+    discarded here.
     """
-    from backend.shared.helpers.alert_utils import format_notification_header
-    body_lines = [
-        f"{sim_tag}Alert{branch_tag} — {agent.name}",
-        format_notification_header(agent.name, agent.id, ist_display=ist_display),
-        f"Condition: {message_text}",
-    ]
-    telegram_body = "\n".join(body_lines)
+    from backend.shared.helpers.alert_utils import dispatch_payload
+    p = dispatch_payload(
+        "alert", ist_display, f"Condition: {message_text}", email_table_html="",
+        subject_detail=agent.name, sim_mode=sim_mode,
+        agent_name=agent.name, agent_id=agent.id,
+    )
+    telegram_body = p["telegram_msg"]
     # Dedicated ntfy body — kept a separate variable (not just an alias for
     # telegram_body) even though the content is identical today. ntfy has no
     # HTML rendering; message_text is operator/user-authored (e.g.
@@ -122,8 +144,8 @@ def _build_dispatch_bodies(
     # can't silently inherit literal <b>/<code> tags — see
     # backend/shared/helpers/alert_utils.py:_html_to_plain for the sibling
     # fix on that path.
-    ntfy_body = "\n".join(body_lines)
-    email_subject = f"RamboQuant {sim_tag}Agent{branch_tag}: {agent.name}"
+    ntfy_body = p["telegram_msg"]
+    email_subject = p["email_subject"]
     email_body = _build_dispatch_email_body(
         agent.name, agent.id, sim_tag, branch, branch_tag, ist_display, message_text, sim_mode
     )

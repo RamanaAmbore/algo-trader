@@ -16,7 +16,9 @@ Dimensions covered per the five-dimension test convention:
     for the actual alert/no-alert call, not inline branching.
   - Correctness: matching / within-grace / past-grace / already-alerted /
     missing-HEAD / remote-moves-mid-episode transitions.
-  - Reuse: alert path reuses `send_ntfy_alert` (grepped, not reimplemented).
+  - Reuse: alert path reuses the shared log-record + event-agent dispatch
+    pipeline (`DEPLOY_SYNC_AGENT`), not a new transport (grepped, not
+    reimplemented).
   - Registration: task is wired into `on_startup`'s task list.
   - Safety: subprocess helpers never raise on a bad/non-git path — they
     degrade to None so the pure decision function's "missing HEAD" branch
@@ -200,11 +202,23 @@ def test_task_wrapped_in_supervised_like_its_siblings():
     )
 
 
-def test_task_reuses_send_ntfy_alert_not_a_new_transport():
+def test_task_reuses_the_log_and_dispatch_pipeline_not_a_new_transport():
+    """2026-11 alert-identity audit fix — this used to carry a dead
+    `send_ntfy_alert` import (never actually called in this function's
+    body even before this fix — the real alert goes through
+    `logger.warning(..., extra={"alert_event": "deploy_out_of_sync", ...})`,
+    picked up by the dedicated `DEPLOY_SYNC_AGENT`/`telegram_deploy`
+    channel, same as every other alert in this codebase). The dead
+    import was removed; this test now asserts the REAL mechanism
+    (log-record + event-agent dispatch) instead of the stale literal
+    text match that happened to pass only because the dead import line
+    was textually present in the function source."""
     src = inspect.getsource(_task_deploy_sync_check)
-    assert "send_ntfy_alert" in src
+    assert "logger.warning(" in src
+    assert '"alert_event": "deploy_out_of_sync"' in src
+    assert "send_ntfy_alert" not in src
     assert "requests." not in src and "httpx" not in src, (
-        "must reuse the existing ntfy transport (alert_utils.send_ntfy_alert), "
+        "must reuse the existing log-record + event-agent dispatch pipeline, "
         "not a new httpx/requests call (IPv6 happy-eyeballs breaks ntfy.sh "
         "delivery from this server — see CLAUDE.md 'Things to Avoid')"
     )
@@ -233,3 +247,20 @@ def test_task_logs_a_literal_process_name_not_a_fake_agent_lookup():
     src = inspect.getsource(_task_deploy_sync_check)
     assert '"source_type": "process", "source_name": "Deploy sync"' in src
     assert "generic_notice_identity_extra" not in src
+
+
+def test_task_body_carries_no_self_added_duplicate_timestamp():
+    """2026-11 alert-identity audit fix — the body used to append
+    `{timestamp_display()}` on top of what the shared header
+    (`format_notification_header()`/`dispatch_payload()`, built by the
+    DEPLOY_SYNC_AGENT renderer from this record's `source_type`/
+    `source_name`) already supplies. The message built here must carry
+    only the actual content — the manual-fallback remediation command,
+    never a second, self-added timestamp line."""
+    src = inspect.getsource(_task_deploy_sync_check)
+    # The f-string that builds the alert `message` must not call
+    # timestamp_display() itself anymore (a stray mention in a comment
+    # explaining the fix is fine; a real second call inside the message
+    # literal is not).
+    message_block = src.split("message = (")[1].split(")\n")[0]
+    assert "timestamp_display()" not in message_block

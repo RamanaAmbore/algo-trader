@@ -204,11 +204,42 @@ async def _action_live_send_market_status(context: dict, params: dict) -> None:
     # literal process name, not a fake-agent lookup: this daily 05:35
     # IST report is a genuinely un-caused scheduled job. Replaces the
     # prior `get_agent_id_by_slug("market-status-alert")` round-trip.
+    #
+    # Thread a real trigger through when one exists (audit fix, Agent B
+    # round) — `_ds_tick_market_status_report` (background.py) calls this
+    # handler directly with `context={}` for the scheduled cron case, so
+    # no `agent_id`/`agent_name` key is ever present there. A custom
+    # agent's own `DO send_market_status()` call instead reaches this
+    # handler via `actions.py:execute()`, which always stashes the REAL
+    # firing agent's `agent_id`/`agent_name` into `context` beforehand —
+    # same mechanism `send_summary()`/`action_send_summary.py` already
+    # use. `resolve_source()` (alert_utils.py) only renders "triggered
+    # by {agent}"/"triggered manually" when one of these keys is
+    # actually PRESENT on the record (key-presence check, not
+    # truthiness) — so the keys are added to `extra` only when `context`
+    # itself carries them, never with a fabricated `None`.
+    #
+    # KNOWN RENDERER GAP (not fixed here — `event_agents.py` is out of
+    # scope for this change): `_render_market_status()` currently calls
+    # `format_notification_header(..., trigger_known=not
+    # has_process_identity)`, which is hardcoded `False` whenever
+    # `source_type`/`source_name` are set — true unconditionally for
+    # this producer. `_source_extra()` only forwards `agent_id`/
+    # `agent_name` into `resolve_source()` when `trigger_known` is
+    # `True`, so until that renderer line is corrected (e.g. to
+    # `trigger_known=has_agent_identity`), the `agent_id`/`agent_name`
+    # this function now threads through are silently dropped at render
+    # time — this record-side fix is a real but currently inert
+    # precondition for that renderer fix, not a complete fix on its own.
+    extra = {
+        "tags": ["agent", "alert"], "alert_event": "market_status",
+        "title": "Market Status", "body": message,
+        "source_type": "process", "source_name": "Market status report",
+    }
+    if "agent_id" in context or "agent_name" in context:
+        extra["agent_id"] = context.get("agent_id")
+        extra["agent_name"] = context.get("agent_name")
     _DISPATCH_LOGGER.info(
         "[MARKET-STATUS] %s", message.replace("\n", " | "),
-        extra={
-            "tags": ["agent", "alert"], "alert_event": "market_status",
-            "title": "Market Status", "body": message,
-            "source_type": "process", "source_name": "Market status report",
-        },
+        extra=extra,
     )

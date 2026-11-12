@@ -83,9 +83,36 @@ def test_real_agent_direct_action_no_process_layer_unchanged():
     assert action_tag == "Chase close positions"
 
 
-def test_genuine_manual_action_no_process_layer_unchanged():
-    """Fill alerts — branch 2, no agent_id/agent_name at all -> "manual"."""
+def test_genuinely_unknown_action_no_identity_key_at_all():
+    """2026-11-08 audit fix (amends this test's own prior assertion) —
+    `extra = {}` carries NEITHER an `agent_id` NOR an `agent_name` KEY.
+    This used to fabricate "manual" (branch 2's old unconditional
+    `resolve_origin(None, None)` fallback). The real-world "genuinely
+    manual" case (e.g. a fill alert with no resolvable agent) always
+    reaches this function via `_source_extra()`, which — for every
+    caller using the default `trigger_known=True` — always SETS the
+    `agent_id`/`agent_name` keys (even to `None`), so that case is
+    covered by `test_explicit_none_keys_still_means_manual` below, not
+    this one. A raw, empty `extra` dict (reachable via
+    `event_agents._resolve_tag_labels`'s direct read of a record's own
+    `extra`, before the MCP-ping/unrouted-self-alert producers were
+    fixed to carry `source_type`/`source_name`) must render "unknown",
+    never a fabricated "manual"."""
     extra = {}
+    label_word, label_sentence, process_tag, action_tag = resolve_source(extra)
+    assert label_word == "Agent"
+    assert label_sentence == "unknown"
+    assert process_tag is None
+    assert action_tag is None
+
+
+def test_explicit_none_keys_still_means_manual():
+    """The genuine "explicitly manual" case — `agent_id`/`agent_name`
+    KEYS are present (set by `_source_extra()`'s default
+    `trigger_known=True`), their VALUES are `None`. This is the real
+    shape every fill/order-failure alert with no resolvable agent
+    reaches `resolve_source()` in — still "manual", unchanged."""
+    extra = {"agent_id": None, "agent_name": None}
     label_word, label_sentence, process_tag, action_tag = resolve_source(extra)
     assert label_word == "Agent"
     assert label_sentence == "manual"

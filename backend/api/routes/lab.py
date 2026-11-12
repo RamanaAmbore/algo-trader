@@ -1119,18 +1119,19 @@ def _res_agent_action_labels(action: str) -> tuple[str, str]:
 def _mcp_ping(tg_html: str) -> None:
     """Record an MCP audit ping. The event agent sends it to Telegram.
 
-    Prepends the origin header (2026-10 audit fix — MCP pings had no
-    origin line at all) and appends the dual-tz timestamp once here —
-    the single chokepoint all 6 MCP ping call sites funnel through —
-    rather than at each call site individually. No agent concept exists
-    for MCP tool calls, so `format_notification_header(None, None, ...)`
-    resolves to the "manual" origin via `resolve_origin()`'s own
-    documented fallback for a bare `agent_id=None`/`agent_name=None`
-    pair — there is no better answer for "who triggered this MCP call".
+    2026-11-08 audit fix (item 3) — header/timestamp construction moved
+    OUT of this producer and into the renderer
+    (`event_agents.py:_render_mcp_ping`), matching every other
+    renderer's convention. This function used to call
+    `format_notification_header(None, None)` directly, which fabricated
+    "Agent: manual" — a tool call made through MCP is an
+    external-client-triggered PROCESS event, not a manual operator
+    action; there's no agent concept to resolve here either. The
+    renderer now classifies it `source_type="process",
+    source_name="MCP"`.
 
     2026-10 plain-text reversal — `tg_html` (despite the parameter name,
-    kept for call-site stability) is now plain text: no `<i>` wrap around
-    the timestamp line.
+    kept for call-site stability) is plain text; no markup to escape.
 
     `tg_html` must already have any `acct=` account code masked
     (`mask_account`) by its caller before reaching here — this function
@@ -1139,11 +1140,10 @@ def _mcp_ping(tg_html: str) -> None:
     the last carries no account) mask at the call site as of the 2026-10
     notification-masking audit; `_mcp_ping` itself stays a thin
     pass-through."""
-    from backend.shared.helpers.date_time_utils import timestamp_display
-    from backend.shared.helpers.alert_utils import format_notification_header
-    origin_line = format_notification_header(None, None).splitlines()[0]
-    tg_html = f"{origin_line}\n{tg_html}\n{timestamp_display()}"
-    logger.info("MCP ping", extra={"tags": ["mcp", "alert"], "alert_event": "mcp_ping", "tg": tg_html})
+    logger.info("MCP ping", extra={
+        "tags": ["mcp", "alert"], "alert_event": "mcp_ping", "body": tg_html,
+        "source_type": "process", "source_name": "MCP",
+    })
 
 
 def _res_agent_status_telegram_ping(
