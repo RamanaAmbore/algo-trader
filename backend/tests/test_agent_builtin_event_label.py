@@ -86,9 +86,12 @@ class TestIsBuiltinSeededEventAgent:
         # dedicated agent (`market-status-alert`, `action-notify-alert`,
         # `order-cancelled-alert`): 10 -> 11 -> 12 -> 13. None are
         # collapse changes. 2026-11-04: 13 -> 14 —
-        # `gtt-orphan-cancelled-alert` (SEED_VERSION 6 -> 7).
-        assert len(_SEEDED_SLUGS) == 14
-        assert len(set(_SEEDED_SLUGS)) == 14  # no duplicate slugs
+        # `gtt-orphan-cancelled-alert` (SEED_VERSION 6 -> 7). 2026-11
+        # alert-agent audit fix: 14 -> 15 — `draft-sweep-alert`
+        # (SEED_VERSION 9 -> 10), another brand-new, unrelated
+        # standalone agent.
+        assert len(_SEEDED_SLUGS) == 15
+        assert len(set(_SEEDED_SLUGS)) == 15  # no duplicate slugs
 
     @pytest.mark.parametrize("slug", _SEEDED_SLUGS)
     def test_true_for_every_seeded_event_agent_slug(self, slug):

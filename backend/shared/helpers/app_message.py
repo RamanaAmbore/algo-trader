@@ -27,7 +27,26 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any, Optional
 
-logger = logging.getLogger(__name__)
+from backend.shared.helpers.ramboq_logger import get_logger
+
+# 2026-11 alert-agent audit fix — a bare `logging.getLogger(__name__)`
+# has no `QueueHandler` of its own and is not guaranteed to reach
+# `log_events`/the event-agent dispatch pipeline at all (see
+# `ramboq_logger.get_logger()`'s own docstring for why propagation to a
+# parent logger's handler cannot be relied on). `_route_sinks()` below
+# now logs instead of calling `send_ntfy_alert()` directly, so this
+# module needs the real queue-backed logger, not the stdlib default.
+logger = get_logger(__name__)
+
+# Level-name -> stdlib logging level, for `_route_sinks()`'s `logger.log()`
+# call below.
+_LEVEL_TO_LOGGING: dict[str, int] = {
+    "debug": logging.DEBUG,
+    "info": logging.INFO,
+    "warning": logging.WARNING,
+    "error": logging.ERROR,
+    "critical": logging.CRITICAL,
+}
 
 # ---------------------------------------------------------------------------
 # Module-level async_session import (guarded — unavailable in some test envs)
@@ -124,24 +143,60 @@ def _retain_until(msg: AppMessage) -> Optional[date]:
 # ---------------------------------------------------------------------------
 
 async def _route_sinks(msg: AppMessage) -> None:
-    """Fire ntfy push for messages that meet routing criteria (best-effort).
+    """Log-and-dispatch sink for messages that meet routing criteria.
 
-    Ntfy is sent for:
+    Routing criteria (unchanged from the pre-fix direct-ntfy gate):
       - error or critical level
       - any tag in _NTFY_TAGS (deploy, alert)
 
-    Generic info/system ticks and ephemeral (news) messages are skipped.
+    Generic info/system ticks and ephemeral (news) messages are skipped
+    — same no-op as before.
+
+    2026-11 alert-agent audit fix — this used to call
+    `send_ntfy_alert()` directly via `asyncio.to_thread`, a second,
+    parallel notification pipeline outside `event_agents.py`'s control.
+    It never fired in production (the only live caller, `background.
+    py`'s close-summary cron, always passes level="info",
+    tags=["summary", <seg>], which never satisfies the gate above), but
+    it was reachable by any future caller. Fixed by logging a single
+    tagged record instead of sending directly — no direct sender call
+    remains in this module.
+
+    `tags_for()` (`log_store.py`) already stamps every record's own
+    level name as a tag (and, for CRITICAL, also "error"), so an
+    error/critical AppMessage reaches `ERROR_AGENT`'s catch-all
+    (`tag="error", min_level="ERROR"`) for free, with no synthetic tag
+    added here. Deliberately NOT adding an "alert" tag unconditionally:
+    doing so would make every error/critical AppMessage also look
+    "alert-shaped" to `event_agents.py:_looks_alert_shaped()` and
+    double-fire through the unrouted-catch-all self-alert on top of
+    `ERROR_AGENT`. A caller that wants deploy/alert-style routing sets
+    its own `tags` on the `AppMessage` (e.g. `["deploy"]`) — forwarded
+    verbatim below — which, combined with WARNING+ level, is still
+    picked up by `UNROUTED_ALERT_AGENT`'s catch-all the same way any
+    other unmatched alert-shaped record is. No live caller passes such
+    tags today (see this module's own docstring), so this is a
+    correctly-shaped path for a future caller, not a currently
+    exercised one. No dedicated seeded agent is added for
+    `alert_event="app_message"` for the same reason — nothing fires at
+    error/critical today, so there is nothing yet for a dedicated
+    agent to cover beyond what `ERROR_AGENT`'s existing catch-all
+    already provides.
     """
     tag_set = frozenset(msg.tags or [])
-    should_ntfy = msg.level in ("error", "critical") or bool(tag_set & _NTFY_TAGS)
-    if not should_ntfy:
+    should_alert = msg.level in ("error", "critical") or bool(tag_set & _NTFY_TAGS)
+    if not should_alert:
         return
     try:
-        from backend.shared.helpers.alert_utils import send_ntfy_alert  # type: ignore
         title = msg.title or (msg.tags[0].capitalize() if msg.tags else msg.level.upper())
-        await asyncio.to_thread(send_ntfy_alert, title, msg.body)
+        level_no = _LEVEL_TO_LOGGING.get(msg.level, logging.INFO)
+        logger.log(
+            level_no, "AppMessage: %s", msg.body,
+            extra={"tags": list(msg.tags or []), "alert_event": "app_message",
+                   "title": title, "body": msg.body},
+        )
     except Exception as exc:
-        logger.debug("AppMessage: ntfy sink failed: %s", exc)
+        logger.debug("AppMessage: log-and-dispatch sink failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------

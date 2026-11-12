@@ -69,8 +69,8 @@ def _render_fill(rec: dict) -> tuple[str, str, str]:
     # real "Agent: ..." line down to line 2 — not at the top despite
     # `format_fill_message` building it that way. Matches the
     # established convention every other correctly-behaving renderer in
-    # this file uses (`_render_order_cancelled`/`_render_action_notify`/
-    # etc.): `tg=body` explicitly, so Telegram sends `body` alone.
+    # this file uses (`_render_order_cancelled`/`_render_agent_close_
+    # hold`/etc.): `tg=body` explicitly, so Telegram sends `body` alone.
     return title, body, body
 
 
@@ -640,28 +640,28 @@ def _render_market_status(rec: dict) -> tuple:
     return title, body, body
 
 
-def _render_action_notify(rec: dict) -> tuple:
-    """A DO-clause action's own declared `notify=[...]` channels
-    (2026-11-03 log+agent conversion of the `notify=` action param —
-    `actions.py:_al_maybe_notify_action`).
+def _render_agent_close_hold(rec: dict) -> tuple:
+    """A newly-staged AGENT_CLOSE hold
+    (`actions_live.py:_al_send_agent_close_hold_alert`) — a
+    `require_release` agent's `close_position` staged for operator
+    review instead of placed live.
 
     Plain `(title, body, tg)` passthrough, no separate origin header —
-    `body` (`full_message`, built by `_al_notify_build_message`)
+    `body` (built by `actions_live.py:_al_agent_close_hold_message`)
     already leads with the firing agent's own identity via
-    `format_notification_header()` (2026-11-04 alert-format audit fix
-    — was the bespoke `"Agent [{agent_key}] action: ..."` shape;
-    adding a second `format_notification_header()` call here on top
-    would just redundantly repeat the identity line this message's
-    first line already is). Own `out[4]` channels list — this action's
-    per-channel selection (e.g. ntfy's `priority`) is resolved entirely
-    at the producer (`_al_notify_channels_for_log`), never by
-    `alert_routing.py`'s static per-agent resolution, same reasoning as
-    `_render_market_status` above.
+    `format_notification_header()`, so a second header here would just
+    redundantly repeat the identity line. Channel selection comes from
+    `alert_routing.resolve_channels()`'s per-slug override for
+    `agent-close-hold-alert`, resolved the normal way by
+    `_dispatch_agent()` — not a per-record `out[4]` override (2026-11
+    channel-authoring retirement; this alert used to route through the
+    now-retired generic `ACTION_NOTIFY_AGENT`/`_render_action_notify`,
+    which carried its own hardcoded channel list).
     """
     x = rec.get("extra") or {}
-    title = x.get("title") or "Agent action"
+    title = x.get("title") or "Agent close held"
     body = x.get("body") or ""
-    return title, body, body, None, list(x.get("channels") or [])
+    return title, body, body
 
 
 def _render_order_cancelled(rec: dict) -> tuple:
@@ -671,19 +671,25 @@ def _render_order_cancelled(rec: dict) -> tuple:
 
     This alert is ORDER-scoped — "who placed this order: manual or
     which agent" is always a meaningful question here (unlike
-    `_render_market_status`/`_render_deploy_sync`/`_render_action_
-    notify`'s genuinely agent-less system/infra events) — so, matching
-    `_render_chase_cancel`/`_render_gtt_not_accepted`'s own
-    unconditional pattern, `format_notification_header()` is called
-    EVERY time, never gated on identity being present:
-    `resolve_origin()` already degrades a `None` agent_id to the
-    literal "Agent: manual" line, the system-wide invariant that an
-    order alert's origin is never silently omitted (2026-10 operator
-    requirement: "make sure it has agent info in the beginning... if
-    it is not by agent, add manual"). Own `out[4]` channels list —
-    this alert's base channel (ntfy) is deliberately narrow by itself;
-    the real routing (urgent ntfy + forced email, or dropped entirely)
-    comes from the SAME `extra['action_required']` binary gate
+    `_render_market_status`/`_render_deploy_sync`'s genuinely agent-less
+    system/infra events) — so, matching `_render_chase_cancel`/
+    `_render_gtt_not_accepted`'s own unconditional pattern,
+    `format_notification_header()` is called EVERY time, never gated on
+    identity being present: `resolve_origin()` already degrades a
+    `None` agent_id to the literal "Agent: manual" line, the system-wide
+    invariant that an order alert's origin is never silently omitted
+    (2026-10 operator requirement: "make sure it has agent info in the
+    beginning... if it is not by agent, add manual").
+
+    2026-11 channel-authoring retirement — this used to return its own
+    dynamic `out[4]` channel-override list (the producer embedded a
+    hardcoded `extra['channels']` literal). Now a plain passthrough
+    tuple, same shape as `_render_market_status`: channel selection
+    comes from `alert_routing.resolve_channels()`'s per-slug override
+    for `order-cancelled-alert`, resolved the normal way by
+    `_dispatch_agent()`. The real routing (urgent ntfy + forced email,
+    or dropped entirely) still comes from the SAME
+    `extra['action_required']` binary gate
     `_apply_action_required_ntfy_gate`/`_apply_action_required_email_
     gate` already apply to every other action-required alert in this
     codebase.
@@ -706,7 +712,7 @@ def _render_order_cancelled(rec: dict) -> tuple:
         trigger_known=_order_scope_trigger_known(x),
     )
     body = f"{origin_header}\n{x.get('body') or ''}"
-    return title, body, body, None, list(x.get("channels") or [])
+    return title, body, body
 
 
 def _render_gtt_not_accepted(rec: dict) -> tuple[str, str, str]:
@@ -809,7 +815,7 @@ register_renderer("rich_alert")(_render_rich_alert)
 register_renderer("summary")(_render_summary)
 register_renderer("breach")(_render_breach)
 register_renderer("market_status")(_render_market_status)
-register_renderer("action_notify")(_render_action_notify)
+register_renderer("agent_close_hold")(_render_agent_close_hold)
 register_renderer("order_cancelled")(_render_order_cancelled)
 register_renderer("gtt_not_accepted")(_render_gtt_not_accepted)
 register_renderer("order_correction")(_render_order_correction)
@@ -2375,26 +2381,37 @@ MARKET_STATUS_ALERT_AGENT = {
     "actions": [{"type": "render", "render": "market_status"}],
 }
 
+# RETIRED 2026-11 (channel-authoring retirement — the `notify=[...]`
+# action param it rendered has no replacement, see `actions.py`'s
+# former "Part B" block and `routes/agents.py:_age_validate_action_
+# entries`'s rejection of a `notify` key). Kept defined, NOT deleted —
+# `_RETIRED_SLUGS` below still needs its slug to deactivate any
+# already-seeded row on next startup (same deactivate-never-delete
+# convention as the 2026-10-25 alert-channel collapse). Deliberately
+# NOT added to `_COLLAPSED_DETECTOR_SPECS` — that tuple feeds
+# `_build_alert_event_dispatch_table()`, which would wire
+# `action_notify` into the 3 generic channel agents via a per-slug
+# override this slug no longer has; its mechanism is retired outright,
+# not folded into the channel-agent collapse. Removed from
+# `SEEDED_AGENTS` below, so `seed_event_agents()`'s insert/update loop
+# never touches it again.
 ACTION_NOTIFY_AGENT = {
     "slug": "action-notify-alert",
     "name": "Agent action notify",
-    "description": "Renders a DO-clause action's own declared "
-                    "notify=[...] channels.",
-    # 2026-11-03 fix (operator: "audit all the alerts and make sure
-    # every one of them is generated by alert agent... driven by tags")
-    # — new, dedicated agent; `actions.py:_al_maybe_notify_action` used
-    # to call a send primitive per channel directly, bypassing the
-    # log+event-agent pipeline entirely.
+    "description": "RETIRED — used to render a DO-clause action's own "
+                    "declared notify=[...] channels. That action param "
+                    "has been removed with no replacement.",
     "conditions": {"log": {"tag": "alert", "min_level": "INFO",
                            "where": {"alert_event": "action_notify"}}},
     "priority": "info",
-    # `events` deliberately omitted — same reasoning as
-    # MARKET_STATUS_ALERT_AGENT above: this agent's real channel list
-    # is per-record (`_render_action_notify`'s own `out[4]`, carrying
-    # the producer's resolved notify=[...] channel/params selection),
-    # never `alert_routing.resolve_channels()`'s static per-agent
-    # resolution.
-    "actions": [{"type": "render", "render": "action_notify"}],
+    # Inert post-retirement — never seeded, never dispatched (this dict
+    # is kept only so `_RETIRED_SLUGS`/`_NOTIFY_ACTION_RETIRED_SLUGS` can
+    # reference its own `slug` instead of a bare string literal). The
+    # renderer it used to name, `"action_notify"`, is unregistered
+    # (`_render_action_notify` is deleted); `[]` here makes that
+    # explicit rather than pointing at a dangling renderer name a future
+    # reader might assume still exists.
+    "actions": [],
 }
 
 ORDER_CANCELLED_AGENT = {
@@ -2410,15 +2427,38 @@ ORDER_CANCELLED_AGENT = {
     "conditions": {"log": {"tag": "alert", "min_level": "WARNING",
                            "where": {"alert_event": "order_cancelled"}}},
     "priority": "high",
-    # `events` deliberately omitted — same reasoning as
-    # MARKET_STATUS_ALERT_AGENT/ACTION_NOTIFY_AGENT above: this agent's
-    # real channel/urgency is the per-record `extra['action_required']`
-    # binary gate (always True here — the chase-requote case never
-    # reaches this agent at all, filtered out at the producer before
-    # any log record is written), applied generically by
-    # `_dispatch_record_channels`, never `alert_routing.resolve_
-    # channels()`'s static per-agent resolution.
+    # `events` deliberately omitted — this agent's channel list comes
+    # from `alert_routing._PER_SLUG_OVERRIDES["order-cancelled-alert"]`
+    # (2026-11 channel-authoring retirement — this used to be a
+    # per-record `extra['action_required']` binary gate ONLY, with the
+    # base channel list carried via a dynamic `out[4]` override in
+    # `_render_order_cancelled`; that renderer is now a plain
+    # passthrough and the base list lives in `alert_routing.py` like
+    # every other migrated agent's). The `action_required` binary gate
+    # (always True here — the chase-requote case never reaches this
+    # agent at all, filtered out at the producer before any log record
+    # is written) still applies generically on top, via
+    # `_dispatch_record_channels`.
     "actions": [{"type": "render", "render": "order_cancelled"}],
+}
+
+AGENT_CLOSE_HOLD_ALERT_AGENT = {
+    "slug": "agent-close-hold-alert",
+    "name": "Agent close held",
+    "description": "Renders a newly-staged AGENT_CLOSE hold — a "
+                    "require_release agent's close_position staged for "
+                    "operator review instead of placed live.",
+    # 2026-11 channel-authoring retirement — new, dedicated agent;
+    # `actions_live.py:_al_send_agent_close_hold_alert` used to embed
+    # its own hardcoded `[telegram, ntfy]` channel list in `extra`,
+    # dispatched through the (now-retired) generic `ACTION_NOTIFY_AGENT`
+    # above via its `_render_action_notify`. `events` deliberately
+    # omitted — this agent's channel list comes from
+    # `alert_routing._PER_SLUG_OVERRIDES["agent-close-hold-alert"]`.
+    "conditions": {"log": {"tag": "alert", "min_level": "WARNING",
+                           "where": {"alert_event": "agent_close_hold"}}},
+    "priority": "high",
+    "actions": [{"type": "render", "render": "agent_close_hold"}],
 }
 
 GTT_ORPHAN_CANCELLED_AGENT = {
@@ -2444,8 +2484,54 @@ GTT_ORPHAN_CANCELLED_AGENT = {
     "actions": [{"type": "render", "render": "generic_notice"}],
 }
 
+DRAFT_SWEEP_AGENT = {
+    "slug": "draft-sweep-alert",
+    "name": "Draft sweep",
+    "description": "Notifies how many stale draft orders were cleared "
+                    "by the 08:00 IST market-open sweep.",
+    # 2026-11 alert-agent audit fix — `background.py:_ds_tick_draft_
+    # sweep()` used to call `alert_utils._send_telegram_info()`
+    # directly, bypassing this file's log-then-dispatch pipeline
+    # entirely (no agent, no routing). Standalone dedicated agent, same
+    # shape as GTT_ORPHAN_CANCELLED_AGENT/VISITOR_REPORT_AGENT above —
+    # its real channel is `telegram_info` only (matching the old direct
+    # call's own channel), not folded into `_GENERIC_NOTICE_SPECS` /
+    # `_COLLAPSED_DETECTOR_SPECS` for the same byte-for-byte-pinned-
+    # count reason GTT_ORPHAN_CANCELLED_AGENT's own comment gives.
+    "conditions": {"log": {"tag": "alert", "min_level": "INFO",
+                           "where": {"alert_event": "draft_sweep"}}},
+    "priority": "info",
+    "actions": [{"type": "render", "render": "generic_notice"}],
+}
 
-SEED_VERSION = 8
+
+SEED_VERSION = 10
+# 2026-11 (SEED_VERSION 9 -> 10) — alert-agent audit fix: inserts the
+# new DRAFT_SWEEP_AGENT row. Standalone dedicated agent (own per-slug
+# `telegram_info`-only channel override in alert_routing.py), not a
+# collapsed-table entry — same reasoning as the GTT_ORPHAN_CANCELLED_
+# AGENT bump immediately below. `seed_action()` returns 'insert'
+# unconditionally for this brand-new slug, so the bump isn't strictly
+# required, but is kept for the same auditable-history reason every
+# other standalone addition in this file bumps it.
+#
+# 2026-11 (SEED_VERSION 8 -> 9) — channel-authoring retirement. (a)
+# `AGENT_CLOSE_HOLD_ALERT_AGENT` is a brand-new slug — `seed_action()`
+# returns 'insert' for a missing slug unconditionally, so this bump is
+# not strictly required for it, but is included for the same
+# auditable-history reason the GTT_ORPHAN_CANCELLED_AGENT insert below
+# bumped the version too. (b) `ACTION_NOTIFY_AGENT` ("action-notify-
+# alert") is removed from `SEEDED_AGENTS` and deactivated via
+# `_RETIRED_SLUGS` — `_retire_collapsed_event_agents()` runs
+# unconditionally every `seed_event_agents()` call regardless of
+# version, so this part of the bump is also not strictly required, same
+# reasoning. (c) `ORDER_CANCELLED_AGENT`'s `conditions`/`actions` are
+# UNCHANGED (still `{"type": "render", "render": "order_cancelled"}`) —
+# only its own dict comment and its renderer's return shape changed
+# (dynamic `out[4]` override -> plain passthrough, channel list moved
+# to `alert_routing._PER_SLUG_OVERRIDES`), so no hash mismatch and no
+# re-sync needed for that row either.
+#
 # 2026-11-05 (SEED_VERSION 7 -> 8) — MARKET_STATUS_ALERT_AGENT gains a
 # static `events` list (log, telegram, email), replacing the per-record
 # dynamic `out[4]` channel override its renderer used to return. An
@@ -2728,7 +2814,8 @@ EMAIL_CHANNEL_AGENT = _channel_agent_spec("alert-channel-email", "Alert channel:
 SEEDED_AGENTS = (
     ERROR_AGENT, DEPLOY_SYNC_AGENT, RICH_ALERT_AGENT, SUMMARY_AGENT, BREACH_AGENT,
     VISITOR_REPORT_AGENT, UNROUTED_ALERT_AGENT, MARKET_STATUS_ALERT_AGENT,
-    ACTION_NOTIFY_AGENT, ORDER_CANCELLED_AGENT, GTT_ORPHAN_CANCELLED_AGENT,
+    ORDER_CANCELLED_AGENT, GTT_ORPHAN_CANCELLED_AGENT, AGENT_CLOSE_HOLD_ALERT_AGENT,
+    DRAFT_SWEEP_AGENT,
     TELEGRAM_CHANNEL_AGENT, NTFY_CHANNEL_AGENT, EMAIL_CHANNEL_AGENT,
 )
 
@@ -2744,7 +2831,20 @@ SEEDED_AGENTS = (
 # not deleted: the row (and its `AgentEvent`/audit history, if any) stays
 # reversible, and `alert_routing._PER_SLUG_OVERRIDES` still resolves its
 # historical channel set correctly for display on the Automation page.
-_RETIRED_SLUGS: frozenset[str] = frozenset(spec["slug"] for spec in _COLLAPSED_DETECTOR_SPECS)
+#
+# 2026-11 channel-authoring retirement — `action-notify-alert`
+# (`ACTION_NOTIFY_AGENT`) is retired the exact same way: removed from
+# `SEEDED_AGENTS` above, deactivated by the same
+# `_retire_collapsed_event_agents()` pass via this union. Deliberately
+# NOT folded into `_COLLAPSED_DETECTOR_SPECS` (see that agent's own
+# dict comment for why) — a second, independent retired-slug set kept
+# separate so the 16-entry collapsed table's own pinned count is
+# untouched by this change.
+_NOTIFY_ACTION_RETIRED_SLUGS: frozenset[str] = frozenset({ACTION_NOTIFY_AGENT["slug"]})
+_RETIRED_SLUGS: frozenset[str] = (
+    frozenset(spec["slug"] for spec in _COLLAPSED_DETECTOR_SPECS)
+    | _NOTIFY_ACTION_RETIRED_SLUGS
+)
 
 
 def event_agent_row_fields(

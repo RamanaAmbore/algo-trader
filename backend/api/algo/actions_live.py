@@ -1984,15 +1984,22 @@ async def _al_send_agent_close_hold_alert(
     side: str, qty: int, reason: str,
 ) -> None:
     """Fire one action-required alert for a newly-staged AGENT_CLOSE
-    hold. Reuses the SAME log-then-dispatch mechanism `_al_maybe_notify_
-    action` already uses (`_DISPATCH_LOGGER`, `alert_event=
-    "action_notify"`, routed through the existing `ACTION_NOTIFY_AGENT`
-    — no new seeded event agent for this), with `action_required=True`
-    so the existing binary gate
+    hold. Writes ONE log record via `_DISPATCH_LOGGER`, tagged
+    `alert_event="agent_close_hold"` — a dedicated seeded agent
+    (`event_agents.AGENT_CLOSE_HOLD_ALERT_AGENT` + its
+    `_render_agent_close_hold` renderer) picks this up. Channel
+    selection is resolved by `alert_routing.py`'s per-slug override for
+    that agent's slug, not a per-record `channels` literal here (2026-11
+    channel-authoring retirement — this used to embed its own hardcoded
+    `[telegram, ntfy]` channel list in `extra`; every alert now routes
+    through the shared tier/per-slug/catch-all chain the same way a
+    plain log-only agent already does). `action_required=True` still
+    runs through the existing binary gate
     (`event_agents._apply_action_required_ntfy_gate`/`_apply_action_
-    required_email_gate`) forces urgent ntfy plus a forced email entry.
-    Never raises — a failed alert must not prevent the hold itself from
-    having been staged."""
+    required_email_gate`), forcing urgent ntfy plus a forced email
+    entry regardless of the per-slug channel list. Never raises — a
+    failed alert must not prevent the hold itself from having been
+    staged."""
     try:
         from backend.shared.helpers.alert_utils import _DISPATCH_LOGGER
         agent_key = getattr(agent, "slug", None) or getattr(agent, "id", None) or "unknown"
@@ -2002,12 +2009,8 @@ async def _al_send_agent_close_hold_alert(
         _DISPATCH_LOGGER.warning(
             f"[AGENT-CLOSE-HOLD] {message}",
             extra={
-                "tags": ["agent", "alert"], "alert_event": "action_notify",
+                "tags": ["agent", "alert"], "alert_event": "agent_close_hold",
                 "title": f"Agent close held — {agent_key}", "body": message,
-                "channels": [
-                    {"channel": "telegram", "enabled": True},
-                    {"channel": "ntfy", "enabled": True},
-                ],
                 "action_required": True,
                 "agent_id": getattr(agent, "id", None),
                 "agent_name": getattr(agent, "name", None),

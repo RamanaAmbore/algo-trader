@@ -1205,17 +1205,14 @@ describe('Sprint 10 — hyphenated NAME lexing (call/token-reference position on
 });
 
 describe('Sprint 10 — standalone token(...) statement', () => {
-  it('compiles to a {kind, name, body, description?} object', () => {
+  // `kind=notify` removed 2026-11 (channel-naming removal) — a Token's
+  // own notify-kind channel-list body can no longer be authored via CLI.
+  // This test used to pin the happy-path compile; it now pins the
+  // opposite, matching the `bracket(...)` removal precedent.
+  it('kind=notify is a hard compile error (channel-naming removal)', () => {
     const r = compile('token(kind=notify) telegram, email #name="x"');
-    expect(r.ok).toBe(true);
-    expect(r.fragment).toEqual({
-      kind: 'notify',
-      name: 'x',
-      body: [
-        { channel: 'telegram', enabled: true },
-        { channel: 'email', enabled: true },
-      ],
-    });
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /kind=notify has been removed/.test(e.message))).toBe(true);
   });
 
   // 2026-10-12 — condition-kind Token creation is now supported (was a
@@ -1683,7 +1680,10 @@ describe('compileStatement opts.allowedKinds — scope restriction', () => {
   });
 
   it('omitting allowedKinds entirely is backward compatible — a token(...) still compiles normally', () => {
-    const r = compile('token(kind="notify") telegram #name="my-token"');
+    // `kind="notify"` no longer compiles at all (channel-naming removal,
+    // 2026-11) — `kind="condition"` is the one still-live kind this test
+    // can use to prove "no allowedKinds restriction" compiles normally.
+    const r = compile('token(kind="condition") pnl@positions.total <= -50000 #name="my-token"');
     expect(r.ok).toBe(true);
     expect(r.kind).toBe('token');
   });
@@ -4332,47 +4332,38 @@ describe('Sprint G — Task 4: kind: / underlying: qualifiers', () => {
 // here with zero action-specific code.
 // ═══════════════════════════════════════════════════════════════════════
 
-describe('Part B — notify=[...] universal action-level kwarg', () => {
-  it('order(..., notify=[telegram]) compiles with a `notify` SIBLING key, not inside params', () => {
+// `Part B — notify=[...] universal action-level kwarg` describe block
+// removed 2026-11 (channel-naming removal) — replaced by this one, which
+// pins the new, opposite behaviour: `notify=...` on any action call is
+// now a hard compile error. `alert(...)`'s own channel-call-list clause
+// is a completely separate mechanism and is UNAFFECTED by this removal.
+describe('notify=... on an action call is a hard compile error (channel-naming removal)', () => {
+  it('order(..., notify=[telegram]) is rejected with the removal message', () => {
     const r = compile('WHEN always DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, notify=[telegram])');
-    expect(r.errors).toEqual([]);
-    expect(r.ok).toBe(true);
-    expect(r.agent.actions).toEqual([{
-      type: 'order',
-      params: { account: 'ZG0790', symbol: 'NIFTY25JULFUT', side: 'SELL', qty: 75 },
-      notify: [{ channel: 'telegram' }],
-    }]);
-    // never inside params
-    expect(r.agent.actions[0].params.notify).toBeUndefined();
+    expect(r.ok).toBe(false);
+    expect(r.errors.some((e) => /notify=\.\.\. channel selection has been removed/.test(e.message))).toBe(true);
   });
 
-  it('close_position(..., notify=[telegram, ntfy(priority="urgent")]) — multiple channels, one with its own param', () => {
+  it('close_position(..., notify=[telegram, ntfy(priority="urgent")]) is likewise rejected', () => {
     const r = compile(
       'WHEN pnl@positions.expiring_today > 0 '
       + 'DO close_position(account="ZG0790", symbol="NIFTY25JULFUT", notify=[telegram, ntfy(priority="urgent")])'
     );
-    expect(r.errors).toEqual([]);
-    expect(r.ok).toBe(true);
-    expect(r.agent.actions).toEqual([{
-      type: 'close_position',
-      params: { account: 'ZG0790', symbol: 'NIFTY25JULFUT' },
-      notify: [
-        { channel: 'telegram' },
-        { channel: 'ntfy', params: { priority: 'urgent' } },
-      ],
-    }]);
+    expect(r.ok).toBe(false);
+    expect(r.errors.some((e) => /notify=\.\.\. channel selection has been removed/.test(e.message))).toBe(true);
   });
 
-  it('an unknown channel name inside notify=[...] is a compile-time error (same message style as ALERT)', () => {
+  it('notify=[...] with an unknown channel name is STILL rejected with the removal message, not the old "unknown channel" error', () => {
     const r = compile(
       'WHEN pnl@positions.expiring_today > 0 '
       + 'DO close_position(account="ZG0790", symbol="NIFTY25JULFUT", notify=[bogus_channel])'
     );
     expect(r.ok).toBe(false);
-    expect(r.errors.some((e) => /unknown channel 'bogus_channel'/.test(e.message))).toBe(true);
+    expect(r.errors.some((e) => /notify=\.\.\. channel selection has been removed/.test(e.message))).toBe(true);
+    expect(r.errors.some((e) => /unknown channel 'bogus_channel'/.test(e.message))).toBe(false);
   });
 
-  it('an action with NO notify= compiles with no `notify` key at all (not an empty list) — zero behavior change', () => {
+  it('an action with NO notify= compiles exactly as before — zero behavior change', () => {
     const r = compile(
       'WHEN pnl@positions.expiring_today > 0 DO close_position(account=account_id, symbol=symbol)'
     );
@@ -4384,58 +4375,23 @@ describe('Part B — notify=[...] universal action-level kwarg', () => {
     expect('notify' in r.agent.actions[0]).toBe(false);
   });
 
-  it('duplicate notify= is a compile-time error', () => {
+  it('duplicate notify= is STILL a compile-time error (now via the same removal message, not a "duplicate parameter" one)', () => {
     const r = compile('WHEN always DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, notify=[telegram], notify=[telegram])');
     expect(r.ok).toBe(false);
-    expect(r.errors.some((e) => /duplicate parameter 'notify'/.test(e.message))).toBe(true);
+    expect(r.errors.some((e) => /notify=\.\.\. channel selection has been removed/.test(e.message))).toBe(true);
   });
 
-  it('notify=[...] is universally available — zero per-action-type special-casing — exercised on log too', () => {
+  it('notify=[...] is rejected universally — zero per-action-type special-casing — exercised on log too', () => {
     const r = compile('WHEN always DO log(message="hello", notify=[telegram])');
-    expect(r.ok).toBe(true);
-    expect(r.agent.actions).toEqual([{
-      type: 'log',
-      params: { message: 'hello' },
-      notify: [{ channel: 'telegram' }],
-    }]);
+    expect(r.ok).toBe(false);
+    expect(r.errors.some((e) => /notify=\.\.\. channel selection has been removed/.test(e.message))).toBe(true);
   });
 
-  // Extensibility proof (per the plan's explicit requirement) — a
-  // brand-new, test-only channel added ONLY to a locally-built catalog
-  // (mirroring how a real new row in the backend's `grammar_tokens`
-  // table would appear) resolves in `notify=[...]` with ZERO changes to
-  // any action-compile code path — mechanically proving the "new
-  // channel just works" invariant, not just by code inspection.
-  it('extensibility: a brand-new catalog-only channel compiles in notify=[...] with zero code changes', () => {
-    const extendedCatalog = buildCatalog([
-      ...FIXTURE_ROWS,
-      { grammar_kind: 'notify', token_kind: 'channel', token: 'newtestchannel', params_schema: { urgency: { type: 'enum', enum: ['low', 'high'], required: false } } },
-    ]);
-    const r = compileAgentCliStatement(
-      'WHEN always DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, notify=[newtestchannel(urgency="high")])',
-      extendedCatalog,
-      { lotSizeOf, exchangesOf }
-    );
-    expect(r.errors).toEqual([]);
-    expect(r.ok).toBe(true);
-    expect(r.agent.actions).toEqual([{
-      type: 'order',
-      params: { account: 'ZG0790', symbol: 'NIFTY25JULFUT', side: 'SELL', qty: 75 },
-      notify: [{ channel: 'newtestchannel', params: { urgency: 'high' } }],
-    }]);
-  });
-
-  it('decompile round-trip: compile -> decompile -> recompile is byte-identical JSON', () => {
-    const r1 = compile(
-      'WHEN pnl@positions.expiring_today > 0 '
-      + 'DO close_position(account="ZG0790", symbol="NIFTY25JULFUT", notify=[telegram, ntfy(priority="urgent")])'
-    );
-    expect(r1.ok).toBe(true);
-    const dec = decompileAgent(r1.agent, CATALOG);
-    expect(dec.errors).toEqual([]);
-    const r2 = compile(dec.text);
-    expect(r2.ok).toBe(true);
-    expect(r2.agent).toEqual(r1.agent);
+  it('a bare notify=telegram (no brackets) is rejected the same way, not with a generic "unknown parameter" error', () => {
+    const r = compile('WHEN always DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, notify=telegram)');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some((e) => /notify=\.\.\. channel selection has been removed/.test(e.message))).toBe(true);
+    expect(r.errors.some((e) => /unknown parameter 'notify'/.test(e.message))).toBe(false);
   });
 });
 

@@ -1061,12 +1061,15 @@ def test_generic_notice_agents_are_every_spec_in_the_shared_table():
     # standalone `generic_notice` user, outside `_GENERIC_NOTICE_SPECS`
     # entirely (see its own dict comment in event_agents.py for why it
     # was kept standalone rather than folded into the heavily-pinned
-    # 16/18-entry collapsed table).
+    # 16/18-entry collapsed table). 2026-11 alert-agent audit fix —
+    # DRAFT_SWEEP_AGENT is a THIRD such standalone user, same reasoning.
     standalone_generic_notice_slugs = {
         spec["slug"] for spec in ea.SEEDED_AGENTS
         if any(isinstance(a, dict) and a.get("render") == "generic_notice" for a in spec.get("actions") or [])
     } - {ea.UNROUTED_ALERT_AGENT["slug"], ea.USER_REGISTERED_AGENT["slug"]}
-    assert standalone_generic_notice_slugs == {"visitor-report-alert", "gtt-orphan-cancelled-alert"}
+    assert standalone_generic_notice_slugs == {
+        "visitor-report-alert", "gtt-orphan-cancelled-alert", "draft-sweep-alert",
+    }
     for alert_event, source_slug in [
         ("gtt_asymmetric", "gtt-asymmetric-alert"), ("oco_double_fire", "oco-double-fire-alert"),
         ("ticker_recovered", "ticker-recovered-alert"), ("ticker_degraded", "ticker-degraded-alert"),
@@ -1074,6 +1077,53 @@ def test_generic_notice_agents_are_every_spec_in_the_shared_table():
         entry = ea.ALERT_EVENT_DISPATCH[alert_event]
         assert entry["render"] == "generic_notice"
         assert entry["source_slug"] == source_slug
+
+
+@pytest.mark.asyncio
+async def test_draft_sweep_agent_is_seeded_and_dispatches_to_telegram_info_only(monkeypatch):
+    """2026-11 alert-agent audit fix — `background.py:_ds_tick_draft_
+    sweep()` used to call `alert_utils._send_telegram_info()` directly,
+    bypassing this file's log-then-dispatch pipeline entirely. Standalone
+    `DRAFT_SWEEP_AGENT` (a THIRD deliberate standalone `generic_notice`
+    user outside `_GENERIC_NOTICE_SPECS`, same shape as
+    `GTT_ORPHAN_CANCELLED_AGENT`/`VISITOR_REPORT_AGENT`) now matches its
+    producer's tagged log record and delivers it on the dedicated
+    `telegram_info` channel only — matching the old direct call's own
+    channel exactly, via `alert_routing._PER_SLUG_OVERRIDES
+    ['draft-sweep-alert']` — never `telegram`/`ntfy`."""
+    import backend.shared.helpers.utils as u
+    from backend.api.algo import event_agents as ea
+
+    assert ea.DRAFT_SWEEP_AGENT in ea.SEEDED_AGENTS
+    assert ea.validate_seed_spec(ea.DRAFT_SWEEP_AGENT) == []
+
+    sent = {"info": [], "tg": [], "ntfy": []}
+    monkeypatch.setattr(u, "is_enabled", lambda cap: True)
+    monkeypatch.setattr(ea, "_channel_enabled", lambda cap: True)
+    monkeypatch.setitem(ea.CHANNELS, "telegram_info",
+                        ("telegram_info", lambda t, b, tg=None, **k: sent["info"].append((t, b))))
+    monkeypatch.setitem(ea.CHANNELS, "telegram",
+                        ("telegram", lambda t, b, tg=None, **k: sent["tg"].append((t, b))))
+    monkeypatch.setitem(ea.CHANNELS, "ntfy",
+                        ("ntfy", lambda t, b, tg=None, priority=None, **k: sent["ntfy"].append((t, b))))
+
+    rec = {"ts": datetime(2026, 11, 11, 2, 30, 0, tzinfo=timezone.utc), "level": "INFO",
+           "tags": ["orders", "alert"],
+           "extra": {"tags": ["orders", "alert"], "alert_event": "draft_sweep",
+                     "title": "Drafts cleared",
+                     "body": "3 draft(s) cleared at market open (created before today's session).",
+                     "source_type": "process", "source_name": "Draft sweep"}}
+    spec = ea.DRAFT_SWEEP_AGENT
+    agent = SimpleNamespace(slug=spec["slug"], **{k: spec.get(k, []) for k in ("conditions", "events", "actions")})
+    await ea.dispatch([rec], [agent])
+
+    assert len(sent["info"]) == 1
+    assert sent["tg"] == []
+    assert sent["ntfy"] == []
+    title, body = sent["info"][0]
+    assert title == "Drafts cleared"
+    assert "Source: Draft sweep" in body
+    assert "3 draft(s) cleared" in body
 
 
 # ── Item 3 — SEED_VERSION no longer silently overwrites an operator edit ──

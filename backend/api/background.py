@@ -4560,6 +4560,20 @@ async def _ds_tick_draft_sweep(now: datetime, today: date, done_ref: list) -> No
     not build new UI"): logs + an info-tier Telegram line when N > 0, so
     an operator with notifications on sees "N draft(s) cleared at market
     open" rather than a silent disappearance.
+
+    2026-11 alert-agent audit fix — this used to call
+    `alert_utils._send_telegram_info()` directly, bypassing the
+    log-then-dispatch architecture every other alert in this codebase
+    uses (no tags, no `alert_event`, no seeded agent, no routing-table
+    entry). Now logs a single tagged record instead — a new seeded
+    `draft-sweep-alert` agent (`event_agents.py`, `generic_notice`
+    renderer, same shape as `GTT_ORPHAN_CANCELLED_AGENT`/
+    `VISITOR_REPORT_AGENT`) picks it up and sends it on the dedicated
+    `telegram_info` channel via `alert_routing.py`'s per-slug override —
+    the exact channel the old direct call used. `source_type`/
+    `source_name` follow the 2026-11-06 operator SSOT instruction: a
+    literal process name, not a fake-agent lookup — this scheduled
+    sweep has no known trigger.
     """
     if now.time() < dtime(8, 0) or done_ref[0] == today:
         return
@@ -4574,18 +4588,13 @@ async def _ds_tick_draft_sweep(now: datetime, today: date, done_ref: list) -> No
         logger.warning(f"[DRAFT-SWEEP] failed: {e}")
         return
     if n > 0:
-        logger.info(f"[DRAFT-SWEEP] cleared {n} stale draft(s) at market open")
-        try:
-            from backend.shared.helpers import alert_utils
-            # _send_telegram_info does a blocking requests.post (10s
-            # timeout) — offload so it never stalls this task's 30s loop
-            # (single-worker Kite constraint — see CLAUDE.md).
-            await asyncio.to_thread(
-                alert_utils._send_telegram_info,
-                f"{n} draft(s) cleared at market open (created before today's session).",
-            )
-        except Exception as e:
-            logger.warning(f"[DRAFT-SWEEP] notify failed: {e}")
+        body = f"{n} draft(s) cleared at market open (created before today's session)."
+        logger.info(
+            f"[DRAFT-SWEEP] {body}",
+            extra={"tags": ["orders", "alert"], "alert_event": "draft_sweep",
+                   "title": "Drafts cleared", "body": body,
+                   "source_type": "process", "source_name": "Draft sweep"},
+        )
 
 
 async def _msr_marker_date() -> "date | None":

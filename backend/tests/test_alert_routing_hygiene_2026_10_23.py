@@ -180,8 +180,12 @@ class TestCancelAlertChaseGate:
         assert extra["action_required"] is True
         assert extra["agent_id"] == 7
         assert extra["agent_name"] == "Loss guardrail"
-        channels = {c["channel"] for c in extra["channels"]}
-        assert "ntfy" in channels
+        # 2026-11 channel-authoring retirement — the producer no longer
+        # embeds its own `channels` literal in `extra`; channel
+        # selection now comes from `alert_routing.py`'s per-slug
+        # override for `order-cancelled-alert`, resolved at dispatch
+        # time, not carried on the log record itself.
+        assert "channels" not in extra
         assert "ZG0790" not in extra["body"], "account must be masked in the logged body"
 
     async def test_cancel_alert_identity_degrades_to_none_on_lookup_failure(self):

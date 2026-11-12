@@ -5,10 +5,14 @@
  * Edit on any row (any kind) decompiles its live JSON into the Console
  * tab's CLI text and arms edit mode, so Save routes through the real
  * UPDATE endpoint for that row — never the create-only path. This spec
- * proves the round-trip for the three Agent-table kinds (cycle/Agents,
- * event/Alerts, template/Templates). (The Bracket kind's equivalent
- * round trip used to live in console_decompile_bracket_edit_flow.spec.js
- * — deleted 2026-11, Track 3 T3.4, Bracket/Template/GTT removal.)
+ * proves the round-trip for cycle/Agents and event/Alerts rows. (The
+ * Bracket kind's equivalent round trip used to live in
+ * console_decompile_bracket_edit_flow.spec.js — deleted 2026-11, Track 3
+ * T3.4, Bracket/Template/GTT removal.) The template/Templates case below
+ * now instead proves the OPPOSITE for a notify-kind body: Edit refuses
+ * loud with a toast, since `kind=notify` was removed (channel-naming
+ * removal, 2026-11) and a notify-kind Token can no longer be decompiled
+ * to CLI text at all.
  *
  * Each endpoint is mocked (`page.route`) — the PUT/PATCH interceptor
  * asserts it was actually called with the right slug/id, which is the
@@ -248,9 +252,18 @@ test('event Agent (Alert): Edit decompiles to WHEN log(...) DO ... render(...), 
   expect(putCalled.body.actions).toEqual(EVENT_ROW.actions);
 });
 
-test('Template (Token): Edit decompiles, Save PUTs /api/agents/{slug} — never the retired fragments route', async ({ page }) => {
+// Channel-naming removal (2026-11) — a stored `kind='template'` row with
+// a notify-kind body (`events` non-empty, `conditions` empty) can no
+// longer be decompiled to CLI text at all (`decompileToken` now hard-
+// errors on this shape — see `compileTokenStmt`'s own rejection). This
+// test used to pin the successful decompile->edit->Save round trip; it
+// now pins the opposite: Edit shows a toast with the removal message and
+// never switches to the Console tab with an empty/broken box, matching
+// `editRow`'s own documented "on a decompile failure, stay on the row"
+// contract.
+test('Template (Token) with a notify-kind body: Edit shows the removal error, never opens Console or PUTs', async ({ page }) => {
   await mockAgentsList(page, [TEMPLATE_ROW]);
-  let putCalled = /** @type {any} */ (null);
+  let putCalled = false;
   let fragmentsRouteCalled = false;
   await page.route('**/api/admin/fragments/**', async (route) => {
     fragmentsRouteCalled = true;
@@ -258,7 +271,7 @@ test('Template (Token): Edit decompiles, Save PUTs /api/agents/{slug} — never 
   });
   await page.route('**/api/agents/notify-critical-trio-e2e', async (route) => {
     if (route.request().method() !== 'PUT') { await route.continue(); return; }
-    putCalled = { url: route.request().url(), body: route.request().postDataJSON() };
+    putCalled = true;
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ detail: 'ok' }) });
   });
 
@@ -267,17 +280,11 @@ test('Template (Token): Edit decompiles, Save PUTs /api/agents/{slug} — never 
   const row = await openCardAndRow(page, 'agents', 'Notify Critical Trio E2E');
   await row.getByRole('button', { name: 'Edit' }).click();
 
-  await expect(page.locator('.console-edit-banner')).toContainText('Notify Critical Trio E2E', { timeout: TIMEOUT });
-  const cliTextarea = page.locator('.agent-cli-textarea');
-  const value = await cliTextarea.inputValue();
-  expect(value).toMatch(/^token\(kind=notify\)/);
+  const errorToast = page.locator('.rbq-toast[role="alert"]').first();
+  await expect(errorToast).toBeVisible({ timeout: TIMEOUT });
+  await expect(errorToast).toContainText(/kind=notify has been removed/);
 
-  const saveBtn = page.locator('.console-agent-cli-btn');
-  await expect(saveBtn).toHaveText('Save', { timeout: TIMEOUT });
-  await saveBtn.click();
-
-  await expect.poll(() => putCalled, { timeout: TIMEOUT }).not.toBeNull();
-  expect(putCalled.url).toContain('/api/agents/notify-critical-trio-e2e');
-  expect(putCalled.body.events).toEqual([{ channel: 'telegram', enabled: true }]);
+  await expect(page.locator('.console-edit-banner')).toHaveCount(0);
+  expect(putCalled).toBe(false);
   expect(fragmentsRouteCalled).toBe(false);
 });

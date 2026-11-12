@@ -118,14 +118,19 @@ class TestCancelAlertSendsWithoutTypeError:
         `source_name`; this fixture omits them deliberately to exercise
         the renderer's own literal fallback default), so the header
         reads "Source: postback triggered manually" instead of the old
-        "Agent: manual"."""
+        "Agent: manual".
+
+        2026-11 channel-authoring retirement — the renderer no longer
+        returns a dynamic `out[4]` channel-override list (channel
+        selection now comes from `alert_routing.py`'s per-slug override
+        for `order-cancelled-alert`); it is a plain 3-tuple, same shape
+        as `_render_market_status`."""
         from backend.api.algo.event_agents import _render_order_cancelled
 
         rec = {"extra": {
             "title": "Order cancelled: NIFTY26OCTFUT",
             "body": "ZG#### SELL 75 NIFTY26OCTFUT — Cancelled by user",
             "agent_id": None, "agent_name": None,
-            "channels": [{"channel": "ntfy", "enabled": True}],
         }}
-        title, body, tg, email_payload, channels = _render_order_cancelled(rec)
+        title, body, tg = _render_order_cancelled(rec)
         assert body.splitlines()[0] == "Source: postback triggered manually"

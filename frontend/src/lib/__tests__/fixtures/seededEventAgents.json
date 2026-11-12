@@ -183,26 +183,6 @@
     ]
   },
   {
-    "slug": "action-notify-alert",
-    "name": "Agent action notify",
-    "conditions": {
-      "log": {
-        "tag": "alert",
-        "min_level": "INFO",
-        "where": {
-          "alert_event": "action_notify"
-        }
-      }
-    },
-    "events": [],
-    "actions": [
-      {
-        "type": "render",
-        "render": "action_notify"
-      }
-    ]
-  },
-  {
     "slug": "order-cancelled-alert",
     "name": "Order cancelled",
     "conditions": {
@@ -231,6 +211,46 @@
         "min_level": "INFO",
         "where": {
           "alert_event": "gtt_orphan_cancelled"
+        }
+      }
+    },
+    "events": [],
+    "actions": [
+      {
+        "type": "render",
+        "render": "generic_notice"
+      }
+    ]
+  },
+  {
+    "slug": "agent-close-hold-alert",
+    "name": "Agent close held",
+    "conditions": {
+      "log": {
+        "tag": "alert",
+        "min_level": "WARNING",
+        "where": {
+          "alert_event": "agent_close_hold"
+        }
+      }
+    },
+    "events": [],
+    "actions": [
+      {
+        "type": "render",
+        "render": "agent_close_hold"
+      }
+    ]
+  },
+  {
+    "slug": "draft-sweep-alert",
+    "name": "Draft sweep",
+    "conditions": {
+      "log": {
+        "tag": "alert",
+        "min_level": "INFO",
+        "where": {
+          "alert_event": "draft_sweep"
         }
       }
     },

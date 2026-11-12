@@ -292,6 +292,12 @@ class TestSeededAgentsGateKeysAreDeclared:
         2026-11-04 — `gtt-orphan-cancelled-alert` joins the set: its
         one channel (telegram) carries `gate: False`, same convention
         as every other agent here.
+
+        2026-11-11 — `draft-sweep-alert` joins the set: its one channel
+        (`telegram_info`, via `alert_routing._PER_SLUG_OVERRIDES`) carries
+        `gate: False`, same convention as every other agent here — added
+        when the 08:00 draft-sweep notice was converted from a direct
+        `_send_telegram_info` call to log-then-dispatch.
         """
         slugs = {
             agent["slug"]
@@ -301,6 +307,7 @@ class TestSeededAgentsGateKeysAreDeclared:
         assert slugs == {
             "unrouted-alert-catch-all", "agent-alert-rich", "market-summary",
             "visitor-report-alert", "deploy-sync-alert", "gtt-orphan-cancelled-alert",
+            "draft-sweep-alert",
         }
 
     def test_inventory_action_level_gate_agent_count(self):

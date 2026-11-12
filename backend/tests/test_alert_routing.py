@@ -195,11 +195,18 @@ def test_frozen_oracle_covers_every_migrated_agent_exactly():
     comment above). The 3 new generic channel agents are excluded for
     the same reason `USER_REGISTERED_AGENT` already was — net-new, no
     pre-migration oracle entry to pin. `MARKET_STATUS_ALERT_AGENT`
-    (2026-11-03, alert-agent audit Wave 1), `ACTION_NOTIFY_AGENT`
-    (Wave 2), `ORDER_CANCELLED_AGENT` (Wave 3), and
-    `GTT_ORPHAN_CANCELLED_AGENT` (2026-11-04) are excluded for the
-    identical reason — brand-new agents added long after this oracle
-    was frozen, not a migration of any pre-existing one."""
+    (2026-11-03, alert-agent audit Wave 1), `ORDER_CANCELLED_AGENT`
+    (Wave 3), `GTT_ORPHAN_CANCELLED_AGENT` (2026-11-04), and
+    `AGENT_CLOSE_HOLD_ALERT_AGENT` (2026-11 channel-authoring
+    retirement — replaces the retired `ACTION_NOTIFY_AGENT`/Wave 2 slot
+    in `SEEDED_AGENTS`) are excluded for the identical reason — brand-
+    new agents added long after this oracle was frozen, not a migration
+    of any pre-existing one. `ACTION_NOTIFY_AGENT` no longer appears in
+    `SEEDED_AGENTS` at all (retired), so it needs no exclusion entry.
+    `DRAFT_SWEEP_AGENT` (2026-11, alert-agent audit fix) is excluded for
+    the identical reason — another brand-new, unrelated standalone
+    agent; see `test_draft_sweep_alert_resolves_via_per_slug_override`
+    below for its own direct coverage."""
     all_specs = event_agents.SEEDED_AGENTS + event_agents._COLLAPSED_DETECTOR_SPECS
     migrated_slugs = {
         spec["slug"] for spec in all_specs
@@ -209,9 +216,10 @@ def test_frozen_oracle_covers_every_migrated_agent_exactly():
             event_agents.TELEGRAM_CHANNEL_AGENT["slug"], event_agents.NTFY_CHANNEL_AGENT["slug"],
             event_agents.EMAIL_CHANNEL_AGENT["slug"],
             event_agents.MARKET_STATUS_ALERT_AGENT["slug"],
-            event_agents.ACTION_NOTIFY_AGENT["slug"],
+            event_agents.AGENT_CLOSE_HOLD_ALERT_AGENT["slug"],
             event_agents.ORDER_CANCELLED_AGENT["slug"],
             event_agents.GTT_ORPHAN_CANCELLED_AGENT["slug"],
+            event_agents.DRAFT_SWEEP_AGENT["slug"],
         )
     }
     assert migrated_slugs == set(_FROZEN_ORACLE)
@@ -234,6 +242,54 @@ def test_user_registered_agent_resolves_to_telegram_and_ntfy_high():
         {"channel": "telegram", "enabled": True, "gate": False},
         {"channel": "ntfy", "enabled": True, "gate": False, "priority": "high"},
         {"channel": "email", "enabled": True, "gate": False},
+    ]
+
+
+def test_order_cancelled_alert_resolves_via_per_slug_override():
+    """2026-11 channel-authoring retirement — `order-cancelled-alert`
+    used to carry its own per-record `extra['channels']` literal
+    (`orders.py:_opp_send_cancel_alert`), read via a dynamic `out[4]`
+    override in `_render_order_cancelled`. That renderer is now a plain
+    passthrough (`events` deliberately omitted on the spec), so this
+    per-slug override row is the real, sole channel source."""
+    spec = event_agents.ORDER_CANCELLED_AGENT
+    resolved = alert_routing.resolve_channels(
+        name=spec["slug"], priority=spec.get("priority"), agent_events=spec.get("events", []))
+    assert resolved == [
+        {"channel": "telegram", "enabled": True},
+        {"channel": "ntfy", "enabled": True},
+    ]
+
+
+def test_agent_close_hold_alert_resolves_via_per_slug_override():
+    """2026-11 channel-authoring retirement — brand-new dedicated agent;
+    `actions_live.py:_al_send_agent_close_hold_alert` used to embed this
+    exact channel list directly in `extra['channels']`, dispatched
+    through the (now-retired) generic `ACTION_NOTIFY_AGENT`. `events`
+    deliberately omitted on the spec, so this per-slug override row is
+    the real, sole channel source."""
+    spec = event_agents.AGENT_CLOSE_HOLD_ALERT_AGENT
+    resolved = alert_routing.resolve_channels(
+        name=spec["slug"], priority=spec.get("priority"), agent_events=spec.get("events", []))
+    assert resolved == [
+        {"channel": "telegram", "enabled": True},
+        {"channel": "ntfy", "enabled": True},
+    ]
+
+
+def test_draft_sweep_alert_resolves_via_per_slug_override():
+    """2026-11 alert-agent audit fix — `background.py:_ds_tick_draft_
+    sweep()` used to call `alert_utils._send_telegram_info()` directly.
+    Brand-new dedicated `DRAFT_SWEEP_AGENT`; `events` deliberately
+    omitted on the spec, so this per-slug override row is the real, sole
+    channel source. `telegram_info`-only, matching the old direct call's
+    own channel exactly — same "good news, FYI only" shape as
+    `visitor-report-alert`."""
+    spec = event_agents.DRAFT_SWEEP_AGENT
+    resolved = alert_routing.resolve_channels(
+        name=spec["slug"], priority=spec.get("priority"), agent_events=spec.get("events", []))
+    assert resolved == [
+        {"channel": "telegram_info", "enabled": True, "gate": False},
     ]
 
 

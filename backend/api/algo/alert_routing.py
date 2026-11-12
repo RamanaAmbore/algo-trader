@@ -214,6 +214,43 @@ _PER_SLUG_OVERRIDES: dict[str, list[dict]] = {
     "gtt-orphan-cancelled-alert": [
         {"channel": "telegram", "enabled": True, "gate": False},
     ],
+    # 2026-11 channel-authoring retirement — two of the handful of alert
+    # paths that still embedded their own hardcoded channel LITERAL
+    # directly in the producer's log-record `extra` (not a `notify=[...]`
+    # action param, not an operator `alert(...)` DSL clause — a plain
+    # Python list baked into the call site). Both are converted to the
+    # ordinary per-slug-override shape every other migrated agent above
+    # already uses; the verbatim channel lists below are unchanged from
+    # what the producer used to embed.
+    #
+    # `order-cancelled-alert` — `orders.py:_opp_send_cancel_alert` used
+    # to carry this same list in `extra['channels']`, read via a dynamic
+    # `out[4]` override in `_render_order_cancelled`. That renderer now
+    # returns a plain passthrough tuple (same shape as
+    # `_render_market_status`), so this row is the real channel source.
+    "order-cancelled-alert": [
+        {"channel": "telegram", "enabled": True},
+        {"channel": "ntfy", "enabled": True},
+    ],
+    # `agent-close-hold-alert` — `actions_live.py:_al_send_agent_close_
+    # hold_alert` used to carry this same list in `extra['channels']`,
+    # dispatched through the (now-retired) generic `ACTION_NOTIFY_AGENT`
+    # via its own `_render_action_notify`'s `out[4]` override. This is a
+    # brand-new dedicated seeded agent
+    # (`event_agents.AGENT_CLOSE_HOLD_ALERT_AGENT`), not a retrofit of
+    # the retired one.
+    "agent-close-hold-alert": [
+        {"channel": "telegram", "enabled": True},
+        {"channel": "ntfy", "enabled": True},
+    ],
+    # 2026-11 alert-agent audit fix — `background.py:_ds_tick_draft_
+    # sweep()` used to call `alert_utils._send_telegram_info()`
+    # directly. `telegram_info`-only, matching the old direct call's
+    # own channel exactly — same "good news, FYI only" shape as
+    # `visitor-report-alert` above.
+    "draft-sweep-alert": [
+        {"channel": "telegram_info", "enabled": True, "gate": False},
+    ],
     # 2026-10 operator-reported gap — new-user self-registration alerts
     # were never reaching Telegram/ntfy (see `event_agents.py:
     # USER_REGISTERED_AGENT`'s own comment for the root cause). High,

@@ -87,18 +87,27 @@ def _freeze_ts(monkeypatch):
 # `action-notify-alert` Wave 2, `order-cancelled-alert` Wave 3 — all
 # unrelated to the collapse, brand-new agents, not replaced
 # detectors) = 13, PLUS `gtt-orphan-cancelled-alert` (2026-11-04, SEED_
-# VERSION 6 -> 7 — see event_agents.py's own comment on that bump) = 14.
+# VERSION 6 -> 7 — see event_agents.py's own comment on that bump) = 14,
+# PLUS `draft-sweep-alert` (2026-11 alert-agent audit fix, SEED_VERSION
+# 9 -> 10) = 15.
 # ─────────────────────────────────────────────────────────────────────────
 
 def test_seeded_agents_count_is_13_not_23():
-    assert len(ea.SEEDED_AGENTS) == 14
+    # 2026-11 channel-authoring retirement — `action-notify-alert` is
+    # retired (the `notify=[...]` action param it rendered has no
+    # replacement) and replaced one-for-one in this set by the brand-new
+    # `agent-close-hold-alert`; count stays 14. 2026-11 alert-agent audit
+    # fix — `draft-sweep-alert` is a brand-new standalone agent
+    # (`background.py:_ds_tick_draft_sweep()` no longer calls
+    # `alert_utils._send_telegram_info()` directly); count is now 15.
+    assert len(ea.SEEDED_AGENTS) == 15
     slugs = {s["slug"] for s in ea.SEEDED_AGENTS}
     assert slugs == {
         "error-alert", "deploy-sync-alert", "agent-alert-rich", "market-summary",
         "cycle-breach-alert", "visitor-report-alert", "unrouted-alert-catch-all",
         "alert-channel-telegram", "alert-channel-ntfy", "alert-channel-email",
-        "market-status-alert", "action-notify-alert", "order-cancelled-alert",
-        "gtt-orphan-cancelled-alert",
+        "market-status-alert", "agent-close-hold-alert", "order-cancelled-alert",
+        "gtt-orphan-cancelled-alert", "draft-sweep-alert",
     }
 
 
@@ -118,7 +127,13 @@ def test_every_collapsed_spec_slug_is_retired():
     for spec in ea._COLLAPSED_DETECTOR_SPECS:
         assert spec["slug"] not in seeded_slugs
         assert spec["slug"] in ea._RETIRED_SLUGS
-    assert len(ea._RETIRED_SLUGS) == 16
+    # 16 collapsed-detector slugs + `action-notify-alert` (2026-11
+    # channel-authoring retirement, unioned in separately via
+    # `_NOTIFY_ACTION_RETIRED_SLUGS` — see event_agents.py's own
+    # comment above `_RETIRED_SLUGS`) = 17.
+    assert len(ea._RETIRED_SLUGS) == 17
+    assert "action-notify-alert" in ea._RETIRED_SLUGS
+    assert "action-notify-alert" not in seeded_slugs
 
 
 # ─────────────────────────────────────────────────────────────────────────

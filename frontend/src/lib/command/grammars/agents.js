@@ -639,10 +639,14 @@ function _shiftPositions(node, baseStart) {
  *  span; `baseStart` is its absolute offset, re-applied via
  *  `_shiftPositions` since a fresh `lexAgentStatement` call always
  *  counts from 0. Returns `{ type: 'list', value: CallNode[] }` — NOT
- *  the ordinary ValueNode list shape (whose items are ValueNodes); the
- *  sole consumer (`_compileNotifyClause`) knows to expect CallNode[]
- *  here and never routes this through `_coerceValueForSpec`/
- *  `_unwrapValueNode`. */
+ *  the ordinary ValueNode list shape (whose items are ValueNodes); never
+ *  routed through `_coerceValueForSpec`/`_unwrapValueNode`. Channel-naming
+ *  removal (2026-11) — `notify=[...]` has no real compiler left that
+ *  reads this parsed CallNode[] value (`_compileCatalogActionCall`
+ *  rejects the `notify` key outright, by name, before ever inspecting
+ *  it) — this parser is kept ONLY so `notify=[...]` still parses
+ *  successfully, letting that compile-time check produce a clear,
+ *  dedicated error instead of a confusing lex/parse-time one. */
 function _parseNotifyListArg(rawBracketText, baseStart) {
   const { tokens, errors } = lexAgentStatement(rawBracketText);
   if (errors.length) {
@@ -5093,61 +5097,16 @@ function _resolveGivenExprRefOrNull(valueNode, bindingsAt, spec, label) {
   return { error: _err(`${label}: GIVEN label '${valueNode.value}' is a computed value; it cannot be used for a numeric/enum field.`) };
 }
 
-// ── `notify=[...]` — universal action-level kwarg (Part B, 2026-10) ────
-// Available on EVERY action-kind token (`order`/`place_order`,
-// `close_position`, `cancel_order`, `modify_order`, `cancel_all_orders`,
-// `chase_close_positions`, `expiry_auto_close`, `monitor_order`,
-// `deactivate_agent`, `set_flag`, `emit_log` — every row the live
-// catalog's `grammar_kind=action` seeds today, per
-// `backend/config/grammars/agent_grammar.yaml`) with ZERO per-action
-// code: `notify=` is stripped out of the call's own args HERE, in
-// `compileDoClause`, BEFORE any per-type dispatch (place_order/emit_log/
-// generic) ever sees the call — same "strip sugar before generic
-// key-mapping" pattern `_splitLotsArg`/`_splitTpSlWingArgs`/
-// `_MESSAGE_KEYS` already established — so no action's own
-// `params_schema` needs to declare it. Compiles to a SIBLING key on the
-// action's own compiled dict (`{"type":...,"params":{...},"notify":[...]}`
-// ) — NEVER written inside `params` — using the SAME
-// `_resolveChannelCall` helper (and underlying `catalog.channels`
-// resolution) ALERT's own channel-call-list already uses, so a
-// brand-new channel added only to the backend catalog works here with
-// zero frontend code changes.
-const _NOTIFY_KEY = 'notify';
-
-/** Strip any `notify=[...]` arg out of a DO-clause action call — see the
- *  section header above. Returns `{ notifyArgs, call }`; `notifyArgs` is
- *  the (0 or more) matching ArgEntry(s) — more than one is a
- *  duplicate-parameter compile error, surfaced by the caller. */
-function _splitNotifyArg(call) {
-  const notifyArgs = (call.args || []).filter((a) => a.key && a.key.toLowerCase() === _NOTIFY_KEY);
-  const rest = (call.args || []).filter((a) => !(a.key && a.key.toLowerCase() === _NOTIFY_KEY));
-  return { notifyArgs, call: { ...call, args: rest } };
-}
-
-/** Compile a `notify=[...]` arg's already-parsed CallNode[] value (see
- *  `_parseNotifyListArg`) against `catalog.channels` — reuses
- *  `_resolveChannelCall` with no `stripKeys` (notify has no `msg=`-style
- *  sugar of its own). Returns `{ notify, errors }` — `notify` is the
- *  compiled sibling-key array (`null` on any error): each entry is
- *  either `{"$ref": token}` (a bare Token reference) or `{"channel":
- *  token}` / `{"channel": token, "params": {...}}` (params present only
- *  when the call declared at least one — never an empty `{}`). */
-function _compileNotifyClause(valueNode, catalog, label) {
-  if (!valueNode || valueNode.type !== 'list' || !Array.isArray(valueNode.value)) {
-    return { notify: null, errors: [_err(`${label}: notify must be a list of channel calls, e.g. notify=[telegram, ntfy(priority="urgent")]`)] };
-  }
-  const errors = [];
-  const notify = [];
-  for (const call of valueNode.value) {
-    const r = _resolveChannelCall(call, catalog, null, 'notify=[...]');
-    if (r.errors.length) { errors.push(...r.errors); continue; }
-    if (r.isFragmentRef) { notify.push({ '$ref': r.token }); continue; }
-    const out = { channel: r.entry.token };
-    if (r.params && Object.keys(r.params).length) out.params = r.params;
-    notify.push(out);
-  }
-  return { notify: errors.length ? null : notify, errors };
-}
+// `_NOTIFY_KEY`/`_splitNotifyArg`/`_compileNotifyClause` removed 2026-11
+// (channel-naming removal) — `notify=[...]` was a universal action-level
+// kwarg, stripped out of a call's own args before any per-type dispatch
+// ever saw it and compiled to a `notify` sibling key on the action's own
+// dict. It is now a hard compile error on every action call instead (see
+// `_compileCatalogActionCall`'s own rejection, right below) — channel
+// selection is decided automatically now, so there is nothing left to
+// strip, resolve, or compile. `alert(...)`'s OWN channel-call-list
+// clause (`compileAlertClause`) is a completely separate mechanism and is
+// UNAFFECTED by this removal — it still compiles exactly as before.
 
 /** Compile ONE call against the real action catalog (`order`/`place_order`,
  *  `log` (the renamed `emit_log`), or any other generic action) — the
@@ -5159,10 +5118,19 @@ function _compileNotifyClause(valueNode, catalog, label) {
  *  before this function is ever called, since none of the three is a
  *  real catalog-action lookup. */
 function _compileCatalogActionCall(rawCall, catalog, opts, rowRefCtx) {
-  const { notifyArgs, call } = _splitNotifyArg(rawCall);
-  if (notifyArgs.length > 1) {
-    return { action: null, errors: [_err(`${call.name}: duplicate parameter 'notify'`)] };
+  // Channel-naming removal (2026-11) — `notify=[...]` used to be a
+  // universal action-level kwarg, stripped out here before any per-type
+  // dispatch ever saw the call (see the removed section header this
+  // function used to sit under). It is now a hard compile error on EVERY
+  // action call, checked up front before any per-type param compilation
+  // runs — channel selection is decided automatically now, there is
+  // nothing left to compile. `alert(...)`'s own channel-call-list clause
+  // is unaffected — this check is scoped to action calls only.
+  const notifyArg = (rawCall.args || []).find((a) => a.key && a.key.toLowerCase() === 'notify');
+  if (notifyArg) {
+    return { action: null, errors: [_err(`${rawCall.name}: notify=... channel selection has been removed — channels are now decided automatically, this parameter is no longer supported`)] };
   }
+  const call = rawCall;
 
   const errors = [];
   const rawName = call.name.toLowerCase();
@@ -5213,13 +5181,6 @@ function _compileCatalogActionCall(rawCall, catalog, opts, rowRefCtx) {
     if (!r.errors.length) action = { type: entry.token, params: r.params };
   }
   if (!action) return { action: null, errors };
-
-  if (notifyArgs.length === 1) {
-    const nr = _compileNotifyClause(notifyArgs[0].value, catalog, entry.token);
-    errors.push(...nr.errors);
-    if (nr.errors.length) return { action: null, errors };
-    action = { ...action, notify: nr.notify };
-  }
   return { action, errors };
 }
 
@@ -6457,11 +6418,14 @@ const _TOKEN_KIND_SPEC = Object.freeze({ type: 'enum', enum: ['notify', 'conditi
  *  dedicated `AgentTemplate` model/table this used to target directly
  *  is retired).
  *
- *  `kind=notify`: the body call_list is compiled via the EXACT SAME
- *  `compileAlertClause` path ALERT's own call_list already uses (no
- *  clause-level `msg=` default — `null` — since a Token body is a plain
- *  channel list, not an ALERT clause). Result carries `fragment.body`
- *  (an events array) — `fragment.conditions` is absent.
+ *  `kind=notify`: REMOVED 2026-11 (channel-naming removal) — a Token
+ *  fragment's own notify-kind channel-list body is now a hard compile
+ *  error (see the `kind === 'notify'` branch below). Only `kind=condition`
+ *  can be compiled going forward. `alert(...)`'s OWN channel-call-list
+ *  clause (`compileAlertClause`) is unaffected — this removal is scoped
+ *  to authoring/editing a saved Token fragment's body, not to referencing
+ *  an already-saved fragment (a bare `$ref` Token name) from inside
+ *  `alert(...)`, which still resolves exactly as before.
  *
  *  `kind=condition`: `ast.condition` (parsed by `parseTokenStmt` via the
  *  SAME `parseCondition` production `WHEN` uses) is compiled via the
@@ -6508,9 +6472,12 @@ function compileTokenStmt(ast, catalog, opts = {}) {
       conditions = condResult.conditions;
     }
   } else if (kind === 'notify') {
-    const bodyResult = compileAlertClause(ast.bodyCalls, null, catalog);
-    errors.push(...bodyResult.errors);
-    body = bodyResult.events;
+    // Channel-naming removal (2026-11) — a Token's own notify-kind
+    // channel-list body can no longer be authored/edited via CLI; channel
+    // selection is decided automatically now. `alert(...)`'s own
+    // channel-call-list clause is unaffected (see this function's own
+    // doc comment above).
+    errors.push(_err('token: kind=notify has been removed — a Token\'s channel-list body can no longer be authored via CLI; remove it from the row directly'));
   }
   // kind invalid/unresolved (e.g. missing/duplicate/bad enum) — the
   // errors above already explain why; skip body/condition compilation
@@ -7584,20 +7551,23 @@ export function decompileCondition(conditions, catalog) {
  *  overwhelmingly common case) decompile exactly as before Sprint 6 — no
  *  `msg=` anywhere in the output. */
 /** Resolve + render ONE channel-call-list entry back to CLI text pieces —
- *  the decompile-side mirror of `_resolveChannelCall`, shared by
+ *  the decompile-side mirror of `_resolveChannelCall`, used by
  *  `decompileEvents` (ALERT's own `{channel, enabled, ...params}`
- *  flat-spread shape) and the new `notify[]` decompiler (`{channel,
- *  params}` nested shape, see `_compileNotifyClause`) — so a channel's
- *  own declared `params_schema` renders identically in both places, with
- *  zero channel-specific code in either caller.
+ *  flat-spread shape) so a channel's own declared `params_schema` renders
+ *  consistently with zero channel-specific code in the caller. The
+ *  action-level `notify[]` decompiler that used to share this (a
+ *  `{channel, params}` NESTED shape, via the `paramsKey` option below)
+ *  was removed 2026-11 (channel-naming removal) — `decompileEvents` is
+ *  now the sole caller, and never sets `paramsKey`; it is left in place
+ *  rather than stripped out, since this function is shared, load-bearing
+ *  infrastructure for ALERT's own (unaffected) decompile path.
  *
  *  `excludeKeys` names sibling keys on `ev` that are NEVER a real
  *  channel param when reading the FLAT-SPREAD shape (ALERT's own
  *  `enabled`/`message`, both validated separately by that caller, see
- *  below); `paramsKey`, when set, means `ev`'s own params live NESTED
- *  under that key instead (notify's shape) — mutually exclusive in
- *  practice (ALERT never sets `paramsKey`, notify never sets
- *  `excludeKeys`).
+ *  below); `paramsKey`, when set, would mean `ev`'s own params live
+ *  NESTED under that key instead — dead in practice now (see above), but
+ *  harmless to leave.
  *
  *  Returns `{ error }`, or `{ ref: true, text }` for a Token reference,
  *  or `{ entry, argParts }` for a real channel — `argParts` is the
@@ -7833,39 +7803,15 @@ function _decompileGenericAction(params, entry) {
  *  `decompileEvents`. `place_order` renders via the `order` CLI alias
  *  (never the literal `place_order` name — the opposite-direction
  *  mapping from how the compiler resolves `order`→`place_order`). */
-/** Render an action's `notify[]` sibling array (see `_compileNotifyClause`)
- *  back to `notify=[...]`'s bracket-content text (WITHOUT the leading
- *  `notify=` — the caller splices that into the action call's own
- *  argument list, see `_appendNotifyArgText`) — shares
- *  `_resolveChannelEntryForDecompile` with `decompileEvents`, so a
- *  channel's own params render identically in both places. `notify` is
- *  required non-empty here (the compiler never emits an empty array —
- *  see `_compileNotifyClause`); the caller checks presence first. */
-function _renderNotifyListText(notify, catalog) {
-  if (!Array.isArray(notify) || notify.length === 0) {
-    return { text: null, errors: [_err(`'notify' must be a non-empty array when present, got ${JSON.stringify(notify)}`)] };
-  }
-  const errors = [];
-  const parts = [];
-  for (const ev of notify) {
-    const r = _resolveChannelEntryForDecompile(ev, catalog, { paramsKey: 'params' });
-    if (r.error) { errors.push(_err(r.error)); continue; }
-    if (r.ref) { parts.push(r.text); continue; }
-    parts.push(r.argParts.length === 0 ? r.entry.token : `${r.entry.token}(${r.argParts.join(', ')})`);
-  }
-  if (errors.length) return { text: null, errors };
-  return { text: `[${parts.join(', ')}]`, errors: [] };
-}
-
-/** Splice a rendered `notify=[...]` arg into an already-rendered action
- *  call's text — `text` is either a bare token (zero other params, e.g.
- *  `deactivate_agent`) or a `token(...)` call; either shape gets
- *  `notify=` appended as one more argument, no other change. */
-function _appendNotifyArgText(text, notifyArgText) {
-  if (notifyArgText == null) return text;
-  const arg = `notify=${notifyArgText}`;
-  return text.endsWith(')') ? `${text.slice(0, -1)}, ${arg})` : `${text}(${arg})`;
-}
+// `_renderNotifyListText`/`_appendNotifyArgText` removed 2026-11
+// (channel-naming removal) — they rendered a stored action's `notify[]`
+// sibling array back to `notify=[...]` CLI text. `decompileActions`
+// below now treats a stored `notify` key as a hard decompile error
+// instead — that text could never recompile anyway (see
+// `_compileCatalogActionCall`'s rejection), so rendering it would be a
+// silently-broken round-trip, not a working one. `_resolveChannelEntryForDecompile`
+// stays — `decompileEvents` (ALERT's own channel-call-list decompile,
+// unaffected by this removal) still uses it.
 
 /** Decompile a stored `{"type":"render", "render":"<name>", ...}` action
  *  entry (Wave 2, grammar-unification) back to `render(render=..., gate=
@@ -7952,18 +7898,17 @@ export function decompileActions(actions, catalog, opts = {}) {
       || (lookupName === 'order' ? catalog.actions.get('place_order') : null);
     if (!entry) { errors.push(_err(`unknown action '${act.type}' referenced in stored actions`)); continue; }
 
-    // Part B (2026-10) — `notify=[...]` is a SIBLING key on the action
-    // dict (never inside `params`, see `_compileNotifyClause`'s own
-    // header comment); rendered once here (regardless of which branch
-    // below renders the action's own call text) and spliced in via
-    // `_appendNotifyArgText`. Absent/`undefined` is the overwhelmingly
-    // common case — zero behavior change for every action that doesn't
-    // use this.
-    let notifyArgText = null;
+    // Channel-naming removal (2026-11) — `notify=[...]` used to be a
+    // SIBLING key on the action dict (never inside `params`), rendered
+    // back to `notify=[...]` CLI text. It is now a hard decompile error,
+    // matching `_compileCatalogActionCall`'s own rejection — that text
+    // could never recompile anyway, so rendering it would be a
+    // silently-broken round-trip, not a working one. Absent/`undefined`
+    // is the overwhelmingly common case — zero behavior change for every
+    // action that doesn't carry this.
     if (act.notify !== undefined) {
-      const nr = _renderNotifyListText(act.notify, catalog);
-      if (nr.errors.length) { errors.push(...nr.errors); continue; }
-      notifyArgText = nr.text;
+      errors.push(_err(`action '${act.type}': notify=... channel selection has been removed — this agent's stored notify list can no longer be edited via CLI; remove it from the row directly`));
+      continue;
     }
 
     // Sprint [order-unify] — a stored action's `type` may be EITHER the
@@ -7973,14 +7918,14 @@ export function decompileActions(actions, catalog, opts = {}) {
     if (lookupName === 'order' || lookupName === 'place_order') {
       const r = _decompileOrderAction(act.params, entry, opts);
       if (r.error) { errors.push(_err(r.error)); continue; }
-      parts.push(_appendNotifyArgText(r.text, notifyArgText));
+      parts.push(r.text);
       continue;
     }
     // Sprint [GIVEN-expr] — render the `debug(x)` sugar form when the
     // message is the new, genuinely-live `{"$given": name}` marker (an
     // operator-expression GIVEN binding) — byte-for-byte round-trip,
     // same as the pre-existing `$row` case directly below.
-    if (lookupName === 'log' && act.params && act.params.level === 'debug' && _isGivenRefMarker(act.params.message) && notifyArgText == null) {
+    if (lookupName === 'log' && act.params && act.params.level === 'debug' && _isGivenRefMarker(act.params.message)) {
       parts.push(`debug(${act.params.message['$given']})`);
       continue;
     }
@@ -7996,11 +7941,8 @@ export function decompileActions(actions, catalog, opts = {}) {
     // might have typed directly without ever using the `debug(...)`
     // sugar — there is no way to tell the two apart from stored JSON
     // alone, and there doesn't need to be: both are equally valid, and
-    // re-saving either one is a no-op round trip. Skipped entirely when
-    // `notify` is present — `debug(x)`'s own grammar takes exactly one
-    // bare argument, with no room for a second `notify=` kwarg — falling
-    // through to the generic rendering below instead, which supports it.
-    if (lookupName === 'log' && act.params && act.params.level === 'debug' && _isRowRefMarker(act.params.message) && notifyArgText == null) {
+    // re-saving either one is a no-op round trip.
+    if (lookupName === 'log' && act.params && act.params.level === 'debug' && _isRowRefMarker(act.params.message)) {
       parts.push(`debug(${act.params.message['$row']})`);
       continue;
     }
@@ -8012,13 +7954,13 @@ export function decompileActions(actions, catalog, opts = {}) {
     // rejects on recompile (its bare-arg sugar requires an unquoted bare
     // word) — the exact same mismatch `debug(x)`'s own dedicated branches
     // above exist to avoid. Mirrors `_compileHelpCall`'s shape exactly.
-    if (lookupName === 'help' && act.params && typeof act.params.name === 'string' && notifyArgText == null) {
+    if (lookupName === 'help' && act.params && typeof act.params.name === 'string') {
       parts.push(`help(${act.params.name})`);
       continue;
     }
     const r = _decompileGenericAction(act.params, entry);
     if (r.error) { errors.push(_err(r.error)); continue; }
-    parts.push(_appendNotifyArgText(r.text, notifyArgText));
+    parts.push(r.text);
   }
   if (errors.length) return { text: null, errors };
   return { text: parts.join(', '), errors: [], parts };
@@ -8320,10 +8262,13 @@ function _renderObjectLiteral(obj) {
  *  support added 2026-10-12, operator: "build it now"). The reverse of
  *  `compileTokenStmt`. Dispatches on which field is actually populated:
  *
- *  NOTIFY-kind — non-empty `events`, `conditions` empty/`{}` — decompiles
- *  to `token(kind=notify) <channels> #name=...`. Reuses `decompileEvents`
- *  UNCHANGED (a Token's notify body is the exact same `{channel,
- *  enabled}` list shape ALERT's own clause already uses).
+ *  NOTIFY-kind — non-empty `events`, `conditions` empty/`{}` — REMOVED
+ *  2026-11 (channel-naming removal): `compileTokenStmt` no longer
+ *  accepts `kind=notify`, so a stored Token row still carrying this shape
+ *  (from before the removal) is now a hard decompile error, reported
+ *  directly rather than via the generic recompile-safety-net fallback
+ *  below. `alert(...)`'s own channel-call-list clause (and
+ *  `decompileEvents`, which it still uses) is unaffected.
  *
  *  CONDITION-kind — non-empty `conditions` — decompiles to
  *  `token(kind=condition) <expr> #name=...`. Reuses `decompileCondition`
@@ -8352,10 +8297,13 @@ export function decompileToken({ conditions, events, name, description }, catalo
     if (condResult.text == null) return { text: null, errors };
     headAndBodyText = `token(kind=condition) ${condResult.text}`;
   } else {
-    const eventsResult = decompileEvents(events, catalog);
-    errors.push(...eventsResult.errors);
-    if (eventsResult.text == null) return { text: null, errors };
-    headAndBodyText = `token(kind=notify) ${eventsResult.text}`;
+    // Channel-naming removal (2026-11) — `kind=notify` can no longer be
+    // authored/edited via CLI (see `compileTokenStmt`'s own rejection);
+    // a stored row still carrying this shape is reported directly rather
+    // than left to fail the recompile safety-net below with a vague
+    // "internal" error.
+    errors.push(_err('token: kind=notify has been removed — this Token\'s channel-list body can no longer be edited via CLI; remove it from the row directly'));
+    return { text: null, errors };
   }
 
   const metaResult = decompileMetaClause({ name, description });
@@ -8526,15 +8474,15 @@ const _ACTION_NAME_ALIAS = Object.freeze({ order: 'place_order', place_order: 'p
 function _syntheticEntryFor(name, catalog) {
   const lower = String(name).toLowerCase();
   if (lower === 'token') {
-    // `kind=condition` parses but is a guaranteed compile error today
-    // (compileTokenStmt) — restrict the SUGGESTED enum to the one value
-    // that actually compiles, rather than suggesting a value that's
-    // certain to fail once picked (per the advisor review for this
-    // sprint). `kind=` itself is still a free-typed enum field as far as
-    // the grammar/lexer is concerned — only the autocomplete candidate
-    // list is narrowed.
-    const schema = { kind: { type: 'enum', enum: ['notify'] } };
-    return { token: 'token', paramsSchema: schema, paramKeys: Object.keys(schema), description: 'Saved, reusable notify channel-list preset — requires #name=.', mutuallyExclusiveGroups: null };
+    // `kind=notify` parses but is now a guaranteed compile error
+    // (channel-naming removal, 2026-11 — see `compileTokenStmt`'s own
+    // rejection) — restrict the SUGGESTED enum to the one value that
+    // actually compiles, rather than suggesting a value that's certain
+    // to fail once picked. `kind=` itself is still a free-typed enum
+    // field as far as the grammar/lexer is concerned — only the
+    // autocomplete candidate list is narrowed.
+    const schema = { kind: { type: 'enum', enum: ['condition'] } };
+    return { token: 'token', paramsSchema: schema, paramKeys: Object.keys(schema), description: 'Saved, reusable condition preset — requires #name=.', mutuallyExclusiveGroups: null };
   }
   if (lower === 'order' || lower === 'place_order') {
     // Sprint [order-unify] — tolerant lookup (suggestion-only; see

@@ -222,6 +222,14 @@ class TestDraftSweepTick:
         mock_sweep.assert_not_awaited()
 
     async def test_notifies_only_when_drafts_cleared(self):
+        """2026-11 alert-agent audit fix — this no longer calls
+        `alert_utils._send_telegram_info()` directly (that was a
+        parallel notification pipeline outside `event_agents.py`'s
+        control). It now logs ONE tagged record through the module's
+        own `logger`, carrying `alert_event='draft_sweep'` so the new
+        seeded `draft-sweep-alert` agent (event_agents.py) can pick it
+        up and dispatch it on the `telegram_info` channel — see
+        `alert_routing._PER_SLUG_OVERRIDES['draft-sweep-alert']`."""
         from backend.api.background import _ds_tick_draft_sweep
 
         now = datetime(2026, 10, 22, 8, 0, tzinfo=IST)
@@ -229,10 +237,23 @@ class TestDraftSweepTick:
         done_ref = [None]
         with _patch_no_holidays(), \
              patch("backend.api.background._sweep_stale_drafts", AsyncMock(return_value=3)), \
-             patch("backend.shared.helpers.alert_utils._send_telegram_info") as mock_tg:
+             patch("backend.shared.helpers.alert_utils._send_telegram_info") as mock_tg, \
+             patch("backend.api.background.logger") as mock_logger:
             await _ds_tick_draft_sweep(now, today, done_ref)
-        mock_tg.assert_called_once()
-        assert "3" in mock_tg.call_args[0][0]
+
+        # No direct-send bypass remains.
+        mock_tg.assert_not_called()
+
+        info_calls = [
+            c for c in mock_logger.info.call_args_list
+            if c.kwargs.get("extra", {}).get("alert_event") == "draft_sweep"
+        ]
+        assert len(info_calls) == 1
+        extra = info_calls[0].kwargs["extra"]
+        assert "alert" in extra["tags"]
+        assert extra["source_type"] == "process"
+        assert extra["source_name"] == "Draft sweep"
+        assert "3" in extra["body"]
 
     async def test_no_notify_when_nothing_swept(self):
         from backend.api.background import _ds_tick_draft_sweep
@@ -242,6 +263,12 @@ class TestDraftSweepTick:
         done_ref = [None]
         with _patch_no_holidays(), \
              patch("backend.api.background._sweep_stale_drafts", AsyncMock(return_value=0)), \
-             patch("backend.shared.helpers.alert_utils._send_telegram_info") as mock_tg:
+             patch("backend.shared.helpers.alert_utils._send_telegram_info") as mock_tg, \
+             patch("backend.api.background.logger") as mock_logger:
             await _ds_tick_draft_sweep(now, today, done_ref)
         mock_tg.assert_not_called()
+        info_calls = [
+            c for c in mock_logger.info.call_args_list
+            if c.kwargs.get("extra", {}).get("alert_event") == "draft_sweep"
+        ]
+        assert len(info_calls) == 0

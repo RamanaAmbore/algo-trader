@@ -1216,12 +1216,19 @@ describe('meta clause decompile round-trip', () => {
 //    path for a `kind='template'` Agent row holding a notify-kind Token
 //    body (non-empty `events`, empty `conditions`) — see template_registry
 //    .py's `_tr_fragment_to_agent_fields` for how that shape is stored. ──
-describe('Sprint C — decompileToken() round-trip (notify-kind Token)', () => {
+// `Sprint C — decompileToken() round-trip (notify-kind Token)` — the
+// two notify-kind happy-path cases this describe block used to pin were
+// removed 2026-11 (channel-naming removal) and replaced by the single
+// hard-decompile-error case below, matching the `bracket(...)` removal
+// precedent. `alert(...)`'s own channel-call-list clause (and
+// `decompileEvents`, which this file's condition-kind tests don't touch)
+// are a completely separate mechanism and are UNAFFECTED by this removal.
+describe('Sprint C — decompileToken() round-trip', () => {
   function decompileTok(tokenJson, opts = {}) {
     return decompileToken(tokenJson, CATALOG, { lotSizeOf, ...opts });
   }
 
-  it('single-channel Token decompiles and round-trips', () => {
+  it('a stored notify-kind Token (non-empty events, no conditions) is a hard decompile error', () => {
     const tokenJson = {
       conditions: {},
       events: [{ channel: 'telegram', enabled: true }],
@@ -1229,28 +1236,8 @@ describe('Sprint C — decompileToken() round-trip (notify-kind Token)', () => {
       description: 'Critical ops trio',
     };
     const dec = decompileTok(tokenJson);
-    expect(dec.errors).toEqual([]);
-    expect(dec.text).toMatch(/^token\(kind=notify\) telegram #name=notify-critical-trio #desc="Critical ops trio"$/);
-    const recompiled = compile(dec.text);
-    expect(recompiled.ok).toBe(true);
-    expect(recompiled.kind).toBe('token');
-    expect(recompiled.fragment).toEqual({ kind: 'notify', name: 'notify-critical-trio', body: tokenJson.events, description: 'Critical ops trio' });
-  });
-
-  it('multi-channel Token with params round-trips', () => {
-    const tokenJson = {
-      conditions: null,
-      events: [
-        { channel: 'telegram', enabled: true },
-        { channel: 'ntfy', enabled: true, priority: 'urgent' },
-      ],
-      name: 'notify-urgent-pair',
-    };
-    const dec = decompileTok(tokenJson);
-    expect(dec.errors).toEqual([]);
-    const recompiled = compile(dec.text);
-    expect(recompiled.ok).toBe(true);
-    expect(recompiled.fragment.body).toEqual(tokenJson.events);
+    expect(dec.text).toBeNull();
+    expect(dec.errors.some(e => /kind=notify has been removed/.test(e.message))).toBe(true);
   });
 
   it('decompiles a condition-kind Token to token(kind=condition) <expr> #name=... and round-trips (2026-10-12)', () => {
@@ -1293,7 +1280,10 @@ describe('Sprint C — decompileToken() round-trip (notify-kind Token)', () => {
   });
 
   it('refuses loud on a missing name', () => {
-    const dec = decompileTok({ conditions: {}, events: [{ channel: 'log', enabled: true }] });
+    // notify-kind is itself removed now (see above) — use a condition-kind
+    // fixture so this test still exercises the real "missing name" check,
+    // not the removal message.
+    const dec = decompileTok({ conditions: { metric: 'pnl', scope: 'positions.total', op: '<=', value: -1 }, events: [] });
     expect(dec.text).toBeNull();
     expect(dec.errors.some(e => /missing required 'name'/.test(e.message))).toBe(true);
   });
@@ -1716,17 +1706,24 @@ describe('Sprint [order-unify] — order/place_order decompile tolerance', () =>
 // per-channel rendering `decompileEvents` already uses for ALERT.
 // ═══════════════════════════════════════════════════════════════════════
 
-describe('Part B — notify=[...] decompile support', () => {
-  it('a single-channel notify[] sibling key decompiles to notify=[telegram] as part of the action call', () => {
+// `Part B — notify=[...] decompile support` describe block removed
+// 2026-11 (channel-naming removal) — replaced by this one, which pins
+// the new, opposite behaviour: a stored action's `notify[]` sibling key
+// is now a hard decompile error, matching the `bracket(...)` removal
+// precedent. `alert(...)`'s own channel-call-list clause (and
+// `decompileEvents`, which it still uses) is a completely separate
+// mechanism and is UNAFFECTED by this removal.
+describe('a stored action notify[] sibling key is a hard decompile error (channel-naming removal)', () => {
+  it('a single-channel notify[] sibling key is rejected with the removal message', () => {
     const r = decompileActions(
       [{ type: 'close_position', params: { account: 'ZG0790', symbol: 'NIFTY25JULFUT' }, notify: [{ channel: 'telegram' }] }],
       CATALOG,
     );
-    expect(r.errors).toEqual([]);
-    expect(r.text).toBe('close_position(account="ZG0790", symbol="NIFTY25JULFUT", notify=[telegram])');
+    expect(r.text).toBeNull();
+    expect(r.errors.some(e => /notify=\.\.\. channel selection has been removed/.test(e.message))).toBe(true);
   });
 
-  it('a multi-channel notify[] with one channel\'s own param (ntfy.priority) decompiles identically to how ALERT renders the same channel', () => {
+  it('a multi-channel notify[] with one channel\'s own param (ntfy.priority) is likewise rejected', () => {
     const r = decompileActions(
       [{
         type: 'close_position',
@@ -1735,8 +1732,8 @@ describe('Part B — notify=[...] decompile support', () => {
       }],
       CATALOG,
     );
-    expect(r.errors).toEqual([]);
-    expect(r.text).toBe('close_position(account="ZG0790", symbol="NIFTY25JULFUT", notify=[telegram, ntfy(priority=urgent)])');
+    expect(r.text).toBeNull();
+    expect(r.errors.some(e => /notify=\.\.\. channel selection has been removed/.test(e.message))).toBe(true);
   });
 
   it('an action with no `notify` key at all decompiles with no notify= text — zero behavior change', () => {
@@ -1748,26 +1745,12 @@ describe('Part B — notify=[...] decompile support', () => {
     expect(r.text).toBe('close_position(account="ZG0790", symbol="NIFTY25JULFUT")');
   });
 
-  it('a zero-other-param action (deactivate_agent) with notify= still renders correctly (bare token + wrapped parens)', () => {
+  it('a zero-other-param action (deactivate_agent) with notify= is also rejected', () => {
     const r = decompileActions(
       [{ type: 'deactivate_agent', params: {}, notify: [{ channel: 'telegram' }] }],
       CATALOG,
     );
-    expect(r.errors).toEqual([]);
-    expect(r.text).toBe('deactivate_agent(notify=[telegram])');
-  });
-
-  it('full agent round-trip: compile -> decompile -> recompile with notify=[...] yields byte-identical JSON', () => {
-    roundTrip(
-      'WHEN pnl@positions.expiring_today > 0 '
-      + 'DO close_position(account="ZG0790", symbol="NIFTY25JULFUT", notify=[telegram, ntfy(priority="urgent")])'
-    );
-  });
-
-  it('order(...)\'s own notify=[...] round-trips alongside lots= conversion', () => {
-    roundTrip(
-      'WHEN pnl@positions.expiring_today > 0 '
-      + 'DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, notify=[telegram])'
-    );
+    expect(r.text).toBeNull();
+    expect(r.errors.some(e => /notify=\.\.\. channel selection has been removed/.test(e.message))).toBe(true);
   });
 });

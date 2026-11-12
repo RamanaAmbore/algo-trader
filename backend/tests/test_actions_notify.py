@@ -1,36 +1,33 @@
 """
-Part B (2026-10-12) — `notify=[...]` on action tokens.
-2026-11-03 — converted from direct per-channel sends to a single
-log+event-agent record (alert-agent audit Wave 2; see
-`actions.py:_al_maybe_notify_action`'s own module-header comment for
-the full chain).
+2026-11 channel-authoring retirement — the `notify=[...]` action-call
+parameter (Part B, 2026-10-12) is removed with NO replacement.
 
-An action of any kind may declare its own `notify` SIBLING key (never
-inside `params`):
-  {"type": "place_order", "params": {...},
-   "notify": [{"channel": "telegram"},
-              {"channel": "ntfy", "params": {"priority": "urgent"}}]}
+This file used to cover Part B's full safety-invariant suite (mode
+gating, masking, success-only firing, per-tick throttle, notify-send
+failure isolation, and an end-to-end real-log-handler round trip). All
+of that coverage is gone along with the mechanism itself:
+`actions.py:_al_maybe_notify_action`/`_al_notify_channels_for_log`/
+`_al_notify_build_message`/`_al_notify_throttle_check`/
+`_MAX_NOTIFY_PER_AGENT_PER_TICK`, and
+`event_agents.py:_render_action_notify`, no longer exist.
 
-Covers the mandatory safety invariants from the plan file's "Part B,
-revised and approved" section — all preserved unchanged by the
-2026-11-03 conversion:
-  1. Mode-gating — only `mode == "live"` ever writes a log record;
-     sim/paper/replay/shadow never do.
-  2. Masking — an account identifier in an action param never reaches
-     the logged message text unmasked.
-  3. Success-only firing — a failed action never fires notify (no
-     double-report alongside the existing failure-alert path).
-  4. Throttle — the 11th notify-triggering action for the same agent in
-     one `execute()` call is skipped; the first 10 write a record.
-  5. `_action_place_order`'s real-outcome capture (Part B.1,
-     actions_live.py) — `context["_action_result_detail"]` reflects the
-     real `ChaseResult.status`/`.detail` after `chase_order()` returns.
-  6. Notify-record exceptions are caught/logged, never propagate out of
-     `execute()`'s loop, and never mark the action as failed.
-  7. NEW — the logged record carries `alert_event="action_notify"`,
-     the resolved `channels` list (telegram/ntfy/email entries with
-     their own `params` flattened in), and the real firing agent's
-     `agent_id`/`agent_name`.
+What this file covers now:
+  1. The retired symbols are genuinely gone from `actions.py` and
+     `event_agents.py` — not just unused, but removed.
+  2. `execute()`'s per-action loop no longer calls anything notify-
+     shaped after a successful dispatch — a `notify` sibling key on an
+     action is now simply inert data, never read.
+  3. `routes/agents.py:_age_validate_action_entries` rejects any
+     `actions` entry carrying a `notify` key, so a stale or
+     operator-authored one can never round-trip through a save.
+  4. `ACTION_NOTIFY_AGENT`/`action-notify-alert` is retired from
+     `SEEDED_AGENTS` (deactivated on next startup, never deleted).
+  5. `_action_place_order`'s real-outcome capture
+     (`context["_action_result_detail"]`, actions_live.py) — this is
+     NOT part of the notify mechanism (it reflects the real
+     `ChaseResult.status`/`.detail` after `chase_order()` returns,
+     independent of whatever consumed it before), so this coverage is
+     preserved unchanged from the original Part B test file.
 """
 
 import pytest
@@ -46,209 +43,155 @@ def _make_agent(slug: str = "test-agent", id_: int = 1):
 
 
 # ---------------------------------------------------------------------------
-# 1. Mode-gating — live-only, no default
+# 1. The retired symbols are genuinely gone
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["sim", "paper", "replay", "shadow"])
-async def test_notify_never_logs_in_non_live_modes(mode):
-    from backend.api.algo.actions import _al_maybe_notify_action
+def test_notify_action_symbols_removed_from_actions_module():
+    import backend.api.algo.actions as actions_mod
 
-    agent = _make_agent()
-    action = {
-        "type": "place_order",
-        "params": {"account": "ZG0790", "symbol": "NIFTY25JULFUT", "side": "BUY", "qty": 2},
-        "notify": [{"channel": "telegram"}],
-    }
-    context: dict = {}
-
-    with patch("backend.shared.helpers.alert_utils._DISPATCH_LOGGER") as mock_logger:
-        await _al_maybe_notify_action(
-            agent, action, "place_order", action["params"], mode, context,
+    for name in (
+        "_al_maybe_notify_action", "_al_notify_channels_for_log",
+        "_al_notify_build_message", "_al_notify_throttle_check",
+        "_MAX_NOTIFY_PER_AGENT_PER_TICK",
+    ):
+        assert not hasattr(actions_mod, name), (
+            f"{name} must be removed — the notify=[...] action param "
+            f"has no replacement"
         )
 
-    mock_logger.info.assert_not_called()
+
+def test_notify_renderer_removed_from_event_agents_module():
+    import backend.api.algo.event_agents as ea
+
+    assert not hasattr(ea, "_render_action_notify")
+    assert "action_notify" not in ea.RENDERS
 
 
-@pytest.mark.asyncio
-async def test_notify_logs_one_record_in_live_mode():
-    from backend.api.algo.actions import _al_maybe_notify_action
+def test_execute_source_no_longer_references_notify_wiring():
+    """Structural guard — `execute()`'s own source must not call anything
+    notify-shaped. Reading the source (not just behavior) catches a
+    future re-introduction under a different name/call-site that a
+    behavioral test alone might miss."""
+    import inspect
+    from backend.api.algo import actions as actions_mod
 
-    agent = _make_agent()
-    action = {
-        "type": "place_order",
-        "params": {"account": "ZG0790", "symbol": "NIFTY25JULFUT", "side": "BUY", "qty": 2},
-        "notify": [{"channel": "telegram"}, {"channel": "ntfy", "params": {"priority": "urgent"}}],
-    }
-    context: dict = {}
-
-    with patch("backend.shared.helpers.alert_utils._DISPATCH_LOGGER") as mock_logger:
-        await _al_maybe_notify_action(
-            agent, action, "place_order", action["params"], "live", context,
-        )
-
-    mock_logger.info.assert_called_once()
-    extra = mock_logger.info.call_args.kwargs["extra"]
-    assert extra["alert_event"] == "action_notify"
-    assert extra["agent_id"] == agent.id
-    assert extra["agent_name"] == agent.name
-    channels = {c["channel"]: c for c in extra["channels"]}
-    assert channels["telegram"]["enabled"] is True
-    assert channels["ntfy"]["enabled"] is True
-    assert channels["ntfy"]["priority"] == "urgent"
-
-
-@pytest.mark.asyncio
-async def test_notify_noop_when_no_notify_key():
-    """Zero overhead when action.get('notify') is absent — the ~100% case
-    for existing agents."""
-    from backend.api.algo.actions import _al_maybe_notify_action
-
-    agent = _make_agent()
-    action = {"type": "place_order", "params": {"account": "ZG0790"}}
-    context: dict = {}
-
-    with patch("backend.shared.helpers.alert_utils._DISPATCH_LOGGER") as mock_logger:
-        await _al_maybe_notify_action(
-            agent, action, "place_order", action["params"], "live", context,
-        )
-
-    mock_logger.info.assert_not_called()
+    src = inspect.getsource(actions_mod.execute)
+    assert "notify" not in src.lower()
 
 
 # ---------------------------------------------------------------------------
-# 2. Masking
+# 2. A `notify` sibling key on an action is now inert — never read
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_notify_masks_account_identifier_in_logged_message():
-    from backend.api.algo.actions import _al_maybe_notify_action
-    from backend.shared.helpers.utils import mask_account_in_text
-
-    agent = _make_agent()
-    action = {
-        "type": "place_order",
-        "params": {"account": "ZG0790", "symbol": "NIFTY25JULFUT", "side": "SELL", "qty": 1},
-        "notify": [{"channel": "telegram"}],
-    }
-    context: dict = {}
-
-    with patch("backend.shared.helpers.alert_utils._DISPATCH_LOGGER") as mock_logger:
-        await _al_maybe_notify_action(
-            agent, action, "place_order", action["params"], "live", context,
-        )
-
-    mock_logger.info.assert_called_once()
-    body = mock_logger.info.call_args.kwargs["extra"]["body"]
-    assert "ZG0790" not in body
-    assert body == mask_account_in_text(body)
-
-
-# ---------------------------------------------------------------------------
-# 3. Success-only firing — wired via execute()'s loop
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_execute_failed_action_never_fires_notify():
-    """A failed action (handler raises) must route to
-    `_al_action_failed_audit` and must NEVER reach `_al_maybe_notify_
-    action` — no double-report alongside the existing failure-alert
-    path."""
+async def test_execute_ignores_a_stale_notify_key_on_a_successful_action():
+    """An action dict carrying a leftover `notify` key (e.g. a row the
+    DB migration hasn't normalized yet, or a hand-built test fixture)
+    must not cause `execute()` to raise or to do anything special with
+    it — the key is simply never read any more."""
     from backend.api.algo.actions import execute
 
     agent = _make_agent()
     actions = [
         {
             "type": "place_order",
-            "params": {"account": "ZG0790", "symbol": "NIFTY25JULFUT", "side": "SELL", "qty": 1},
-            "notify": [{"channel": "telegram"}],
-        },
-    ]
-    context: dict = {}
-
-    mock_dispatch = AsyncMock(side_effect=RuntimeError("broker rejected"))
-    mock_audit = AsyncMock()
-    mock_notify = AsyncMock()
-
-    with patch("backend.api.algo.actions._resolve_mode", return_value="live"), \
-         patch("backend.api.algo.actions._exchange_gate_passes", return_value=(True, "")), \
-         patch("backend.api.algo.actions._al_dispatch_by_mode", new=mock_dispatch), \
-         patch("backend.api.algo.actions._al_action_failed_audit", new=mock_audit), \
-         patch("backend.api.algo.actions._al_maybe_notify_action", new=mock_notify), \
-         patch("backend.api.algo.actions._log_action_success", new=AsyncMock()):
-        await execute(agent, actions, context)
-
-    mock_audit.assert_called_once()
-    mock_notify.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_execute_successful_action_fires_notify_after_success_log():
-    """A successful action (ok=True) reaches `_al_maybe_notify_action`
-    exactly once, and never `_al_action_failed_audit`."""
-    from backend.api.algo.actions import execute
-
-    agent = _make_agent()
-    actions = [
-        {
-            "type": "place_order",
-            "params": {"account": "ZG0790", "symbol": "NIFTY25JULFUT", "side": "SELL", "qty": 1},
+            "params": {"account": "ZG0790", "symbol": "NIFTY25JULFUT",
+                       "side": "SELL", "qty": 1},
             "notify": [{"channel": "telegram"}],
         },
     ]
     context: dict = {}
 
     mock_dispatch = AsyncMock(return_value=True)
-    mock_audit = AsyncMock()
-    mock_notify = AsyncMock()
 
     with patch("backend.api.algo.actions._resolve_mode", return_value="live"), \
          patch("backend.api.algo.actions._exchange_gate_passes", return_value=(True, "")), \
          patch("backend.api.algo.actions._al_dispatch_by_mode", new=mock_dispatch), \
-         patch("backend.api.algo.actions._al_action_failed_audit", new=mock_audit), \
-         patch("backend.api.algo.actions._al_maybe_notify_action", new=mock_notify), \
-         patch("backend.api.algo.actions._log_action_success", new=AsyncMock()):
-        await execute(agent, actions, context)
-
-    mock_notify.assert_called_once()
-    mock_audit.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# 4. Throttle — cap at _MAX_NOTIFY_PER_AGENT_PER_TICK (10) per agent per tick
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_notify_throttle_caps_at_ten_per_agent_per_tick():
-    from backend.api.algo.actions import execute, _MAX_NOTIFY_PER_AGENT_PER_TICK
-
-    assert _MAX_NOTIFY_PER_AGENT_PER_TICK == 10
-
-    agent = _make_agent()
-    actions = [
-        {
-            "type": "place_order",
-            "params": {"account": "ZG0790", "symbol": "NIFTY25JULFUT", "side": "SELL", "qty": 1},
-            "notify": [{"channel": "telegram"}],
-        }
-        for _ in range(11)
-    ]
-    context: dict = {}
-
-    with patch("backend.api.algo.actions._resolve_mode", return_value="live"), \
-         patch("backend.api.algo.actions._exchange_gate_passes", return_value=(True, "")), \
-         patch("backend.api.algo.actions._al_dispatch_by_mode", new=AsyncMock(return_value=True)), \
          patch("backend.api.algo.actions._log_action_success", new=AsyncMock()), \
          patch("backend.shared.helpers.alert_utils._DISPATCH_LOGGER") as mock_logger:
         await execute(agent, actions, context)
 
-    assert mock_logger.info.call_count == 10, (
-        f"expected exactly 10 log records (11th throttled), got {mock_logger.info.call_count}"
-    )
+    mock_dispatch.assert_called_once()
+    mock_logger.info.assert_not_called()
+    mock_logger.warning.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
-# 5. _action_place_order's real-outcome capture (Part B.1)
+# 3. `_age_validate_action_entries` rejects a `notify` key
+# ---------------------------------------------------------------------------
+
+def test_age_validate_action_entries_rejects_notify_key():
+    from backend.api.routes.agents import _age_validate_action_entries
+    from litestar.exceptions import HTTPException
+
+    actions = [
+        {"type": "place_order", "params": {"account": "ZG0790"},
+         "notify": [{"channel": "telegram"}]},
+    ]
+    with pytest.raises(HTTPException) as exc_info:
+        _age_validate_action_entries(actions)
+    assert "notify" in str(exc_info.value.detail).lower()
+
+
+def test_age_validate_action_entries_accepts_actions_with_no_notify_key():
+    from backend.api.routes.agents import _age_validate_action_entries
+
+    # Must not raise — a real, fully-specified action with no `notify`
+    # key sails through unchanged.
+    _age_validate_action_entries([
+        {"type": "place_order", "params": {
+            "account": "ZG0790", "symbol": "NIFTY25JULFUT",
+            "side": "BUY", "qty": 1,
+        }},
+    ])
+
+
+# ---------------------------------------------------------------------------
+# 4. ACTION_NOTIFY_AGENT is retired, not deleted
+# ---------------------------------------------------------------------------
+
+def test_action_notify_agent_retired_from_seeded_agents():
+    from backend.api.algo import event_agents as ea
+
+    assert ea.ACTION_NOTIFY_AGENT not in ea.SEEDED_AGENTS
+    assert ea.ACTION_NOTIFY_AGENT["slug"] not in {s["slug"] for s in ea.SEEDED_AGENTS}
+    assert ea.ACTION_NOTIFY_AGENT["slug"] in ea._RETIRED_SLUGS
+
+
+@pytest.mark.asyncio
+async def test_retire_collapsed_event_agents_deactivates_action_notify_row():
+    """`_retire_collapsed_event_agents()` deactivates an already-seeded
+    `action-notify-alert` row the exact same way it deactivates the 16
+    collapsed detectors — reuses that function's existing query, which
+    now also matches this slug via the unioned `_RETIRED_SLUGS`."""
+    from types import SimpleNamespace
+    from backend.api.algo import event_agents as ea
+
+    row = SimpleNamespace(slug="action-notify-alert", status="active")
+
+    class _FakeScalars:
+        def __init__(self, rows):
+            self._rows = rows
+        def all(self):
+            return self._rows
+
+    class _FakeResult:
+        def __init__(self, rows):
+            self._rows = rows
+        def scalars(self):
+            return _FakeScalars(self._rows)
+
+    class _FakeSession:
+        async def execute(self, *a, **k):
+            return _FakeResult([row])
+
+    await ea._retire_collapsed_event_agents(_FakeSession())
+    assert row.status == "inactive"
+
+
+# ---------------------------------------------------------------------------
+# 5. _action_place_order's real-outcome capture — unrelated to notify,
+#    preserved unchanged from the original Part B test file.
 # ---------------------------------------------------------------------------
 
 def _make_conns_stub(account: str) -> MagicMock:
@@ -280,7 +223,7 @@ def _make_broker_stub(*, ltp_value: float = 23500.0) -> MagicMock:
 async def test_action_place_order_captures_real_chase_outcome(status_name, detail_text):
     """mock chase_order returning a terminal non-FILLED ChaseResult —
     context['_action_result_detail'] must reflect that real status/detail
-    after _action_place_order returns, independent of the notify wrapper."""
+    after _action_place_order returns."""
     from backend.api.algo.actions import _action_place_order
     from backend.api.algo.chase import ChaseResult, ChaseStatus
 
@@ -314,120 +257,3 @@ async def test_action_place_order_captures_real_chase_outcome(status_name, detai
         "status": status_name.lower(),
         "detail": detail_text,
     }
-
-
-# ---------------------------------------------------------------------------
-# 6. Notify-send failure isolation
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_notify_log_record_exception_is_caught_and_logged_not_propagated():
-    """A log-record failure (simulated — the logger itself raising) must
-    be caught inside _al_maybe_notify_action and never propagate."""
-    from backend.api.algo.actions import _al_maybe_notify_action
-
-    agent = _make_agent()
-    action = {
-        "type": "place_order",
-        "params": {"account": "ZG0790", "symbol": "NIFTY25JULFUT", "side": "SELL", "qty": 1},
-        "notify": [{"channel": "telegram"}],
-    }
-    context: dict = {}
-
-    mock_logger = MagicMock()
-    mock_logger.info.side_effect = RuntimeError("logging subsystem blip")
-
-    with patch("backend.shared.helpers.alert_utils._DISPATCH_LOGGER", mock_logger):
-        # Must not raise.
-        await _al_maybe_notify_action(
-            agent, action, "place_order", action["params"], "live", context,
-        )
-
-
-@pytest.mark.asyncio
-async def test_execute_notify_log_record_exception_never_marks_action_failed():
-    """A notify log-record failure inside execute()'s loop must never
-    route to `_al_action_failed_audit` — it's caught at the wiring call
-    site too."""
-    from backend.api.algo.actions import execute
-
-    agent = _make_agent()
-    actions = [
-        {
-            "type": "place_order",
-            "params": {"account": "ZG0790", "symbol": "NIFTY25JULFUT", "side": "SELL", "qty": 1},
-            "notify": [{"channel": "telegram"}],
-        },
-    ]
-    context: dict = {}
-
-    mock_audit = AsyncMock()
-    mock_logger = MagicMock()
-    mock_logger.info.side_effect = RuntimeError("logging subsystem blip")
-
-    with patch("backend.api.algo.actions._resolve_mode", return_value="live"), \
-         patch("backend.api.algo.actions._exchange_gate_passes", return_value=(True, "")), \
-         patch("backend.api.algo.actions._al_dispatch_by_mode", new=AsyncMock(return_value=True)), \
-         patch("backend.api.algo.actions._al_action_failed_audit", new=mock_audit), \
-         patch("backend.api.algo.actions._log_action_success", new=AsyncMock()), \
-         patch("backend.shared.helpers.alert_utils._DISPATCH_LOGGER", mock_logger):
-        # Must not raise out of execute()'s loop.
-        await execute(agent, actions, context)
-
-    mock_audit.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# 8. End-to-end: a real LogStoreHandler, not a mocked dispatch — same
-#    precedent as test_alert_header_identity_2026_11_03.py /
-#    test_log_store.py::test_order_failure_and_summary_records_reach_the_queue.
-#    Confirms the record genuinely survives the real logger pipeline
-#    (never dropped by `_SKIP_PREFIXES`) and is picked up by
-#    `_render_action_notify`.
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_notify_record_reaches_a_real_log_handler_and_renders():
-    import logging
-    from backend.shared.helpers import log_store
-    from backend.api.algo.actions import _al_maybe_notify_action
-    from backend.api.algo.event_agents import _render_action_notify
-
-    agent = _make_agent()
-    action = {
-        "type": "place_order",
-        "params": {"account": "ZG0790", "symbol": "NIFTY25JULFUT", "side": "BUY", "qty": 2},
-        "notify": [{"channel": "telegram"}, {"channel": "ntfy", "params": {"priority": "urgent"}}],
-    }
-    context: dict = {}
-
-    h = log_store.LogStoreHandler()
-    dispatch_logger = logging.getLogger("backend.api.algo.events")
-    dispatch_logger.addHandler(h)
-    dispatch_logger.setLevel(logging.INFO)
-    try:
-        await _al_maybe_notify_action(
-            agent, action, "place_order", action["params"], "live", context,
-        )
-    finally:
-        dispatch_logger.removeHandler(h)
-
-    rows = h.drain(10)
-    notify_rows = [r for r in rows if r["extra"].get("alert_event") == "action_notify"]
-    assert notify_rows, "action_notify record never reached the queue"
-    rec = notify_rows[0]
-    assert rec["extra"]["agent_id"] == agent.id
-    assert rec["extra"]["agent_name"] == agent.name
-
-    title, body, tg, email_payload, channels = _render_action_notify(rec)
-    # 2026-11-04 (operator alert-format audit): the bespoke
-    # "Agent [{agent_key}] action: ..." string is gone — the body now
-    # leads with the same `format_notification_header()` origin line
-    # every other renderer in the system uses ("Agent: {name} (#{id})"),
-    # followed by "action: {description}".
-    assert body.startswith(f"Agent: {agent.name} (#{agent.id})\n")
-    assert "action: " in body
-    assert "BUY 2 NIFTY25JULFUT" in body
-    assert email_payload is None
-    channel_names = {c["channel"] for c in channels}
-    assert {"telegram", "ntfy"} <= channel_names

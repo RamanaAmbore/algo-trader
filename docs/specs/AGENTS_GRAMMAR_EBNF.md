@@ -83,13 +83,16 @@ help_stmt      := help_call meta_item*         (* Exactly ONE help(<name>) call.
 cancel_all_orders_stmt := cancel_all_orders_call meta_item*
                                                 (* Exactly ONE cancel_all_orders(...) call. No
                                                    comma. Meta is a COMPILE-time error. *)
-token_stmt     := token_head (condition_body | call_list) meta_item*
+token_stmt     := token_head condition_body meta_item*
                                                 (* token(...) only. head := token(kind=condition)
                                                    names a condition fragment, and its body is one
-                                                   condition. head := token(kind=notify) is
-                                                   followed by a channel call_list with NO comma
-                                                   between head and body. kind=notify is the only
-                                                   action kind supported on the notify path.
+                                                   condition. head := token(kind=notify) still
+                                                   PARSES (body := call_list, no comma between head
+                                                   and body) but is a hard COMPILE-time error —
+                                                   channel-naming removal, 2026-11: a Token's own
+                                                   notify-kind channel-list body can no longer be
+                                                   authored/edited via CLI. kind=condition is the
+                                                   only kind that actually compiles.
                                                    #name= is required. #tag= and #group= are
                                                    rejected. *)
 token_head     := call                         (* call.name must be "token". *)

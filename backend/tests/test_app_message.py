@@ -259,99 +259,135 @@ class TestFireSyncEntry:
 
 
 # ============================================================================
-# Group 4: _route_sinks() — ntfy routing
+# Group 4: _route_sinks() — log-and-dispatch routing (2026-11 alert-agent
+# audit fix)
+#
+# `_route_sinks` used to call `send_ntfy_alert()` directly via
+# `asyncio.to_thread` — a second, parallel notification pipeline outside
+# `event_agents.py`'s control (see this module's own docstring on
+# `_route_sinks`). It now logs a single tagged record through the
+# module's `logger` instead, so a seeded event agent can pick it up and
+# route it through the normal dispatch pipeline. These tests assert
+# (a) no direct `send_ntfy_alert`/`asyncio.to_thread` call remains, and
+# (b) the expected log record — with `alert_event`/`tags` — is emitted
+# only when the pre-existing routing gate (error/critical level, or a
+# deploy/alert tag) is satisfied.
 # ============================================================================
 
 class TestRouteSinks:
-    """Test alert routing to ntfy.sh and other sinks."""
+    """Test alert routing via the log-then-dispatch pipeline."""
 
     @pytest.mark.asyncio
-    async def test_route_sinks_ntfy_on_error(self):
-        """_route_sinks routes error messages to ntfy."""
+    async def test_route_sinks_no_direct_ntfy_call_remains(self):
+        """`_route_sinks` must never call `send_ntfy_alert`/`asyncio.
+        to_thread` directly — even for an error-level message, which is
+        exactly the case that used to trigger the direct-send call."""
         try:
             from backend.shared.helpers.app_message import AppMessage, _route_sinks
         except ImportError:
             pytest.skip("app_message module not yet implemented")
 
         with patch("backend.shared.helpers.app_message.asyncio.to_thread",
-                   new_callable=AsyncMock) as mock_thread:
+                   new_callable=AsyncMock) as mock_thread, \
+             patch("backend.shared.helpers.alert_utils.send_ntfy_alert") as mock_ntfy:
             msg = AppMessage(body="broker auth failed", tags=["system"], level="error", title="Auth Error")
             await _route_sinks(msg)
-        mock_thread.assert_awaited_once()
+        mock_thread.assert_not_awaited()
+        mock_ntfy.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_route_sinks_ntfy_on_critical(self):
-        """_route_sinks routes critical messages to ntfy."""
+    async def test_route_sinks_logs_tagged_record_on_error(self):
+        """An error-level message is logged with `alert_event=
+        'app_message'` and its own tags forwarded verbatim — `tags_for()`
+        (log_store.py) separately stamps the "error" level tag, which is
+        what lets `ERROR_AGENT`'s catch-all pick this up for free."""
         try:
-            from backend.shared.helpers.app_message import AppMessage, _route_sinks
+            from backend.shared.helpers.app_message import AppMessage, _route_sinks, logger
         except ImportError:
             pytest.skip("app_message module not yet implemented")
 
-        with patch("backend.shared.helpers.app_message.asyncio.to_thread",
-                   new_callable=AsyncMock) as mock_thread:
+        with patch.object(logger, "log") as mock_log:
+            msg = AppMessage(body="broker auth failed", tags=["system"], level="error", title="Auth Error")
+            await _route_sinks(msg)
+        mock_log.assert_called_once()
+        args, kwargs = mock_log.call_args
+        assert args[0] == 40  # logging.ERROR
+        extra = kwargs["extra"]
+        assert extra["alert_event"] == "app_message"
+        assert extra["tags"] == ["system"]
+        assert extra["title"] == "Auth Error"
+        assert extra["body"] == "broker auth failed"
+
+    @pytest.mark.asyncio
+    async def test_route_sinks_logs_tagged_record_on_critical(self):
+        """Critical messages are logged at CRITICAL, same tagging
+        contract as the error case."""
+        try:
+            from backend.shared.helpers.app_message import AppMessage, _route_sinks, logger
+        except ImportError:
+            pytest.skip("app_message module not yet implemented")
+
+        with patch.object(logger, "log") as mock_log:
             msg = AppMessage(body="system failure", tags=["system"], level="critical", title="Critical")
             await _route_sinks(msg)
-        mock_thread.assert_awaited_once()
+        mock_log.assert_called_once()
+        args, kwargs = mock_log.call_args
+        assert args[0] == 50  # logging.CRITICAL
+        assert kwargs["extra"]["alert_event"] == "app_message"
 
     @pytest.mark.asyncio
-    async def test_route_sinks_ntfy_on_deploy_tag(self):
-        """_route_sinks routes deploy-tagged messages to ntfy."""
+    async def test_route_sinks_logs_tagged_record_on_deploy_tag(self):
+        """A deploy-tagged info-level message still satisfies the
+        pre-existing gate and is logged (at INFO) — its own "deploy" tag
+        is forwarded verbatim, not synthesized into "alert" (see
+        `_route_sinks`'s own docstring for why injecting "alert" here
+        would risk a double-fire alongside ERROR_AGENT for error/
+        critical messages — this message is info-level so that specific
+        risk doesn't apply, but the module deliberately uses one
+        consistent rule: forward the caller's own tags, never add one)."""
         try:
-            from backend.shared.helpers.app_message import AppMessage, _route_sinks
+            from backend.shared.helpers.app_message import AppMessage, _route_sinks, logger
         except ImportError:
             pytest.skip("app_message module not yet implemented")
 
-        with patch("backend.shared.helpers.app_message.asyncio.to_thread",
-                   new_callable=AsyncMock) as mock_thread:
+        with patch.object(logger, "log") as mock_log:
             msg = AppMessage(body="api deployed to prod", tags=["deploy", "system"], level="info")
             await _route_sinks(msg)
-        mock_thread.assert_awaited_once()
+        mock_log.assert_called_once()
+        args, kwargs = mock_log.call_args
+        assert args[0] == 20  # logging.INFO
+        extra = kwargs["extra"]
+        assert extra["alert_event"] == "app_message"
+        assert extra["tags"] == ["deploy", "system"]
 
     @pytest.mark.asyncio
-    async def test_route_sinks_no_ntfy_for_info_system(self):
-        """_route_sinks does not alert on generic system info."""
+    async def test_route_sinks_no_log_for_info_system(self):
+        """`_route_sinks` stays a no-op for generic system info — the
+        same gate as before (error/critical level, or a deploy/alert
+        tag) applies, just with a different delivery mechanism."""
         try:
-            from backend.shared.helpers.app_message import AppMessage, _route_sinks
+            from backend.shared.helpers.app_message import AppMessage, _route_sinks, logger
         except ImportError:
             pytest.skip("app_message module not yet implemented")
 
-        with patch("backend.shared.helpers.app_message.asyncio.to_thread",
-                   new_callable=AsyncMock) as mock_thread:
+        with patch.object(logger, "log") as mock_log:
             msg = AppMessage(body="background sync tick", tags=["system"], level="info")
             await _route_sinks(msg)
-        mock_thread.assert_not_awaited()
+        mock_log.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_route_sinks_no_ntfy_for_news(self):
-        """_route_sinks does not alert on news (ephemeral)."""
+    async def test_route_sinks_no_log_for_news(self):
+        """`_route_sinks` does not log on news (ephemeral, info-level,
+        no deploy/alert tag)."""
         try:
-            from backend.shared.helpers.app_message import AppMessage, _route_sinks
+            from backend.shared.helpers.app_message import AppMessage, _route_sinks, logger
         except ImportError:
             pytest.skip("app_message module not yet implemented")
 
-        with patch("backend.shared.helpers.app_message.asyncio.to_thread",
-                   new_callable=AsyncMock) as mock_thread:
+        with patch.object(logger, "log") as mock_log:
             msg = AppMessage(body="market news", tags=["news"], level="info")
             await _route_sinks(msg)
-        mock_thread.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_route_sinks_calls_send_ntfy_alert(self):
-        """_route_sinks delegates to send_ntfy_alert via to_thread."""
-        try:
-            from backend.shared.helpers.app_message import AppMessage, _route_sinks
-        except ImportError:
-            pytest.skip("app_message module not yet implemented")
-
-        async def capture_thread_fn(*args, **kwargs):
-            return None
-
-        with patch("backend.shared.helpers.app_message.asyncio.to_thread",
-                   new_callable=AsyncMock, side_effect=capture_thread_fn) as mock_thread:
-            msg = AppMessage(body="critical error", tags=["system"], level="critical", title="Critical")
-            await _route_sinks(msg)
-        # Verify to_thread was called with send_ntfy_alert
-        mock_thread.assert_awaited_once()
+        mock_log.assert_not_called()
 
 
 # ============================================================================

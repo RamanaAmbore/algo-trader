@@ -1294,6 +1294,19 @@ def _age_validate_action_entries(actions: list) -> None:
         if not isinstance(entry, dict):
             errors.append(f"action entry must be an object, got {type(entry).__name__}")
             continue
+        # 2026-11 channel-authoring retirement — the `notify=[...]`
+        # action-call parameter is removed with no replacement (see
+        # `actions.py`'s former "Part B" block and
+        # `ACTION_NOTIFY_AGENT`'s retirement in `event_agents.py`).
+        # Checked unconditionally, independent of whether `type` itself
+        # is a known action — a stale `notify` key must never silently
+        # round-trip through an otherwise-valid save.
+        if "notify" in entry:
+            errors.append(
+                "'notify' is no longer a supported action field — alert "
+                "channel routing is resolved by alert_routing.py's "
+                "tier/per-slug/catch-all chain, not a per-action override"
+            )
         action_type = entry.get("type")
         if not action_type or not is_known_action_type(action_type):
             errors.append(f"unknown action type '{action_type}'")

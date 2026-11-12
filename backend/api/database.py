@@ -1275,6 +1275,69 @@ async def _migrate_agents_require_release(conn) -> None:
     ))
 
 
+async def _migrate_agents_strip_notify_from_actions(conn) -> None:
+    """One-time data normalization — strips the retired `notify` sibling
+    key from every entry of every `agents.actions` JSONB array (2026-11
+    channel-authoring retirement: the `notify=[...]` action-call param
+    is removed with no replacement; see `actions.py`'s former "Part B"
+    block and `routes/agents.py:_age_validate_action_entries`'s
+    rejection of a `notify` key on any future save).
+
+    Pure SQL, not a Python row-by-row rewrite — unlike a hypothetical
+    sibling migration that also touched `conditions`/`events`/`actions`
+    content covered by `event_agents.compute_seed_spec_hash()`, `notify`
+    was NEVER part of any seeded agent's own actions (no `SEEDED_AGENTS`
+    spec in `event_agents.py`, nor any `BUILTIN_AGENTS` spec in
+    `agent_engine.py`, ever declares one — confirmed by grep before
+    writing this migration) — `notify` only ever appeared on an
+    operator-authored cycle agent's own DO-clause action. Stripping it
+    therefore can never touch a seeded row's `seed_spec_hash` baseline
+    (the hash covers `conditions`/`events`/`actions`), so no companion
+    hash-recompute step is needed here, unlike a migration that touched
+    seeded content.
+
+    Idempotent: the `WHERE EXISTS (...)` guard only matches a row that
+    actually still has a `notify` key on some object element of
+    `actions`, so a re-run (next boot) is a no-op UPDATE of zero rows.
+    `jsonb_typeof(elem) = 'object'` guards the `elem - 'notify'`
+    subtraction — `actions` entries are always objects by construction
+    (`_age_validate_action_entries` requires `{"type": ..., "params":
+    {...}}`), but the CASE keeps a malformed non-object element
+    (if one ever existed) untouched rather than raising. `actions` is
+    an ORDERED list (an agent's own execution order), so the rebuild
+    uses `WITH ORDINALITY` + `jsonb_agg(... ORDER BY ord)` to make that
+    order explicit and guaranteed, rather than relying on
+    `jsonb_array_elements()`'s own (today incidentally stable, but
+    unspecified) iteration order. `SET LOCAL lock_timeout` bounds how
+    long this can wait behind any in-flight row lock on `agents`, same
+    pattern as every other migration here.
+    """
+    from sqlalchemy import text
+    await conn.execute(text("SET LOCAL lock_timeout = '5s'"))
+    await conn.execute(text("""
+        UPDATE agents
+        SET    actions = (
+            SELECT COALESCE(
+                jsonb_agg(
+                    CASE WHEN jsonb_typeof(elem) = 'object'
+                         THEN elem - 'notify'
+                         ELSE elem
+                    END
+                    ORDER BY ord
+                ),
+                '[]'::jsonb
+            )
+            FROM jsonb_array_elements(actions) WITH ORDINALITY AS t(elem, ord)
+        )
+        WHERE  actions IS NOT NULL
+          AND  jsonb_typeof(actions) = 'array'
+          AND  EXISTS (
+                SELECT 1 FROM jsonb_array_elements(actions) AS e
+                WHERE jsonb_typeof(e) = 'object' AND e ? 'notify'
+          )
+    """))
+
+
 # `_migrate_agents_bracket_columns` removed (Bracket/Template-GTT
 # removal, T3.6, 2026-11) — it added `agents.legacy_template_id` +
 # `agents.bracket_config`, both dropped by
@@ -1393,6 +1456,7 @@ async def init_db() -> None:
         await _migrate_agents_seed_spec_hash(conn)
         await _migrate_agents_priority(conn)
         await _migrate_agents_require_release(conn)
+        await _migrate_agents_strip_notify_from_actions(conn)
         await _migrate_drop_position_pairs_table(conn)
         await _migrate_market_special_sessions_source(conn)
         # MUST run LAST in this transaction — drops order_templates and

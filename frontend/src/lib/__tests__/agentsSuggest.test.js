@@ -524,10 +524,10 @@ describe('suggestAgentCliAt() — Sprint H item 4: order(/token( param suggestio
     expect(r.suggestions).toEqual(['kind']);
   });
 
-  it('"token(kind=" only suggests the one real compiling value ("notify"), not "condition" (a guaranteed compile error)', () => {
+  it('"token(kind=" only suggests the one real compiling value ("condition"), not "notify" (channel-naming removal, 2026-11 — a guaranteed compile error)', () => {
     const r = suggest('token(kind=');
     expect(r.kind).toBe('enum');
-    expect(r.suggestions).toEqual(['notify']);
+    expect(r.suggestions).toEqual(['condition']);
   });
 
   it('bracket(...) is rejected at parse time, even one built from what used to be suggested params', () => {

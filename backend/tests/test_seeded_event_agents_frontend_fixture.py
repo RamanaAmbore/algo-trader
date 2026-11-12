@@ -68,10 +68,17 @@ def test_fixture_has_all_13_agents_and_covers_both_log_and_any_shapes():
     # 12 -> 13 — Waves 1/2/3 each add one brand-new dedicated agent
     # (`market-status-alert`, `action-notify-alert`,
     # `order-cancelled-alert`). 2026-11-04: 13 -> 14 —
-    # `gtt-orphan-cancelled-alert` (SEED_VERSION 6 -> 7).
+    # `gtt-orphan-cancelled-alert` (SEED_VERSION 6 -> 7). 2026-11
+    # channel-authoring retirement (SEED_VERSION 8 -> 9): count stays
+    # 14 — `action-notify-alert` is retired (removed), replaced
+    # one-for-one by the brand-new `agent-close-hold-alert`. 2026-11
+    # alert-agent audit fix (SEED_VERSION 9 -> 10): 14 -> 15 —
+    # `draft-sweep-alert`, a brand-new standalone dedicated agent
+    # (`background.py:_ds_tick_draft_sweep()` no longer calls
+    # `alert_utils._send_telegram_info()` directly).
     with open(_FIXTURE_PATH, "r", encoding="utf-8") as f:
         fixture = json.load(f)
-    assert len(fixture) == 14
+    assert len(fixture) == 15
     has_plain_log = any("log" in a["conditions"] for a in fixture)
     has_any_of_logs = any("any" in a["conditions"] for a in fixture)
     has_nonempty_events = any(a["events"] for a in fixture)

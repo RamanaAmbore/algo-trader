@@ -771,9 +771,14 @@ async def _opp_send_cancel_alert(
     that forces urgent ntfy + email for `action_required=True` and
     drops ntfy entirely for `action_required=False` now governs this
     alert too, instead of a bespoke if/early-return. The new
-    `ORDER_CANCELLED_AGENT` (`event_agents.py`) picks this up via its
-    own `out[4]` channel list (same mechanism `_render_breach`/
-    `_render_market_status`/`_render_action_notify` already use).
+    `ORDER_CANCELLED_AGENT` (`event_agents.py`) picks this up and routes
+    it through `alert_routing.py`'s per-slug override for
+    `order-cancelled-alert` (2026-11 channel-authoring retirement — this
+    used to carry its own per-record `channels` literal in `extra`,
+    resolved via a dynamic `out[4]` override in
+    `_render_order_cancelled`; every alert now routes through the
+    shared tier/per-slug/catch-all chain the same way a plain log-only
+    agent already does).
 
     2026-10 audit fix (preserved): `send_ntfy_alert(title, message,
     priority=None)` was once called with a single positional argument
@@ -808,17 +813,6 @@ async def _opp_send_cancel_alert(
             extra={
                 "tags": ["orders", "alert"], "alert_event": "order_cancelled",
                 "title": f"Order cancelled: {symbol}", "body": message,
-                # 2026-11-04 channel-routing audit (operator: "telegram
-                # all the alerts[,] no exceptions") — telegram was
-                # missing from this record's own channel list entirely;
-                # every other alert type in the codebase includes it.
-                # ntfy/email unchanged: `action_required=True` below
-                # still forces urgent ntfy and appends email, same as
-                # before this fix.
-                "channels": [
-                    {"channel": "telegram", "enabled": True},
-                    {"channel": "ntfy", "enabled": True},
-                ],
                 "action_required": True,
                 "agent_id": agent_id, "agent_name": agent_name,
                 # 2026-11-06 (operator SSOT instruction) — "Source:
