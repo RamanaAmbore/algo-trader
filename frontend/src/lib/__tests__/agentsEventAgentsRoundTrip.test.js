@@ -57,7 +57,7 @@ function compile(text, opts = {}) {
   return compileAgentCliStatement(text, CATALOG, opts);
 }
 
-describe('Wave 2 — byte-identical compile gate: all 15 real SEEDED_AGENTS shapes', () => {
+describe('Wave 2 — byte-identical compile gate: all 16 real SEEDED_AGENTS shapes', () => {
   // 2026-10-25 alert-channel collapse (commit 7d2b51fc): 23 -> 10 seeded
   // kind='event' agents. See CLAUDE.md's "Alert-channel collapse" entry.
   // 2026-11-03: 10 -> 11 -> 12 -> 13 — the alert-agent audit's own
@@ -69,7 +69,12 @@ describe('Wave 2 — byte-identical compile gate: all 15 real SEEDED_AGENTS shap
   // 6 -> 7), same "brand-new dedicated agent" shape as the Wave 1/2/3
   // additions above. 2026-11 alert-agent audit fix: 14 -> 15 —
   // `draft-sweep-alert` (SEED_VERSION 9 -> 10), same shape again.
-  expect(seededAgents.length).toBe(15);
+  // 2026-11-08 alert-agent audit fix round 2: 15 -> 16 — `action-notify-
+  // alert` was itself retired (deactivated, never deleted — see
+  // CLAUDE.md's `_RETIRED_SLUGS` convention) when `notify=` was removed
+  // from the DSL, and `app-message-alert` was added the same round to
+  // fix a silent CRITICAL-drop bug (`APP_MESSAGE_AGENT`). Net +1.
+  expect(seededAgents.length).toBe(16);
 
   for (const agent of seededAgents) {
     it(`${agent.slug}: decompile -> recompile reproduces the EXACT stored conditions/events/actions`, () => {
