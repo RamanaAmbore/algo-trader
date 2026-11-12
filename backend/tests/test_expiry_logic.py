@@ -500,3 +500,105 @@ async def test_close_positions_records_held_order_with_expiry_close_category():
     assert kwargs["side"] == "SELL"
     assert kwargs["qty"] == 1
     assert kwargs["product"] == "NRML"
+
+
+# ── 2026-11 classifier re-base: scan_positions() vs classify_from_context() ─
+
+def test_scan_positions_and_classify_from_context_agree_on_needs_close():
+    """SSOT parity — the governing invariant behind the 2026-11 operator
+    decision to re-base `expiry-mcx-risk-alert`/`expiry-nfo-risk-alert`
+    onto `ExpiryEngine`'s real classifier: `scan_positions()` (the
+    broker-fetched path `expiry-day-preclose-alert`/`expiry-day-itm-
+    auto-close` use) and `classify_from_context()` (the ctx-based
+    adapter the two risk-alert condition RESOLVERS now use, since they
+    cannot make a live broker call every poll cycle) must agree exactly
+    on `needs_close`, given the SAME underlying book.
+
+    Covers both canonical disagreement cases the re-base closes: a
+    synthetic long-CE/short-PE combo (no valid netting pair — flagged)
+    and a lone unhedged ITM leg (no partner at all — flagged)."""
+    from datetime import date as _date
+    from unittest.mock import MagicMock, patch
+
+    from backend.api.algo.expiry import ExpiryEngine, OptionPosition, classify_from_context
+
+    today = _date(2025, 5, 29)
+    spot_prices = {"GOLDM": 76000.0, "GOLD": 76000.0}
+
+    # Hand-built OptionPositions — what the REAL `_fetch_option_positions`
+    # would construct from Kite's instrument master for this exact book.
+    fetched_opts = [
+        OptionPosition(account="A1", tradingsymbol="GOLDM25MAY75000CE", exchange="MCX",
+                        instrument_type="CE", underlying="GOLDM", strike=75000.0,
+                        expiry=today, quantity=1, product="NRML"),
+        OptionPosition(account="A1", tradingsymbol="GOLD25MAY75000CE", exchange="MCX",
+                        instrument_type="CE", underlying="GOLD", strike=75000.0,
+                        expiry=today, quantity=1, product="NRML"),
+        OptionPosition(account="A1", tradingsymbol="GOLD25MAY75000PE", exchange="MCX",
+                        instrument_type="PE", underlying="GOLD", strike=75000.0,
+                        expiry=today, quantity=-1, product="NRML"),
+    ]
+
+    engine = ExpiryEngine()
+    with patch.object(engine, "_fetch_option_positions", return_value=fetched_opts), \
+         patch.object(engine, "_fetch_future_positions", return_value=[]), \
+         patch.object(engine, "_fetch_underlying_ltps", return_value=spot_prices), \
+         patch("backend.api.algo.expiry.timestamp_indian") as mock_ts:
+        mock_ts.return_value.date.return_value = today
+        to_close = engine.scan_positions()
+    scan_needs_close = {p.tradingsymbol for p in to_close}
+
+    # Same raw rows, as a condition resolver would see them in
+    # ctx.position_rows (no broker/instrument-master lookup available).
+    ctx_rows = [
+        {"account": "A1", "tradingsymbol": "GOLDM25MAY75000CE", "exchange": "MCX", "quantity": 1},
+        {"account": "A1", "tradingsymbol": "GOLD25MAY75000CE", "exchange": "MCX", "quantity": 1},
+        {"account": "A1", "tradingsymbol": "GOLD25MAY75000PE", "exchange": "MCX", "quantity": -1},
+    ]
+    classified = classify_from_context(ctx_rows, ctx_rows, spot_prices, exchange_filter="MCX")
+    ctx_needs_close = {c.tradingsymbol for c in classified if c.needs_close}
+
+    assert scan_needs_close == {"GOLDM25MAY75000CE", "GOLD25MAY75000CE"}, scan_needs_close
+    assert ctx_needs_close == scan_needs_close, (
+        f"classify_from_context() disagreed with scan_positions(): "
+        f"scan={scan_needs_close} ctx={ctx_needs_close}")
+
+
+def test_scan_positions_and_classify_from_context_agree_on_genuine_hedge():
+    """Mirror case — a genuinely rule-valid hedge (same strike, same
+    type, opposite sign) must net to zero residual under BOTH paths."""
+    from datetime import date as _date
+    from unittest.mock import patch
+
+    from backend.api.algo.expiry import ExpiryEngine, OptionPosition, classify_from_context
+
+    today = _date(2025, 5, 29)
+    spot_prices = {"GOLD": 76000.0}
+
+    fetched_opts = [
+        OptionPosition(account="A1", tradingsymbol="GOLD25MAY75000CE", exchange="MCX",
+                        instrument_type="CE", underlying="GOLD", strike=75000.0,
+                        expiry=today, quantity=1, product="NRML"),
+        OptionPosition(account="A1", tradingsymbol="GOLD25MAY75000CE", exchange="MCX",
+                        instrument_type="CE", underlying="GOLD", strike=75000.0,
+                        expiry=today, quantity=-1, product="NRML"),
+    ]
+
+    engine = ExpiryEngine()
+    with patch.object(engine, "_fetch_option_positions", return_value=fetched_opts), \
+         patch.object(engine, "_fetch_future_positions", return_value=[]), \
+         patch.object(engine, "_fetch_underlying_ltps", return_value=spot_prices), \
+         patch("backend.api.algo.expiry.timestamp_indian") as mock_ts:
+        mock_ts.return_value.date.return_value = today
+        to_close = engine.scan_positions()
+    scan_needs_close = {p.tradingsymbol for p in to_close}
+
+    ctx_rows = [
+        {"account": "A1", "tradingsymbol": "GOLD25MAY75000CE", "exchange": "MCX", "quantity": 1},
+        {"account": "A1", "tradingsymbol": "GOLD25MAY75000CE", "exchange": "MCX", "quantity": -1},
+    ]
+    classified = classify_from_context(ctx_rows, ctx_rows, spot_prices, exchange_filter="MCX")
+    ctx_needs_close = {c.tradingsymbol for c in classified if c.needs_close}
+
+    assert scan_needs_close == set()
+    assert ctx_needs_close == set()

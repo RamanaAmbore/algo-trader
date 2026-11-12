@@ -268,7 +268,7 @@
     "conditions": {
       "log": {
         "tag": "alert",
-        "min_level": "WARNING",
+        "min_level": "INFO",
         "where": {
           "alert_event": "app_message"
         }

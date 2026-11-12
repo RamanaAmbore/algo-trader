@@ -13,7 +13,17 @@ This document describes the grammar as shipped (Wave 2, 2026-10-24 — the plan 
 `.claude/PLAN.md`). The grammar has no `GIVEN` keyword, no `ALERT` clause keyword, and one
 conditional wrapper, `WHEN … DO …`. Everything before `WHEN` (or the whole statement, if there
 is no `WHEN`) is an unconditional preamble. `alert`, `log`, `help`, `debug`, `render`, `order`,
-`bracket`, and label assignment are all ordinary items anywhere in the preamble or `DO`.
+and label assignment are all ordinary items anywhere in the preamble or `DO`.
+
+> **REMOVED — Bracket/Template/GTT (Track 3, T3.1–T3.4, 2026-11).** `bracket(...)` is rejected
+> everywhere, not merely unsupported: a leading `bracket(...)` is a parse-time error
+> (`_dispatchStatement`, [agents.js:~2808](../../frontend/src/lib/command/grammars/agents.js#L2808));
+> `bracket(...)` anywhere else in a preamble or `DO` is a compile-time error
+> (`_compileSharedCall`, [agents.js:~5250](../../frontend/src/lib/command/grammars/agents.js#L5250));
+> and `order(..., bracket=...)` is a compile-time "unknown parameter" error
+> ([agents.js:~6168](../../frontend/src/lib/command/grammars/agents.js#L6168)). The
+> `bracket_stmt`/`bracket_call`/`BracketAst` productions below are historical record only — do
+> not reintroduce without a new design decision.
 
 An event (`kind='event'`) agent is an ORDINARY `agent_stmt` whose condition is a
 `log(tag=…, min_level=…, where={…})` call and whose `DO` carries exactly one
@@ -33,13 +43,16 @@ gate (`agentsGrammar.test.js`) confirms the new syntax reproduces their exact `c
 
 ```ebnf
 (* ── Top level ───────────────────────────────────────────────────────────── *)
-statement      := order_stmt | bracket_stmt | help_stmt | cancel_all_orders_stmt
+statement      := order_stmt | help_stmt | cancel_all_orders_stmt
                  | token_stmt | agent_stmt
-                                                (* Dispatch order (`_dispatchStatement`): a leading
-                                                   order/place_order, bracket, or help call is
-                                                   tried FIRST as its exclusive standalone
-                                                   statement and accepted only if it consumes the
-                                                   whole input.
+                                                (* `bracket_stmt` removed 2026-11 — see the REMOVED
+                                                   note above. A leading `bracket(...)` is rejected
+                                                   immediately with a named error, before any trial
+                                                   parse, and never reaches this dispatch.
+                                                   Dispatch order (`_dispatchStatement`): a leading
+                                                   order/place_order or help call is tried FIRST as
+                                                   its exclusive standalone statement and accepted
+                                                   only if it consumes the whole input.
                                                    Otherwise the parse backtracks and falls through
                                                    to agent_stmt, which accepts the same call
                                                    vocabulary. token and cancel_all_orders have no
@@ -76,23 +89,30 @@ call_list      := call ("," call)*
 order_stmt     := order_call ("," order_call)* meta_item*
                                                 (* order / place_order only. Trailing meta_item is
                                                    parsed but is a COMPILE-time error. *)
-bracket_stmt   := bracket_call meta_item*      (* Exactly ONE bracket(...) call. No basket form.
-                                                   #name= is effectively required. *)
+(* bracket_stmt removed 2026-11 (Track 3, T3.4, Bracket/Template/GTT removal) — see the
+   REMOVED note above. Historical record only, do not reintroduce without a new design
+   decision:
+     bracket_stmt   := bracket_call meta_item*  (* Exactly ONE bracket(...) call. No basket
+                                                    form. #name= is effectively required. *)
+*)
 help_stmt      := help_call meta_item*         (* Exactly ONE help(<name>) call. Read-only.
                                                    Meta is a COMPILE-time error. *)
 cancel_all_orders_stmt := cancel_all_orders_call meta_item*
                                                 (* Exactly ONE cancel_all_orders(...) call. No
                                                    comma. Meta is a COMPILE-time error. *)
-token_stmt     := token_head condition_body meta_item*
+token_stmt     := token_head (condition_body | call_list) meta_item*
                                                 (* token(...) only. head := token(kind=condition)
                                                    names a condition fragment, and its body is one
-                                                   condition. head := token(kind=notify) still
-                                                   PARSES (body := call_list, no comma between head
-                                                   and body) but is a hard COMPILE-time error —
-                                                   channel-naming removal, 2026-11: a Token's own
-                                                   notify-kind channel-list body can no longer be
-                                                   authored/edited via CLI. kind=condition is the
-                                                   only kind that actually compiles.
+                                                   condition — this is the ONLY body shape that
+                                                   actually compiles. For every OTHER peeked head
+                                                   kind — kind=notify, an omitted kind=, or an
+                                                   unrecognized/invalid kind= value — the parser
+                                                   falls back to body := call_list (`telegram,
+                                                   email, log`, no comma between head and body);
+                                                   this form PARSES but is ALWAYS a hard
+                                                   COMPILE-time error — channel-naming removal,
+                                                   2026-11: a Token's own notify-kind channel-list
+                                                   body can no longer be authored/edited via CLI.
                                                    #name= is required. #tag= and #group= are
                                                    rejected. *)
 token_head     := call                         (* call.name must be "token". *)
@@ -107,7 +127,10 @@ alert_call     := "alert" "(" ("nop" | item_list) ")"
                                                    alert(...) ONLY, a leading msg= sugar is
                                                    accepted: `msg=value, channel, …`. *)
 order_call     := call                         (* name is order or place_order. *)
-bracket_call   := call                         (* name is bracket. *)
+(* bracket_call removed 2026-11 (Track 3, T3.4, Bracket/Template/GTT removal) — see the
+   REMOVED note above:
+     bracket_call   := call                     (* name is bracket. *)
+*)
 help_call      := NAME "(" bare_word ")"       (* help(<name>). <name> is one bare word, same
                                                    lexer sugar debug(x) uses. Never quoted. *)
 debug_call     := NAME "(" bare_word ")"       (* debug(x). Compiles to a log call with level
@@ -256,10 +279,11 @@ obj_kwarg      := NAME "=" value | NAME "=" object_literal
                                                    Reuses "=" as the key/value separator. *)
 tp_scales_json_value := "[" object_literal ("," object_literal)* "]"
                                                 (* The ONLY legal value for a call argument named
-                                                   tp_scales_json (case-insensitive), on order(...)
-                                                   or bracket(...). Parsed by a dedicated
-                                                   mini-lexer (_parseTpScalesJsonArg), not
-                                                   tokenizeCallStyle. *)
+                                                   tp_scales_json (case-insensitive), on order(...).
+                                                   `bracket(...)` is removed 2026-11 — see the
+                                                   REMOVED note above — so this can no longer apply
+                                                   there. Parsed by a dedicated mini-lexer
+                                                   (_parseTpScalesJsonArg), not tokenizeCallStyle. *)
 
 (* ── Reserved words ──────────────────────────────────────────────────────── *)
 (* Drift-guarded: frontend/src/lib/__tests__/agentsGrammarEbnfDrift.test.js asserts this set is
@@ -377,7 +401,8 @@ Prose rules (all shipped, Wave 2):
   `has_explicit_alert` is NEVER set for an event agent (that flag's rich-alert-skip semantics
   belong to `kind='agent'`/cycle dispatch only, which event agents bypass entirely).
 - **`render(…)` is a dedicated-compiler call** (`_compileRenderCall`, dispatched by name in
-  `_compileSharedCall` alongside `alert`/`bracket`/`debug`/`help` — NOT the generic
+  `_compileSharedCall` alongside `alert`/`debug`/`help` — `bracket` is also dispatched by name
+  there, but only to reject it as removed, see the REMOVED note above — NOT the generic
   `_compileCatalogActionCall`, whose `{type, params}` output shape doesn't fit: `render`'s own
   value is a TOP-LEVEL SIBLING key of `type`, never nested under `params`). Both `render=`
   (required, free text) and `gate=` (optional boolean) are validated against ONE schema,
@@ -420,9 +445,11 @@ Prose rules (all shipped, Wave 2):
   compiled entry. Bindings are visible only to calls and conditions written AFTER the binding
   (`parseCall` snapshots `state.bindings` per call). A label may not be a reserved word or a
   `label_reserved` word.
-- **Standalone statements do not mix.** `order`/`bracket`/`help` are standalone ONLY when they
-  are the entire input. `token` and `cancel_all_orders` are standalone-only, with no preamble
-  fallback. Anything else containing those names in a mixed list goes through `agent_stmt`.
+- **Standalone statements do not mix.** `order`/`help` are standalone ONLY when they are the
+  entire input. `token` and `cancel_all_orders` are standalone-only, with no preamble fallback.
+  Anything else containing those names in a mixed list goes through `agent_stmt`. `bracket(...)`
+  is not part of this trial at all — it is rejected outright, in every position, standalone or
+  not — see the REMOVED note above.
 - **`alert` with no parentheses** is no longer a clause keyword. Any bare, non-called leading
   `ALERT` (e.g. `ALERT telegram DO …`, or the retired `ALERT log_tag=…` spelling) is a specific
   parse error naming the removed clause keyword. A bare `alert = …` is a label-reservation error.
@@ -579,8 +606,10 @@ functions in `agents.js` for that.
 
 ```
 Statement := AgentAst
-           | OrderAst | BracketAst | HelpAst | CancelAllOrdersAst | TokenAst
-               (* EventAst (the old event_stmt AST node) is retired — an event agent is an
+           | OrderAst | HelpAst | CancelAllOrdersAst | TokenAst
+               (* BracketAst removed 2026-11 (Track 3, T3.4, Bracket/Template/GTT removal) — no
+                  AST node of this shape can be produced anymore; see the REMOVED note above.
+                  EventAst (the old event_stmt AST node) is retired — an event agent is an
                   AgentAst whose condition resolves to a log-condition leaf. There is no
                   separate parsed shape for it. *)
 
@@ -599,12 +628,17 @@ AgentAst  := { kind:'agent',
                   not change; no dedicated node type was added. *)
 
 OrderAst  := { kind:'order', calls: CallNode[], meta: MetaItem[] }
-BracketAst:= { kind:'bracket', call: CallNode, meta: MetaItem[] }
+(* BracketAst removed 2026-11 (Track 3, T3.4, Bracket/Template/GTT removal) — see the REMOVED
+   note above. Historical record only:
+     BracketAst:= { kind:'bracket', call: CallNode, meta: MetaItem[] }
+*)
 HelpAst   := { kind:'help', call: CallNode, meta: MetaItem[] }
 CancelAllOrdersAst := { kind:'cancel_all_orders', call: CallNode, meta: MetaItem[] }
 TokenAst  := { kind:'token', head: CallNode, bodyCalls: CallNode[], meta }
+               (* PARSES for any head kind other than kind=condition (notify, omitted, or
+                  invalid), but never COMPILES — see token_stmt's production note above. *)
            | { kind:'token', head: CallNode, condition: Condition, meta }
-               (* second form is head kind=condition *)
+               (* second form is head kind=condition — the only form that compiles. *)
 
 Binding   := { label: string, rhsKind: 'value' | 'expr', rhsNode: ValueNode | ArithNode,
                rhsText: string }              (* rhsText is the verbatim RHS source slice *)
@@ -657,8 +691,13 @@ catalog-content facts, not grammar bugs unless marked.
 - The boolean-metric shorthand is keyed off `value_type === 'boolean'`, but no live metric is
   typed `'boolean'`. `is_itm`/`is_ntm` are `'number'`, and `is_future` has no `value_type`. Tests
   use a fixture catalog that declares a real boolean metric.
-- `ntfy` (used in the design doc's example) does not exist in the live `notify`/`channel`
-  catalog. Implemented generically. Tests use a fixture.
+- **Resolved**: the earlier claim that `ntfy` (used in the design doc's example) does not exist
+  in the live `notify`/`channel` catalog was wrong. It is registered at
+  [agent_grammar.yaml:~931](../../backend/config/grammars/agent_grammar.yaml#L931)
+  (`grammar_kind: notify`, `token_kind: channel`, token `ntfy`, with a `priority` enum
+  including `low`/`default`/`high`/`urgent`). The channel mechanism is still implemented
+  generically — it does not special-case `ntfy` — and tests also keep a fixture catalog, since
+  this doc's examples must compile standalone of the live backend catalog content.
 - `side` (used in an operator-table example, `side in [BUY, SELL]`) is not a real condition or
   metric token. `in`/`not in` are generic. Tests use a fixture metric.
 - **Resolved** (record of why the design changed): `params_schema` is stored as Postgres JSONB,

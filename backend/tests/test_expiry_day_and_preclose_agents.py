@@ -44,12 +44,19 @@ class TestMarketPrecloseNonMcx:
             f"Expected fire_at_time=None, got {agent.get('fire_at_time')}"
 
     def test_condition_is_nse_close_within_30_minutes(self):
+        """2026-11 same-window consolidation added a second leaf — this
+        generic reminder now also requires NOT being an NSE expiry day,
+        since expiry-day-preclose-alert already covers that same moment
+        with richer content. See test_expiry_same_window_consolidation.py
+        for the suppression-behavior coverage."""
         agent = _by_slug('market-preclose-nonmcx')
         assert agent is not None
-        assert agent.get('conditions') == {
-            "op": "<=", "scope": "funds.total",
-            "metric": "minutes_until_nse_close", "value": 30,
-        }, f"Unexpected conditions: {agent.get('conditions')}"
+        assert agent.get('conditions') == {"all": [
+            {"op": "<=", "scope": "funds.total",
+             "metric": "minutes_until_nse_close", "value": 30},
+            {"op": "==", "scope": "funds.total",
+             "metric": "is_nse_expiry_today", "value": 0.0},
+        ]}, f"Unexpected conditions: {agent.get('conditions')}"
 
     def test_name(self):
         agent = _by_slug('market-preclose-nonmcx')

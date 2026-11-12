@@ -427,12 +427,15 @@ def _render_order_correction(rec: dict) -> tuple[str, str, str]:
         trigger_known=_order_scope_trigger_known(x),
     )
     title = f"Order corrected: {x.get('symbol') or ''} #{x.get('algo_order_id')}"
+    # 2026-11-08 audit fix (item 8) — the trailing "(source=...)" suffix
+    # was dropped: the header's own "Source: {process} ..." line above
+    # already names the same corrector, so this was a redundant repeat
+    # of the exact same information.
     body = (
         f"{header}\n"
         f"AlgoOrder #{x.get('algo_order_id')} {x.get('masked') or ''} "
         f"{x.get('symbol') or ''} {x.get('exchange') or ''}: "
-        f"{x.get('prior_status')} -> {x.get('new_status')} "
-        f"(source={x.get('source') or 'order-poll'})"
+        f"{x.get('prior_status')} -> {x.get('new_status')}"
     )
     return title, body, body
 
@@ -544,13 +547,26 @@ def _render_deploy_sync(rec: dict) -> tuple[str, str, str]:
     has_process_identity = bool(source_type) and bool(source_name)
     if has_agent_identity or has_process_identity:
         from backend.shared.helpers.alert_utils import format_notification_header
-        # `trigger_known` only matters when `source_type` is actually set
-        # (branch 1 of `resolve_source`) — the legacy real-agent path
-        # (`has_agent_identity`, no `source_type`) always needs it `True`
-        # so `agent_id`/`agent_name` reach `resolve_origin()` at all.
+        # 2026-11-08 audit fix (item 4) — this used to hardcode
+        # `trigger_known=not has_process_identity`, which is always
+        # `False` for every real producer of this renderer (all 8 of
+        # them always set `source_type`/`source_name`, so
+        # `has_process_identity` is always `True`) — correct for them
+        # today, by coincidence, since none happens to also attach a
+        # real `agent_id`/`agent_name`. But a hardcoded `False` would
+        # silently drop a real trigger for any FUTURE producer that
+        # sets BOTH a process identity and a real agent/manual trigger
+        # (an agent-invoked `generic_notice`-shaped call) — the exact
+        # same bug class `_render_market_status` was already fixed for
+        # (see that function's own 2026-11-08 comment). Fixed to the
+        # same key-presence check every order-scoped renderer uses:
+        # a scheduled/autonomous call with no `agent_id`/`agent_name`
+        # key at all still correctly shows no trigger; a future
+        # agent-invoked call would show "Source: {process} triggered
+        # by {agent}"/"triggered manually" instead of being dropped.
         origin_header = format_notification_header(
             agent_name, agent_id, source_type=source_type, source_name=source_name,
-            trigger_known=not has_process_identity,
+            trigger_known=_order_scope_trigger_known(x),
         )
         body = f"{origin_header}\n{body}"
     return title, body, body
@@ -820,9 +836,19 @@ def _render_error(rec: dict) -> tuple[str, str, str]:
     the old generic "RamboQuant error" filler line and the separate,
     now-redundant full-logger-name body line are both DROPPED, not
     deferred: the header above already carries the process name.
-    """
+
+    2026-11-08 audit fix (item 8) — this used to call
+    `format_notification_header()`, keep only its FIRST line
+    (`.splitlines()[0]`), then separately compute its own `ts` via a
+    second `timestamp_display()` call and splice it back in with an
+    extra blank line before the message — the only renderer in this
+    file with that stray blank line, and a pointless re-derivation of
+    the exact dual-tz string the header function already computes
+    internally. Simplified to call the header once and use its FULL
+    output (both lines), then append the message with a single `\n`,
+    matching every other renderer's convention (e.g.
+    `_render_order_correction`)."""
     from backend.shared.helpers.utils import mask_account_in_text
-    from backend.shared.helpers.date_time_utils import timestamp_display
     from backend.shared.helpers.alert_utils import format_notification_header
     x = rec.get("extra") or {}
     name = (rec.get("logger") or "").rsplit(".", 1)[-1] or "unknown"
@@ -830,12 +856,11 @@ def _render_error(rec: dict) -> tuple[str, str, str]:
     msg = clean_message(mask_account_in_text(rec.get("message") or "") or "")
     repeats = rec.get("repeats") or 0
     suffix = f" (+{repeats} repeats)" if repeats else ""
-    ts = timestamp_display()
-    origin_line = format_notification_header(
-        x.get("agent_name"), x.get("agent_id"), ist_display=ts,
+    header = format_notification_header(
+        x.get("agent_name"), x.get("agent_id"),
         source_type="error", source_name=name, trigger_known=has_trigger_key,
-    ).splitlines()[0]
-    body = f"{origin_line}\n{ts}\n\n{msg}{suffix}"
+    )
+    body = f"{header}\n{msg}{suffix}"
     return "RamboQuant error", body, body
 
 
@@ -1453,7 +1478,7 @@ async def _dispatch_record_channels(
     return sent
 
 
-async def _dispatch_agent(agent, records: list[dict]) -> int:
+async def _dispatch_agent(agent, records: list[dict], all_agents: "list | None" = None) -> int:
     # 2026-10-25 alert-channel collapse — one of the 3 generic channel
     # agents (TELEGRAM_CHANNEL_AGENT/NTFY_CHANNEL_AGENT/EMAIL_CHANNEL_AGENT)
     # dispatches through a completely different path: it has no single
@@ -1512,7 +1537,7 @@ async def _dispatch_agent(agent, records: list[dict]) -> int:
             continue
         if not evaluate(agent.conditions, Context(log_records=[rec])):
             continue
-        if _error_agent_self_alerted(agent, rec):
+        if _error_agent_self_alerted(agent, rec, all_agents):
             continue
         log_only = bool(rec.get("_log_only"))
         if log_only and gated and not static_has_log:
@@ -1713,7 +1738,7 @@ def _apply_action_required_email_gate(channels: list, action_required: "bool | N
 async def dispatch(records: list[dict], agents: list) -> int:
     sent = 0
     for agent in agents:
-        sent += await _dispatch_agent(agent, records)
+        sent += await _dispatch_agent(agent, records, agents)
     return sent
 
 
@@ -2003,7 +2028,7 @@ ERROR_AGENT = {
 }
 
 
-def _error_agent_self_alerted(agent, rec: dict) -> bool:
+def _error_agent_self_alerted(agent, rec: dict, all_agents: "list | None" = None) -> bool:
     """2026-10-23 audit fix (O9) — ERROR_AGENT is a blanket catch-all:
     `log_store.py:tags_for` auto-tags EVERY record with its level name
     lowercased, so ERROR_AGENT's condition (`tag="error", min_level=
@@ -2037,6 +2062,36 @@ def _error_agent_self_alerted(agent, rec: dict) -> bool:
     agent, and is skipped for ERROR_AGENT specifically. A bare CRITICAL
     record with neither flag falls through to ERROR_AGENT exactly like
     a bare ERROR record always has.
+
+    2026-11-08 audit fix (item 7) — the CRITICAL+`alert_event` branch
+    above used to assume "already routed", unconditionally, for ANY
+    `alert_event` value. That held for every alert_event this file's
+    own dedicated agents actually consume (chase's `cancel_unconfirmed`,
+    the GTT wing agents) — but a CRITICAL record carrying an
+    `alert_event` with NO real dedicated consumer at all (confirmed
+    live: `concurrent_chase_refused`, logged by
+    `chase.py:_ch_abort_concurrent_refused` with no matching entry in
+    `SEEDED_AGENTS`/`ALERT_EVENT_DISPATCH`) was silently DROPPED —
+    "looks routed" to both this gate and `_record_matches_any_agent()`'s
+    unrouted-catch-all check, but nothing actually delivers it. Fixed:
+    this branch now checks whether some OTHER currently-active agent
+    genuinely matches the record's own `conditions` — the exact same
+    `evaluate()` call `_record_matches_any_agent()` makes — rather than
+    assuming a match exists just because the record is CRITICAL-shaped.
+    ERROR_AGENT itself and `UNROUTED_ALERT_AGENT` (the condition-match
+    catch-all safety net, not a per-event consumer) are excluded from
+    this check, so neither can "cover for" the other. The explicit
+    `self_alerted=True` opt-out above is untouched — a caller that
+    already sent its own notification through a direct call (not an
+    event-agent dispatch) keeps that unconditional short-circuit
+    regardless of what else is loaded.
+
+    `all_agents=None` (a caller with no full agent list in scope — every
+    pre-existing direct test call of this function, and any future bare
+    call) preserves the exact pre-fix unconditional-skip behavior for
+    this branch: fail toward the established skip when the full live
+    agent set isn't available, never toward a surprise double-delivery
+    for a test that only constructs a bare ERROR_AGENT.
     """
     if getattr(agent, "slug", None) != ERROR_AGENT["slug"]:
         return False
@@ -2044,7 +2099,11 @@ def _error_agent_self_alerted(agent, rec: dict) -> bool:
     if bool(extra.get("self_alerted")):
         return True
     if rec.get("level") == "CRITICAL" and extra.get("alert_event"):
-        return True
+        if all_agents is None:
+            return True
+        _excluded_slugs = (ERROR_AGENT["slug"], UNROUTED_ALERT_AGENT["slug"])
+        others = [a for a in all_agents if getattr(a, "slug", None) not in _excluded_slugs]
+        return _record_matches_any_agent(rec, others)
     return False
 
 
@@ -2273,8 +2332,24 @@ _GENERIC_NOTICE_SPECS: tuple[dict, ...] = (
     # "high" (not "critical") deliberately, since this is a catch-all
     # for ANY `AppMessage` that opts into alerting (error/critical level,
     # or a deploy/alert tag), not exclusively critical-severity events.
+    #
+    # 2026-11-08 audit fix (item 6, same day) — `min_level` lowered from
+    # "WARNING" to "INFO". `app_message.py:_route_sinks()`'s own
+    # `should_alert` gate deliberately treats a bare "deploy"/"alert" tag
+    # match as alert-worthy at ANY level (pinned by
+    # `test_app_message.py::test_route_sinks_logs_tagged_record_on_
+    # deploy_tag`, an INFO-level case) — with this agent's `min_level`
+    # still at "WARNING", an INFO-level tag-matched `AppMessage` would
+    # pass that gate, get logged and tagged "alert", and then match
+    # NO agent at all (this one's own condition would reject it, and the
+    # unrouted catch-all also requires WARNING+) — silently dropped one
+    # step later than the bug this spec originally closed. "INFO" is the
+    # correct floor, not lower: the separate, unconditional DEBUG
+    # structural exemption in `_dispatch_agent` already drops every
+    # DEBUG-level record before any agent's `min_level` is consulted, so
+    # there is no lower floor this condition could ever actually see.
     {"slug": "app-message-alert", "name": "App message alert",
-     "tag": "alert", "min_level": "WARNING", "alert_event": "app_message",
+     "tag": "alert", "min_level": "INFO", "alert_event": "app_message",
      "priority": "high",
      "description": "Catch-all delivery for any AppMessage (error/critical "
                      "infra event) logged via the unified AppMessage dispatcher."},

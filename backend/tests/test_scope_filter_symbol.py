@@ -240,14 +240,21 @@ class TestComposesWithEveryVariant:
     def test_mcx_unhedged_symbol_filter_on_already_hedged_leg_still_empty(self):
         """Filtering to a leg that `.mcx_unhedged` already excludes
         (perfectly hedged pair) must still return nothing — the
-        hedge-balance filter is not bypassed by scope_filter."""
+        hedge-balance filter is not bypassed by scope_filter.
+
+        2026-11 classifier re-base: `spot_prices` set to the strike
+        itself so both legs classify ATM (confirmed-safe, not
+        UNKNOWN) — an unconfirmed leg is surfaced, never silently
+        excluded, so a genuinely-excludable fixture needs a resolvable
+        spot. See `scope_positions_expiring_today_mcx_unhedged.py`'s
+        own docstring."""
         rows = [
             {"account": "ACCT_X", "tradingsymbol": "GOLD25APR75000CE",
              "exchange": "MCX", "quantity": 1, "pnl": -9000.0},
             {"account": "ACCT_X", "tradingsymbol": "GOLD25APR75000PE",
              "exchange": "MCX", "quantity": -1, "pnl": -9000.0},
         ]
-        ctx = Context(position_rows=rows, now=_NOW_EXPIRY_DAY)
+        ctx = Context(position_rows=rows, spot_prices={"GOLD": 75000.0}, now=_NOW_EXPIRY_DAY)
         leaf = {
             "metric": "pnl", "scope": "positions.expiring_today.mcx_unhedged",
             "op": "<=", "value": -5000,

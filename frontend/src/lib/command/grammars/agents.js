@@ -2698,12 +2698,6 @@ export function parseHelpStmt(state) {
  *  (via the same `_coerceValueForSpec`/`_TOKEN_KIND_SPEC` helper
  *  `compileTokenStmt` uses to validate it properly) BEFORE deciding how
  *  to parse the rest of the statement:
- *    - `kind=notify` (or an unrecognized/omitted kind — unchanged
- *      default) → `call_list` (`telegram, email, log`, reusing
- *      `parseCallList` unchanged — the SAME production ALERT's own
- *      call_list uses). At least one body call is required
- *      (`parseCallList` never returns an empty array) — a notify Token
- *      with zero channels has no useful body.
  *    - `kind=condition` → a full boolean `condition` expression (reuses
  *      `parseCondition` UNCHANGED — the exact same production `WHEN`
  *      uses), e.g. `token(kind=condition) pnl@positions.total <= -50000
@@ -2711,11 +2705,22 @@ export function parseHelpStmt(state) {
  *      (the same shape a stored Agent row's own `conditions` column
  *      already holds for these rows — see `compileTokenStmt`), so
  *      reusing the WHEN-clause grammar verbatim is correct, not just
- *      convenient.
+ *      convenient. This is the ONLY shape that actually COMPILES —
+ *      see the fallback branch immediately below.
+ *    - `kind=notify` (or an unrecognized/omitted kind — the parse-time
+ *      fallback) → `call_list` (`telegram, email, log`, reusing
+ *      `parseCallList` unchanged — the SAME production ALERT's own
+ *      call_list uses). At least one body call is required
+ *      (`parseCallList` never returns an empty array). This shape
+ *      PARSES but is ALWAYS a hard COMPILE-time error (channel-naming
+ *      removal, 2026-11, commit `0216d534`) — `compileTokenStmt` rejects
+ *      `kind === 'notify'` outright; a Token's own channel-list body can
+ *      no longer be authored or edited via this grammar.
  *  An invalid `kind=` value (or a missing one) is NOT re-validated
- *  here — this peek is parse-only and defaults to the notify/call_list
- *  shape on any ambiguity; `compileTokenStmt` is the single source of
- *  truth for the real "kind must be notify|condition" error. */
+ *  here — this peek is parse-only and falls back to the call_list shape
+ *  on any ambiguity, purely so the parser has SOMETHING to consume;
+ *  `compileTokenStmt` is the single source of truth for the real "kind
+ *  must be condition" error. */
 export function parseTokenStmt(state) {
   const head = parseCall(state);
   if (head.name.toLowerCase() !== 'token') {
@@ -2736,7 +2741,9 @@ export function parseTokenStmt(state) {
   return { kind: 'token', head, bodyCalls, meta };
 }
 
-/** `statement := agent_stmt | order_stmt | bracket_stmt | token_stmt` —
+/** `statement := agent_stmt | order_stmt | help_stmt | cancel_all_orders_stmt | token_stmt`
+ *  (`bracket_stmt` removed 2026-11, Track 3 T3.4, Bracket/Template/GTT removal — a leading
+ *  `bracket(...)` is rejected immediately below, before this dispatch is even consulted) —
  *  the top-level DISPATCH rule only (which production to parse `state`
  *  as), factored out of `parseStatement` (Sprint H) so the suggestion
  *  engine's `_collectBindingsUpToCursor` can run the EXACT SAME dispatch
@@ -2886,7 +2893,8 @@ function _dispatchStatement(state) {
   return parseAgentStmt(state);
 }
 
-/** `statement := agent_stmt | order_stmt | bracket_stmt | token_stmt` —
+/** `statement := agent_stmt | order_stmt | help_stmt | cancel_all_orders_stmt | token_stmt`
+ *  (`bracket_stmt` removed 2026-11 — see `_dispatchStatement`'s own doc comment) —
  *  top-level entry point. Returns `{ ast, errors }` — `ast` is `null` on
  *  any parse failure. */
 export function parseStatement(text) {
@@ -4703,23 +4711,25 @@ const _MESSAGE_KEYS = new Set(['msg', 'message']);
 // follow. Closes the "msg=hello doesn't [accept bare]" inconsistency.
 const _MESSAGE_SPEC = Object.freeze({ type: 'freetext' });
 
-/** Resolve ONE call from a channel-call-list — the shared half of
- *  `alert_clause`'s own call_list production AND the new action-level
- *  `notify=[...]` (Sprint — see this file's CLAUDE.md entry for the
- *  full design) — against `catalog.channels`. This is the ONE place a
- *  channel name is looked up and its own declared `params_schema`
- *  resolved (via `_compileGenericActionParams`, generically, with zero
- *  channel-specific code), so a brand-new channel added only to the
- *  catalog works in EITHER caller with no frontend code changes at all.
+/** Resolve ONE call from a channel-call-list — against `catalog.channels`.
+ *  This is the ONE place a channel name is looked up and its own
+ *  declared `params_schema` resolved (via `_compileGenericActionParams`,
+ *  generically, with zero channel-specific code), so a brand-new channel
+ *  added only to the catalog works with no frontend code changes at all.
+ *
+ *  Its only real caller now is `compileAlertClause`'s own call_list
+ *  production (below) — `alert(...)`'s channel-list body. The
+ *  action-level `notify=[...]` param this function used to also serve
+ *  was removed 2026-11 (channel-naming removal commit `0216d534`) along
+ *  with its own caller, `_compileNotifyClause`/`_splitNotifyArg`.
  *
  *  `stripKeys` (optional `Set<lowercased string>`) names args to pull
  *  out of the call BEFORE the generic params_schema compile runs —
  *  ALERT's own `msg=`/`message=` sugar (`_MESSAGE_KEYS`) is never a
  *  real channel param (see that const's own header comment), so ALERT
- *  passes `_MESSAGE_KEYS` here; `notify=` has no such sugar and omits
- *  this entirely. `contextLabel` only affects the "is ${other} — only
- *  channels are allowed in ${contextLabel}" wording, so each caller's
- *  error message still names its own clause.
+ *  passes `_MESSAGE_KEYS` here. `contextLabel` only affects the "is
+ *  ${other} — only channels are allowed in ${contextLabel}" wording, so
+ *  the caller's error message still names its own clause.
  *
  *  Returns `{ errors }` (non-empty on failure), or one of:
  *    `{ errors: [], isFragmentRef: true, token }` — a bare Token
@@ -4731,7 +4741,7 @@ const _MESSAGE_SPEC = Object.freeze({ type: 'freetext' });
  *      param object (possibly `{}`); `strippedArgs` is whatever
  *      `stripKeys` pulled out (always `[]` when `stripKeys` is
  *      omitted) — left for the caller to interpret (ALERT's own `msg`
- *      precedence logic; `notify=` never receives a non-empty array). */
+ *      precedence logic). */
 function _resolveChannelCall(call, catalog, stripKeys, contextLabel = 'here') {
   const entry = catalog.channels.get(call.name.toLowerCase());
   if (!entry) {

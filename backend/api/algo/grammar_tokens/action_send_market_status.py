@@ -219,18 +219,14 @@ async def _action_live_send_market_status(context: dict, params: dict) -> None:
     # truthiness) — so the keys are added to `extra` only when `context`
     # itself carries them, never with a fabricated `None`.
     #
-    # KNOWN RENDERER GAP (not fixed here — `event_agents.py` is out of
-    # scope for this change): `_render_market_status()` currently calls
-    # `format_notification_header(..., trigger_known=not
-    # has_process_identity)`, which is hardcoded `False` whenever
-    # `source_type`/`source_name` are set — true unconditionally for
-    # this producer. `_source_extra()` only forwards `agent_id`/
-    # `agent_name` into `resolve_source()` when `trigger_known` is
-    # `True`, so until that renderer line is corrected (e.g. to
-    # `trigger_known=has_agent_identity`), the `agent_id`/`agent_name`
-    # this function now threads through are silently dropped at render
-    # time — this record-side fix is a real but currently inert
-    # precondition for that renderer fix, not a complete fix on its own.
+    # 2026-11-08 audit fix (item 5) — the renderer-side precondition this
+    # comment used to flag as outstanding was fixed the same day:
+    # `event_agents.py:_render_market_status()` now calls
+    # `format_notification_header(..., trigger_known=
+    # _order_scope_trigger_known(x))`, the same key-presence check used
+    # here, so an `agent_id`/`agent_name` this function threads through
+    # (an agent-invoked `send_market_status()` call) now reaches the
+    # rendered header instead of being silently dropped.
     extra = {
         "tags": ["agent", "alert"], "alert_event": "market_status",
         "title": "Market Status", "body": message,

@@ -987,7 +987,7 @@ retired detector's `source_slug`, so all three channel agents show the same labe
 | `ramboq_logger.py` | Attaches the log-store handler and the origin filter |
 | `event_agents.py` | New. Agents, renderers, channels, gate wiring, dispatch |
 | `error_alerts.py` | `ErrorAlertHandler` removed. `RepeatGate` and `SharedRepeatGate` |
-| `alert_utils.py` | `dispatch_payload`, `_email_message`, `_send_email_to_recipients` split out of `_dispatch`. `order_failure_messages`. Summary and order failure record instead of send |
+| `alert_utils.py` | `dispatch_payload`, `_email_message`, `_send_email_to_recipients` split out of `_dispatch` (since removed 2026-11-12 as dead code). `order_failure_messages`. Summary and order failure record instead of send |
 | `fill_notify.py` | Records instead of sends |
 | `chase.py`, `template_attach.py`, `orders_place.py` | Record instead of send *(`template_attach.py` since deleted — Bracket/Template-GTT removal, T3.1, 2026-11. Historical row only; `chase.py`/`orders_place.py` unaffected.)* |
 | `agent_engine.py` | Rich alert records instead of `_dispatch` |

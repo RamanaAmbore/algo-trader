@@ -147,6 +147,44 @@ def test_age_validate_action_entries_accepts_actions_with_no_notify_key():
 
 
 # ---------------------------------------------------------------------------
+# 2026-11-08 audit fix (item 9) — `_age_validate_preamble_entries` rejects
+# a `notify` key on a `preamble` entry too, closing the gap
+# `_age_validate_action_entries` (actions-only) left open.
+# ---------------------------------------------------------------------------
+
+def test_age_validate_preamble_entries_rejects_notify_key():
+    from backend.api.routes.agents import _age_validate_preamble_entries
+    from litestar.exceptions import HTTPException
+
+    preamble = [
+        {"type": "log", "params": {"message": "x"}, "notify": [{"channel": "telegram"}]},
+    ]
+    with pytest.raises(HTTPException) as exc_info:
+        _age_validate_preamble_entries(preamble)
+    assert "notify" in str(exc_info.value.detail).lower()
+
+
+def test_age_validate_preamble_entries_accepts_alert_shaped_entry():
+    """An `alert(...)` preamble entry (`{"type": "alert", "events":
+    [...]}`, no `params` key, and `"alert"` is not itself a known
+    dispatchable action type) must NOT be rejected — this is exactly
+    why `_age_validate_preamble_entries` does not reuse the full
+    `_age_validate_action_entries` validator wholesale."""
+    from backend.api.routes.agents import _age_validate_preamble_entries
+
+    _age_validate_preamble_entries([
+        {"type": "alert", "events": [{"log_tag": "demo", "render": "generic_notice"}]},
+    ])
+
+
+def test_age_validate_preamble_entries_accepts_none_and_empty():
+    from backend.api.routes.agents import _age_validate_preamble_entries
+
+    _age_validate_preamble_entries(None)
+    _age_validate_preamble_entries([])
+
+
+# ---------------------------------------------------------------------------
 # 4. ACTION_NOTIFY_AGENT is retired, not deleted
 # ---------------------------------------------------------------------------
 

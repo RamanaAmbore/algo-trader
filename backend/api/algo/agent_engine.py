@@ -2663,23 +2663,50 @@ _EXPIRY_RISK_AGENT_DEFAULTS = dict(
     ],
 )
 
+# 2026-11 same-window consolidation (operator finding: 3 alerts could
+# fire within ~1 minute of each other on an expiry day, 30 min before
+# close — this generic reminder, the expiry risk alert, and the
+# richer `expiry-day-preclose-alert` with the actual position
+# breakdown). Each risk alert's own `all[]` now ADDS a suppression leaf
+# — `not{all[is_{exch}_expiry_today==1, minutes_until_{exch}_close<=30]}`
+# — so it goes quiet specifically during its OWN exchange's 30-minute
+# pre-close window on an expiry day (the exact window
+# `expiry-day-preclose-alert` already reports the same position in,
+# with strictly more content), while continuing to fire normally the
+# rest of market hours and on any non-expiry day. Content-matched
+# one-time migrations for both agents' pre-consolidation condition
+# shapes live in `_ae_sync_existing_builtin` (see
+# `_AE_CONTENT_MATCHED_COND_MIGRATIONS` below) — a bare edit here does
+# NOT reach an already-seeded prod/dev row on its own.
 _EXPIRY_RISK_AGENTS = [
     {
         "slug": "expiry-nfo-risk-alert",
         "name": "NFO expiry risk — ITM options or open futures",
-        "long_name": "when:positions.expiring_today.nfo.(is_itm==1 OR is_future==1)   alert:high/tg+email+ntfy(high)+log   do:notify-only",
-        "description": "Fires on expiry day when any NFO position is ITM (option) or is an open future — both require active management.",
-        "conditions": {"any": [
-            {"op": "==", "scope": "positions.expiring_today.nfo", "metric": "is_itm",    "value": 1.0},
-            {"op": "==", "scope": "positions.expiring_today.nfo", "metric": "is_future", "value": 1.0},
+        "long_name": "when:positions.expiring_today.nfo.(is_itm==1 OR is_future==1) AND NOT(nse_preclose_window)   alert:high/tg+email+ntfy(high)+log   do:notify-only",
+        "description": "Fires on expiry day when any NFO position is ITM (option) or is an open future — both require active management. Suppressed during NSE's own 30-min pre-close window, where expiry-day-preclose-alert already reports the same thing.",
+        "conditions": {"all": [
+            {"any": [
+                {"op": "==", "scope": "positions.expiring_today.nfo", "metric": "is_itm",    "value": 1.0},
+                {"op": "==", "scope": "positions.expiring_today.nfo", "metric": "is_future", "value": 1.0},
+            ]},
+            {"not": {"all": [
+                {"op": "==", "scope": "funds.total", "metric": "is_nse_expiry_today",        "value": 1.0},
+                {"op": "<=", "scope": "funds.total", "metric": "minutes_until_nse_close",     "value": 30},
+            ]}},
         ]},
     },
     {
         "slug": "expiry-mcx-risk-alert",
         "name": "MCX expiry risk — unhedged options or open futures",
-        "long_name": "when:positions.expiring_today.mcx_unhedged.pnl>=-inf   alert:high/tg+email+ntfy(high)+log   do:notify-only",
-        "description": "Fires on expiry day when any MCX position is unhedged (net exposure) or is a future — broker will auto-settle without manual close.",
-        "conditions": {"op": ">=", "scope": "positions.expiring_today.mcx_unhedged", "metric": "pnl", "value": -999999999},
+        "long_name": "when:positions.expiring_today.mcx_unhedged.pnl>=-inf AND NOT(mcx_preclose_window)   alert:high/tg+email+ntfy(high)+log   do:notify-only",
+        "description": "Fires on expiry day when any MCX option position is unhedged after the real engine's 4-rule netting (or UNKNOWN-moneyness) — broker will auto-settle without manual close. A lone expiring future with no option leg is never itself flagged (futures are netting partners only, never a needs_close candidate in their own right). Suppressed during MCX's own 30-min pre-close window, where expiry-day-preclose-alert already reports the same thing.",
+        "conditions": {"all": [
+            {"op": ">=", "scope": "positions.expiring_today.mcx_unhedged", "metric": "pnl", "value": -999999999},
+            {"not": {"all": [
+                {"op": "==", "scope": "funds.total", "metric": "is_mcx_expiry_today",        "value": 1.0},
+                {"op": "<=", "scope": "funds.total", "metric": "minutes_until_mcx_close",     "value": 30},
+            ]}},
+        ]},
     },
 ]
 
@@ -3037,11 +3064,28 @@ _INFO_AGENTS = [
         # counterpart to market-preclose-mcx-v2 above. Uses the shared
         # _INFO_AGENT_DEFAULTS channel set (telegram+ntfy(default)+log)
         # via setdefault below — email was not named for this one.
+        #
+        # 2026-11 same-window consolidation (operator finding): on an
+        # NSE expiry day, this generic reminder used to fire in the
+        # SAME ~1-minute window as `expiry-day-preclose-alert`, which
+        # already covers the same "30 min before NSE close" moment with
+        # strictly more useful content (the real position breakdown).
+        # Added `is_nse_expiry_today==0` so this reminder only fires on
+        # a NON-expiry day. `market-preclose-mcx-v2` is deliberately
+        # left untouched — `expiry-day-preclose-alert` covers BOTH
+        # exchanges in one alert, so only the NSE-side generic reminder
+        # needs this suppression. Content-matched one-time migration for
+        # this condition shape lives in `_ae_sync_existing_builtin` (see
+        # `_AE_CONTENT_MATCHED_COND_MIGRATIONS` below) — a bare edit
+        # here does NOT reach an already-seeded prod/dev row on its own.
         "slug": "market-preclose-nonmcx",
         "name": "NSE pre-close",
-        "long_name": "when:minutes_until_nse_close<=30   schedule:always/cooldown:1320   alert:info/tg+ntfy(default)+log   do:notify-only",
-        "description": "Fires once 30 minutes before NSE's own session closes today.",
-        "conditions": {"op": "<=", "scope": "funds.total", "metric": "minutes_until_nse_close", "value": 30},
+        "long_name": "when:minutes_until_nse_close<=30 AND NOT(nse_expiry_today)   schedule:always/cooldown:1320   alert:info/tg+ntfy(default)+log   do:notify-only",
+        "description": "Fires once 30 minutes before NSE's own session closes today, on a non-expiry day. On an NSE expiry day, expiry-day-preclose-alert already covers this same moment with the real position breakdown.",
+        "conditions": {"all": [
+            {"op": "<=", "scope": "funds.total", "metric": "minutes_until_nse_close", "value": 30},
+            {"op": "==", "scope": "funds.total", "metric": "is_nse_expiry_today",     "value": 0.0},
+        ]},
     },
 ]
 
@@ -3290,6 +3334,44 @@ def _ae_is_stale_loss_positions_total_cond(cond: dict | None) -> bool:
     return cond == _LOSS_POSITIONS_TOTAL_OLD_COND
 
 
+# Table-driven content-matched one-time migrations (2026-11 same-window
+# consolidation — see the `_EXPIRY_RISK_AGENTS`/`market-preclose-nonmcx`
+# BUILTIN_AGENTS entries for the full rationale). Each entry is
+# {slug: exact pre-consolidation condition tree}. Generalizes the
+# single-slug `loss-positions-total` precedent above to 3 more agents
+# without adding 3 more near-duplicate branches to
+# `_ae_sync_existing_builtin` (already near the radon CC gate). Same
+# safety contract: byte-for-byte exact match only — an operator who
+# customized any of these 3 rows in ANY way is left alone; this sync
+# then no-ops for that row, which is always safe (never a false
+# positive, only a false negative that means "nothing to migrate").
+_AE_CONTENT_MATCHED_COND_MIGRATIONS: dict[str, dict] = {
+    "market-preclose-nonmcx": {
+        "op": "<=", "scope": "funds.total", "metric": "minutes_until_nse_close", "value": 30,
+    },
+    "expiry-nfo-risk-alert": {"any": [
+        {"op": "==", "scope": "positions.expiring_today.nfo", "metric": "is_itm",    "value": 1.0},
+        {"op": "==", "scope": "positions.expiring_today.nfo", "metric": "is_future", "value": 1.0},
+    ]},
+    "expiry-mcx-risk-alert": {
+        "op": ">=", "scope": "positions.expiring_today.mcx_unhedged", "metric": "pnl", "value": -999999999,
+    },
+}
+
+
+def _ae_apply_content_matched_cond_migration(existing, agent_def: dict) -> None:
+    """Apply a table-driven content-matched one-time migration (see
+    `_AE_CONTENT_MATCHED_COND_MIGRATIONS` above) when `existing.
+    conditions` is byte-for-byte the pre-migration shape recorded for
+    this slug. No-ops for any slug not in the table, or any row whose
+    stored conditions don't exactly match (including an operator-
+    customized row) — same exact-equality safety contract as
+    `_ae_is_stale_loss_positions_total_cond`."""
+    old_cond = _AE_CONTENT_MATCHED_COND_MIGRATIONS.get(agent_def.get("slug", ""))
+    if old_cond is not None and existing.conditions == old_cond:
+        existing.conditions = agent_def["conditions"]
+
+
 def _ae_sync_existing_builtin(existing, agent_def: dict) -> None:
     """Force-sync mutable fields on an existing system Agent row.
 
@@ -3361,6 +3443,9 @@ def _ae_sync_existing_builtin(existing, agent_def: dict) -> None:
         existing.conditions = agent_def["conditions"]
         existing.cooldown_minutes = agent_def.get(
             "cooldown_minutes", existing.cooldown_minutes)
+    # 2026-11 same-window consolidation — see
+    # `_AE_CONTENT_MATCHED_COND_MIGRATIONS`'s own docstring.
+    _ae_apply_content_matched_cond_migration(existing, agent_def)
 
 
 def _ae_build_agent_row(agent_def: dict) -> 'Agent':

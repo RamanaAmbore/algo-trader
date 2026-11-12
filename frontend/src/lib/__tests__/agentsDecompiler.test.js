@@ -1673,6 +1673,46 @@ describe('Sprint [GIVEN-expr] — agent.given[] decompile round-trip', () => {
   });
 });
 
+// Audit follow-up (2026-11) — existing coverage only exercised a preamble
+// alert(...) at COMPILE time (agentsGrammar.test.js's "no ALERT keyword
+// exists anywhere" + "has_explicit_alert ... is absent for a
+// preamble-ONLY alert(...) call" describe blocks). Nothing committed
+// confirmed the DECOMPILE direction for a preamble-position alert(...) —
+// confirmed working via an ad-hoc check during the audit, never
+// committed as a real test until now.
+describe('preamble alert(...) decompile round-trip (audit follow-up, 2026-11)', () => {
+  it('a preamble alert(telegram, ntfy(priority=urgent)) compiles to a preamble entry, decompiles to text with the alert BEFORE WHEN and no alert inside DO, and recompiles byte-identical', () => {
+    const text = 'alert(telegram, ntfy(priority=urgent))\n'
+      + 'WHEN pnl@positions.total <= -50000 DO log(level=info, message="hit")';
+    const { first, dec } = roundTrip(text);
+
+    // Compiles to a preamble entry, not a DO-level alert.
+    expect(first.agent.preamble).toEqual([
+      { type: 'alert', events: [
+        { channel: 'telegram', enabled: true },
+        { channel: 'ntfy', enabled: true, priority: 'urgent' },
+      ] },
+    ]);
+    expect(first.agent.events).toEqual([]);
+    // has_explicit_alert is specifically about a DO-level alert() — a
+    // preamble-only alert(...) must never set it (same invariant
+    // agentsGrammar.test.js's item 0.C describe block already pins at
+    // compile time; this confirms it still holds for THIS statement
+    // shape, which also carries a real WHEN...DO...).
+    expect('has_explicit_alert' in first.agent).toBe(false);
+
+    // Decompiled text: the alert(...) line is reproduced BEFORE WHEN
+    // (preamble position preserved, not collapsed into DO), and the DO
+    // segment carries no second, synthesized alert(...) call.
+    const alertIdx = dec.text.indexOf('alert(');
+    const whenIdx = dec.text.indexOf('WHEN');
+    expect(alertIdx).toBeGreaterThanOrEqual(0);
+    expect(whenIdx).toBeGreaterThan(alertIdx);
+    const doIdx = dec.text.indexOf('DO');
+    expect(dec.text.slice(doIdx)).not.toContain('alert(');
+  });
+});
+
 describe('Sprint [order-unify] — order/place_order decompile tolerance', () => {
   it('a stored type: "order" action decompiles to order(...)', () => {
     const r = decompileActions(

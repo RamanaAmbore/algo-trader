@@ -148,7 +148,7 @@ class TestWhereFilterNarrowsRows:
 #  2. Parity with the bespoke mcx_unhedged token
 # ═══════════════════════════════════════════════════════════════════════
 
-def _unhedged_parity_fixture():
+def _unhedged_parity_fixture(*, spot_prices=None):
     """Lone unhedged MCX leg + a perfectly-hedged MCX pair, matching the
     SAME shape test_scope_filter_symbol.py's mcx_unhedged fixtures use —
     with `is_unhedged`/`net_qty` already broadcast the way
@@ -181,10 +181,29 @@ def _unhedged_parity_fixture():
 
 
 class TestParityWithBespokeMcxUnhedgedToken:
+    """2026-11 classifier re-base: `.mcx_unhedged` (the bespoke token)
+    now classifies via the real `ExpiryEngine`, while the generic
+    `is_unhedged`/`net_qty` DSL columns (`compute_mcx_ce_pe_net_groups`,
+    `background.py`'s broadcast) are DELIBERATELY left on the old
+    crude signed-quantity-sum heuristic — see
+    `scope_positions_expiring_today_mcx_unhedged.py`'s own module
+    docstring for why. The two can now genuinely disagree. This class's
+    first test demonstrates a scenario where they still happen to
+    agree (both the old heuristic AND the real engine confirm the GOLD
+    pair is safely excluded, once given a resolvable spot); the second
+    test pins the now-DOCUMENTED disagreement explicitly, so it's
+    never mistaken for an accidental regression."""
+
     def test_where_filter_reproduces_bespoke_token_row_set(self):
+        """With a resolvable GOLD spot at the strike (ATM — confirmed,
+        not UNKNOWN), both mechanisms agree: the GOLD pair is excluded
+        and the lone GOLDM leg (no spot given, UNKNOWN under the real
+        engine, unconditionally flagged under the crude sum) surfaces
+        under both."""
         rows = _unhedged_parity_fixture()
         ctx_general = Context(position_rows=rows, now=_NOW_EXPIRY_DAY)
-        ctx_bespoke = Context(position_rows=rows, now=_NOW_EXPIRY_DAY)
+        ctx_bespoke = Context(position_rows=rows, spot_prices={"GOLD": 75000.0},
+                               now=_NOW_EXPIRY_DAY)
 
         general_leaf = {
             "metric": "pnl", "scope": "positions.expiring_today",
@@ -204,6 +223,38 @@ class TestParityWithBespokeMcxUnhedgedToken:
         general_symbols = {m["row"]["tradingsymbol"] for m in general_result}
         bespoke_symbols = {m["row"]["tradingsymbol"] for m in bespoke_result}
         assert general_symbols == bespoke_symbols == {"GOLDM25APR75000CE"}
+
+    def test_known_disagreement_without_a_resolvable_spot(self):
+        """Without ANY spot price for GOLD, the crude `is_unhedged`
+        column still excludes the GOLD pair (signed-sum == 0, unaware
+        of moneyness), while the real engine includes it as UNKNOWN —
+        "can't confirm this leg is safe" (see `_scope_positions_
+        expiring_today_mcx_unhedged`'s own docstring). This is the
+        documented residual gap this re-base deliberately leaves open
+        for the generic DSL column — pinned here so it's a known,
+        tested fact, not a silent surprise."""
+        rows = _unhedged_parity_fixture()
+        ctx_general = Context(position_rows=rows, now=_NOW_EXPIRY_DAY)
+        ctx_bespoke = Context(position_rows=rows, now=_NOW_EXPIRY_DAY)
+
+        general_leaf = {
+            "metric": "pnl", "scope": "positions.expiring_today",
+            "op": "<=", "value": 1,
+            "where": {"all": [
+                {"column": "exchange", "op": "==", "value": "MCX"},
+                {"column": "is_unhedged", "op": "==", "value": 1},
+            ]},
+        }
+        bespoke_leaf = {
+            "metric": "pnl", "scope": "positions.expiring_today.mcx_unhedged",
+            "op": "<=", "value": 1,
+        }
+        general_symbols = {m["row"]["tradingsymbol"] for m in evaluate(general_leaf, ctx_general)}
+        bespoke_symbols = {m["row"]["tradingsymbol"] for m in evaluate(bespoke_leaf, ctx_bespoke)}
+
+        assert general_symbols == {"GOLDM25APR75000CE"}
+        assert bespoke_symbols == {"GOLDM25APR75000CE", "GOLD25APR75000CE", "GOLD25APR75000PE"}
+        assert general_symbols != bespoke_symbols
 
 
 # ═══════════════════════════════════════════════════════════════════════

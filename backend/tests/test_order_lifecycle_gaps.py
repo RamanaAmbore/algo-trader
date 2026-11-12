@@ -194,3 +194,59 @@ class TestRenderMarketStatusTriggerKnownFix:
         }}
         title, body, tg = _render_market_status(rec)
         assert body.splitlines()[0] == "Source: Market status report triggered manually"
+
+
+class TestRenderDeploySyncTriggerKnownFix:
+    """2026-11-08 audit fix (item 4) — `_render_deploy_sync` had the
+    exact same hardcoded `trigger_known=not has_process_identity` bug
+    `_render_market_status` was already fixed for above. Every real
+    producer of this renderer (gtt_asymmetric, oco_double_fire,
+    ticker_recovered, ticker_degraded, visitor_report, deploy_out_of_sync,
+    user_registered, the unrouted catch-all, app_message) always sets
+    `source_type`/`source_name` and never a real `agent_id`/`agent_name`,
+    so this bug was latent — but a hardcoded `False` would silently drop
+    a real trigger for any future agent-invoked `generic_notice`-shaped
+    call. Fixed to the same `_order_scope_trigger_known(x)` key-presence
+    check."""
+
+    def test_scheduled_process_call_shows_no_trigger(self):
+        """No `agent_id`/`agent_name` keys at all (every real producer's
+        actual shape today) — must still show no trigger."""
+        from backend.api.algo.event_agents import _render_deploy_sync
+
+        rec = {"extra": {
+            "title": "Deploy out of sync",
+            "body": "Local HEAD != origin HEAD",
+            "source_type": "process", "source_name": "Deploy sync",
+        }}
+        title, body, tg = _render_deploy_sync(rec)
+        assert body.splitlines()[0] == "Source: Deploy sync"
+
+    def test_agent_invoked_call_shows_the_real_agent(self):
+        """A hypothetical future agent-invoked generic_notice call that
+        carries a real `agent_id`/`agent_name` pair alongside the process
+        identity must surface "triggered by {agent}", not be silently
+        dropped the way the pre-fix hardcoded `trigger_known=False`
+        would have."""
+        from backend.api.algo.event_agents import _render_deploy_sync
+
+        rec = {"extra": {
+            "title": "Deploy out of sync",
+            "body": "Local HEAD != origin HEAD",
+            "source_type": "process", "source_name": "Deploy sync",
+            "agent_id": 42, "agent_name": "custom-agent",
+        }}
+        title, body, tg = _render_deploy_sync(rec)
+        assert body.splitlines()[0] == "Source: Deploy sync triggered by custom-agent"
+
+    def test_agent_invoked_manual_sentinel_shows_triggered_manually(self):
+        from backend.api.algo.event_agents import _render_deploy_sync
+
+        rec = {"extra": {
+            "title": "Deploy out of sync",
+            "body": "Local HEAD != origin HEAD",
+            "source_type": "process", "source_name": "Deploy sync",
+            "agent_id": None, "agent_name": None,
+        }}
+        title, body, tg = _render_deploy_sync(rec)
+        assert body.splitlines()[0] == "Source: Deploy sync triggered manually"

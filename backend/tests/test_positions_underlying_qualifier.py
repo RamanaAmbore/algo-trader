@@ -214,13 +214,20 @@ class TestComposesWithVariants:
         assert result[0]["row"]["tradingsymbol"] == "GOLDM25APR75000CE"
 
     def test_mcx_unhedged_hedged_leg_still_excluded_even_if_underlying_matches(self):
+        """2026-11 classifier re-base: `.mcx_unhedged` now classifies via
+        the real `ExpiryEngine`, which needs a resolvable spot to confirm
+        a leg is NOT ITM/NTM (an unconfirmed leg is surfaced, never
+        silently excluded — see `scope_positions_expiring_today_mcx_
+        unhedged.py`'s own docstring). `spot_prices` is set to the SAME
+        value as the strike so both legs classify ATM (neither ITM nor
+        NTM) — confirmed-safe, still genuinely excluded."""
         rows = [
             {"account": "ACCT_X", "tradingsymbol": "GOLD25APR75000CE",
              "exchange": "MCX", "quantity": 1, "pnl": -9000.0, "underlying": "GOLD"},
             {"account": "ACCT_X", "tradingsymbol": "GOLD25APR75000PE",
              "exchange": "MCX", "quantity": -1, "pnl": -9000.0, "underlying": "GOLD"},
         ]
-        ctx = Context(position_rows=rows, now=_NOW_EXPIRY_DAY)
+        ctx = Context(position_rows=rows, spot_prices={"GOLD": 75000.0}, now=_NOW_EXPIRY_DAY)
         leaf = {
             "metric": "pnl", "scope": "positions.expiring_today.mcx_unhedged",
             "op": "<=", "value": -5000,

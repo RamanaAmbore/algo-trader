@@ -1277,11 +1277,23 @@ async def _migrate_agents_require_release(conn) -> None:
 
 async def _migrate_agents_strip_notify_from_actions(conn) -> None:
     """One-time data normalization — strips the retired `notify` sibling
-    key from every entry of every `agents.actions` JSONB array (2026-11
-    channel-authoring retirement: the `notify=[...]` action-call param
-    is removed with no replacement; see `actions.py`'s former "Part B"
-    block and `routes/agents.py:_age_validate_action_entries`'s
-    rejection of a `notify` key on any future save).
+    key from every entry of every `agents.actions` AND `agents.preamble`
+    JSONB array (2026-11 channel-authoring retirement: the
+    `notify=[...]` action-call param is removed with no replacement;
+    see `actions.py`'s former "Part B" block and
+    `routes/agents.py:_age_validate_action_entries`'s rejection of a
+    `notify` key on any future save).
+
+    2026-11-08 audit fix (item 9) — the original version of this
+    migration only covered `actions`. `preamble` (a saved cycle-agent's
+    unconditional-or-cooldown-gated statement list, see the
+    "Saved cycle-agent preamble" design entry) carries the SAME shared
+    statement vocabulary a DO-clause action does, so a hand-authored or
+    API/MCP-written `notify=[...]` call could just as easily have landed
+    there. The original fix's own live DB check (confirmed zero `actions`
+    rows affected) was not re-run against `preamble` specifically for
+    this follow-up — this closes the gap structurally for the future,
+    not a claim that live `preamble` data was re-verified clean.
 
     Pure SQL, not a Python row-by-row rewrite — unlike a hypothetical
     sibling migration that also touched `conditions`/`events`/`actions`
@@ -1298,19 +1310,26 @@ async def _migrate_agents_strip_notify_from_actions(conn) -> None:
 
     Idempotent: the `WHERE EXISTS (...)` guard only matches a row that
     actually still has a `notify` key on some object element of
-    `actions`, so a re-run (next boot) is a no-op UPDATE of zero rows.
-    `jsonb_typeof(elem) = 'object'` guards the `elem - 'notify'`
-    subtraction — `actions` entries are always objects by construction
-    (`_age_validate_action_entries` requires `{"type": ..., "params":
-    {...}}`), but the CASE keeps a malformed non-object element
-    (if one ever existed) untouched rather than raising. `actions` is
-    an ORDERED list (an agent's own execution order), so the rebuild
-    uses `WITH ORDINALITY` + `jsonb_agg(... ORDER BY ord)` to make that
-    order explicit and guaranteed, rather than relying on
-    `jsonb_array_elements()`'s own (today incidentally stable, but
-    unspecified) iteration order. `SET LOCAL lock_timeout` bounds how
-    long this can wait behind any in-flight row lock on `agents`, same
-    pattern as every other migration here.
+    `actions`/`preamble`, so a re-run (next boot) is a no-op UPDATE of
+    zero rows. `jsonb_typeof(elem) = 'object'` guards the
+    `elem - 'notify'` subtraction — entries are always objects by
+    construction (`_age_validate_action_entries` requires `{"type":
+    ..., "params": {...}}`), but the CASE keeps a malformed non-object
+    element (if one ever existed) untouched rather than raising.
+    `actions`/`preamble` are both ORDERED lists (an agent's own
+    execution order), so the rebuild uses `WITH ORDINALITY` +
+    `jsonb_agg(... ORDER BY ord)` to make that order explicit and
+    guaranteed, rather than relying on `jsonb_array_elements()`'s own
+    (today incidentally stable, but unspecified) iteration order.
+    `SET LOCAL lock_timeout` bounds how long this can wait behind any
+    in-flight row lock on `agents`, same pattern as every other
+    migration here. The two columns are stripped via two independent
+    `UPDATE` statements rather than one combined query, since a row can
+    have either column `NULL` independently of the other (`preamble`
+    is optional; a non-persistent/dry-run agent may carry no `preamble`
+    at all) — a single combined `WHERE` would need to handle every
+    `(actions NULL/preamble NULL)` combination, more complex for no
+    benefit over two simple, independently idempotent statements.
     """
     from sqlalchemy import text
     await conn.execute(text("SET LOCAL lock_timeout = '5s'"))
@@ -1333,6 +1352,28 @@ async def _migrate_agents_strip_notify_from_actions(conn) -> None:
           AND  jsonb_typeof(actions) = 'array'
           AND  EXISTS (
                 SELECT 1 FROM jsonb_array_elements(actions) AS e
+                WHERE jsonb_typeof(e) = 'object' AND e ? 'notify'
+          )
+    """))
+    await conn.execute(text("""
+        UPDATE agents
+        SET    preamble = (
+            SELECT COALESCE(
+                jsonb_agg(
+                    CASE WHEN jsonb_typeof(elem) = 'object'
+                         THEN elem - 'notify'
+                         ELSE elem
+                    END
+                    ORDER BY ord
+                ),
+                '[]'::jsonb
+            )
+            FROM jsonb_array_elements(preamble) WITH ORDINALITY AS t(elem, ord)
+        )
+        WHERE  preamble IS NOT NULL
+          AND  jsonb_typeof(preamble) = 'array'
+          AND  EXISTS (
+                SELECT 1 FROM jsonb_array_elements(preamble) AS e
                 WHERE jsonb_typeof(e) = 'object' AND e ? 'notify'
           )
     """))

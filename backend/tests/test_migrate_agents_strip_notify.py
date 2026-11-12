@@ -11,23 +11,29 @@ migration tests assert on the SQL text and call-ordering, never against
 a real Postgres connection.
 
 Covers:
-  1. The migration issues a single idempotent `UPDATE agents ... WHERE
-     EXISTS (...)` statement that rebuilds `actions` via `jsonb_agg`
-     over `jsonb_array_elements(...) WITH ORDINALITY`, ordered by that
-     ordinality column — action order must be explicit, never left to
-     an unspecified iteration order.
+  1. The migration issues idempotent `UPDATE agents ... WHERE
+     EXISTS (...)` statements that rebuild `actions` AND `preamble` via
+     `jsonb_agg` over `jsonb_array_elements(...) WITH ORDINALITY`,
+     ordered by that ordinality column — entry order must be explicit,
+     never left to an unspecified iteration order.
   2. `elem - 'notify'` only runs on an object element (`jsonb_typeof`
      guard), never raising on a malformed non-object entry.
   3. `SET LOCAL lock_timeout` is set, matching every other migration.
   4. `init_db()` calls it inside the `engine.begin()` transactional
      block, after `_migrate_agents_require_release(conn)`.
-  5. Scope boundary — this migration does NOT touch `events`,
-     `has_explicit_alert`, or `preamble`. The 2026-11 plan's `alert(...)`
-     DSL clause and `agent.events`/`has_explicit_alert` remain a
-     legitimate, untouched per-agent channel-selection mechanism (per
-     the operator's explicit correction) — only the `notify=[...]`
+  5. Scope boundary — this migration does NOT touch `events` or
+     `has_explicit_alert`. The 2026-11 plan's `alert(...)` DSL clause
+     and `agent.events`/`has_explicit_alert` remain a legitimate,
+     untouched per-agent channel-selection mechanism (per the
+     operator's explicit correction) — only the `notify=[...]`
      action-call parameter and the two hardcoded producer literals are
      retired.
+  6. 2026-11-08 audit fix (item 9) — the migration's SCOPE was widened
+     to also strip `notify` from `agents.preamble` (a saved cycle-
+     agent's own shared statement vocabulary, same risk as `actions`).
+     `preamble` is therefore now a DELIBERATE, covered target, not an
+     untouched boundary — see the dedicated `preamble`-shape tests
+     below.
 """
 
 from __future__ import annotations
@@ -81,15 +87,33 @@ def test_migrate_agents_strip_notify_is_idempotent_statement_wise():
 
 def test_migrate_agents_strip_notify_does_not_touch_events_or_has_explicit_alert():
     """Scope guard — the migration's own SQL text must never reference
-    `events`, `has_explicit_alert`, or `preamble`. Those remain a live,
-    untouched per-agent channel-selection mechanism (the `alert(...)`
-    DSL clause) per the operator's explicit correction mid-plan."""
+    `events` or `has_explicit_alert`. Those remain a live, untouched
+    per-agent channel-selection mechanism (the `alert(...)` DSL clause)
+    per the operator's explicit correction mid-plan. `preamble` is
+    DELIBERATELY excluded from this guard — see the 2026-11-08 widening
+    (item 9) and the dedicated `preamble`-shape tests below."""
     conn = _FakeTxConn()
     asyncio.run(dbmod._migrate_agents_strip_notify_from_actions(conn))
     joined = "\n".join(conn.executed)
     assert "events" not in joined
     assert "has_explicit_alert" not in joined
-    assert "preamble" not in joined
+
+
+def test_migrate_agents_strip_notify_also_covers_preamble_shape():
+    """2026-11-08 audit fix (item 9) — `preamble` gets the identical
+    idempotent, ordinality-ordered, object-typed-guarded treatment as
+    `actions`, via a second, independent `UPDATE` statement (a row can
+    have either column `NULL` independently of the other)."""
+    conn = _FakeTxConn()
+    asyncio.run(dbmod._migrate_agents_strip_notify_from_actions(conn))
+
+    joined = "\n".join(conn.executed)
+    assert "SET    preamble = (" in joined or "SET preamble = (" in joined
+    assert "jsonb_array_elements(preamble) WITH ORDINALITY AS t(elem, ord)" in joined
+    assert "WHERE  preamble IS NOT NULL" in joined or "WHERE preamble IS NOT NULL" in joined
+    # Both UPDATE statements are present as separate executed calls.
+    assert sum("UPDATE agents" in s for s in conn.executed) == 2
+    assert sum("elem - 'notify'" in s for s in conn.executed) == 2
 
 
 def test_init_db_calls_strip_notify_migration_after_require_release():

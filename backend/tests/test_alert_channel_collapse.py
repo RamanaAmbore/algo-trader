@@ -313,7 +313,9 @@ async def test_order_failure_identical_via_channel_agents(chans):
     # order-failure test — same new SHA).
     # 2026-11-08 audit fix (item 7) — header reads "Source: Order
     # failure triggered manually" instead of "Agent: manual".
-    tg_body = ('Source: Order failure triggered manually\n10:15:30 IST\n❌ Order rejected  [Manual]  [LIVE]  (+2 suppressed)\n'
+    # 2026-11-08 audit fix (item 2) — mode="live" shows no pill, and the
+    # subject uses the shared "{label_word}: {detail}... | {ts}" shape.
+    tg_body = ('Source: Order failure triggered manually\n10:15:30 IST\n❌ Order rejected  [Manual]    (+2 suppressed)\n'
               'ZG####  BUY  75  NIFTY26OCTFUT  (NFO)\nsource: ticket\nInsufficient funds <x>'
               '\n#manual #via_order_failure_alert #warning')
     assert chans["telegram"] == [("Order Rejected: NIFTY26OCTFUT BUY", tg_body, tg_body)]
@@ -321,9 +323,9 @@ async def test_order_failure_identical_via_channel_agents(chans):
     assert len(chans["email"]) == 1
     _, _, email_payload = chans["email"][0]
     subj, body = email_payload
-    assert subj == "[Manual] RamboQuant Order Rejected: NIFTY26OCTFUT BUY (live)"
+    assert subj == "Source: Order Rejected NIFTY26OCTFUT BUY [Manual] | 10:15:30 IST"
     assert hashlib.sha256(body.encode()).hexdigest() == \
-        "d566a312ffe6a9b8470a85225dec7d62a038c20683c1b3de14fb984e58e5d288"
+        "be52c58997bdb252245c7902f834bf2a18c35d1e4ae166d4eedd3edf16f24174"
 
 
 @pytest.mark.asyncio

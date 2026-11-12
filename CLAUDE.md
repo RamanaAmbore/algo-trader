@@ -795,7 +795,7 @@ unmasked account number.
   the log call with `extra={"self_alerted": True}`. Current callers are chase's max-attempts exhaustion
   ([`chase.py:2333-2341`](backend/api/algo/chase.py#L2333)) and `actions_live.py`'s close-position
   failure path ([`actions_live.py:752-759`](backend/api/algo/actions_live.py#L752)). The gate is
-  `_error_agent_self_alerted()` ([`event_agents.py:718`](backend/api/algo/event_agents.py#L718)). It
+  `_error_agent_self_alerted()` ([`event_agents.py:2031`](backend/api/algo/event_agents.py#L2031)). It
   applies only to ERROR_AGENT, so any other agent keyed on ERROR is unaffected. Note the
   `_render_error()` imprecision above: the `self_alerted` flag does not change how an unscoped ERROR
   line renders.
@@ -1027,6 +1027,11 @@ slug; version gating only matters when an EXISTING row's shape changes.
   the per-record `out[4]` channel-override mechanism (`event_agents.py:_dispatch_agent()`,
   `channels = out[4] if len(out) > 4 else agent_channels`), the same generic mechanism `BREACH_AGENT`
   already used, confirmed NOT breach-specific.
+- *Superseded 2026-11-12 (commit `0216d534`) — `notify=` is removed entirely, with no replacement.
+  `ACTION_NOTIFY_AGENT` is retired (deactivated, never deleted). Tests:
+  `test_actions_notify.py::test_notify_action_symbols_removed_from_actions_module`,
+  `::test_notify_renderer_removed_from_event_agents_module`,
+  `::test_action_notify_agent_retired_from_seeded_agents`. Historical record only.*
 - **Wave 2 — the `notify=[...]` action param.** `_al_notify_send_one_channel` (per-channel direct-send
   helper in `actions.py`) deleted entirely. New `_al_notify_channels_for_log()` converts the action's
   `notify=` channel list into the same `[{channel, enabled, ...params}]` shape the per-record override
@@ -1050,6 +1055,8 @@ slug; version gating only matters when an EXISTING row's shape changes.
   chase-own-requote early-return path in the same function is unchanged — still a bare `logger.debug`
   with no alert tag, since that's a routine, self-resolving event that must never page the operator
   (see "Alert routing hygiene" above).
+- *Superseded 2026-11-12 — the count is now 16 (`test_seeded_event_agents_frontend_fixture.py:84`).
+  `ACTION_NOTIFY_AGENT` is retired, so the three-addition list below no longer holds. Historical record only.*
 - `SEEDED_AGENTS` grew from 10 (post-2026-10-25 alert-channel collapse) to 13:
   `MARKET_STATUS_ALERT_AGENT`, `ACTION_NOTIFY_AGENT`, `ORDER_CANCELLED_AGENT` are the three additions.
   Frontend fixture `frontend/src/lib/__tests__/fixtures/seededEventAgents.json` and its two guard
@@ -1068,7 +1075,7 @@ slug; version gating only matters when an EXISTING row's shape changes.
   path must follow this same log-then-dispatch pattern, never add a new direct-send call site.
 
 **No fabricated "manual" identity; `APP_MESSAGE_AGENT` ends a silent CRITICAL drop; explicit
-alert-agent label (2026-11-08, uncommitted)** — Three changes to the identity and dispatch path.
+alert-agent label (2026-11-08, committed)** — Three changes to the identity and dispatch path.
 - **Unknown is not manual.** `resolve_source()` branch 2 ([alert_utils.py:745-749](backend/shared/helpers/alert_utils.py#L745))
   returns `("Agent", "unknown", None, None)` when the record carries neither an `agent_id` nor an
   `agent_name` KEY. It used to fall back to `resolve_origin()`'s `"manual"`. The header then reads
@@ -1077,7 +1084,7 @@ alert-agent label (2026-11-08, uncommitted)** — Three changes to the identity 
   process identity (see "Known gaps" in "Alert identity SSOT"). Tests:
   [test_resolve_source_2026_11_06.py](backend/tests/test_resolve_source_2026_11_06.py).
 - **`APP_MESSAGE_AGENT` (`app-message-alert`).** A CRITICAL `AppMessage` matched `ERROR_AGENT`'s catch-all
-  condition. `_error_agent_self_alerted()` ([event_agents.py:2006](backend/api/algo/event_agents.py#L2006))
+  condition. `_error_agent_self_alerted()` ([event_agents.py:2031](backend/api/algo/event_agents.py#L2031))
   then skipped it, because it carries `alert_event`. No other seeded agent matched `alert_event="app_message"`,
   so the record reached no channel at all. The fix is a dedicated `generic_notice` agent
   ([event_agents.py:2276-2280](backend/api/algo/event_agents.py#L2276), [:2309](backend/api/algo/event_agents.py#L2309)),
@@ -1086,6 +1093,9 @@ alert-agent label (2026-11-08, uncommitted)** — Three changes to the identity 
   level, or a `deploy`/`alert` tag). An ERROR-level app message therefore does not double-fire through
   `ERROR_AGENT` either. Test:
   [test_app_message_critical_delivery.py](backend/tests/test_app_message_critical_delivery.py).
+- *Amended 2026-11-12 — `min_level` is now INFO.* `APP_MESSAGE_AGENT` ([event_agents.py:2352](backend/api/algo/event_agents.py#L2352))
+  was lowered from WARNING to INFO, because `_route_sinks` deliberately treats a bare `deploy`/`alert`
+  tag as alert-worthy at INFO. The gate itself is unchanged. See the 2026-11-12 entry below.
 - **Explicit alert-agent label.** `_resolve_tag_labels()` ([event_agents.py:1131](backend/api/algo/event_agents.py#L1131))
   gives the dispatching agent its own slot, and the slot's form now differs by channel.
   - *Telegram and ntfy:* `#via_<slug>`, e.g. `#via_market_status_alert`. `_tag_token()`
@@ -1108,9 +1118,112 @@ alert-agent label (2026-11-08, uncommitted)** — Three changes to the identity 
   renderable. No live code path reaches them. `order_correction` is not in this list: it is live
   ([order_poll.py:213](backend/api/algo/order_poll.py#L213)).
 - Invariant: an identity is never fabricated. A record with no identity key renders `unknown`, and only a
-  key present with a `None` value renders `manual`. A CRITICAL `alert_event` record always has a seeded
+  key present with a `None` value renders `manual`. *Amended 2026-11-12:* a CRITICAL `alert_event` record is now consumed by an active agent or falls
+  through to ERROR_AGENT, so it no longer depends on a seeded match (see the 2026-11-12 entry). The
+  original wording follows: a CRITICAL `alert_event` record always has a seeded
   agent that matches it. The alert-agent label is resolved by `_resolve_tag_labels()` only, never by a
   second lookup.
+
+**Action-layer channel naming removed; alert agents are the only senders (commit `0216d534`, 2026-11)** —
+Per the approved plan (`.claude/PLAN.done65.md`), action agents and producer code may only log a tagged
+record. A seeded alert agent is the one thing that matches that record, resolves channels through
+`alert_routing.py`, and sends. The log record is the sole interface between them.
+- **`notify=[...]` removed.** The action-call kwarg is gone with no replacement. `_render_action_notify`
+  and the `ACTION_NOTIFY_AGENT` renderer went with it. `_age_validate_action_entries`
+  ([routes/agents.py](backend/api/routes/agents.py)) rejects a `notify` key on any `actions` entry. The
+  migration `_migrate_agents_strip_notify_from_actions()` ([database.py:1278](backend/api/database.py#L1278))
+  strips any stored `notify` key from `actions` and `preamble`, and touches no other field.
+- **Two hardcoded `[telegram, ntfy]` literals removed.** `_al_send_agent_close_hold_alert`
+  (`actions_live.py`) and `_opp_send_cancel_alert` (`orders.py`) now log only. Per-slug rows in
+  `alert_routing.py` carry the channel choice, so the channel is no longer in producer code.
+- **Two direct sends converted to log-and-dispatch.** The 08:00 draft-sweep notice in
+  `background.py:_ds_tick_draft_sweep` and the error/critical sink `app_message.py:_route_sinks` now
+  log a tagged record instead of calling a sender.
+- **Deliberately untouched.** The `alert(...)` DSL clause, `Agent.events`, `has_explicit_alert`, and the
+  decompiler round-trip are an alert agent's own mechanism for choosing its channels. They are kept intact.
+- Invariant: an action or producer never names a delivery channel. Only `alert_routing.py` does, and
+  only an alert agent sends.
+
+**Alert pipeline, third round — `order_failure` header, tag and Alerts row agree; CRITICAL
+`app_message` gets an identity line; `_error_agent_self_alerted` stops assuming a consumer exists
+(2026-11-12, uncommitted)** — Third round in the identity lineage, after "Alert identity SSOT" (2026-11-06) and "No fabricated
+'manual' identity…" (2026-11-08, commit `5615564c`). Each item was found by re-auditing those
+shipped commits, whose claimed invariants were not fully true. For completeness: `0216d534` removed
+action-layer channel naming, and `1a6edeab` fixed a seeded-agent count test. Neither changed identity.
+- **`order_failure` identity matches its header.** `order_failure_messages()`
+  ([alert_utils.py:1505](backend/shared/helpers/alert_utils.py#L1505)) builds its header from
+  `_ORDER_FAILURE_SOURCE_TYPE`/`_ORDER_FAILURE_SOURCE_NAME` ([:1445-1446](backend/shared/helpers/alert_utils.py#L1445)).
+  `_send_order_failure_messages()` ([:1567](backend/shared/helpers/alert_utils.py#L1567)) now attaches the
+  same pair to the log record's `extra` ([:1616-1617](backend/shared/helpers/alert_utils.py#L1616)). The
+  trailing tag and the Alerts tab read the record's `extra`, not the header string, so all three now
+  resolve the same `Source: Order failure ...` sentence.
+  - *Mode pill.* `mode_tag` is empty for `mode` `live` or unset ([:1466-1468](backend/shared/helpers/alert_utils.py#L1466)),
+    so a live rejection shows no pill. The old `[LIVE]` pill is gone.
+  - *Subject.* It now reads `{label_word}: Order Rejected {symbol} {side} [{origin}]{branch}{mode} | {ts}`
+    ([:1560-1563](backend/shared/helpers/alert_utils.py#L1560)). `label_word` comes from `resolve_source()`
+    on the same pair, so the subject cannot say "Agent" while the body says "Source". The old
+    `[Manual] RamboQuant Order Rejected:` shape is gone. Golden coverage: `test_alert_golden.py::test_order_failure_golden_text_channels_and_html`.
+- **CRITICAL `app_message` has an identity line and a timestamp.** `_route_sinks()`
+  ([app_message.py:254](backend/shared/helpers/app_message.py#L254)) sets `source_type="process"` and
+  `source_name="App message"` on the record. `_render_deploy_sync` ([event_agents.py:544-571](backend/api/algo/event_agents.py#L544))
+  then builds a header, where before it skipped the header entirely. The record still carries
+  `self_alerted: True`, so ERROR_AGENT never double-fires on it. Tests:
+  `test_app_message_critical_delivery.py::test_critical_app_message_body_carries_source_identity_and_timestamp`.
+- **INFO-level `AppMessage` with a `deploy`/`alert` tag reaches a channel.** `APP_MESSAGE_AGENT`'s
+  `min_level` is now INFO ([event_agents.py:2352](backend/api/algo/event_agents.py#L2352)). The
+  `should_alert` gate ([app_message.py:241](backend/shared/helpers/app_message.py#L241)) is deliberately
+  unchanged, and is pinned by `test_app_message.py::test_route_sinks_logs_tagged_record_on_deploy_tag`.
+  The gap sat at the consumer, not the gate. No live caller is affected today: the close-summary cron
+  logs INFO with unrelated tags. Test: `test_app_message_critical_delivery.py::test_info_level_deploy_tagged_app_message_now_reaches_a_channel`.
+- **`_render_deploy_sync` `trigger_known` uses key presence.** It was hardcoded to
+  `not has_process_identity`, which is always False for its real producers. It is now
+  `_order_scope_trigger_known(x)` ([event_agents.py:567-570](backend/api/algo/event_agents.py#L567)),
+  the same rule `_render_market_status` uses. Latent today: no `generic_notice` producer sets
+  `agent_id` or `agent_name`.
+- **`_error_agent_self_alerted` no longer assumes a consumer exists.** Its signature is now
+  `(agent, rec, all_agents=None)` ([event_agents.py:2031](backend/api/algo/event_agents.py#L2031)).
+  `dispatch()` ([:1738](backend/api/algo/event_agents.py#L1738)) passes its agent list into
+  `_dispatch_agent()`, and the call at [:1540](backend/api/algo/event_agents.py#L1540) forwards it.
+  For a CRITICAL record carrying `alert_event`, ERROR_AGENT is skipped only when some OTHER active
+  agent's own `conditions` match the record. The check uses the same `evaluate()` path as
+  `_record_matches_any_agent()` ([:1830](backend/api/algo/event_agents.py#L1830)).
+  - ERROR_AGENT and `UNROUTED_ALERT_AGENT` are excluded from that check, so neither covers for the other.
+  - "Other" means active only. `load_agents()` ([:1930](backend/api/algo/event_agents.py#L1930)) returns
+    `Agent.status == "active"` event agents.
+  - If no other agent matches, the record falls through to ERROR_AGENT and is delivered there. It is
+    not dropped. Live case: `concurrent_chase_refused` ([chase.py:3413](backend/api/algo/chase.py#L3413))
+    has no dedicated consumer. The sibling `send_order_failure_alert(..., bypass_gates=True)` call in
+    `chase.py` is left in place.
+  - `all_agents=None` keeps the old unconditional skip for direct callers. An explicit
+    `self_alerted=True` still short-circuits before any of this.
+  - Matching is on conditions, not delivery. A matched agent whose channels are gated by
+    `_log_only` or the action-required gate still counts as routed, as before.
+  - *Test gap.* No test pins the new no-consumer fall-through by name. `test_alert_routing_hygiene_2026_10_23.py:440`
+    covers the CRITICAL+`alert_event` skip itself. A dedicated test is outstanding.
+- **Cleanups, no behaviour change beyond the lines named.**
+  - `_render_error` ([event_agents.py:813-864](backend/api/algo/event_agents.py#L813)) calls
+    `format_notification_header()` once and uses its full output. The stray blank line is gone.
+  - `_render_order_correction` ([:389-438](backend/api/algo/event_agents.py#L389)) drops its trailing
+    `(source=...)` suffix, because the header already names the corrector.
+  - `_alert_agent_source_slug` ([:993](backend/api/algo/event_agents.py#L993)) is intentionally not
+    uniform. A collapsed event uses its retired detector's `source_slug` from `ALERT_EVENT_DISPATCH`.
+    A dedicated agent falls back to `agent.name` (2026-11-06 fix). This is not a defect, and it is pinned by a test.
+  - `_send_email_to_recipients` is deleted. Nothing in `alert_utils.py` references it.
+  - `_relabel_agent_label_to_alert()` ([alert_utils.py:739](backend/shared/helpers/alert_utils.py#L739))
+    stays. It has live callers at [:514](backend/shared/helpers/alert_utils.py#L514),
+    [:517](backend/shared/helpers/alert_utils.py#L517) and [:984](backend/shared/helpers/alert_utils.py#L984).
+- **Notify-strip migration covers `preamble`.** `_migrate_agents_strip_notify_from_actions()`
+  ([database.py:1278](backend/api/database.py#L1278)) strips the `notify` key from both `actions` and
+  `preamble` entries. A new `_age_validate_preamble_entries()` ([routes/agents.py:1301](backend/api/routes/agents.py#L1301))
+  runs on create and PATCH ([:1510](backend/api/routes/agents.py#L1510), [:1665](backend/api/routes/agents.py#L1665)).
+  It is narrower than `_age_validate_action_entries`, because a preamble `alert(...)` entry has no
+  `params` key. Tests: `test_migrate_agents_strip_notify.py::test_migrate_agents_strip_notify_also_covers_preamble_shape`,
+  `test_actions_notify.py::test_age_validate_preamble_entries_rejects_notify_key`. Live `preamble` rows
+  were not re-verified in this round, so the migration closes the gap going forward only.
+- Invariant: every alert identity is resolved from the record's `extra` through `resolve_source()`, so a
+  header, its trailing tag and its Alerts row cannot disagree. A CRITICAL `alert_event` record is either
+  consumed by an active agent or falls through to ERROR_AGENT. It is never dropped on the assumption
+  that a consumer exists.
 
 **Alert identity SSOT — `resolve_source()` separates "who triggered it" from "which process produced
 it"; background processes stop borrowing a fake agent; trailing tag becomes four slots (2026-11-06
@@ -3832,6 +3945,15 @@ agent 30 mins before expiry market closure, close agents 25 mins before". Final 
   from the action — the agent's own condition already gates timing, so a second,
   independently-configured gate inside the action would just be a second place the same decision
   could disagree.
+- *Correction, 2026-11-12 — two points above are incomplete.* (1) `scan_positions()` is still the
+  classifier for the two original agents only. The `expiry-mcx-risk-alert`/`expiry-nfo-risk-alert`
+  condition resolvers do not call it. They use `classify_from_context()` or a `qty != 0` filter,
+  for a reason the 2026-11-12 entry below sets out. (2) The action is not ungated by exchange. It
+  keeps only the exchanges currently inside their own pre-close window, via
+  `_expiry_preclose_exchanges()` ([actions_live.py:1831](backend/api/algo/actions_live.py#L1831)),
+  then filters the scan result to them ([:1847](backend/api/algo/actions_live.py#L1847)). The
+  condition decides whether the action runs. This filter decides which exchange's positions it
+  closes. `before_cutoff()` is still not used.
 - **Wording never claims a verdict it can't back.** MCX: a root with zero `needs_close` legs
   renders demoted/last as `netted: ROOT`, NEUTRAL wording only — never "safe"/"hedged, no action
   needed" (a long-CE+long-PE pair legitimately nets to zero but can still devolve into a naked
@@ -3867,8 +3989,9 @@ agent 30 mins before expiry market closure, close agents 25 mins before". Final 
   so the two mechanisms cannot double-place a live order even though they can both independently
   attempt the same close on the same day; whichever runs first stages (or places, once released)
   the HELD row, and the second finds nothing new to close.
-- Invariant: alert and auto-close identification can never disagree — they call the identical
-  `ExpiryEngine.scan_positions()`. A root's "unnetted"/"ITM" classification is never duplicated
+- Invariant (*scope amended 2026-11-12* — holds for the two original agents, not the two risk-alert
+  condition resolvers; see the correction bullet above and the 2026-11-12 entry): alert and auto-close
+  identification can never disagree — they call the identical `ExpiryEngine.scan_positions()`. A root's "unnetted"/"ITM" classification is never duplicated
   into a second, independent implementation.
 
 **`expiry-day-itm-auto-close` silently ran in paper mode on its first live trading day —
@@ -3901,6 +4024,106 @@ that was supposed to be the backstop silently no-op'd the whole time.
 - Invariant: a builtin agent spec that explicitly needs `trade_mode: "live"` to reach its own
   real safety-gate path (hold-by-default, or any other live-only gate) must say so explicitly in
   its own spec dict — never rely on the system-wide default, which is paper for every new agent.
+
+**Expiry risk alerts re-based onto the expiry classifier; three expiry-day alerts de-duplicated in
+the 30-minute pre-close window (2026-11-12, uncommitted)** — Two linked changes to the expiry-day
+alert set, plus a precise record of which classifier each caller uses. This extends the 2026-10-29
+consolidation above. It does not replace it.
+- **One classification function, two entry points, MCX only.** `ExpiryEngine.classify_prepared()`
+  ([expiry.py:620](backend/api/algo/expiry.py#L620)) is the pure step. It sets moneyness, theta, the
+  4-rule MCX netting and the NFO ITM/NTM flag on a list of positions, with no broker call. It does
+  read the in-process `algo.*` settings through the constructor. `scan_positions()`
+  ([:650](backend/api/algo/expiry.py#L650)) fetches from the broker, then calls it
+  ([:695](backend/api/algo/expiry.py#L695)). `classify_from_context()` ([:1020](backend/api/algo/expiry.py#L1020))
+  builds the same `OptionPosition`/`FuturePosition` shapes from `ctx.position_rows` and
+  `ctx.spot_prices` ([_opt_from_row :958](backend/api/algo/expiry.py#L958), [_fut_from_row :996](backend/api/algo/expiry.py#L996)),
+  then calls `classify_prepared()`. The MCX netting math has one copy. The NFO path does not use it.
+- **Why the second entry point exists.** `scan_positions()` makes blocking broker calls (positions,
+  instruments, LTP). A condition resolver runs synchronously on the main loop inside
+  `_cycle_evaluate_agent`. Calling `scan_positions()` there would stall chase polls, postbacks and SSE
+  on every cycle. `classify_from_context()` takes the same inputs from data the engine already fills
+  once per cycle, so it adds no broker call.
+- **Which function each caller uses.**
+
+| Caller | Path | Classifier |
+|---|---|---|
+| `expiry-day-preclose-alert` render helper | `agent_engine.py` `_v2_expiry_position_breakdown` ([:1466](backend/api/algo/agent_engine.py#L1466)) | `scan_positions()`, via `asyncio.to_thread` |
+| `expiry-day-itm-auto-close` action | `actions_live.py` `_action_live_expiry_auto_close` ([:1774](backend/api/algo/actions_live.py#L1774)) | `scan_positions()`, via `asyncio.to_thread` ([:1842](backend/api/algo/actions_live.py#L1842)) |
+| `expiry-mcx-risk-alert` condition | `grammar_tokens/scope_positions_expiring_today_mcx_unhedged.py` ([:129](backend/api/algo/grammar_tokens/scope_positions_expiring_today_mcx_unhedged.py#L129)) | `classify_from_context()` ([:172](backend/api/algo/grammar_tokens/scope_positions_expiring_today_mcx_unhedged.py#L172)) → `classify_prepared()` |
+| `expiry-nfo-risk-alert` condition | `grammar_tokens/scope_positions_expiring_today_nfo.py` ([:52](backend/api/algo/grammar_tokens/scope_positions_expiring_today_nfo.py#L52)) | None. A `qty != 0` filter ([:62-66](backend/api/algo/grammar_tokens/scope_positions_expiring_today_nfo.py#L62)) plus the generic `is_itm`/`is_future` metrics |
+
+- **Same inputs, not the same data.** Agreement is pinned only when both paths get identical inputs.
+  They do not get identical inputs in production. `scan_positions()` takes MCX spot from the nearest
+  front-month FUT (`_fetch_underlying_ltps`). `classify_from_context()` reads `ctx.spot_prices`, which
+  is matched to the option's own month. The NFO scope window is `≤1.5` days-to-expiry, while
+  `scan_positions()` uses `expiry == today`. The NFO alert agrees with the engine's moneyness only by
+  definition: `is_itm` (`intrinsic > 0`, [metric_is_itm.py:14](backend/api/algo/grammar_tokens/metric_is_itm.py#L14))
+  equals the engine's ITM∪NTM union, given the same spot value. That is an argument from the
+  definitions, not a parity test.
+  - *The window gap applies to MCX too.* The MCX scope also starts from `_scope_positions_expiring_today()`
+    ([scope_positions_expiring_today_mcx_unhedged.py:166](backend/api/algo/grammar_tokens/scope_positions_expiring_today_mcx_unhedged.py#L166)).
+    `classify_from_context()` does not re-filter by `expiry == today`. A T-1 leg can therefore be
+    classified by the MCX alert that a same-moment `scan_positions()` would skip. Both risk alerts share
+    this residual.
+- **Empirical evidence.** `test_expiry_logic.py::test_scan_positions_and_classify_from_context_agree_on_needs_close`
+  ([:507](backend/tests/test_expiry_logic.py#L507)) patches the engine's fetches, runs `scan_positions()`
+  and `classify_from_context()` on the same rows, and asserts identical `needs_close` sets. It covers a
+  synthetic long-CE/short-PE combo (no valid netting pair, flagged by both paths) and a lone unhedged
+  ITM leg. The mirror test at [:567](backend/tests/test_expiry_logic.py#L567) covers a same-strike
+  genuine hedge, which nets to zero on both paths. The guts case (long CE plus long PE at different ITM
+  strikes; rule 3 nets it to zero) is tested only at resolver level:
+  `test_scope_positions_expiring_today_mcx_unhedged.py::test_mcx_unhedged_nets_guts_position_old_heuristic_flagged`
+  ([:161](backend/tests/grammar_tokens/test_scope_positions_expiring_today_mcx_unhedged.py#L161)). It is
+  not a `scan_positions()` parity case. The synthetic-combo resolver case is at
+  [:135](backend/tests/grammar_tokens/test_scope_positions_expiring_today_mcx_unhedged.py#L135).
+- **Residuals, deliberately not fixed in this round.**
+  - *Futures do not agree.* The engine uses an expiring future only as a netting partner, never as a
+    `needs_close` candidate (`classify_from_context()`'s own docstring, [expiry.py:1063-1069](backend/api/algo/expiry.py#L1063)).
+    `expiry-mcx-risk-alert`'s description still says "or is a future", which is now false for MCX.
+    `expiry-nfo-risk-alert` still fires on `is_future`, while `expiry-day-preclose-alert` and
+    `expiry-day-itm-auto-close` do not.
+  - *Follow-up, 2026-11-12 — the MCX resolver now fails loud (operator decision: "fail loud").* An
+    exception in the lazy import or in `classify_from_context()` used to return `[]`, a false
+    all-clear on the one resolver the engine can least afford it. It now logs CRITICAL and returns
+    every currently-expiring MCX row, so the condition evaluates as triggered
+    ([scope_positions_expiring_today_mcx_unhedged.py:182-207](backend/api/algo/grammar_tokens/scope_positions_expiring_today_mcx_unhedged.py#L182)).
+    The CRITICAL is tagged `error` and carries no `self_alerted` flag or `alert_event`, so ERROR_AGENT's
+    catch-all delivers it. This matches the engine's "never a false all-clear" rule. An unknown
+    position is alerted on, not silently passed.
+  - *The DSL column stays on the old heuristic.* `background.py`'s `is_unhedged`/`net_qty` columns still
+    use `compute_mcx_ce_pe_net_groups()`, the crude sum. It disagrees with the engine on the two cases
+    above. A custom agent reading those columns does not get the re-based classifier. Only the scope
+    token does. The scope module's own docstring records this, at its lines 6-12 and 33-42.
+- **Same-window consolidation.** Three alerts could fire within about a minute of each other on an
+  expiry day, 30 minutes before close. Each now yields to the richer `expiry-day-preclose-alert`.
+  - `market-preclose-nonmcx` ([agent_engine.py:3081](backend/api/algo/agent_engine.py#L3081)) gains
+    `is_nse_expiry_today == 0` ([:3087](backend/api/algo/agent_engine.py#L3087)). This is **day-scoped**.
+    On an NSE expiry day it never fires, not just inside the window. On a non-expiry day it fires as
+    before. `is_nse_expiry_today` means a held NSE/NFO position expires today ([:1295](backend/api/algo/agent_engine.py#L1295)).
+    It is not the exchange calendar.
+  - `expiry-nfo-risk-alert` ([:2683](backend/api/algo/agent_engine.py#L2683)) and `expiry-mcx-risk-alert`
+    ([:2699](backend/api/algo/agent_engine.py#L2699)) each gain
+    `not{all[is_{exch}_expiry_today == 1, minutes_until_{exch}_close <= 30]}`. This is **window-scoped**.
+    Each is quiet only inside its own exchange's 30-minute pre-close window on an expiry day. Otherwise
+    it fires as before.
+  - `market-preclose-mcx-v2` is deliberately untouched. `expiry-day-preclose-alert` covers both
+    exchanges in one alert, so only the NSE-side generic reminder needed suppression.
+  - One-time migration. `_AE_CONTENT_MATCHED_COND_MIGRATIONS` ([agent_engine.py:3348](backend/api/algo/agent_engine.py#L3348))
+    records the exact pre-consolidation condition for each of the three rows.
+    `_ae_apply_content_matched_cond_migration()` ([:3362](backend/api/algo/agent_engine.py#L3362)), called
+    from `_ae_sync_existing_builtin()` ([:3448](backend/api/algo/agent_engine.py#L3448)), rewrites a row
+    only when its stored conditions are byte-for-byte that shape. An operator-customised row is left alone.
+  - Tests: `backend/tests/test_expiry_same_window_consolidation.py`. It covers suppression inside each
+    window, firing outside it, firing on a non-expiry day, the unchanged `market-preclose-mcx-v2`, and
+    the migration (exact match, customised row, unrelated slug).
+  - *Known residual.* If an operator deactivates `expiry-day-preclose-alert`, the two risk alerts and
+    `market-preclose-nonmcx` go silent in the affected window, with no fallback. A fallback would need
+    cross-agent state, which was avoided on purpose.
+- Invariant: inside its own 30-minute pre-close window, an expiry risk alert is quiet
+  unconditionally in its own window. The suppression leaf never checks `expiry-day-preclose-alert`, so
+  coverage in that window depends on the preclose alert being active. Outside the window it fires as before.
+  The futures gap is the one place this round did not reach the classifier's full guarantee. The MCX
+  resolver's exception path now fails loud, as described in the follow-up bullet above.
 
 **close_price / ltp invariant — DO NOT CHANGE without explicit operator instruction** —
 `prev_close` = previous session's **settlement LTP** (frozen from settlement until next session opens at 08:00 IST). `ltp` ticks live during session, freezes at settlement price at close. Day P&L = `(ltp − prev_close) × qty`.
@@ -4068,6 +4291,7 @@ now caches + returns a `stale` flag; `/api/nav/by-account` masks `errors` for no
 | Order-entry grammar | `backend/config/grammars/orders.yaml` |
 | Toggle agent default status | `backend/api/algo/agent_engine.py` |
 | Expiry pre-close alert + auto-close (one agent each, both exchanges) | `backend/api/algo/agent_engine.py` (`expiry-day-preclose-alert`/`expiry-day-itm-auto-close`, `_v2_expiry_position_breakdown`) + `backend/api/algo/actions_live.py:_action_live_expiry_auto_close` + `backend/api/algo/grammar_tokens/metric_is_expiry_preclose_{alert,close}_window.py` |
+| Expiry risk alerts (`expiry-mcx-risk-alert` / `expiry-nfo-risk-alert`) — classifier and pre-close window suppression | `backend/api/algo/grammar_tokens/scope_positions_expiring_today_mcx_unhedged.py` (`classify_from_context`) + `backend/api/algo/grammar_tokens/scope_positions_expiring_today_nfo.py` (`qty != 0` filter) + `backend/api/algo/agent_engine.py` (`_EXPIRY_RISK_AGENTS`, `_AE_CONTENT_MATCHED_COND_MIGRATIONS`) + `backend/api/algo/expiry.py` (`classify_prepared`) |
 | Expiry close hold/release | `/admin/settings` → `expiry_close_hold_enabled` (inverted: `true`=held, default) |
 | Auto-close short option at 90% profit (`exit-tp-short-option-90`) | `backend/api/algo/agent_engine.py` (seed spec + `_v2_exit_tp_short_option_enrichment`) + `backend/api/algo/grammar_tokens/metric_short_option_gain_from_entry_pct.py` + `backend/api/algo/actions_live.py:_al_maybe_stage_agent_close_hold` |
 | Generic agent-close hold/release/auto-release infra (`require_release`) | `backend/api/algo/actions.py:_dispatch_live_action` + `backend/api/algo/actions_live.py` (`_al_maybe_stage_agent_close_hold`, `_al_agent_close_recently_cancelled_this_session`) + `backend/api/background.py:_task_agent_close_auto_release` |
@@ -4125,7 +4349,7 @@ now caches + returns a `stale` flag; `/api/nav/by-account` masks `errors` for no
 | Alert channel set for a seeded agent | `backend/api/algo/alert_routing.py` (`_PER_SLUG_OVERRIDES`, `_TIER_DEFAULTS`, `resolve_channels`) — not the agent's spec |
 | Alert identity header label ("Agent:" vs "Source: ... triggered ...") | `backend/shared/helpers/alert_utils.py:resolve_source` (SSOT) → `format_notification_header` / `dispatch_payload`; a producer sets `source_type="process"` + `source_name` on its log record (see "Alert identity SSOT" above) |
 | Alert trailing tag (action / process / alert-agent / level hashtags) | `backend/api/algo/event_agents.py:_resolve_tag_labels` (shared by `_agent_tag_line` and `_agent_pill_html`) |
-| Convert a direct-send alert path to log+agent (market status / notify= / postback cancel pattern) | Log via `_DISPATCH_LOGGER` with `alert_event`/`channels`/`agent_id`/`agent_name` in `extra` → new seeded agent + renderer in `event_agents.py` (see "Alert-agent audit, all 4 waves" above) |
+| Convert a direct-send alert path to log+agent (market status / postback cancel pattern) | Log via `_DISPATCH_LOGGER` with `alert_event`/`agent_id`/`agent_name` in `extra`. Do NOT pass `channels`: routing is `alert_routing.py`'s job, and `notify=` is retired (`0216d534`) → new seeded agent + renderer in `event_agents.py` (see "Alert-agent audit, all 4 waves" above) |
 | Deploy-sync Telegram channel (dedicated bot/chat) | `event_agents.py:_send_telegram_deploy_html` + `CHANNELS["telegram_deploy"]` + `alert_routing.py` (`deploy-sync-alert` row); secrets `telegram_bot_token_deploy` / `telegram_chat_id_deploy` |
 | Deploy script Telegram ping (no ntfy, no email) | `webhook/notify_deploy.py` |
 | Forced email for action-required alerts | `event_agents.py:_apply_action_required_email_gate` (applied in `_dispatch_record_channels`) |

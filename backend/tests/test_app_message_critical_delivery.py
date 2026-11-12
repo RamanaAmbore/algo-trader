@@ -191,6 +191,63 @@ async def test_pre_fix_record_shape_does_not_match_the_new_agent_either(chans):
 
 
 @pytest.mark.asyncio
+async def test_critical_app_message_body_carries_source_identity_and_timestamp(chans):
+    """2026-11-08 audit fix (item 3) — the previous round fixed DELIVERY
+    (the record now reaches a real channel), but the record itself
+    still carried no `source_type`/`source_name`, so `_render_deploy_sync`
+    (APP_MESSAGE_AGENT's own renderer, registered under
+    `"generic_notice"`) skipped building a header entirely — the real
+    Telegram/ntfy/email payload had no identity line and no timestamp
+    at all. Confirmed to fail against the pre-fix `_route_sinks()`:
+    before `source_type`/`source_name` were added to the logged
+    `extra`, this body started directly with the raw message text, no
+    "Source: ..." line and no dual-tz timestamp line above it."""
+    row = await _capture_row(AppMessage(
+        level="critical", tags=["order"], body="broker auth failed", title="Auth failure",
+    ))
+    assert row["extra"]["source_type"] == "process"
+    assert row["extra"]["source_name"] == "App message"
+
+    await ea.dispatch([row], _all_seeded_agents())
+
+    assert len(chans["telegram"]) == 1
+    body = chans["telegram"][0][1]
+    lines = body.splitlines()
+    assert lines[0] == "Source: App message", (
+        f"expected a real identity line, got: {lines[0]!r}"
+    )
+    assert "IST" in lines[1] and "EST" in lines[1], (
+        f"expected a dual-tz timestamp line, got: {lines[1]!r}"
+    )
+    assert "broker auth failed" in body
+
+
+@pytest.mark.asyncio
+async def test_info_level_deploy_tagged_app_message_now_reaches_a_channel(chans):
+    """2026-11-08 audit fix (item 6) — closed at the consumer, not the
+    `should_alert` gate: `_route_sinks()` already (deliberately) logs an
+    INFO-level "deploy"/"alert"-tagged message
+    (`test_route_sinks_logs_tagged_record_on_deploy_tag`), but
+    `APP_MESSAGE_AGENT`'s `min_level` was "WARNING", so that record
+    matched no agent and the unrouted catch-all (also WARNING+) missed
+    it too — silently dropped one step later than the original bug this
+    whole fixture guards. Confirmed to fail against the pre-fix
+    `min_level="WARNING"`: `ea.dispatch` would return 0 and both channel
+    lists would stay empty."""
+    row = await _capture_row(AppMessage(
+        level="info", tags=["deploy"], body="deploy webhook fired", title="Deploy",
+    ))
+    assert row["level"] == "INFO"
+    assert "alert" in row["tags"]
+
+    sent_count = await ea.dispatch([row], _all_seeded_agents())
+
+    assert sent_count >= 1
+    assert len(chans["telegram"]) == 1
+    assert len(chans["ntfy"]) == 1
+
+
+@pytest.mark.asyncio
 async def test_info_level_app_message_without_ntfy_tag_is_not_dispatched(chans):
     """An ordinary info-level, non-deploy/alert-tagged AppMessage must
     stay a complete no-op (unchanged gate) — `_route_sinks` returns

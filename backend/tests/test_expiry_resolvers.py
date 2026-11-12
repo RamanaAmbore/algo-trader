@@ -130,11 +130,11 @@ def _seed_registry_inline():
 def test_commodity_agent_condition_fires_on_unhedged_itm_goldm():
     """Walk the `positions.expiring_today.mcx_unhedged` + `is_itm`
     condition tree against a fabricated GOLDM book where ONE leg is
-    ITM + unhedged and another is fully hedged. Engine should match
-    exactly the unhedged leg. The condition tree is built inline
-    (2026-10-29) rather than read off a BUILTIN_AGENTS entry — the two
-    exchange-specific auto-close agents that used to carry this exact
-    shape were retired and consolidated into a single
+    ITM + unhedged and another is genuinely, validly hedged. Engine
+    should match exactly the unhedged leg. The condition tree is built
+    inline (2026-10-29) rather than read off a BUILTIN_AGENTS entry —
+    the two exchange-specific auto-close agents that used to carry this
+    exact shape were retired and consolidated into a single
     expiry-day-itm-auto-close, whose own condition is a flat
     is_expiry_preclose_close_window leaf with no per-row scope at all
     (the real position identification moved into
@@ -143,6 +143,15 @@ def test_commodity_agent_condition_fires_on_unhedged_itm_goldm():
     `mcx_unhedged`/`is_itm` resolvers themselves are correct — they
     remain live, used today by the still-active expiry-mcx-risk-alert
     agent.
+
+    2026-11 classifier re-base (operator decision): `mcx_unhedged` now
+    classifies via the real `ExpiryEngine` 4-rule netting, not a crude
+    CE/PE signed-quantity sum — the GOLD "hedge" distractor below is a
+    genuine, engine-valid rule-1 pair (same strike, same type, opposite
+    sign), not the old long-CE/short-PE SYNTHETIC combo (which the real
+    engine does NOT consider a hedge at all — see
+    `test_commodity_agent_condition_fires_on_synthetic_combo_not_hedged`
+    below for that disagreement case, the one the re-base closes).
     """
     _seed_registry_inline()
     from backend.api.algo.agent_evaluator import evaluate
@@ -153,7 +162,8 @@ def test_commodity_agent_condition_fires_on_unhedged_itm_goldm():
     ]}
 
     # Build a real GOLDM book — strike 75000, spot 76000 → call ITM.
-    # Add a perfectly hedged GOLD pair as a distractor; should NOT match.
+    # Add a genuinely (rule-1) hedged GOLD pair as a distractor; should
+    # NOT match.
     today = date(2025, 5, 29)
     today_dt = datetime(today.year, today.month, today.day, 17, 30,
                         tzinfo=timezone.utc)  # 23:00 IST
@@ -163,11 +173,12 @@ def test_commodity_agent_condition_fires_on_unhedged_itm_goldm():
             # Unhedged ITM GOLDM call
             {"tradingsymbol": "GOLDM25MAY75000CE", "exchange": "MCX",
              "quantity": 1, "last_price": 1100.0},
-            # Hedged GOLD pair (qty 0 net) — distractor
+            # Rule-1 hedged GOLD pair (same strike, same type CE,
+            # opposite sign — a real, engine-valid netting pair) — distractor
             {"tradingsymbol": "GOLD25MAY75000CE", "exchange": "MCX",
              "quantity": 1, "last_price": 1100.0},
-            {"tradingsymbol": "GOLD25MAY75000PE", "exchange": "MCX",
-             "quantity": -1, "last_price": 100.0},
+            {"tradingsymbol": "GOLD25MAY75000CE", "exchange": "MCX",
+             "quantity": -1, "last_price": 1100.0},
         ],
         spot_prices={"GOLDM": 76000.0, "GOLD": 76000.0},
     )
@@ -176,6 +187,48 @@ def test_commodity_agent_condition_fires_on_unhedged_itm_goldm():
     # once, against the GOLDM leg only.
     assert len(matches) == 1, (
         f"expected exactly one match (GOLDM unhedged ITM), got {len(matches)}: {matches}")
+
+
+def test_commodity_agent_condition_fires_on_synthetic_combo_not_hedged():
+    """2026-11 classifier re-base — the exact audit-reproduced
+    disagreement: a long-CE + short-PE combo at the SAME strike (a
+    synthetic directional position, not a hedge) used to sum to zero
+    under the OLD crude heuristic and was silently excluded. The real
+    engine has no valid opt-opt netting rule for opposite-type +
+    opposite-sign, so it correctly flags the ITM leg. Both the GOLDM
+    lone leg and the GOLD synthetic-combo's ITM leg should now match.
+    """
+    _seed_registry_inline()
+    from backend.api.algo.agent_evaluator import evaluate
+
+    agent_conditions = {"all": [
+        {"op": "==", "scope": "positions.expiring_today.mcx_unhedged",
+         "metric": "is_itm", "value": 1.0},
+    ]}
+
+    today = date(2025, 5, 29)
+    today_dt = datetime(today.year, today.month, today.day, 17, 30,
+                        tzinfo=timezone.utc)  # 23:00 IST
+    ctx = _ctx(
+        now=today_dt,
+        position_rows=[
+            {"tradingsymbol": "GOLDM25MAY75000CE", "exchange": "MCX",
+             "quantity": 1, "last_price": 1100.0},
+            # Synthetic long-CE/short-PE combo at the same strike — NOT
+            # a valid netting pair under the real engine's rules.
+            {"tradingsymbol": "GOLD25MAY75000CE", "exchange": "MCX",
+             "quantity": 1, "last_price": 1100.0},
+            {"tradingsymbol": "GOLD25MAY75000PE", "exchange": "MCX",
+             "quantity": -1, "last_price": 100.0},
+        ],
+        spot_prices={"GOLDM": 76000.0, "GOLD": 76000.0},
+    )
+    matches = evaluate(agent_conditions, ctx)
+    matched_syms = {m.get('row', {}).get('tradingsymbol')
+                    for m in matches if isinstance(m, dict)}
+    assert matched_syms == {"GOLDM25MAY75000CE", "GOLD25MAY75000CE"}, (
+        f"expected both the GOLDM lone leg and the GOLD synthetic "
+        f"combo's ITM leg to fire, got {matched_syms}")
 
 
 def test_equity_agent_condition_fires_on_itm_nifty_calls():

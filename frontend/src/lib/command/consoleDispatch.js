@@ -344,21 +344,29 @@ export async function submitConsoleAgent(compiledAgent, rawText) {
 
 /**
  * Submit a compiled `kind:'token'` result (`compiled.fragment` —
- * `{kind, name, body?, conditions?, description?}` — see
- * `compileTokenStmt` in agents.js) as a new Template —
- * `Agent(kind='template')` — via the unified `createAgent` (`POST
- * /api/agents/`). Sprint D2 (Agent/Bracket/Template unification phase)
- * retired the separate `/api/admin/fragments` CRUD this used to call; a
- * Template is now just an ordinary Agent row.
+ * `{kind, name, conditions?, description?}` — see `compileTokenStmt` in
+ * agents.js) as a new Template — `Agent(kind='template')` — via the
+ * unified `createAgent` (`POST /api/agents/`). Sprint D2 (Agent/Bracket/
+ * Template unification phase) retired the separate
+ * `/api/admin/fragments` CRUD this used to call; a Template is now just
+ * an ordinary Agent row.
  *
- * `compiledFragment.kind` is `'notify'` or `'condition'` (2026-10-12 —
- * condition-kind Token creation is now supported). For `'notify'`,
- * `fragment.body` (a channel list) lands in `events`, `conditions`
- * stays `{}`. For `'condition'`, `fragment.conditions` (the JSON
- * condition tree, from `compileCondition` — the same production WHEN
- * uses) lands in `conditions`, `events` stays `[]`. No backend change
- * needed — `createAgent` already accepts a non-empty `conditions` tree
- * for `kind='template'` rows (confirmed: real condition-kind Templates
+ * `compiledFragment.kind` is ALWAYS `'condition'` in practice —
+ * `compileTokenStmt` (agents.js) is a hard COMPILE-time error for
+ * `kind === 'notify'` (returns `fragment: null`), so a non-null fragment
+ * with `kind !== 'condition'` can never reach here through the real
+ * compiler (channel-naming removal, 2026-11, commit `0216d534`). The
+ * explicit guard below is defensive only: it surfaces a clear error
+ * instead of silently writing an empty, useless Template row if some
+ * other caller ever constructs a `kind:'notify'`-shaped fragment by
+ * hand.
+ *
+ * `fragment.conditions` (the JSON condition tree, from `compileCondition`
+ * — the same production WHEN uses) lands in `conditions`; `events`
+ * always stays `[]` — a Template's own notify-kind channel-list body can
+ * no longer be authored via this grammar. No backend change needed —
+ * `createAgent` already accepts a non-empty `conditions` tree for
+ * `kind='template'` rows (confirmed: real condition-kind Templates
  * already exist in production, authored via direct JSON before this
  * grammar supported them).
  *
@@ -374,15 +382,17 @@ export async function submitConsoleToken(compiledFragment, rawText = '') {
   if (!compiledFragment || !compiledFragment.name) {
     return { ok: false, error: 'token requires a #name= tag' };
   }
+  if (compiledFragment.kind !== 'condition') {
+    return { ok: false, error: 'token: only kind=condition can be created — notify-kind channel-list Tokens were removed 2026-11 (channel-naming removal)' };
+  }
   const slug = compiledFragment.name;
-  const isCondition = compiledFragment.kind === 'condition';
   const payload = {
     slug,
     kind: 'template',
     name: slug,
     description: compiledFragment.description || '',
-    conditions: isCondition ? (compiledFragment.conditions || {}) : {},
-    events: isCondition ? [] : (compiledFragment.body || []),
+    conditions: compiledFragment.conditions || {},
+    events: [],
     actions: [],
     cli_source: rawText || '',
   };
@@ -512,18 +522,28 @@ export async function updateConsoleAgent(slug, compiledAgent, rawText, hadExplic
  * an operator to tell which one `$ref` still resolves by. If the
  * operator wants to rename a Template, they delete + recreate it.
  * @param {string} slug — the Agent row being edited (unchanged by this call)
- * @param {any} compiledFragment — `compiled.fragment` (`{kind, name, body?, conditions?, description?}`)
+ * @param {any} compiledFragment — `compiled.fragment` (`{kind, name, conditions?, description?}`)
  * @param {string} rawText — the raw (edited) CLI text, stored as cli_source
+ *
+ * `compiledFragment.kind` is ALWAYS `'condition'` in practice, same
+ * reasoning as `submitConsoleToken` above — `compileTokenStmt` hard-
+ * errors on `kind === 'notify'`, and `decompileToken` (agents.js) also
+ * refuses to decompile an already-saved notify-kind row into editable
+ * text in the first place, so this function can never be reached with a
+ * non-null `kind:'notify'` fragment through the real Edit flow
+ * (channel-naming removal, 2026-11, commit `0216d534`). The explicit
+ * guard below is defensive only.
  */
 export async function updateConsoleToken(slug, compiledFragment, rawText = '') {
   if (!slug) return { ok: false, error: 'no token selected for update' };
   if (!compiledFragment) return { ok: false, error: 'nothing compiled to save' };
-  // 2026-10-12 — condition-kind Token editing, same branch submitConsoleToken uses.
-  const isCondition = compiledFragment.kind === 'condition';
+  if (compiledFragment.kind !== 'condition') {
+    return { ok: false, error: 'token: only kind=condition can be edited — notify-kind channel-list Tokens were removed 2026-11 (channel-naming removal)' };
+  }
   const payload = {
     description: compiledFragment.description || '',
-    conditions: isCondition ? (compiledFragment.conditions || {}) : {},
-    events: isCondition ? [] : (compiledFragment.body || []),
+    conditions: compiledFragment.conditions || {},
+    events: [],
     cli_source: rawText || '',
   };
   try {

@@ -139,7 +139,7 @@ async def test_dsl_single_tag_alert_dispatches_to_telegram_and_ntfy(sent):
     # body line are both dropped. Trailing tag: process ("orders"),
     # alert agent this demo agent's own slug "demo-error-alert"
     # (tag-token'd), log level ("error") — no action tag.
-    body = (f"Source: orders (error)\n{_FIXED_TS}\n\n"
+    body = (f"Source: orders (error)\n{_FIXED_TS}\n"
             f"order placement failed: insufficient margin\n#orders #via_demo_error_alert #error")
     assert sent["ntfy"] == [("RamboQuant error", body)]
     assert sent["tg"] == [body]

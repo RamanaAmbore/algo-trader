@@ -185,7 +185,7 @@ def test_compute_theta_uses_default_risk_free():
         captured_r.append(r)
         return {"theta": -5.0}
 
-    def fake_days_to_expiry(expiry, close_time=None):
+    def fake_days_to_expiry(expiry, ref=None, close_time=None):
         return 7.0
 
     # ExpiryEngine has heavy __init__ (async callbacks etc.); bypass it.
@@ -239,7 +239,7 @@ def test_compute_theta_nfo_uses_default_risk_free():
         captured_r.append(r)
         return {"theta": -5.0}
 
-    def fake_days_to_expiry(expiry, close_time=None):
+    def fake_days_to_expiry(expiry, ref=None, close_time=None):
         return 7.0
 
     engine = ExpiryEngine.__new__(ExpiryEngine)

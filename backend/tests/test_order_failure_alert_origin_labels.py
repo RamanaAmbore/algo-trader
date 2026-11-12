@@ -185,6 +185,61 @@ class TestSendOrderFailureAlertThreadsAgentId:
         assert "[Manual]" in captured["msg"]
 
 
+class TestOrderFailureSourceIdentityAgreement:
+    """2026-11-08 audit fix (item 1) — the logged `extra` dict must carry
+    the SAME `source_type`/`source_name` pair `order_failure_messages()`
+    passes to `format_notification_header()`, so `resolve_source()` —
+    called independently on `extra` by the trailing tag and by the
+    Alerts tab (`routes/alerts.py:_log_event_to_alert`) — can never
+    disagree with what the header text actually says."""
+
+    def test_logged_extra_carries_source_type_and_name(self):
+        from backend.shared.helpers import alert_utils
+
+        captured = {}
+
+        def _fake_warning(msg, extra=None, **kw):
+            captured["extra"] = extra
+
+        with patch.object(alert_utils, "_DISPATCH_LOGGER") as mock_logger, \
+             patch("backend.api.helpers.snapshot_gate._any_segment_open", return_value=True), \
+             patch.object(alert_utils, "_redis_cooldown_check", return_value=(False, 0, True)):
+            mock_logger.warning.side_effect = _fake_warning
+            alert_utils.send_order_failure_alert(
+                account="ZG0790", symbol="NIFTY25OCTFUT", exchange="NFO",
+                side="SELL", qty=50, mode="live", source="chase",
+                error="boom", agent_id=None,
+            )
+
+        assert captured["extra"]["source_type"] == alert_utils._ORDER_FAILURE_SOURCE_TYPE
+        assert captured["extra"]["source_name"] == alert_utils._ORDER_FAILURE_SOURCE_NAME
+
+    def test_header_first_line_matches_resolve_source_on_the_logged_extra(self):
+        """Build the header the way `order_failure_messages()` does, and
+        the `extra` dict the way `_send_order_failure_messages()` does,
+        then confirm `resolve_source()` on the logged `extra` produces
+        the SAME label_word/label_sentence that the header's first line
+        already shows — the exact disagreement this fix closes."""
+        from backend.shared.helpers.alert_utils import (
+            order_failure_messages, resolve_source,
+        )
+
+        tg_body, _subject, _email = order_failure_messages(
+            masked="ZG####", symbol="NIFTY25OCTFUT", exchange="NFO",
+            side="SELL", qty=50, mode="live", source="chase",
+            error="boom", suppressed_count=0, ist_disp="10:00:00 IST",
+            agent_id=None, agent_name=None,
+        )
+        header_first_line = tg_body.splitlines()[0]
+
+        logged_extra = {
+            "agent_id": None, "agent_name": None,
+            "source_type": "process", "source_name": "Order failure",
+        }
+        label_word, label_sentence, *_ = resolve_source(logged_extra)
+        assert header_first_line == f"{label_word}: {label_sentence}"
+
+
 class TestEventAgentsRenderPassesAgentId:
     def test_render_order_failure_forwards_agent_id_from_extra(self):
         from backend.api.algo.event_agents import _render_order_failure

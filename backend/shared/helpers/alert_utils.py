@@ -41,7 +41,6 @@ from typing import TYPE_CHECKING
 
 import requests
 
-from backend.shared.helpers.mail_utils import send_email
 from backend.shared.helpers.ramboq_logger import get_logger
 from backend.shared.helpers.utils import secrets, config, is_enabled, pytest_alert_transport_blocked
 
@@ -530,18 +529,6 @@ def _email_message(
         f"</body></html>"
     )
     return subject, html_body
-
-
-def _send_email_to_recipients(subject: str, html_body: str, log_prefix: str) -> None:
-    """Queue one email per current alert recipient. Offloads SMTP to the pool."""
-    for email in get_alert_recipients():
-        def _send_one(addr=email, subj=subject, body=html_body, pfx=log_prefix):
-            try:
-                send_email("", addr, subj, body)
-                logger.info(f"{pfx} email sent to {addr}")
-            except Exception as _e:
-                logger.error(f"Failed to send {pfx} email to {addr}: {_e}")
-        _SMTP_EXECUTOR.submit(_send_one)
 
 
 def _build_tg_warning_block(sim_mode: bool, branch: str,
@@ -1448,6 +1435,17 @@ def _classify_order_origin_label(source: str, agent_id: "int | None") -> str:
     return "Manual Bracket" if is_bracket else "Manual"
 
 
+# 2026-11-08 audit fix (item 1) — SSOT for order_failure's process
+# identity. Both the header built below AND
+# `_send_order_failure_messages()`'s logged `extra` dict (which is what
+# the trailing tag and the Alerts tab independently call
+# `resolve_source()` on) must use this exact pair — defining it once
+# here, instead of two separately-typed literals, is what makes the two
+# structurally unable to drift apart again.
+_ORDER_FAILURE_SOURCE_TYPE = "process"
+_ORDER_FAILURE_SOURCE_NAME = "Order failure"
+
+
 def order_failure_messages(
     *, masked: str, symbol: str, exchange: str, side: str, qty: int, mode: str,
     source: str, error: str, suppressed_count: int, ist_disp: str,
@@ -1457,7 +1455,17 @@ def order_failure_messages(
     from backend.api.algo.grammar_tokens.format_html_table import _html_table
     origin_label = _classify_order_origin_label(source, agent_id)
     branch      = config.get("deploy_branch", "main")
-    mode_tag    = f"[{mode.upper()}]" if mode else ""
+    # 2026-11-08 audit fix (item 2) — a live-mode alert must show NO
+    # pill at all, matching the system-wide "live stays silent" rule
+    # (`dispatch_payload()`'s own `_mode_bracket`/`mode_tag` derivation:
+    # live mode's sim_mode/replay_mode are both False, which resolves to
+    # `''`). This function took its own `mode` string straight from the
+    # AlgoOrder row, so it used to show `[LIVE]` unconditionally for
+    # every real order failure — the one alert type in the whole
+    # pipeline that disagreed with the rule.
+    mode_tag    = (
+        "" if (not mode or mode.lower() == "live") else f"[{mode.upper()}]"
+    )
     sup_note    = f"  (+{suppressed_count} suppressed)" if suppressed_count else ""
     # 2026-10-23 audit fix (O11) — `error` is raw caller-supplied text
     # (e.g. a chase abort message) that can embed an unmasked broker
@@ -1496,7 +1504,7 @@ def order_failure_messages(
     # else.
     header_line = format_notification_header(
         agent_name, agent_id, ist_display=ist_disp,
-        source_type="process", source_name="Order failure",
+        source_type=_ORDER_FAILURE_SOURCE_TYPE, source_name=_ORDER_FAILURE_SOURCE_NAME,
     )
 
     tg_body = (
@@ -1531,11 +1539,27 @@ def order_failure_messages(
         + rows_html
         + f"</body></html>"
     )
+    # 2026-11-08 audit fix (item 2) — matches the `{label_word}:
+    # {detail}{branch_tag}{mode_sfx} | {ts}` convention every other
+    # alert subject in this file now uses (`_email_message`'s own
+    # subject line, below), instead of the older `[Manual] RamboQuant
+    # Order Rejected: ...` shape, which carried no timestamp at all and
+    # predated the "Source:"/"Agent:" label-word convention entirely.
+    # `label_word` is resolved the same way the header above is, off the
+    # identical `source_type`/`source_name` pair, so the subject can
+    # never say "Agent" while the body says "Source" (or vice versa).
+    label_word, _, _, _ = resolve_source(
+        _source_extra(
+            agent_name, agent_id,
+            source_type=_ORDER_FAILURE_SOURCE_TYPE, source_name=_ORDER_FAILURE_SOURCE_NAME,
+            trigger_known=True,
+        )
+    )
+    branch_tag = f" [{branch}]" if branch != "main" else ""
+    mode_sfx   = f" {mode_tag}" if mode_tag else ""
     subject = (
-        f"[{origin_label}] "
-        f"RamboQuant Order Rejected: {symbol} {side}"
-        + (f" [{branch}]" if branch != "main" else "")
-        + (f" ({mode})" if mode else "")
+        f"{label_word}: Order Rejected {symbol} {side} [{origin_label}]"
+        f"{branch_tag}{mode_sfx} | {ist_disp}"
     )
     return tg_body, subject, email_body
 
@@ -1553,6 +1577,18 @@ def _send_order_failure_messages(
     passes them straight through to `order_failure_messages()` for the
     Manual/Agent/Bracket label AND the new "Source: Order failure
     triggered ..." header.
+
+    2026-11-08 audit fix (item 1) — `source_type`/`source_name` now also
+    ride along in `extra`, matching exactly what
+    `order_failure_messages()` passes to `format_notification_header()`
+    for the header text above. Before this, the header said "Source:
+    Order failure triggered ..." but the logged record itself carried
+    no `source_type`/`source_name` key at all — `resolve_source()`,
+    called independently on this same `extra` dict by the trailing tag
+    (`_resolve_tag_labels()`) and by the Alerts tab
+    (`routes/alerts.py:_log_event_to_alert`), fell through to branch 2
+    ("Agent") instead of branch 1 ("Source"), so the tag and the Alerts
+    row disagreed with what the header actually said.
 
     2026-10-25 fix: this used to log through this module's own `logger`
     (name `backend.shared.helpers.alert_utils`, one of `log_store.py`'s
@@ -1577,6 +1613,8 @@ def _send_order_failure_messages(
             "mode": mode, "source": source, "error": error,
             "suppressed_count": suppressed_count, "ist_disp": ist_disp,
             "agent_id": agent_id, "agent_name": agent_name,
+            "source_type": _ORDER_FAILURE_SOURCE_TYPE,
+            "source_name": _ORDER_FAILURE_SOURCE_NAME,
             "branch": config.get("deploy_branch", "main"),
             # 2026-10-23 chase robustness (fix #4) — every order-failure
             # alert is, by definition, action-required: the operator

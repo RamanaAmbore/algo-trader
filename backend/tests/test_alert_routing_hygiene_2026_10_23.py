@@ -229,16 +229,36 @@ def _error_agent() -> SimpleNamespace:
     )
 
 
+def _chase_cancel_agent() -> SimpleNamespace:
+    """The real dedicated consumer of `alert_event="cancel_unconfirmed"`
+    — 2026-11-08 audit fix (item 7) tests need this alongside
+    `_error_agent()` to prove the structural fix for real: ERROR_AGENT
+    now only skips when some OTHER agent genuinely matches, so a test
+    asserting that skip must actually include that other agent."""
+    from backend.api.algo import event_agents
+    d = event_agents.CHASE_CANCEL_AGENT
+    return SimpleNamespace(
+        slug=d["slug"], conditions=d["conditions"], events=d.get("events", []), actions=d["actions"],
+    )
+
+
 @pytest.fixture
 def error_senders(monkeypatch):
     from backend.api.algo import event_agents
     import backend.shared.helpers.utils as u
     calls = {"ntfy": [], "tg": []}
     monkeypatch.setattr(u, "is_enabled", lambda cap: True)
+    # `*_`/`**__` — 2026-11-08 audit fix: a dedicated agent's ntfy entry
+    # can carry a `priority=` kwarg (e.g. CHASE_CANCEL_AGENT's own
+    # `alert_routing.py` override); earlier this fixture only tolerated
+    # extra positional args, so a real `priority=` kwarg crashed the
+    # send with a silently-swallowed TypeError (caught and logged by
+    # `_send_channel`, so `sent` undercounted with no test failure
+    # pointing at the real cause).
     monkeypatch.setitem(event_agents.CHANNELS, "ntfy",
-                        ("ntfy", lambda t, b, *_: calls["ntfy"].append((t, b))))
+                        ("ntfy", lambda t, b, *_, **__: calls["ntfy"].append((t, b))))
     monkeypatch.setitem(event_agents.CHANNELS, "telegram",
-                        ("telegram", lambda t, b, *_: calls["tg"].append((t, b))))
+                        ("telegram", lambda t, b, *_, **__: calls["tg"].append((t, b))))
     return calls
 
 
@@ -366,13 +386,56 @@ class TestCriticalAlertReachesErrorAgent:
         (carries `alert_event`) must not ALSO fire through ERROR_AGENT's
         generic catch-all — same double-alert class as O9's
         `self_alerted` guard above, extended to cover this newly-widened
-        match set."""
+        match set.
+
+        2026-11-08 audit fix (item 7) — this now dispatches against the
+        REAL dedicated consumer (`CHASE_CANCEL_AGENT`) alongside
+        ERROR_AGENT, not ERROR_AGENT alone. The old version of this test
+        passed `[_error_agent()]` only and asserted `sent == 0` — under
+        the new structural fix, that setup has NO real consumer at all,
+        so ERROR_AGENT correctly fires (see the companion test below,
+        which is exactly the `concurrent_chase_refused` silent-drop this
+        fix closes). The real assertion this test needs — "a genuinely
+        consumed alert_event doesn't ALSO leak through the generic
+        catch-all" — requires the genuine consumer to be present."""
         from backend.api.algo import event_agents
-        rec = _critical_rec("chase cancel not confirmed", tags=["chase"],
-                             alert_event="cancel_unconfirmed")
+        # Matches `chase.py`'s own real tagging for this alert_event:
+        # `["chase", "alert"]` — CHASE_CANCEL_AGENT's condition requires
+        # tag="alert", so the fixture must carry it too.
+        rec = _critical_rec("chase cancel not confirmed", tags=["chase", "alert"],
+                             alert_event="cancel_unconfirmed",
+                             order_id="O1", broker_order_id="B1", symbol="NIFTY",
+                             exchange="NFO", agent_id=None)
+        with patch.object(event_agents, "_channel_enabled", return_value=True):
+            sent = await event_agents.dispatch([rec], [_error_agent(), _chase_cancel_agent()])
+        # Exactly CHASE_CANCEL_AGENT's own 2 channels (telegram + ntfy,
+        # per alert_routing.py's per-slug override) — if ERROR_AGENT had
+        # ALSO fired, this would be 3 (its own telegram-only send on top).
+        assert sent == 2
+        assert len(error_senders["tg"]) == 1, (
+            "exactly one telegram send total — CHASE_CANCEL_AGENT's own, "
+            "not a second one from ERROR_AGENT double-firing"
+        )
+
+    async def test_critical_record_with_unconsumed_alert_event_now_reaches_error_agent(
+        self, error_senders,
+    ):
+        """2026-11-08 audit fix (item 7) — THE fix this closes: a CRITICAL
+        record carrying an `alert_event` with NO real dedicated consumer
+        at all (the live-confirmed `concurrent_chase_refused` shape —
+        `chase.py`'s concurrent-chase-refusal path, which has no entry
+        in `SEEDED_AGENTS`/`ALERT_EVENT_DISPATCH`) used to be silently
+        dropped — both this gate AND the unrouted catch-all treated it
+        as "already routed" with nothing actually delivering it. Now
+        that no OTHER loaded agent genuinely matches, ERROR_AGENT fires.
+        Confirmed to fail against the pre-fix code (which returned
+        `sent == 0` unconditionally for any CRITICAL+alert_event)."""
+        from backend.api.algo import event_agents
+        rec = _critical_rec("chase refused — concurrent call", tags=["chase"],
+                             alert_event="concurrent_chase_refused")
         sent = await event_agents.dispatch([rec], [_error_agent()])
-        assert sent == 0
-        assert error_senders == {"ntfy": [], "tg": []}
+        assert sent == 1
+        assert len(error_senders["tg"]) == 1
 
     def test_error_agent_self_alerted_helper_covers_critical_with_alert_event(self):
         from backend.api.algo.event_agents import _error_agent_self_alerted, ERROR_AGENT

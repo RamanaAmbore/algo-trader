@@ -77,7 +77,9 @@ _TAG_RETENTION_DAYS: dict[str, int] = {
 # in this set (no operator review value; would flood the table).
 _EPHEMERAL_TAGS: frozenset[str] = frozenset({"news", "terminal", "simulator"})
 
-# Tags that trigger ntfy routing regardless of level.
+# Tags that trigger ntfy routing regardless of level (deliberate — see
+# `_route_sinks()`'s 2026-11-08 audit fix (item 6): the floor lives at
+# the CONSUMER, `event_agents.APP_MESSAGE_AGENT`, not here).
 _NTFY_TAGS: frozenset[str] = frozenset({"deploy", "alert"})
 
 
@@ -197,6 +199,43 @@ async def _route_sinks(msg: AppMessage) -> None:
     unrouted catch-all) no longer applies, because a real dedicated
     agent now matches this record first, which is exactly what
     `_record_matches_any_agent()` checks.
+
+    2026-11-08 audit fix (item 3) — the dedicated agent's DELIVERY was
+    fixed above, but the record it dispatches still carried no
+    `source_type`/`source_name` at all, so `_render_deploy_sync`
+    (`APP_MESSAGE_AGENT`'s own renderer, registered under
+    `"generic_notice"`) skipped building a header entirely — a CRITICAL
+    `AppMessage` reached Telegram/ntfy/email with no identity line and
+    no timestamp. `_route_sinks()` is itself the "process" that
+    observed this condition and decided to alert — it genuinely has no
+    agent/trigger concept (an `AppMessage` can originate from any
+    caller, sync or async, with no `agent_id` ever threaded through the
+    `AppMessage` dataclass) — so this is a real `source_type="process"`
+    event, never a fabricated "manual".
+
+    2026-11-08 audit fix (item 6) — a structural gap, closed at the
+    CONSUMER, not at this gate. `should_alert` deliberately treats a
+    bare `_NTFY_TAGS` match ("deploy"/"alert") as alert-worthy at ANY
+    level, including INFO — this is explicit, tested intent
+    (`test_app_message.py::test_route_sinks_logs_tagged_record_on_
+    deploy_tag`, which pins an INFO-level "deploy"-tagged message as
+    logged), not an oversight, and this function's own gate is
+    therefore left unchanged. The real gap was one level down:
+    `event_agents.APP_MESSAGE_AGENT` (the one real consumer of the
+    record this sink dispatches) required `min_level="WARNING"`, so an
+    INFO-level record that legitimately passed this gate (and the
+    unrouted catch-all's own WARNING+ floor) still reached NO channel —
+    silently dropped between "this sink decided to alert" and "nothing
+    downstream was willing to deliver it". Not reachable by today's one
+    real caller (`background.py`'s close-summary cron always logs
+    `level="info"` with unrelated tags, never "deploy"/"alert"), but a
+    future caller that tags "deploy"/"alert" at INFO would hit it. Fix:
+    `APP_MESSAGE_AGENT["min_level"]` is lowered to `"INFO"` in
+    `event_agents.py`'s `_GENERIC_NOTICE_SPECS`, matching this gate's
+    own real floor exactly (there is no lower floor to match — the
+    separate, unconditional DEBUG structural exemption in
+    `_dispatch_agent` already drops every DEBUG-level record before any
+    agent's `min_level` is even consulted).
     """
     tag_set = frozenset(msg.tags or [])
     should_alert = msg.level in ("error", "critical") or bool(tag_set & _NTFY_TAGS)
@@ -212,6 +251,7 @@ async def _route_sinks(msg: AppMessage) -> None:
             level_no, "AppMessage: %s", msg.body,
             extra={"tags": tags, "alert_event": "app_message",
                    "title": title, "body": msg.body,
+                   "source_type": "process", "source_name": "App message",
                    # Stops ERROR_AGENT's blanket catch-all from
                    # double-firing alongside APP_MESSAGE_AGENT — see
                    # this function's own docstring above.

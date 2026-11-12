@@ -27,6 +27,7 @@ from backend.shared.helpers.ramboq_logger import get_logger
 from backend.shared.helpers.utils import config
 
 from backend.api.algo.chase import chase_order, ChaseConfig, ChaseResult, ChaseStatus
+from backend.api.algo.grammar import _parsed_or_none
 from backend.api.algo.order_hold import HoldCategory
 from backend.api.algo.order_hold_gate import expiry_close_held, record_held_order
 
@@ -307,12 +308,24 @@ class ExpiryEngine:
                 ))
         return out
 
-    def _compute_theta(self, pos: OptionPosition) -> float:
+    def _compute_theta(self, pos: OptionPosition, *, ref: "datetime | None" = None) -> float:
         """Per-share daily theta via Black-Scholes. Uses a flat IV of
         0.15 (commodity options near expiry — IV barely matters for
         theta when the option is deep ITM/OTM and T → 0). Returns 0
         on degenerate inputs (no spot, no strike, expired). Safe to
-        call for every position; failures fall back to 0."""
+        call for every position; failures fall back to 0.
+
+        `ref` (2026-11 condition-resolver re-base): `days_to_expiry`
+        defaults to the real wall clock when `ref` is None — fine for
+        every live `scan_positions()` caller (a real broker scan always
+        happens "now"), but a condition resolver runs against
+        `ctx.now`, which a sim/replay/test context can set to an
+        arbitrary historical instant. Passing `ref=ctx.now` through
+        keeps theta (and therefore the greedy netting priority it
+        drives) anchored to the SAME clock the rest of the condition
+        evaluation uses, instead of silently reading the live clock
+        mid-test. Every existing `scan_positions()` call site omits
+        `ref`, so its behaviour is unchanged."""
         try:
             from backend.api.algo.derivatives import (
                 greeks, greeks_76, days_to_expiry, DEFAULT_RISK_FREE,
@@ -321,7 +334,7 @@ class ExpiryEngine:
                 return 0.0
             is_mcx = pos.exchange == "MCX"
             close_time = (23, 30) if is_mcx else (15, 30)
-            d = float(days_to_expiry(pos.expiry, close_time=close_time))
+            d = float(days_to_expiry(pos.expiry, ref=ref, close_time=close_time))
             T_years = d / 365.25
             if T_years <= 0:
                 return 0.0
@@ -604,6 +617,36 @@ class ExpiryEngine:
         for (acct, underlying, _expiry), group in groups.items():
             self._classify_mcx_group(acct, underlying, group, all_futs)
 
+    def classify_prepared(
+        self,
+        expiring: list[OptionPosition],
+        all_futs: list[FuturePosition],
+        *,
+        ref: "datetime | None" = None,
+    ) -> None:
+        """Pure, no-I/O classification step — SSOT shared by
+        `scan_positions()` (real broker-fetched data) and
+        `classify_from_context()` (the `ctx.position_rows`/
+        `ctx.spot_prices` adapter used by the `expiry-mcx-risk-alert`/
+        `expiry-nfo-risk-alert` condition resolvers, see
+        `grammar_tokens/scope_positions_expiring_today_mcx_unhedged.py`).
+
+        Takes `expiring` with `underlying_ltp` ALREADY populated (the
+        two callers source that differently — a live `broker.ltp()`
+        call here, `ctx.spot_prices` there) and computes moneyness,
+        theta, and the real 4-rule MCX netting + NFO ITM/NTM
+        classification in place. Mutates `expiring`'s own
+        `moneyness`/`theta`/`residual_qty`/`needs_close`/`close_reason`
+        fields — never a second, independently-reimplemented copy of
+        this math, so the condition path and the alert/auto-close
+        action path can never disagree about the same position.
+        """
+        for p in expiring:
+            p.moneyness = self._classify_moneyness(p)
+            p.theta = self._compute_theta(p, ref=ref)
+            p.residual_qty = p.quantity   # default before netting
+        self._classify_expiring_positions(expiring, all_futs)
+
     def scan_positions(self) -> list[OptionPosition]:
         """
         Scan all option positions and identify those expiring today
@@ -644,14 +687,12 @@ class ExpiryEngine:
         # Fetch underlying LTPs.
         ltps = self._fetch_underlying_ltps(expiring)
 
-        # Classify moneyness + compute theta for the netting priority.
+        # Resolve underlying LTP, then run the shared pure classifier
+        # (moneyness + theta + 4-rule netting) — see classify_prepared()'s
+        # own docstring for why this is factored out as the SSOT.
         for p in expiring:
             p.underlying_ltp = ltps.get(p.underlying, 0)
-            p.moneyness = self._classify_moneyness(p)
-            p.theta = self._compute_theta(p)
-            p.residual_qty = p.quantity   # default before netting
-
-        self._classify_expiring_positions(expiring, all_futs)
+        self.classify_prepared(expiring, all_futs)
 
         to_close = [p for p in expiring if p.needs_close]
         self.state.positions = expiring
@@ -879,3 +920,160 @@ class ExpiryEngine:
             "failed": len(self.state.failed),
             "total_slippage": self.state.total_slippage,
         })
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  Context-driven classification adapter (2026-11 classifier re-base)
+# ═══════════════════════════════════════════════════════════════════════
+#
+# `expiry-mcx-risk-alert`/`expiry-nfo-risk-alert` (agent_engine.py) used to
+# run their OWN independent classification logic — a crude CE/PE
+# signed-quantity sum for MCX, and the generic `is_itm`/`is_future`
+# metrics with no quantity filter for NFO — instead of the real 4-rule
+# theta-priority netting `expiry-day-preclose-alert` and
+# `expiry-day-itm-auto-close` already use via `ExpiryEngine.
+# scan_positions()`. Per explicit operator decision, both risk-alert
+# scopes are re-based onto the SAME classification `scan_positions()`
+# uses, so the two can never disagree about the same position.
+#
+# `scan_positions()` itself cannot be called directly from a condition
+# resolver: it is synchronous and makes real, blocking broker calls
+# (fetch_positions/instruments/ltp), and `_cycle_evaluate_agent` (the
+# resolver's caller) is itself a plain sync `def` that runs directly on
+# the main event loop — a blocking broker call there would stall chase
+# polls/postbacks/SSE for its duration, every cycle, for every agent
+# that references these scopes. `classify_from_context()` below is the
+# alternative: it builds the SAME `OptionPosition`/`FuturePosition`
+# shapes `scan_positions()` builds, but sources them from data the
+# engine ALREADY populates once per cycle for every other condition
+# resolver — `ctx.position_rows` (background.py's `_perf_*` convention)
+# and `ctx.spot_prices` (`background.py:_resolve_spot_prices`, which
+# already resolves MCX roots to their matching-month future via
+# `option_underlying_quote_key`, not the bare-name bug `ExpiryEngine`
+# itself works around in `_mcx_front_month_symbol`) — never a second,
+# live I/O call. `classify_prepared()` is the one shared pure
+# classification step both this adapter and `scan_positions()` call, so
+# there is exactly one copy of the netting/moneyness math.
+
+def _opt_from_row(r: dict) -> "OptionPosition | None":
+    """Build an `OptionPosition` from one `ctx.position_rows` dict —
+    the ctx-side counterpart to `ExpiryEngine._fetch_option_positions`'s
+    per-row construction. Returns `None` for a non-option row, an
+    unparseable symbol, or a flat (qty==0) position — matching
+    `_fetch_option_positions`'s own `if qty == 0: continue` skip, so a
+    squared-off leg never re-enters classification from either path
+    (closes the audit finding that the old `is_itm`/`is_future`-based
+    NFO scope had no quantity filter at all)."""
+    sym = r.get("tradingsymbol") or ""
+    parsed = _parsed_or_none(sym)
+    if not parsed or parsed.get("kind") != "opt":
+        return None
+    opt_type = parsed.get("opt_type")
+    if opt_type not in ("CE", "PE"):
+        return None
+    try:
+        qty = int(float(r.get("quantity", 0) or 0))
+    except (TypeError, ValueError):
+        return None
+    if qty == 0:
+        return None
+    strike = parsed.get("strike")
+    if strike is None:
+        return None
+    return OptionPosition(
+        account=r.get("account") or "",
+        tradingsymbol=sym,
+        exchange=(r.get("exchange") or "").upper(),
+        instrument_type=opt_type,
+        underlying=parsed.get("root") or "",
+        strike=float(strike),
+        expiry=parsed.get("expiry"),
+        quantity=qty,
+        product=r.get("product") or "NRML",
+    )
+
+
+def _fut_from_row(r: dict) -> "FuturePosition | None":
+    """Build a `FuturePosition` from one `ctx.position_rows` dict —
+    the ctx-side counterpart to `ExpiryEngine._fetch_future_positions`.
+    Returns `None` for a non-future row, an unparseable symbol, or a
+    flat (qty==0) position."""
+    sym = r.get("tradingsymbol") or ""
+    parsed = _parsed_or_none(sym)
+    if not parsed or parsed.get("kind") != "fut":
+        return None
+    try:
+        qty = int(float(r.get("quantity", 0) or 0))
+    except (TypeError, ValueError):
+        return None
+    if qty == 0:
+        return None
+    return FuturePosition(
+        account=r.get("account") or "",
+        tradingsymbol=sym,
+        underlying=parsed.get("root") or "",
+        quantity=qty,
+        product=r.get("product") or "NRML",
+    )
+
+
+def classify_from_context(
+    rows: "list[dict]",
+    all_rows: "list[dict]",
+    spot_prices: dict,
+    *,
+    exchange_filter: "str | None" = None,
+    now: "datetime | None" = None,
+) -> "list[OptionPosition]":
+    """Pure, no-I/O adapter — classifies `rows` (option positions) the
+    SAME way `ExpiryEngine.scan_positions()` does, sourced entirely
+    from already-fetched in-memory context data rather than a live
+    broker call. See the module comment above for why this exists.
+
+    `rows` — the near-expiry option rows to classify (typically
+    `_scope_positions_expiring_today(ctx)`'s output, pre-filtered to
+    one exchange by the caller — see `exchange_filter` below).
+    `all_rows` — the FULL, unfiltered `ctx.position_rows`. Futures
+    netting partners can sit at ANY expiry, not only rows expiring
+    today (mirrors `_fetch_future_positions`, which is never
+    itself expiry-filtered) — passing only the near-expiry subset
+    here would silently drop a valid futures offset partner.
+    `spot_prices` — `ctx.spot_prices`, keyed by parsed root (the same
+    convention `_option_moneyness`/`background.py:_resolve_spot_prices`
+    already use).
+    `exchange_filter` — restrict the OPTION side to one exchange
+    ("MCX" or "NFO"); futures partners are never exchange-filtered
+    here (a bare root never collides across exchanges in practice).
+    `now` — threaded into `classify_prepared(ref=...)` so theta (and
+    the netting priority it drives) anchors to `ctx.now`, never the
+    live wall clock — see `_compute_theta`'s own `ref` docstring.
+
+    Returns the classified `OptionPosition` list for `rows` (flat/
+    unparseable/non-option rows are silently excluded — see
+    `_opt_from_row`). `needs_close`/`moneyness`/`residual_qty` are set
+    on each returned position exactly as `scan_positions()` would set
+    them, GIVEN the same input data. A row with no resolvable spot
+    price classifies `moneyness == "UNKNOWN"` and is never flagged
+    `needs_close` (see `_classify_moneyness`'s `underlying_ltp <= 0`
+    branch) — callers must surface an UNKNOWN leg explicitly rather
+    than silently treating it as safe; see
+    `scope_positions_expiring_today_mcx_unhedged.py`'s scope resolver,
+    which does exactly this.
+
+    Known residual gap (not fixed here — matches `scan_positions()`'s
+    own pre-existing behaviour, flagged rather than fixed per the
+    2026-11 classifier re-base plan): a LONE expiring future with no
+    option leg on the same underlying is never itself flagged. Futures
+    are only ever netting PARTNERS in this engine, never a needs_close
+    candidate in their own right, despite the risk-alert agents' own
+    descriptions promising "...or is a future".
+    """
+    options = [o for o in (_opt_from_row(r) for r in rows) if o is not None]
+    if exchange_filter:
+        options = [o for o in options if o.exchange == exchange_filter.upper()]
+    futs = [f for f in (_fut_from_row(r) for r in (all_rows or [])) if f is not None]
+    for o in options:
+        o.underlying_ltp = float(spot_prices.get(o.underlying) or 0.0)
+    engine = ExpiryEngine()
+    engine.classify_prepared(options, futs, ref=now)
+    return options

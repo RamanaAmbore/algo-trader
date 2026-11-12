@@ -1264,6 +1264,58 @@ def _age_validate_template_shape(conditions: dict, events: list, *,
                        "hyphens, max 64 chars")
 
 
+def _age_reject_stray_notify_key(
+    entries: "list | None", *, field_label: str, override_label: str,
+) -> list[str]:
+    """Reject a stray `notify` key on any object entry of *entries* —
+    shared by `_age_validate_action_entries` (for `actions`) and
+    `_age_validate_preamble_entries` (for `preamble`) below.
+
+    2026-11-08 audit fix (item 9) — `preamble` entries use the SAME
+    shared statement vocabulary a DO-clause action does, so a
+    hand-authored or API/MCP-written `notify=[...]` call could land
+    there just as easily as in `actions` — the retired channel-naming
+    param must be rejected on both. Extracted into its own helper
+    because the REST of `_age_validate_action_entries` (unknown-
+    action-type / missing-required-param checks) cannot be safely
+    reused for `preamble` wholesale: a preamble entry can be
+    `{"type": "alert", "events": [...]}` (no `params` key at all, and
+    `"alert"` is not itself a dispatchable action type in the catalog
+    `is_known_action_type()` checks) — running the full validator
+    against that shape would wrongly reject every preamble containing
+    an `alert(...)` call. Only this one, narrow, field-presence check
+    is safe to apply to both. `field_label`/`override_label` let the
+    `actions` caller keep its exact pre-existing message text
+    ("action field" / "per-action override") byte-for-byte."""
+    errors: list[str] = []
+    for entry in entries or []:
+        if isinstance(entry, dict) and "notify" in entry:
+            errors.append(
+                f"'notify' is no longer a supported {field_label} field — alert "
+                "channel routing is resolved by alert_routing.py's "
+                f"tier/per-slug/catch-all chain, not a per-{override_label} override"
+            )
+    return errors
+
+
+def _age_validate_preamble_entries(preamble: "list | None") -> None:
+    """Narrow validator for `agent.preamble` (2026-11-08 audit fix,
+    item 9) — notify-key rejection only. Deliberately does NOT run the
+    broader unknown-action-type/missing-required-param checks
+    `_age_validate_action_entries` runs for `actions` — see
+    `_age_reject_stray_notify_key()`'s own docstring for why that would
+    be unsafe here. This narrows, but does not close, the documented
+    "Known limitations" gap (CLAUDE.md: "`_age_validate_action_entries`
+    runs on `actions` only, never on `preamble`... a validation gap,
+    not an execution-safety gap") — a raw API/MCP write can still store
+    an otherwise-malformed preamble entry; only a stray `notify` key is
+    rejected here."""
+    errors = _age_reject_stray_notify_key(preamble, field_label="preamble", override_label="entry")
+    if errors:
+        raise HTTPException(status_code=422,
+            detail="; ".join(errors), extra={"errors": errors})
+
+
 def _age_validate_action_entries(actions: list) -> None:
     """Reject unknown action types / missing required params on a cycle
     agent's `actions` array at save time — kind-agnostic companion to
@@ -1290,23 +1342,19 @@ def _age_validate_action_entries(actions: list) -> None:
         get_action_params_schema, is_known_action_type,
     )
     errors: list[str] = []
+    # 2026-11 channel-authoring retirement — the `notify=[...]`
+    # action-call parameter is removed with no replacement (see
+    # `actions.py`'s former "Part B" block and `ACTION_NOTIFY_AGENT`'s
+    # retirement in `event_agents.py`). Checked unconditionally,
+    # independent of whether `type` itself is a known action — a stale
+    # `notify` key must never silently round-trip through an otherwise-
+    # valid save. Shared with `_age_validate_preamble_entries` via
+    # `_age_reject_stray_notify_key()` (2026-11-08 audit fix, item 9).
+    errors.extend(_age_reject_stray_notify_key(actions, field_label="action", override_label="action"))
     for entry in actions:
         if not isinstance(entry, dict):
             errors.append(f"action entry must be an object, got {type(entry).__name__}")
             continue
-        # 2026-11 channel-authoring retirement — the `notify=[...]`
-        # action-call parameter is removed with no replacement (see
-        # `actions.py`'s former "Part B" block and
-        # `ACTION_NOTIFY_AGENT`'s retirement in `event_agents.py`).
-        # Checked unconditionally, independent of whether `type` itself
-        # is a known action — a stale `notify` key must never silently
-        # round-trip through an otherwise-valid save.
-        if "notify" in entry:
-            errors.append(
-                "'notify' is no longer a supported action field — alert "
-                "channel routing is resolved by alert_routing.py's "
-                "tier/per-slug/catch-all chain, not a per-action override"
-            )
         action_type = entry.get("type")
         if not action_type or not is_known_action_type(action_type):
             errors.append(f"unknown action type '{action_type}'")
@@ -1456,6 +1504,10 @@ class AgentController(Controller):
                                                is_create=True, slug=data.slug)
             else:
                 _age_validate_action_entries(data.actions)
+            # 2026-11-08 audit fix (item 9) — `preamble` is kind-agnostic
+            # (any agent kind can carry a preamble), so this runs
+            # unconditionally, outside the kind-specific branch above.
+            _age_validate_preamble_entries(data.preamble)
             _age_validate_threshold_conditions(data.conditions, data.given)
             tm = _age_resolve_trade_mode(data.trade_mode)
             agent = Agent(
@@ -1606,6 +1658,11 @@ class AgentController(Controller):
                                                is_create=False)
             else:
                 _age_validate_action_entries(agent.actions)
+            # 2026-11-08 audit fix (item 9) — kind-agnostic, same as the
+            # create-path call above. `getattr(..., None)` mirrors the
+            # `given` access on the next line — a test double / older
+            # in-memory row may not carry this attribute at all.
+            _age_validate_preamble_entries(getattr(agent, "preamble", None))
             _age_validate_threshold_conditions(agent.conditions, getattr(agent, "given", None))
             await session.commit()
         if agent.kind == "event":

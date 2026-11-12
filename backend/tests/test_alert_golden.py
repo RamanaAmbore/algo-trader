@@ -70,18 +70,21 @@ async def test_error_alert_golden_text(sent, error_agent):
     # phrase, and no action tag at all. The old generic "RamboQuant
     # error" filler line and the separate full-logger-name body line
     # are both dropped — the real log message is the body's only
-    # content, with a blank line separating it from the header (operator:
-    # "the process's own log message is the central message of the
-    # alert"). Trailing tag line: process ("x"), alert-agent
-    # ("error_alert"), log-level ("error") — no action tag, since
-    # nothing is known to have triggered a bare application error.
+    # content (operator: "the process's own log message is the central
+    # message of the alert"). Trailing tag line: process ("x"),
+    # alert-agent ("error_alert"), log-level ("error") — no action tag,
+    # since nothing is known to have triggered a bare application error.
+    # 2026-11-08 audit fix (item 8) — no stray blank line between the
+    # header and the message: `_render_error` now calls
+    # `format_notification_header()` once and uses its full two-line
+    # output directly, matching every other renderer's convention.
     # 2026-11-04 channel-routing audit — error-alert no longer sends
     # ntfy at all (alert_routing.py's own per-slug override), telegram
     # only; `sent["ntfy"]` is correctly empty now.
     from backend.api.algo import event_agents
     await event_agents.dispatch([_error_rec("boom: bad value")], [error_agent])
     assert sent["ntfy"] == []
-    assert sent["tg"] == [f"Source: x (error)\n{_FIXED_TS}\n\nboom: bad value\n#x #via_error_alert #error"]
+    assert sent["tg"] == [f"Source: x (error)\n{_FIXED_TS}\nboom: bad value\n#x #via_error_alert #error"]
 
 
 @pytest.mark.asyncio
@@ -89,7 +92,7 @@ async def test_error_alert_strips_html_like_fragments_as_before(sent, error_agen
     from backend.api.algo import event_agents
     await event_agents.dispatch([_error_rec("boom <bad>")], [error_agent])
     # 2026-11-04 — error-alert is telegram-only (see test_error_alert_golden_text).
-    assert sent["tg"] == [f"Source: x (error)\n{_FIXED_TS}\n\nboom\n#x #via_error_alert #error"]
+    assert sent["tg"] == [f"Source: x (error)\n{_FIXED_TS}\nboom\n#x #via_error_alert #error"]
 
 
 @pytest.mark.asyncio
@@ -104,8 +107,8 @@ async def test_error_alert_repeat_suffix_after_cooldown(monkeypatch, sent, error
     await event_agents.dispatch([_error_rec("down", alert_now=True)], [error_agent])
     # 2026-11-04 — error-alert is telegram-only (see test_error_alert_golden_text).
     assert sent["tg"] == [
-        f"Source: x (error)\n{_FIXED_TS}\n\ndown\n#x #via_error_alert #error",
-        f"Source: x (error)\n{_FIXED_TS}\n\ndown (+1 repeats)\n#x #via_error_alert #error",
+        f"Source: x (error)\n{_FIXED_TS}\ndown\n#x #via_error_alert #error",
+        f"Source: x (error)\n{_FIXED_TS}\ndown (+1 repeats)\n#x #via_error_alert #error",
     ]
 
 
@@ -426,15 +429,22 @@ async def test_order_failure_golden_text_channels_and_html(monkeypatch):
     # "order-failure-alert" (tag-token'd, 2026-11-08: `via_`-prefixed);
     # email body SHA re-derived (now includes the trailing pill row).
     # 2026-11-06 — 4th slot is this record's own level ("warning").
-    assert sent["tg"] == ['Source: Order failure triggered manually\n10:15:30 IST\n❌ Order rejected  [Manual]  [LIVE]  (+2 suppressed)\nZG####  BUY  75  NIFTY26OCTFUT  (NFO)\nsource: ticket\nInsufficient funds <x>\n#manual #via_order_failure_alert #warning']
+    #
+    # 2026-11-08 audit fix (item 2) — mode="live" now shows NO pill at
+    # all (the system-wide "live stays silent" rule), where this
+    # fixture used to hardcode `[LIVE]` unconditionally. The subject
+    # also moved onto the shared "{label_word}: {detail}{branch_tag}
+    # {mode_sfx} | {ts}" convention — both re-derived by actually
+    # running the real dispatch pipeline, not by hand.
+    assert sent["tg"] == ['Source: Order failure triggered manually\n10:15:30 IST\n❌ Order rejected  [Manual]    (+2 suppressed)\nZG####  BUY  75  NIFTY26OCTFUT  (NFO)\nsource: ticket\nInsufficient funds <x>\n#manual #via_order_failure_alert #warning']
     assert sent["ntfy"] == [("Order Rejected: NIFTY26OCTFUT BUY",
-                             "Source: Order failure triggered manually\n10:15:30 IST\n❌ Order rejected  [Manual]  [LIVE]  (+2 suppressed)\nZG####  BUY  75  NIFTY26OCTFUT  (NFO)\nsource: ticket\nInsufficient funds <x>\n#manual #via_order_failure_alert #warning",
+                             "Source: Order failure triggered manually\n10:15:30 IST\n❌ Order rejected  [Manual]    (+2 suppressed)\nZG####  BUY  75  NIFTY26OCTFUT  (NFO)\nsource: ticket\nInsufficient funds <x>\n#manual #via_order_failure_alert #warning",
                              "urgent")]
     assert len(sent["mail"]) == 1
     _, addr, subj, body = sent["mail"][0]
     assert addr == "a@x.com"
-    assert subj == "[Manual] RamboQuant Order Rejected: NIFTY26OCTFUT BUY (live)"
-    assert hashlib.sha256(body.encode()).hexdigest() == "d566a312ffe6a9b8470a85225dec7d62a038c20683c1b3de14fb984e58e5d288"
+    assert subj == "Source: Order Rejected NIFTY26OCTFUT BUY [Manual] | 10:15:30 IST"
+    assert hashlib.sha256(body.encode()).hexdigest() == "be52c58997bdb252245c7902f834bf2a18c35d1e4ae166d4eedd3edf16f24174"
 
 
 @pytest.mark.asyncio

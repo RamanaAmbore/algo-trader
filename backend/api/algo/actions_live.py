@@ -1781,12 +1781,22 @@ async def _action_live_expiry_auto_close(agent, context: dict, params: dict):
     `expiry-day-preclose-alert` also uses).
 
     Wraps the legacy ExpiryEngine so the agent path inherits the
-    battle-tested rules:
+    battle-tested rules (`ExpiryEngine.classify_prepared()` is the
+    SSOT — see its own docstring):
       - NFO: close ALL ITM + NTM expiring today (no hedging exception
         — Indian equity F&O is settled per-leg, no broker netting).
-      - MCX: close only UNHEDGED ITM + NTM (CE/PE pairs whose net qty
-        across the underlying+expiry sum to zero are skipped — the
-        broker nets them at settlement, no operator action needed).
+      - MCX: per (account, underlying, expiry) group, apply the real
+        4-rule greedy theta-priority netting (long-CE ↔ short-CE,
+        long-PE ↔ short-PE, long-CE ↔ long-PE, short-CE ↔ short-PE)
+        plus same-underlying FUT positions as delta-offset partners
+        (long-CE ↔ short-FUT, long-PE ↔ long-FUT, etc.) — only the
+        RESIDUAL (non-zero) qty after netting is closed. This is no
+        longer a crude "net qty sums to zero" sum — a synthetic combo
+        (long CE + short PE, same strike) sums to zero but has no
+        valid opt-opt rule and is correctly flagged; a "guts" position
+        (long CE + long PE, different strikes, same sign) sums
+        non-zero but IS a valid rule-3 pair and correctly nets to
+        zero.
 
     Reads NTM buffer + chase config from `algo.expiry_*` settings (same
     knobs the bg task uses), so a single /admin/settings change tunes

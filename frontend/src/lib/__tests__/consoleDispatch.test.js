@@ -378,8 +378,8 @@ describe('slugifyAgentName', () => {
 describe('submitConsoleToken', () => {
   it('creates an Agent(kind="template") row via the unified createAgent call (Sprint D2)', async () => {
     createAgent.mockResolvedValue({ detail: "Agent 'my-token' created" });
-    const fragment = { kind: 'notify', name: 'my-token', body: [{ channel: 'telegram', enabled: true }] };
-    const r = await submitConsoleToken(fragment, 'token(kind=notify) telegram #name="my-token"');
+    const fragment = { kind: 'condition', name: 'my-token', conditions: { metric: 'pnl', scope: 'positions.total', op: '<=', value: -50000 } };
+    const r = await submitConsoleToken(fragment, 'token(kind=condition) pnl@positions.total <= -50000 #name="my-token"');
     expect(r.ok).toBe(true);
     expect(r.slug).toBe('my-token');
     expect(createAgent).toHaveBeenCalledWith({
@@ -387,22 +387,22 @@ describe('submitConsoleToken', () => {
       kind: 'template',
       name: 'my-token',
       description: '',
-      conditions: {},
-      events: fragment.body,
+      conditions: fragment.conditions,
+      events: [],
       actions: [],
-      cli_source: 'token(kind=notify) telegram #name="my-token"',
+      cli_source: 'token(kind=condition) pnl@positions.total <= -50000 #name="my-token"',
     });
   });
 
   it('sends the fragment name as the slug UNCHANGED — never slugified', async () => {
     createAgent.mockResolvedValue({ detail: 'ok' });
-    await submitConsoleToken({ kind: 'notify', name: 'already-valid-slug', body: [] });
+    await submitConsoleToken({ kind: 'condition', name: 'already-valid-slug', conditions: {} });
     expect(createAgent.mock.calls[0][0].slug).toBe('already-valid-slug');
   });
 
   it('surfaces a create failure (e.g. 409 slug collision, or a 400 bad-slug-shape) as a structured error', async () => {
     createAgent.mockRejectedValue(new Error("Agent 'my-token' already exists"));
-    const r = await submitConsoleToken({ kind: 'notify', name: 'my-token', body: [] });
+    const r = await submitConsoleToken({ kind: 'condition', name: 'my-token', conditions: {} });
     expect(r.ok).toBe(false);
     expect(r.error).toMatch(/already exists/);
   });
@@ -410,8 +410,21 @@ describe('submitConsoleToken', () => {
   it('requires a compiled fragment with a name — never calls createAgent with nothing', async () => {
     const r1 = await submitConsoleToken(null);
     expect(r1.ok).toBe(false);
-    const r2 = await submitConsoleToken({ kind: 'notify', body: [] });   // no name
+    const r2 = await submitConsoleToken({ kind: 'condition', conditions: {} });   // no name
     expect(r2.ok).toBe(false);
+    expect(createAgent).not.toHaveBeenCalled();
+  });
+
+  // Channel-naming removal (2026-11, commit 0216d534) — `kind=notify` can
+  // no longer be authored via CLI at all (compileTokenStmt hard-errors,
+  // returning fragment:null), so a non-null kind:'notify' fragment can
+  // never reach this function through the real compiler. This test pins
+  // the defensive guard for the (now-impossible, but still worth
+  // handling) case where some other caller constructs one by hand.
+  it('refuses a notify-kind fragment — createAgent is never called with an empty, useless Template row', async () => {
+    const r = await submitConsoleToken({ kind: 'notify', name: 'my-token', body: [{ channel: 'telegram', enabled: true }] });
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/notify/i);
     expect(createAgent).not.toHaveBeenCalled();
   });
 });
@@ -594,28 +607,28 @@ describe('updateConsoleAgent', () => {
 describe('updateConsoleToken', () => {
   it('calls updateAgent(slug, {description, conditions, events, cli_source}) — never createAgent (Sprint D2)', async () => {
     updateAgent.mockResolvedValue({ detail: 'ok' });
-    const compiledFragment = { kind: 'notify', name: 'my-token', body: [{ channel: 'telegram', enabled: true }], description: 'hi' };
-    const r = await updateConsoleToken('my-token', compiledFragment, 'token(kind=notify) telegram #name="my-token" #desc="hi"');
+    const compiledFragment = { kind: 'condition', name: 'my-token', conditions: { metric: 'pnl', scope: 'positions.total', op: '<=', value: -50000 }, description: 'hi' };
+    const r = await updateConsoleToken('my-token', compiledFragment, 'token(kind=condition) pnl@positions.total <= -50000 #name="my-token" #desc="hi"');
     expect(r.ok).toBe(true);
     expect(r.slug).toBe('my-token');
     expect(createAgent).not.toHaveBeenCalled();
     expect(updateAgent).toHaveBeenCalledWith('my-token', {
       description: 'hi',
-      conditions: {},
-      events: compiledFragment.body,
-      cli_source: 'token(kind=notify) telegram #name="my-token" #desc="hi"',
+      conditions: compiledFragment.conditions,
+      events: [],
+      cli_source: 'token(kind=condition) pnl@positions.total <= -50000 #name="my-token" #desc="hi"',
     });
   });
 
   it('never sends name — Agent.name must never drift from the $ref-key slug', async () => {
     updateAgent.mockResolvedValue({ detail: 'ok' });
-    await updateConsoleToken('my-token', { kind: 'notify', name: 'my-token', body: [] });
+    await updateConsoleToken('my-token', { kind: 'condition', name: 'my-token', conditions: {} });
     const sentPayload = updateAgent.mock.calls[0][1];
     expect(Object.prototype.hasOwnProperty.call(sentPayload, 'name')).toBe(false);
   });
 
   it('requires a target slug — never calls updateAgent with no row selected', async () => {
-    const r = await updateConsoleToken(null, { kind: 'notify', name: 'x', body: [] });
+    const r = await updateConsoleToken(null, { kind: 'condition', name: 'x', conditions: {} });
     expect(r.ok).toBe(false);
     expect(updateAgent).not.toHaveBeenCalled();
   });
@@ -623,6 +636,18 @@ describe('updateConsoleToken', () => {
   it('requires a compiled fragment — never calls updateAgent with nothing', async () => {
     const r = await updateConsoleToken('my-token', null);
     expect(r.ok).toBe(false);
+    expect(updateAgent).not.toHaveBeenCalled();
+  });
+
+  // Channel-naming removal (2026-11, commit 0216d534) — `decompileToken`
+  // also refuses to decompile an already-saved notify-kind row into
+  // editable text, so this function can never be reached with a
+  // kind:'notify' fragment through the real Edit flow either. This test
+  // pins the defensive guard.
+  it('refuses a notify-kind fragment — updateAgent is never called', async () => {
+    const r = await updateConsoleToken('my-token', { kind: 'notify', name: 'my-token', body: [{ channel: 'telegram', enabled: true }] });
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/notify/i);
     expect(updateAgent).not.toHaveBeenCalled();
   });
 });
