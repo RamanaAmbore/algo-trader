@@ -39,8 +39,7 @@
   import RefreshButton from '$lib/RefreshButton.svelte';
   import {
     loadInstruments, suggestUnderlyings,
-    listExpiries, findOption,
-    listFutures, getInstrument, getOptionUnderlyingLot,
+    getInstrument, getOptionUnderlyingLot,
     findNearestFuture, hasFNO,
     instrumentsCacheVersion,
   } from '$lib/data/instruments';
@@ -3597,46 +3596,23 @@
   // this so they re-trigger after the async fetch lands; without it,
   // the page would render with an empty proxy cache and never refresh.
   let proxyTableReady  = $state(false);
+  // chainUnderlying is a leftover of the removed chain-picker panel.
+  // Its only remaining live consumer is onTicketSubmit's draft branch
+  // below (selectedUnderlying fallback) — kept for that one read.
+  // chainExpiry/chainKinds/chainSide/chainLots had no live consumer
+  // left and were removed in the same 2026-11 dead-code sweep that
+  // removed addOptionToBasket/addFutureDraft/chainFutures (see
+  // derivatives_chain_picker_panel_removed.spec.js).
   let chainUnderlying  = $state('');
-  let chainExpiry      = $state('');
-  // Kind multi-select — operator picks any combination of Options
-  // and Futures. Defaults to Options only; the Futures section is
-  // opt-in so the strike grid stays the focal point on mount.
-  /** @type {Array<'opt'|'fut'>} */
-  let chainKinds       = $state(/** @type {Array<'opt'|'fut'>} */ (['opt']));
 
-  // chainSide stays as the (i) launcher's default leg side (long).
-  // Per-row +/− buttons override on a per-pick basis (each button
-  // explicitly passes its own side to addChainDraft), so the outer
-  // toggle no longer carries operator-meaningful state.
-  let chainSide        = $state(/** @type {'long'|'short'} */ ('long'));
-  // chainLots is now only the FALLBACK qty multiplier the (i) modal
-  // path uses when opening OrderTicket directly. The fast +/− path
-  // owns its own per-click lots state via quickPicker below.
-  let chainLots        = $state(1);
-
-  // ── Direct-to-basket quick buttons ────────────────────────────────
-  // Click + or − on a strike (or a futures pill) → leg lands in
-  // `chainBasket` immediately at 1 lot (default). Lot adjustments
-  // happen on the basket pill itself (inline − / + stepper). The
-  // OrderTicket modal (i button) is still the slow path for limit
-  // / mode / qty edits before placing. Replaces the previous inline
-  // ✓ / ✕ / +B picker — operator wanted a single, predictable path
-  // through the basket bar.
-  // Brief toast tracking the cell that just got "+ added" so the
-  // operator can see their click registered. Auto-clears in ~1 s.
-  /** @type {{ key: string, msg: string }|null} */
-  let quickToast = $state(null);
-
+  // `_quickKeyOpt`/`_quickKeyFut` build the dedupe/toast key for a
+  // basket leg; `_mergeIntoBasket` is the shared bump-lots-on-dupe
+  // helper. Both are still live — the only caller left is
+  // SymbolPanel's `onAddToBasket` callback further down this file
+  // (the direct-to-basket quick-add buttons that used to call these
+  // too were removed in the same 2026-11 dead-code sweep as above).
   function _quickKeyOpt(strike, optType) { return `o:${strike}:${optType}`; }
   function _quickKeyFut(sym)             { return `f:${sym}`; }
-
-  function _flashToast(/** @type {string} */ key, /** @type {string} */ msg) {
-    quickToast = { key, msg };
-    setTimeout(() => {
-      if (quickToast?.key === key) quickToast = null;
-    }, 900);
-  }
 
   /** Merge an incoming leg into the existing basket if a leg with
    *  the same symbol AND same side already exists — bump its lots
@@ -3650,90 +3626,6 @@
     chainBasket = chainBasket.map((b, i) =>
       i === idx ? { ...b, lots: (b.lots || 0) + (incoming.lots || 1) } : b);
     return true;
-  }
-
-  /** Add an option leg to the basket. Resolves symbol + lot size from
-   *  the instruments cache and seeds the limit price from chain
-   *  quotes (BUY → ask, SELL → bid) so the basket goes out as a
-   *  LIMIT order. Adding the same (strike, type, side) again bumps
-   *  the existing pill's lots count instead of duplicating. */
-  function addOptionToBasket(/** @type {number} */ strike,
-                              /** @type {'CE'|'PE'} */ optType,
-                              /** @type {'long'|'short'} */ side) {
-    if (!chainUnderlying || !chainExpiry) return;
-    const inst = findOption(
-      chainUnderlying.toUpperCase(), optType, strike, chainExpiry,
-    );
-    if (!inst) { basketError = 'Symbol not in instruments cache.'; return; }
-    const sideTag = /** @type {'BUY'|'SELL'} */ (side === 'long' ? 'BUY' : 'SELL');
-    if (_mergeIntoBasket({ sym: String(inst.s), side: sideTag, lots: 1 })) {
-      basketError = '';
-      _flashToast(_quickKeyOpt(strike, optType), '+1 lot');
-      return;
-    }
-    const q = chainQuotesMap?.[String(strike)]?.[optType.toLowerCase()];
-    const limit = sideTag === 'BUY'
-      ? (q?.ask ?? q?.bid ?? 0)
-      : (q?.bid ?? q?.ask ?? 0);
-    chainBasket = [...chainBasket, {
-      key:      `${sideTag}|${_quickKeyOpt(strike, optType)}|${Date.now()}`,
-      side:     sideTag,
-      sym:      String(inst.s),
-      exchange: inst.e || 'NFO',
-      lots:     1,
-      lotSize:  Number(inst.ls || 1),
-      product:  'NRML',
-      limit:    Number(limit) || 0,
-      chaseAgg: /** @type {'low'} */ ('low'),
-    }];
-    basketError = '';
-    _flashToast(_quickKeyOpt(strike, optType), '✓ added');
-  }
-
-  /** Add a futures leg to the basket. Same dedupe rule — same sym
-   *  + same side bumps lots on the existing leg. Limit defaults to
-   *  0 (the Place handler routes 0-priced legs as MARKET). */
-  function addFuturesToBasket(/** @type {string} */ sym,
-                               /** @type {number} */ lotSize,
-                               /** @type {'long'|'short'} */ side) {
-    const inst = getInstrument(String(sym || '').toUpperCase());
-    const sideTag = /** @type {'BUY'|'SELL'} */ (side === 'long' ? 'BUY' : 'SELL');
-    if (_mergeIntoBasket({ sym: String(sym), side: sideTag, lots: 1 })) {
-      basketError = '';
-      _flashToast(_quickKeyFut(sym), '+1 lot');
-      return;
-    }
-    chainBasket = [...chainBasket, {
-      key:      `${sideTag}|${_quickKeyFut(sym)}|${Date.now()}`,
-      side:     sideTag,
-      sym:      String(sym),
-      exchange: inst?.e || 'NFO',
-      lots:     1,
-      lotSize:  Number(lotSize || inst?.ls || 1),
-      product:  'NRML',
-      limit:    0,
-      chaseAgg: /** @type {'low'} */ ('low'),
-    }];
-    basketError = '';
-    _flashToast(_quickKeyFut(sym), '✓ added');
-  }
-
-  /** Set the chase aggressiveness on a single basket leg. */
-  function setBasketChaseAgg(/** @type {string} */ key,
-                              /** @type {'low'|'med'|'high'} */ agg) {
-    chainBasket = chainBasket.map(b =>
-      b.key === key ? { ...b, chaseAgg: agg } : b
-    );
-  }
-
-  /** Step the lots count on a single basket leg. Floored at 1; no
-   *  upper cap (margin pre-flight catches over-sizing on submit). */
-  function basketStepLots(/** @type {string} */ key,
-                           /** @type {number} */ delta) {
-    chainBasket = chainBasket.map(b => {
-      if (b.key !== key) return b;
-      return { ...b, lots: Math.max(1, Math.floor((b.lots || 1) + delta)) };
-    });
   }
 
   // ── Chain basket — staged legs awaiting one-shot submit ───────────
@@ -3756,10 +3648,6 @@
   let basketError    = $state('');
   let basketProgress = $state(0);
   let basketJustDone = $state(false);
-  function removeFromBasket(/** @type {string} */ key) {
-    chainBasket = chainBasket.filter(b => b.key !== key);
-  }
-  function clearBasket() { chainBasket = []; basketError = ''; }
   /** Submit every basket leg sequentially as a paper MARKET order via
    *  the same `placeTicketOrder` path used by the OrderTicket modal.
    *  Sequential (not Promise.all) so the broker isn't hammered with
@@ -3897,50 +3785,15 @@
     return out;
   });
 
-  // Expiry list rebuilds when the operator picks a different underlying.
-  const chainExpiries = $derived.by(() => {
-    if (!instrumentsReady || !chainUnderlying) return [];
-    // Use 'CE' as the type — every option underlying has both CE + PE
-    // expiries on the same dates, so checking one is enough.
-    return listExpiries(chainUnderlying.toUpperCase(), 'CE');
-  });
-  /** Per-strike CE + PE bid/ask map, keyed by strike → {ce, pe} →
-   *  {bid, ask}. Only reader left is the dead local `addOptionToBasket`
-   *  below (zero callers) — nothing writes this any more since the
-   *  showAddPanel-gated quotes-poll effect that used to populate it
-   *  was removed (2026-11, dead-code sweep). Stays permanently null. */
-  /** @type {Record<string,{
-   *    ce:{bid:number|null,ask:number|null},
-   *    pe:{bid:number|null,ask:number|null}
-   *  }> | null} */
-  let chainQuotesMap = $state(null);
-
-  // Futures contracts on the same underlying — surfaced as a quick-add
-  // row above the strike grid. Filter to the selected expiry first; if
-  // none match (futures and option expiries can drift by a day in
-  // weekly cycles), show whichever future is closest. Futures aren't
-  // strikable, so they appear once per chain, not per row.
-  const chainFutures = $derived.by(() => {
-    if (!instrumentsReady || !chainUnderlying) return [];
-    const all = listFutures(chainUnderlying.toUpperCase()) || [];
-    if (!chainExpiry) return all.slice(0, 3);
-    // Exact expiry match first — futures + options sometimes share
-    // the same Thursday (the monthly-options + monthly-future date).
-    const exact = all.filter(f => f.x === chainExpiry);
-    if (exact.length) return exact;
-    // Fallback: month-of match. Indian weekly options expire on
-    // Thursdays; their natural pairing is the monthly future for
-    // the same calendar month, which expires on the LAST Thursday
-    // of that month. Picking by year-month captures this without
-    // hard-coding the last-Thursday rule.
-    const ym = String(chainExpiry).slice(0, 7);   // 'YYYY-MM'
-    return all.filter(f => String(f.x || '').slice(0, 7) === ym);
-  });
-
   // Default the chain underlying to the top of the priority list
   // (selectedUnderlying when set, otherwise the operator's first
   // book underlying) once the instruments cache has loaded. Empty
-  // out the picked value if it disappears from the list.
+  // out the picked value if it disappears from the list. This is the
+  // one remaining writer of chainUnderlying — kept so the
+  // onTicketSubmit draft-branch fallback below has a real value to
+  // read (chainExpiry's own auto-pick effect, and chainExpiries/
+  // chainFutures that fed it, were removed in the same 2026-11
+  // dead-code sweep — see derivatives_chain_picker_panel_removed.spec.js).
   $effect(() => {
     const list = underlyingChoices;
     untrack(() => {
@@ -3952,14 +3805,6 @@
         chainUnderlying = list[0];
       }
     });
-  });
-
-  // Auto-pick first expiry when chain underlying changes.
-  $effect(() => {
-    void chainUnderlying;
-    if (chainExpiries.length && !chainExpiries.includes(chainExpiry)) {
-      chainExpiry = chainExpiries[0];
-    }
   });
 
   // Order-ticket state — chain clicks open the reusable
@@ -3997,25 +3842,6 @@
     if (realAccounts.length === 1) return realAccounts[0];
     return '';
   }
-  function addFutureDraft(/** @type {string} */ sym,
-                          /** @type {number} */ lotSize,
-                          /** @type {'long'|'short'} */ side = chainSide) {
-    if (!sym) return;
-    const lot  = Number(lotSize || 1);
-    // Look up the instrument so we route to the right exchange
-    // (commodity futures live on MCX, not NFO).
-    const inst = getInstrument(sym.toUpperCase());
-    openTicket({
-      symbol:   sym,
-      exchange: inst?.e || 'NFO',
-      side:     side === 'long' ? 'BUY' : 'SELL',
-      qty:      lot,
-      lotSize:  lot,
-      accounts: ticketAccounts,
-      account:  _ticketAccountDefault(),
-    });
-  }
-
   /** Pre-fill account when the row already names one. Falls back
    *  to the page-level default. Masked (`ZG####`) values get
    *  filtered so the ticket never seeds with an unroutable
@@ -4287,9 +4113,6 @@
    *  Drives Tier 5 in the underlying picker — appears after pinned watchlist
    *  roots and before the static POPULAR_UNDERLYINGS fallback. */
   let _regularWatchlistRoots = $state(/** @type {string[]} */ ([]));
-  /** Per-strike|optType toast confirming the watchlist add. Keyed
-   *  by `${strike}|${CE|PE}` so each chain row tracks its own. */
-  let watchToast = $state(/** @type {{ key: string, msg: string } | null} */ (null));
 
   async function loadRealAccounts() {
     try {
@@ -4337,9 +4160,6 @@
     }
   }
 
-  /** Add a chain row to the user's default watchlist. Resolves the
-   *  contract via the instrument cache so the tradingsymbol matches
-   *  exactly what the broker knows. */
   /** Generic "add this symbol to the default watchlist" — used by
    *  the SymbolActions component on the Candidates rows. Doesn't
    *  need a strike/optType because it acts on a resolved
@@ -4350,28 +4170,6 @@
   ) {
     if (defaultWatchlistId == null) throw new Error('No default watchlist');
     await addWatchlistItem(defaultWatchlistId, String(sym), exchange || 'NFO');
-  }
-
-  async function addOptionToWatchlist(
-    /** @type {number} */ strike,
-    /** @type {'CE'|'PE'} */ optType,
-  ) {
-    if (defaultWatchlistId == null) return;
-    if (!chainUnderlying || !chainExpiry) return;
-    const inst = findOption(
-      chainUnderlying.toUpperCase(), optType, strike, chainExpiry,
-    );
-    if (!inst) { basketError = 'Symbol not in instruments cache.'; return; }
-    const key = `${strike}|${optType}`;
-    try {
-      await addWatchlistItem(defaultWatchlistId, String(inst.s), inst.e || 'NFO');
-      watchToast = { key, msg: '+ Watch' };
-    } catch (e) {
-      // 409 = already in list — show a friendlier confirmation rather
-      // than a red error, since the operator's intent was met.
-      watchToast = { key, msg: /already/i.test(e?.message || '') ? 'in list' : 'err' };
-    }
-    setTimeout(() => { if (watchToast?.key === key) watchToast = null; }, 1200);
   }
 
   /** Account list to feed the OrderTicket — prefers the unmasked

@@ -25,12 +25,24 @@
  *    `$lib/api`), `listStrikes` (from `$lib/data/instruments`), `isMarketOpen`
  *    (from `$lib/marketHours`).
  *
- * Deliberately NOT removed (still has an out-of-scope live or dead-but-
- * untouched consumer — see the task's own handback report for the full
- * second-pass list): `chainUnderlying`/`chainExpiry` (live via
- * `onTicketSubmit`'s draft branch), `chainQuotesMap` (read by the separate,
- * still-present `addOptionToBasket()`), `_mergeIntoBasket`/`_quickKeyOpt`/
- * `_quickKeyFut`/`chainBasket` (live via SymbolPanel's `onAddToBasket`).
+ * Deliberately NOT removed (still has a live consumer — see the task's own
+ * handback report for the full second-pass list): `chainUnderlying` (live
+ * via `onTicketSubmit`'s draft branch), `_mergeIntoBasket`/`_quickKeyOpt`/
+ * `_quickKeyFut`/`chainBasket`/`basketError` (live via SymbolPanel's
+ * `onAddToBasket`), `placeBasket`/`basketPlacing`/`basketProgress`/
+ * `basketJustDone` (pinned by the CRITICAL money-safety regression guard in
+ * basket_mode_sim_replay_safety.spec.js even though nothing calls
+ * `placeBasket()` on this page today).
+ *
+ * A SECOND dead-code sweep (2026-11, follow-up) removed the rest of the
+ * vestigial "Option-chain picker (Strategy mode)" quick-add block that this
+ * first pass had left behind as out-of-scope: `addOptionToBasket()`,
+ * `addOptionToWatchlist()`, `addFutureDraft()`, `chainFutures` (named), plus
+ * `addFuturesToBasket()`, `setBasketChaseAgg()`, `basketStepLots()`,
+ * `removeFromBasket()`, `clearBasket()`, `chainQuotesMap`, `chainExpiry`,
+ * `chainExpiries`, `chainKinds`, `chainSide`, `chainLots`, `quickToast`,
+ * `_flashToast()`, `watchToast` (all zero-caller once the named four were
+ * gone). See `derivatives_vestigial_chain_picker_removed.spec.js`.
  *
  * The real, still-used chain-opening path (row click → SymbolPanel →
  * `OptionChainTab.svelte`'s Chain tab) is covered by
@@ -101,10 +113,12 @@ test.describe('Stale-code: dead showAddPanel chain-picker panel wiring stays rem
     expect(src).not.toMatch(/const chainSpot = \$derived\.by/);
   });
 
-  test('chainQuotesMap declaration survives — addOptionToBasket() still reads it', () => {
-    // Not part of this removal: addOptionToBasket() (a separate, already-
-    // dead-but-out-of-scope local function) is the one remaining reader.
-    expect(src).toContain('let chainQuotesMap = $state(null);');
+  test('chainQuotesMap is gone — its one reader, addOptionToBasket(), was removed in the follow-up sweep', () => {
+    // Superseded: this file's own first pass left chainQuotesMap in place
+    // because addOptionToBasket() still read it. The follow-up sweep
+    // removed addOptionToBasket() too, so chainQuotesMap has zero readers
+    // and is gone. See derivatives_vestigial_chain_picker_removed.spec.js.
+    expect(src).not.toContain('let chainQuotesMap = $state(null);');
   });
 
   test('chainUnderlying survives — onTicketSubmit\'s draft branch is a live consumer', () => {
