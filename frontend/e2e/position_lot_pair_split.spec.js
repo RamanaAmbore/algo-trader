@@ -52,6 +52,21 @@ test.use({ projects: ['chromium-desktop'] });
 const TIMEOUT = 20_000;
 const ACCT = 'ZG0790';
 
+/** Switches the derivatives Legs card's view dropdown to 'Paired' — the
+ *  3-option Legs/Paired/Exp Close dropdown (2026-11) relabeled the OLD
+ *  CE/PE auto-paired "Legs" behavior to 'Paired'; the new default 'legs'
+ *  view is unpaired and, per a further 2026-11 operator correction,
+ *  removes the St-column pairing-state badge from layout entirely (header
+ *  AND every row's own cell — not merely blanked). Tests below that assert
+ *  St-column decoration specifically select 'Paired' first. */
+async function _switchDerivToPaired(page) {
+  const trigger = page.locator('#opt-legs-view');
+  await expect(trigger).toBeVisible({ timeout: 15_000 });
+  await trigger.click();
+  await page.getByRole('option', { name: /^Paired/ }).click();
+  await expect(trigger).toHaveText(/^Paired/);
+}
+
 const LOT_ROWS = [
   {
     tradingsymbol: 'NIFTY26JUN24000CE', symbol: 'NIFTY26JUN24000CE', exchange: 'NFO',
@@ -182,6 +197,10 @@ test.describe('Lot-pairing split — MarketPulse Positions grid', () => {
 test.describe('Lot-pairing split — Derivatives Legs grid', () => {
   test('(d) Legs grid has no redundant chip; St-column badges show correct paired state for the split leg', async ({ page }) => {
     await page.goto('/admin/derivatives?u=NIFTY', { waitUntil: 'domcontentloaded' });
+    // St-column badges only render on 'Paired' (2026-11 correction — see
+    // `_switchDerivToPaired` above); the new default 'legs' view removes
+    // the St cell from layout entirely.
+    await _switchDerivToPaired(page);
     // Redundant chip removed (2026-10).
     await expect(page.locator('.cand-lotsplit-tag')).toHaveCount(0);
     // 4 `paired` St badges: the split leg's two pieces (P1, P2) plus the
@@ -222,6 +241,9 @@ test.describe('Lot-pairing split — Derivatives Legs grid', () => {
 
   test('(f) St column header is horizontally centered, matching the centered body badge', async ({ page }) => {
     await page.goto('/admin/derivatives?u=NIFTY', { waitUntil: 'domcontentloaded' });
+    // The St header only renders on 'Paired'/'Exp Close' (2026-11
+    // correction — see `_switchDerivToPaired` above).
+    await _switchDerivToPaired(page);
     const hdr = page.locator('.cand-headrow .cand-state-hdr');
     await expect(hdr).toHaveCount(1, { timeout: TIMEOUT });
     const textAlign = await hdr.evaluate((el) => getComputedStyle(el).textAlign);

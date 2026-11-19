@@ -222,4 +222,116 @@ test.describe('Derivatives Legs card — Legs/Paired/Exp Close dropdown', () => 
     expect(middleOverflow, '.ch-middle must not overflow horizontally because of the view-picker trigger')
       .toBeLessThanOrEqual(0);
   });
+
+  /**
+   * 2026-11 operator correction — reverses an earlier explicit decision
+   * (made when the 2-option AlgoTabs strip became this 3-option dropdown)
+   * to KEEP the St (pairing-state) badge visible on all 3 views, including
+   * the new unpaired 'legs' default. The St column represents AUTO-PAIRED/
+   * ORPHAN pairing state (positionStateBadge.js) — the whole point of the
+   * new 'legs' view is to show positions WITHOUT CE/PE pairing, so showing
+   * a pairing-state column there is meaningless. St is now:
+   *   - 'legs'   — REMOVED from layout entirely: no header cell, no
+   *                per-row cell, no underlying-anchor cell, no TOTAL-row
+   *                filler cell, and the matching 28px grid-template-columns
+   *                track is dropped too (not just blanked — the other
+   *                columns reflow left to fill the gap).
+   *   - 'paired' — UNCHANGED, today's existing behavior: header + per-row
+   *                badges fully render (matches the OLD pre-dropdown
+   *                "Legs" tab, byte-for-byte).
+   *   - 'expiry' — UNCHANGED, today's existing (2026-10-17) behavior: the
+   *                header cell and the 28px track both stay in the DOM,
+   *                but each row's own `.cand-state-cell` content is blank
+   *                (no badge, no background/color/border) — Exp Close has
+   *                its OWN identity system (`.expiry-id-chip`, C1/C2/N1/N2)
+   *                instead. This test documents, not changes, that behavior.
+   */
+  test('St column: removed from layout on legs, present on paired, present-but-empty on expiry', async ({ page }) => {
+    await loginAsAdmin(page);
+    const rows = [_ceRow(SYM_HIGH, 75, 24000), _ceRow(SYM_LOW, -75, 22000)];
+    await _mockCommonEndpoints(page, rows);
+
+    await page.goto(DERIV_URL, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+
+    const trigger = page.locator('#opt-legs-view');
+    await expect(trigger).toBeVisible({ timeout: 20_000 });
+    await expect(page.locator('.cand-row:not(.cand-row-total)')).toHaveCount(2, { timeout: 20_000 });
+
+    const stHeader = page.locator('.cand-headrow .cand-state-hdr');
+    const anchor = page.locator('.cand-body-rows > .cand-row-underlying-anchor');
+    const firstRealRow = page.locator('.cand-row:not(.cand-row-total)').first();
+    const totalRow = page.locator('.cand-row.cand-row-total');
+    const grid = page.locator('.cand-grid');
+
+    /** Computed `grid-template-columns` track count (one length per track). */
+    async function trackCount() {
+      const gtc = await grid.evaluate((el) => getComputedStyle(el).gridTemplateColumns);
+      return gtc.trim().split(/\s+/).filter(Boolean).length;
+    }
+
+    /** Symbol-column cell x-position agrees across header/data-row/TOTAL —
+     *  proves the removed St track didn't leave the other columns
+     *  misaligned relative to each other (the exact failure mode a
+     *  track-count mismatch between `.cand-grid` and a row's own subgrid
+     *  child count would produce). */
+    async function symbolColumnAligned() {
+      const [hdrBox, rowBox, totalBox] = await Promise.all([
+        page.locator('.cand-headrow [role="columnheader"]', { hasText: 'Symbol' }).first().boundingBox(),
+        firstRealRow.locator('.cand-sym').boundingBox(),
+        totalRow.locator('.cand-total-label').boundingBox(),
+      ]);
+      expect(hdrBox, 'Symbol header box').not.toBeNull();
+      expect(rowBox, 'Symbol data-row box').not.toBeNull();
+      expect(totalBox, 'TOTAL label box').not.toBeNull();
+      expect(Math.abs(hdrBox.x - rowBox.x), `header.x=${hdrBox.x} row.x=${rowBox.x}`).toBeLessThan(1.5);
+      expect(Math.abs(hdrBox.x - totalBox.x), `header.x=${hdrBox.x} total.x=${totalBox.x}`).toBeLessThan(1.5);
+    }
+
+    // ── 'legs' (default) — St removed entirely, 22 tracks, columns
+    //    reflow with no gap ─────────────────────────────────────────────
+    await expect(trigger).toHaveText(/^Legs/);
+    await expect(stHeader, "St header must not exist on 'legs'").toHaveCount(0);
+    await expect(firstRealRow.locator('.cand-state-cell'), "a leg row's St cell must not exist on 'legs'").toHaveCount(0);
+    await expect(anchor.locator('.cand-state-cell'), "the underlying-anchor's St cell must not exist on 'legs'").toHaveCount(0);
+    // TOTAL row's state-track filler `<span></span>` is indistinguishable
+    // from other unlabelled filler spans by class — assert via the total
+    // child-span COUNT instead (22 on 'legs', one fewer than 'paired'/
+    // 'expiry' below), which is the direct DOM-child analogue of the
+    // subgrid-track-count check for this one row.
+    const legsTotalSpanCount = await totalRow.locator('> span').count();
+    expect(legsTotalSpanCount, "TOTAL row span count on 'legs'").toBe(22);
+    expect(await trackCount(), "'.cand-grid' track count on 'legs'").toBe(22);
+    await symbolColumnAligned();
+
+    // ── 'paired' — St fully present (byte-identical to the OLD "Legs") ──
+    await trigger.click();
+    await page.getByRole('option', { name: /^Paired/ }).click();
+    await expect(trigger).toHaveText(/^Paired/);
+    await expect(stHeader, "St header must exist on 'paired'").toHaveCount(1);
+    await expect(firstRealRow.locator('.cand-state-badge-btn'), "a leg row's St badge must render on 'paired'")
+      .toHaveCount(1);
+    await expect(anchor.locator('.cand-state-badge-btn[data-pos-state="anchor"]'),
+      "the underlying-anchor's St badge must render on 'paired'").toHaveCount(1);
+    const pairedTotalSpanCount = await totalRow.locator('> span').count();
+    expect(pairedTotalSpanCount, "TOTAL row span count on 'paired'").toBe(23);
+    expect(await trackCount(), "'.cand-grid' track count on 'paired'").toBe(23);
+    await symbolColumnAligned();
+
+    // ── 'expiry' (Exp Close) — St header + track stay, cell content is
+    //    blank (2026-10-17 pre-existing decision, unchanged by this fix);
+    //    the underlying-anchor row never renders here (pre-existing) ────
+    await trigger.click();
+    await page.getByRole('option', { name: /^Exp Close/ }).click();
+    await expect(trigger).toHaveText(/^Exp Close/);
+    await expect(stHeader, "St header must still exist (present-but-inert) on 'expiry'").toHaveCount(1);
+    expect(await trackCount(), "'.cand-grid' track count on 'expiry'").toBe(23);
+    const expiryRow = page.locator('.cand-row:not(.cand-row-total)').first();
+    const expiryCount = await expiryRow.count();
+    if (expiryCount > 0) {
+      const expiryStCell = expiryRow.locator('.cand-state-cell');
+      await expect(expiryStCell, "Exp Close row's St cell must still exist in the DOM").toHaveCount(1);
+      await expect(expiryStCell.locator('.cand-state-badge-btn'),
+        "Exp Close row's St cell must render NO badge (2026-10-17 decision)").toHaveCount(0);
+    }
+  });
 });

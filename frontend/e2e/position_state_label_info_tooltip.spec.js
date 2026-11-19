@@ -115,11 +115,32 @@ test.describe('MarketPulse Positions grid — St-column badge click', () => {
 });
 
 test.describe('Derivatives Legs grid — St-column badge click', () => {
+  // The St-column badge/click mechanics this block tests only render on
+  // the 'Paired' view — the new default 'legs' view removes the St cell
+  // from layout entirely (2026-11 operator correction; 'Paired' is the
+  // byte-identical continuation of the pre-dropdown "Legs" behavior this
+  // spec was written against). See derivatives_legs_paired_expclose_dropdown.spec.js
+  // for coverage of the default 'legs' view's own (St-less) behavior.
+  async function switchToPaired(page) {
+    const trigger = page.locator('#opt-legs-view');
+    await expect(trigger).toBeVisible({ timeout: TIMEOUT });
+    await trigger.click();
+    await page.getByRole('option', { name: /^Paired/ }).click();
+    await expect(trigger).toHaveText(/^Paired/);
+  }
+
   test('no separate "(i)" trigger exists', async ({ page }) => {
     await loginAsAdmin(page);
     await mockPositions(page);
     await page.goto('/admin/derivatives?u=NIFTY', { waitUntil: 'domcontentloaded' });
-    await expect(page.locator('.cand-state-badge-btn').first()).toBeVisible({ timeout: TIMEOUT });
+    await switchToPaired(page);
+    // Scoped to `.cand-row` (a real, checkbox-bearing leg row) — the
+    // underlying-anchor row (`.cand-row-underlying-anchor`) deliberately
+    // does NOT carry the `.cand-row` class (see its own comment in
+    // +page.svelte) specifically so selectors like this one resolve to a
+    // real leg's row, not its purely-decorative (non-interactive) "X" badge,
+    // which shares the same `.cand-state-badge-btn` class.
+    await expect(page.locator('.cand-row .cand-state-badge-btn').first()).toBeVisible({ timeout: TIMEOUT });
     expect(await page.locator('.cand-state-info-btn').count()).toBe(0);
   });
 
@@ -127,8 +148,15 @@ test.describe('Derivatives Legs grid — St-column badge click', () => {
     await loginAsAdmin(page);
     await mockPositions(page);
     await page.goto('/admin/derivatives?u=NIFTY', { waitUntil: 'domcontentloaded' });
+    await switchToPaired(page);
 
-    const badgeBtn = page.locator('.cand-state-badge-btn').first();
+    // Scoped to `.cand-row` — see the comment on the test above. The
+    // underlying-anchor row's own "X" badge (`.cand-row-underlying-anchor
+    // .cand-state-badge-btn`) is a plain, non-interactive <span> with no
+    // click handler; an unscoped `.cand-state-badge-btn` here would match
+    // it FIRST (it renders before the real leg rows) and this click would
+    // silently do nothing.
+    const badgeBtn = page.locator('.cand-row .cand-state-badge-btn').first();
     await expect(badgeBtn).toBeVisible({ timeout: TIMEOUT });
     await badgeBtn.click();
 

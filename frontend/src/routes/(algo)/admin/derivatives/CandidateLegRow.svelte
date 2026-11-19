@@ -9,7 +9,7 @@
   //   ci             — iteration index from the parent {#each}
   //   prevBand       — band value of the previous row (null if first)
   //   bandCount      — count of rows sharing c._band + c._segment (for band header)
-  //   legsTab        — 'legs' | 'expiry'
+  //   legsTab        — 'legs' | 'paired' | 'expiry'
   //   legAnalytics   — analytics object for c.symbol (legAnalyticsBySymbol[c.symbol])
   //   enabled        — result of _isLegEnabled(c) computed by parent — the
   //                    COMBINED gate (checkbox AND per-underlying draft
@@ -52,7 +52,7 @@
    *   ci: number,
    *   prevBand: string | null,
    *   bandCount: number,
-   *   legsTab: string,
+   *   legsTab: 'legs' | 'paired' | 'expiry',
    *   legAnalytics: any,
    *   enabled: boolean,
    *   checked?: boolean,
@@ -359,40 +359,56 @@
        `.expiry-id-chip` below (C1/C2 for the close-action band, N1/N2
        for netted pairs) — showing the unrelated auto-pair P1/P2 label
        in the same row at the same time duplicated/conflicted with that
-       system. Legs tab is unaffected — the badge still renders there
-       exactly as before. -->
-  <span class="cand-state-cell"
-    style:background={legsTab === 'expiry' ? null : (_stateBadge.bg || null)}
-    style:color={legsTab === 'expiry' ? null : (_stateBadge.color || null)}
-    style:border={legsTab === 'expiry' ? null : (_stateBadge.border || null)}>
-    {#if legsTab !== 'expiry'}
-      {#if _stateBadge.state != null}
-        <!-- Single click target (2026-10-17, operator: "we don't need i
-             for tool tip... clicking on this cell should not interfear
-             with clicking symbol or other elements of the row") — shows
-             this badge's generic "what does this state mean" text
-             (`_stateBadge.tooltip`) via InfoHint instead of a separate
-             "(i)" icon/tooltip, same pattern as the Exp Close tab's
-             band-label/id-chip buttons below. stopPropagation on BOTH
-             click and keydown so it never falls through to the row's
-             own onclick/onkeydown row-activation handler. -->
-        <button type="button" class="cand-state-badge-btn"
-          bind:this={_stateInfoAnchor}
-          data-pos-state={_stateBadge.state}
-          title={_stateBadge.tooltip}
-          aria-expanded={_stateInfoOpen}
-          onclick={(e) => { e.stopPropagation(); _stateInfoOpen = !_stateInfoOpen; }}
-          onkeydown={(e) => { e.stopPropagation(); if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _stateInfoOpen = !_stateInfoOpen; } }}>
+       system. Paired tab is unaffected — the badge still renders there
+       exactly as before (this is the OLD "Legs" behavior, relabeled).
+
+       The whole cell is removed from layout — not merely blanked — on
+       the unpaired 'legs' view (2026-11 operator correction, reversing
+       the earlier "keep St visible on all 3 views" decision): that
+       view's entire point is to show positions WITHOUT CE/PE pairing,
+       so a pairing-state column there is meaningless. The matching
+       28px track is dropped from the parent `.cand-grid` at the same
+       time, via `.cand-grid-no-state` (+page.svelte) — every row type
+       (header, underlying-anchor, this row, TOTAL) drops this one cell
+       together so the subgrid tracks stay in sync; see +page.svelte's
+       own `legsTab === 'legs'` guards on the header/anchor/TOTAL cells
+       for the other three. On Exp Close, the track and this cell both
+       stay in the DOM — only the content below is blanked, unchanged
+       from the 2026-10-17 decision. -->
+  {#if legsTab !== 'legs'}
+    <span class="cand-state-cell"
+      style:background={legsTab === 'expiry' ? null : (_stateBadge.bg || null)}
+      style:color={legsTab === 'expiry' ? null : (_stateBadge.color || null)}
+      style:border={legsTab === 'expiry' ? null : (_stateBadge.border || null)}>
+      {#if legsTab !== 'expiry'}
+        {#if _stateBadge.state != null}
+          <!-- Single click target (2026-10-17, operator: "we don't need i
+               for tool tip... clicking on this cell should not interfear
+               with clicking symbol or other elements of the row") — shows
+               this badge's generic "what does this state mean" text
+               (`_stateBadge.tooltip`) via InfoHint instead of a separate
+               "(i)" icon/tooltip, same pattern as the Exp Close tab's
+               band-label/id-chip buttons below. stopPropagation on BOTH
+               click and keydown so it never falls through to the row's
+               own onclick/onkeydown row-activation handler. -->
+          <button type="button" class="cand-state-badge-btn"
+            bind:this={_stateInfoAnchor}
+            data-pos-state={_stateBadge.state}
+            title={_stateBadge.tooltip}
+            aria-expanded={_stateInfoOpen}
+            onclick={(e) => { e.stopPropagation(); _stateInfoOpen = !_stateInfoOpen; }}
+            onkeydown={(e) => { e.stopPropagation(); if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _stateInfoOpen = !_stateInfoOpen; } }}>
+            {_stateBadge.glyph}
+          </button>
+          <InfoHint popup hideButton id={`cand-state-info-${c.key ?? c.symbol ?? ''}-${ci}`}
+            anchor={_stateInfoAnchor} bind:open={_stateInfoOpen}
+            panel title="Position state" text={_stateBadge.tooltip} />
+        {:else}
           {_stateBadge.glyph}
-        </button>
-        <InfoHint popup hideButton id={`cand-state-info-${c.key ?? c.symbol ?? ''}-${ci}`}
-          anchor={_stateInfoAnchor} bind:open={_stateInfoOpen}
-          panel title="Position state" text={_stateBadge.tooltip} />
-      {:else}
-        {_stateBadge.glyph}
+        {/if}
       {/if}
-    {/if}
-  </span>
+    </span>
+  {/if}
   <!-- svelte-ignore a11y_interactive_supports_focus -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <!-- Context-menu is a secondary affordance (right-click / long-press).

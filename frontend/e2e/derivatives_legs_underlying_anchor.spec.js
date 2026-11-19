@@ -20,6 +20,20 @@
  * is always-checked + disabled — visible for row-shape consistency with
  * every other leg row, but not wired into the real candidate set.
  *
+ * 2026-11 amendment — the Legs card's Legs/Exp-Close picker became a
+ * 3-option Legs/Paired/Exp Close dropdown, and the new default 'legs'
+ * view dropped CE/PE pairing (`sortRowsByAccountOnly`). A further 2026-11
+ * operator correction then removed the St-column pairing-state badge
+ * (positionStateBadge.js) from that new unpaired 'legs' view entirely —
+ * both the header "St" cell and every row's own badge cell, including
+ * this spec's anchor row, are now REMOVED from layout (not merely
+ * blanked) when 'legs' is selected. 'Paired' is the byte-identical
+ * continuation of this spec's original (pre-dropdown) "Legs" behavior —
+ * St badges included — so the two tests below that specifically assert
+ * St-column decoration (`_switchToPaired` below) now select 'Paired'
+ * first. Every other test in this file is unaffected (none depend on St
+ * column presence or TOTAL-row column count).
+ *
  * Run:
  *   npx playwright test e2e/derivatives_legs_underlying_anchor.spec.js
  */
@@ -35,6 +49,16 @@ const PE_SYMBOL   = 'NIFTY26DEC24000PE';
 const EXPIRY      = '2026-12-31';
 const ACCOUNT     = 'ZG0790';
 const DERIV_URL    = `/admin/derivatives?u=${UNDERLYING}`;
+
+/** Switches the Legs card's view dropdown to 'Paired' — see the 2026-11
+ *  amendment above. */
+async function _switchToPaired(page) {
+  const trigger = page.locator('#opt-legs-view');
+  await expect(trigger).toBeVisible({ timeout: 15_000 });
+  await trigger.click();
+  await page.getByRole('option', { name: /^Paired/ }).click();
+  await expect(trigger).toHaveText(/^Paired/);
+}
 
 function _row(sym, strike, optType, qty, pnl, dayPnl) {
   return {
@@ -137,6 +161,10 @@ test.describe('Derivatives Legs grid — underlying-anchor row (sync with Positi
     await loginAsAdmin(page);
     await _mockEndpoints(page);
     await page.goto(DERIV_URL, { waitUntil: 'domcontentloaded' });
+    // Switch to 'Paired' — the St-column track (and this test's positional
+    // span index below) only holds on 'Paired'/'Exp Close'; the new default
+    // 'legs' view drops that track entirely (2026-11 amendment above).
+    await _switchToPaired(page);
 
     const totalRow = page.locator('.cand-row.cand-row-total');
     await expect(totalRow).toBeVisible({ timeout: 15_000 });
@@ -163,12 +191,25 @@ test.describe('Derivatives Legs grid — underlying-anchor row (sync with Positi
     await loginAsAdmin(page);
     await _mockEndpoints(page);
     await page.goto(DERIV_URL, { waitUntil: 'domcontentloaded' });
+    // 'Paired' keeps the St-column track/badge this test asserts; the new
+    // default 'legs' view removes it entirely (2026-11 amendment above).
+    await _switchToPaired(page);
 
     const anchor = page.locator('.cand-body-rows > .cand-row-underlying-anchor');
     await expect(anchor).toBeVisible({ timeout: 15_000 });
     const stCell = anchor.locator('.cand-state-cell');
     await expect(stCell).toHaveCount(1);
     await expect(stCell).toHaveText('X');
+  });
+
+  test('the anchor row\'s St column is REMOVED from layout (not merely blank) on the new default \'legs\' view (2026-11 operator correction)', async ({ page }) => {
+    await loginAsAdmin(page);
+    await _mockEndpoints(page);
+    await page.goto(DERIV_URL, { waitUntil: 'domcontentloaded' });
+
+    const anchor = page.locator('.cand-body-rows > .cand-row-underlying-anchor');
+    await expect(anchor).toBeVisible({ timeout: 15_000 });
+    await expect(anchor.locator('.cand-state-cell')).toHaveCount(0);
   });
 
   test('the anchor row\'s symbol cell has a neutral baseline divider, like a real leg\'s own symbol-cell divider', async ({ page }) => {

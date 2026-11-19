@@ -6111,7 +6111,7 @@
       <div class="cand-scroll algo-grid-chrome fs-content-fill"
            bind:clientWidth={_candScrollW}
            style="--fs-chrome-h: 4.5rem; --cand-vw: {_candScrollW}px;">
-        <div class="cand-grid">
+        <div class="cand-grid" class:cand-grid-no-state={legsTab === 'legs'}>
           <!-- Header row checkbox = master toggle. Checked when
                EVERY candidate is on; unchecked when none; the
                middle "indeterminate" state is rendered via the JS
@@ -6141,8 +6141,20 @@
                    checked={allCandidatesOn}
                    bind:this={allCandidatesEl}
                    onclick={(e) => { e.stopPropagation(); toggleAllCandidates(); }} />
-            <!-- State column header — matches second grid-template-columns track (28px). Not sortable. -->
-            <span class="cand-state-hdr" title="Position state: GTT (green) / Paired (cyan) / Orphan (amber)">St</span>
+            <!-- State column header — matches second grid-template-columns track (28px).
+                 Not sortable. Removed from layout entirely (not just blanked) on the
+                 unpaired 'legs' view (2026-11 operator correction, reversing the earlier
+                 "keep St visible on all 3 views" decision) — that view's entire point is
+                 to show positions WITHOUT CE/PE pairing, so a pairing-state column there
+                 is meaningless. `.cand-grid-no-state` (below) drops the matching 28px
+                 track from the parent grid at the same time this header cell is removed,
+                 so the remaining columns reflow with no empty gap. Stays visible on
+                 'paired' (today's existing Paired-mode behavior, unchanged) and on
+                 'expiry' (the track stays, but each row's own cell renders empty —
+                 CandidateLegRow.svelte's pre-existing, unchanged 2026-10-17 decision). -->
+            {#if legsTab !== 'legs'}
+              <span class="cand-state-hdr" title="Position state: GTT (green) / Paired (cyan) / Orphan (amber)">St</span>
+            {/if}
             <!-- Column-sort headers (2026-11, column-sort plan) —
                  role="columnheader" (not "button" — ag-Grid's own a11y
                  convention, and avoids the "aria-sort unsupported on
@@ -6329,11 +6341,17 @@
                 <input type="checkbox" checked disabled
                   title="Always included — underlying reference, not a tradable leg" />
               </span>
-              <span class="cand-state-cell"
-                style:background={_anchorBadge.bg}
-                style:color={_anchorBadge.color}>
-                <span class="cand-state-badge-btn" data-pos-state={_anchorBadge.state} title={_anchorBadge.tooltip}>{_anchorBadge.glyph}</span>
-              </span>
+              <!-- St cell removed from layout on the unpaired 'legs' view (2026-11
+                   operator correction) — this row never renders on 'expiry' (see
+                   `legsUnderlyingAnchor`'s own gate above), so the only other mode
+                   it can appear in is 'paired', where the badge still shows. -->
+              {#if legsTab !== 'legs'}
+                <span class="cand-state-cell"
+                  style:background={_anchorBadge.bg}
+                  style:color={_anchorBadge.color}>
+                  <span class="cand-state-badge-btn" data-pos-state={_anchorBadge.state} title={_anchorBadge.tooltip}>{_anchorBadge.glyph}</span>
+                </span>
+              {/if}
               <span class="cand-anchor-label">{formatPositionSymbol(legsUnderlyingAnchor.resolvedTs || legsUnderlyingAnchor.underlying, legsUnderlyingAnchor.exchange)}</span>
               <span class="num tf-cell {ltpDayClass(legsUnderlyingAnchor.pct)} {flash.classOf(`${legsUnderlyingAnchor.underlying}:ltp`)}">{legsUnderlyingAnchor.ltp != null ? priceFmt(legsUnderlyingAnchor.ltp) : '—'}</span>
               <span class="num tf-cell cand-anchor-chg-sep {ltpDayClass(legsUnderlyingAnchor.pct)} {flash.classOf(`${legsUnderlyingAnchor.underlying}:ltp`)}">{legsUnderlyingAnchor.pct != null ? pctFmt(legsUnderlyingAnchor.pct) + '%' : '—'}</span>
@@ -6476,7 +6494,13 @@
             {@const _tg = _mergedGreeks ?? strategy?.aggregate_greeks ?? { delta: 0, gamma: 0, theta: 0, vega: 0, rho: 0 }}
             <div class="cand-row cand-row-total">
               <span></span>
-              <span></span>
+              <!-- Checkbox-track filler above; this is the state-track filler —
+                   removed from layout on 'legs' in lockstep with the header's
+                   and every leg row's own St cell (2026-11 operator correction),
+                   so the TOTAL row's tracks keep matching the parent grid's. -->
+              {#if legsTab !== 'legs'}
+                <span></span>
+              {/if}
               <span class="cand-total-label">TOTAL</span>
               <span class="num"></span>
               <span class="num"></span><!-- chg % -->
@@ -6752,52 +6776,52 @@
                 panel title="Greeks (position)" text={'Sum of every leg\'s signed-qty Greeks, including +qty per enabled equity-holding leg (long stock = +1 Δ/share). Θ / 𝒱 / Γ / ρ stay option-only since vanilla stock has zero convexity, decay, IV and rate sensitivity.'} />
             {/snippet}
           </CardHeader>
+          <!-- Header-row + value-row grid (2026-11-18 restructure, operator
+               request): the 5 Greek symbols now form ONE header row, their 5
+               values form ONE data row directly below, each value aligned
+               under its own header. No `.kv-pair` wrapper is needed any more
+               — `.opt-kv-greeks` uses `grid-template-columns: repeat(5, ...)`
+               with no explicit `grid-row`, so the browser's default
+               row-major auto-placement puts these 10 flat children into
+               exactly 2 rows: the 5 `.kv-k` labels fill row 1, the 5 `.kv-v`
+               values fill row 2, each value landing in the same column
+               track as its own header. -->
           <div class="opt-kv opt-kv-greeks">
-            <div class="kv-pair">
-              <span class="kv-k kv-k-greek" bind:this={_sumHintAnchor.delta} role="button" tabindex="0"
-                    aria-expanded={_sumHintOpen.delta}
-                    onclick={() => { _sumHintOpen.delta = !_sumHintOpen.delta; }}
-                    onkeydown={(e) => _sumHintKeydown(e, () => _sumHintOpen.delta = !_sumHintOpen.delta)}>Δ
-                <InfoHint popup hideButton id="sum-hint-delta" anchor={_sumHintAnchor.delta} bind:open={_sumHintOpen.delta}
-                  panel title="Delta (Δ)" text="Delta — net directional exposure. +50 ≈ ₹50 gained per ₹1 spot rise. Includes +qty for enabled equity-holding legs." /></span>
-              <span class="kv-v tf-cell">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.delta)}</span>
-            </div>
-            <div class="kv-pair">
-              <span class="kv-k kv-k-greek" bind:this={_sumHintAnchor.gamma} role="button" tabindex="0"
-                    aria-expanded={_sumHintOpen.gamma}
-                    onclick={() => { _sumHintOpen.gamma = !_sumHintOpen.gamma; }}
-                    onkeydown={(e) => _sumHintKeydown(e, () => _sumHintOpen.gamma = !_sumHintOpen.gamma)}>Γ
-                <InfoHint popup hideButton id="sum-hint-gamma" anchor={_sumHintAnchor.gamma} bind:open={_sumHintOpen.gamma}
-                  panel title="Gamma (Γ)" text="Gamma — rate-of-change of delta as spot moves. High Γ = position is becoming more/less directional quickly." /></span>
-              <span class="kv-v tf-cell">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.gamma)}</span>
-            </div>
-            <div class="kv-pair">
-              <span class="kv-k kv-k-greek" bind:this={_sumHintAnchor.theta} role="button" tabindex="0"
-                    aria-expanded={_sumHintOpen.theta}
-                    onclick={() => { _sumHintOpen.theta = !_sumHintOpen.theta; }}
-                    onkeydown={(e) => _sumHintKeydown(e, () => _sumHintOpen.theta = !_sumHintOpen.theta)}>Θ
-                <InfoHint popup hideButton id="sum-hint-theta" anchor={_sumHintAnchor.theta} bind:open={_sumHintOpen.theta}
-                  panel title="Theta (Θ)" text="Theta — daily decay in rupees. Positive when net short premium. A Θ of −5 = position loses ₹5/day from time decay alone." /></span>
-              <span class="kv-v tf-cell {(_mergedGreeks ?? strategy?.aggregate_greeks)?.theta < 0 ? 'kv-neg' : 'kv-pos'}">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.theta)}</span>
-            </div>
-            <div class="kv-pair">
-              <span class="kv-k kv-k-greek" bind:this={_sumHintAnchor.vega} role="button" tabindex="0"
-                    aria-expanded={_sumHintOpen.vega}
-                    onclick={() => { _sumHintOpen.vega = !_sumHintOpen.vega; }}
-                    onkeydown={(e) => _sumHintKeydown(e, () => _sumHintOpen.vega = !_sumHintOpen.vega)}>𝒱
-                <InfoHint popup hideButton id="sum-hint-vega" anchor={_sumHintAnchor.vega} bind:open={_sumHintOpen.vega}
-                  panel title="Vega (𝒱)" text="Vega — P&L change per 1% IV move. Positive = long volatility (benefits from IV expansion)." /></span>
-              <span class="kv-v tf-cell {(_mergedGreeks ?? strategy?.aggregate_greeks)?.vega < 0 ? 'kv-neg' : 'kv-pos'}">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.vega)}</span>
-            </div>
-            <div class="kv-pair">
-              <span class="kv-k kv-k-greek" bind:this={_sumHintAnchor.rho} role="button" tabindex="0"
-                    aria-expanded={_sumHintOpen.rho}
-                    onclick={() => { _sumHintOpen.rho = !_sumHintOpen.rho; }}
-                    onkeydown={(e) => _sumHintKeydown(e, () => _sumHintOpen.rho = !_sumHintOpen.rho)}>ρ
-                <InfoHint popup hideButton id="sum-hint-rho" anchor={_sumHintAnchor.rho} bind:open={_sumHintOpen.rho}
-                  panel title="Rho (ρ)" text="Rho — sensitivity to a 1% rate change. Mostly cosmetic for short-dated index options." /></span>
-              <span class="kv-v tf-cell">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.rho)}</span>
-            </div>
+            <span class="kv-k kv-k-greek" bind:this={_sumHintAnchor.delta} role="button" tabindex="0"
+                  aria-expanded={_sumHintOpen.delta}
+                  onclick={() => { _sumHintOpen.delta = !_sumHintOpen.delta; }}
+                  onkeydown={(e) => _sumHintKeydown(e, () => _sumHintOpen.delta = !_sumHintOpen.delta)}>Δ
+              <InfoHint popup hideButton id="sum-hint-delta" anchor={_sumHintAnchor.delta} bind:open={_sumHintOpen.delta}
+                panel title="Delta (Δ)" text="Delta — net directional exposure. +50 ≈ ₹50 gained per ₹1 spot rise. Includes +qty for enabled equity-holding legs." /></span>
+            <span class="kv-k kv-k-greek" bind:this={_sumHintAnchor.gamma} role="button" tabindex="0"
+                  aria-expanded={_sumHintOpen.gamma}
+                  onclick={() => { _sumHintOpen.gamma = !_sumHintOpen.gamma; }}
+                  onkeydown={(e) => _sumHintKeydown(e, () => _sumHintOpen.gamma = !_sumHintOpen.gamma)}>Γ
+              <InfoHint popup hideButton id="sum-hint-gamma" anchor={_sumHintAnchor.gamma} bind:open={_sumHintOpen.gamma}
+                panel title="Gamma (Γ)" text="Gamma — rate-of-change of delta as spot moves. High Γ = position is becoming more/less directional quickly." /></span>
+            <span class="kv-k kv-k-greek" bind:this={_sumHintAnchor.theta} role="button" tabindex="0"
+                  aria-expanded={_sumHintOpen.theta}
+                  onclick={() => { _sumHintOpen.theta = !_sumHintOpen.theta; }}
+                  onkeydown={(e) => _sumHintKeydown(e, () => _sumHintOpen.theta = !_sumHintOpen.theta)}>Θ
+              <InfoHint popup hideButton id="sum-hint-theta" anchor={_sumHintAnchor.theta} bind:open={_sumHintOpen.theta}
+                panel title="Theta (Θ)" text="Theta — daily decay in rupees. Positive when net short premium. A Θ of −5 = position loses ₹5/day from time decay alone." /></span>
+            <span class="kv-k kv-k-greek" bind:this={_sumHintAnchor.vega} role="button" tabindex="0"
+                  aria-expanded={_sumHintOpen.vega}
+                  onclick={() => { _sumHintOpen.vega = !_sumHintOpen.vega; }}
+                  onkeydown={(e) => _sumHintKeydown(e, () => _sumHintOpen.vega = !_sumHintOpen.vega)}>𝒱
+              <InfoHint popup hideButton id="sum-hint-vega" anchor={_sumHintAnchor.vega} bind:open={_sumHintOpen.vega}
+                panel title="Vega (𝒱)" text="Vega — P&L change per 1% IV move. Positive = long volatility (benefits from IV expansion)." /></span>
+            <span class="kv-k kv-k-greek" bind:this={_sumHintAnchor.rho} role="button" tabindex="0"
+                  aria-expanded={_sumHintOpen.rho}
+                  onclick={() => { _sumHintOpen.rho = !_sumHintOpen.rho; }}
+                  onkeydown={(e) => _sumHintKeydown(e, () => _sumHintOpen.rho = !_sumHintOpen.rho)}>ρ
+              <InfoHint popup hideButton id="sum-hint-rho" anchor={_sumHintAnchor.rho} bind:open={_sumHintOpen.rho}
+                panel title="Rho (ρ)" text="Rho — sensitivity to a 1% rate change. Mostly cosmetic for short-dated index options." /></span>
+            <span class="kv-v tf-cell">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.delta)}</span>
+            <span class="kv-v tf-cell">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.gamma)}</span>
+            <span class="kv-v tf-cell {(_mergedGreeks ?? strategy?.aggregate_greeks)?.theta < 0 ? 'kv-neg' : 'kv-pos'}">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.theta)}</span>
+            <span class="kv-v tf-cell {(_mergedGreeks ?? strategy?.aggregate_greeks)?.vega < 0 ? 'kv-neg' : 'kv-pos'}">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.vega)}</span>
+            <span class="kv-v tf-cell">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.rho)}</span>
           </div>
         </div>
 
@@ -6808,6 +6832,13 @@
                 panel title="Risk &amp; expected value" text={'Aggregate risk + expected value across all legs. Probability-weighted outcomes integrated against the lognormal pdf of the underlying using a qty-weighted IV proxy. POP × magnitudes captures the asymmetry that POP alone misses.'} />
             {/snippet}
           </CardHeader>
+          <!-- Strict 2-column grid, no header row (2026-11-18 restructure,
+               operator request): `.opt-kv-risk` is `grid-template-columns:
+               max-content 1fr` with each `.kv-pair` set to `display:
+               contents` so its own label + value cells fall directly into
+               the grid as one row — one metric per row, 6 rows (5 when
+               EV/cost's `{#if}` guard below hides it), straight into the
+               first metric with no leading header row. -->
           <div class="opt-kv opt-kv-risk">
             <div class="kv-pair">
               <span class="kv-k kv-k-greek" bind:this={_sumHintAnchor.rr} role="button" tabindex="0"
@@ -7481,41 +7512,56 @@
     font-size: var(--fs-lg);
     font-weight: 700;
   }
-  /* Greeks card — all five pairs in a single row. The narrow
-     `max-content auto` per slot lets each pair size to its own
-     content; column-gap stays tight so the row feels uniform. */
+  /* Greeks card — 2026-11-18 restructure (operator request): a true
+     header-row + value-row grid instead of 5 independent label+value
+     flex pairs. `repeat(5, minmax(max-content, 1fr))` gives each of
+     the 5 Greeks its own column track, sized no narrower than its own
+     widest content (header symbol OR value, whichever is wider) but
+     free to grow to fill extra width — never shrinks below content,
+     so a value can never get ellipsized by its own `.kv-v` `overflow:
+     hidden` base rule fighting a `1fr` track for space. With no
+     `grid-row` assigned, the browser's default row-major auto-
+     placement fills row 1 with the first 5 children (the `.kv-k`
+     headers, in markup order) and row 2 with the next 5 (the `.kv-v`
+     values, in the SAME order) — each value lands in the same column
+     track as its own header, so it's visually aligned underneath it
+     for free, no explicit `grid-row`/`grid-column` bookkeeping needed. */
   .opt-kv-greeks {
     display: grid;
-    grid-template-columns: repeat(5, max-content auto);
-    column-gap: 0.45rem;
-    row-gap: 0;
+    grid-template-columns: repeat(5, minmax(max-content, 1fr));
+    column-gap: 0.55rem;
+    row-gap: 0.3rem;
+    /* Mobile (<600px): 5 real columns can't all fit a 320-375px card.
+       Rather than wrap/reflow (which would break the header-row/
+       value-row 2-row shape this restructure exists to create),
+       scroll horizontally instead — `overflow-x: auto` is a no-op at
+       desktop widths where the row already fits, and lets every Greek
+       stay reachable (not clipped/hidden) at a phone viewport by
+       scrolling, never by shrinking a column below its content. */
+    overflow-x: auto;
+    min-width: 0;
     /* 2026-11-03, operator: "the data row text is not vertically
        centered" — `.opt-block` is a column flex (header + this grid),
        and the 3-card `.opt-side-row` stretches every card to the
-       tallest sibling's height, so Greeks/Risk's own single short row
+       tallest sibling's height, so Greeks/Risk's own short content
        left all its slack space below itself: the header-to-content
        gap is deliberately zero (see the padding/header comments
-       above), so the row sat flush against the header with nothing
-       pushing it down. `flex: 1` lets this grid claim the column's
-       remaining height; `align-content: center` then centers its one
-       row within that taller box. The grid's own TOP edge is
-       unaffected (flex children stack with no gap — see `.opt-block`'s
-       `gap: 0` — so growth happens below, not above), so the existing
-       zero-gap header-to-content measurement
-       (derivatives_card_spacing_consistency.spec.js) stays correct. */
+       above), so the rows sat flush against the header with nothing
+       pushing them down. `flex: 1` lets this grid claim the column's
+       remaining height; `align-content: center` then centers its two
+       rows (as a block) within that taller box. The grid's own TOP
+       edge is unaffected (flex children stack with no gap — see
+       `.opt-block`'s `gap: 0` — so growth happens below, not above),
+       so the existing zero-gap header-to-content measurement
+       (derivatives_card_spacing_consistency.spec.js) stays correct.
+       Preserved unchanged across the 2026-11-18 restructure — still 2
+       rows now instead of 1, `align-content: center` centers the pair
+       of rows exactly the same way it centered the single row before. */
     flex: 1;
     align-content: center;
   }
-  .opt-kv-greeks .kv-pair {
-    /* Each pair contributes label + value into two adjacent grid
-       cells via `display: contents` — the pair wrapper itself
-       doesn't take a grid slot. */
-    display: contents;
-  }
   .opt-kv-greeks .kv-v {
     font-size: var(--fs-md);
-    margin-left: 0.15rem;
-    margin-right: 0.5rem;
     text-align: left;
     /* 2026-11-03, operator: "the data row text is not vertically
        centered" — `.kv-v` is plain `display: block` (base rule
@@ -7533,67 +7579,58 @@
     display: inline-flex;
     align-items: center;
   }
-  /* Narrow viewports (<600px): `max-content` tracks can't shrink, and
-     five Greek pairs with large portfolio Θ/Vega values can overflow
-     a card with no overflow handling (.opt-block). Switch to a
-     flex-wrap layout instead of a rigid 5-pair single row grid. */
-  @media (max-width: 600px) {
-    /* `repeat(auto-fit, minmax(0, max-content) auto)` is invalid CSS —
-       `auto-fit`/`auto-fill` require every track in the repeated
-       pattern to be a FIXED size (a bare `auto` track disqualifies
-       it), so browsers drop the whole declaration and silently keep
-       the rigid 5-pair grid. Switch display modes instead: flex-wrap
-       lets pairs wrap onto multiple lines, and undoing `display:
-       contents` on `.kv-pair` (below) keeps each pair's label+value
-       together as one wrapping unit instead of splitting them onto
-       different lines. */
-    .opt-kv-greeks {
-      display: flex;
-      flex-wrap: wrap;
-      column-gap: 0.45rem;
-      row-gap: 0.3rem;
-    }
-    .opt-kv-greeks .kv-pair {
-      display: flex;
-    }
-  }
-  /* 2026-11-03, operator: "the data row text is not vertically
-     centered" — same fix as `.opt-kv-greeks` above, same reason (this
-     card's own single short row otherwise sits flush against the
-     zero-gap header with all its slack collapsed below it). Applies
-     unconditionally (both the base `.opt-kv` 2-column layout below
-     1180px and the single-row 6-column layout at/above it, set in the
-     media query right below) — it governs only the GRID's own height
-     and how its one row centers within it, independent of column
-     shape. */
+  /* Risk & expected value card — 2026-11-18 restructure (operator
+     request): a strict 2-column grid (label | value), no header row,
+     one metric per row — unconditional at every viewport, replacing
+     the old "2 pairs per row below 1180px / 6-pairs-in-1-row above
+     1180px" responsive shape. `.kv-pair` stays `display: contents` at
+     all widths now, so each pair's own label + value cells fall
+     straight into the grid's 2 columns as one row; 6 `.kv-pair`s (5
+     when the `{#if strategy?.risk?.ev_pct != null}` guard around the
+     EV/cost pair, further down in the markup, hides it — the `{#if}`
+     drops that whole pair, not just its text, so there is never a
+     blank trailing row) auto-flow into 6 (or 5) rows with no leading
+     header row — the grid goes straight into the first metric. */
   .opt-kv-risk {
+    display: grid;
+    grid-template-columns: max-content minmax(max-content, 1fr);
+    column-gap: 0.6rem;
+    row-gap: 0.3rem;
+    /* Same defensive overflow handling as `.opt-kv-greeks` above — the
+       value column's `minmax(max-content, ...)` floor means it can
+       never shrink below its own content (no silent ellipsis-clipping),
+       so a worst-case long value (e.g. 3+ breakevens on an exotic
+       multi-leg strategy — verified live at a forced-overflow 320px
+       case) can legitimately be wider than the card. Without this, the
+       app-wide body overflow-x:clip backstop would cut the
+       overflow off entirely with no way to reach it; `overflow-x: auto`
+       here keeps it reachable via horizontal scroll instead, same
+       contract as Greeks. A no-op at normal content widths (confirmed:
+       a realistic 2-breakeven value fits this card with no scrollbar
+       at 320px). */
+    overflow-x: auto;
+    min-width: 0;
+    /* 2026-11-03, operator: "the data row text is not vertically
+       centered" — same fix as `.opt-kv-greeks` above, same reason
+       (this card's own content otherwise sits flush against the
+       zero-gap header with all its slack collapsed below it).
+       Preserved unchanged across the 2026-11-18 restructure — it now
+       centers the full block of 6 (or 5) stacked rows, the same way
+       it centered the single row before. */
     flex: 1;
     align-content: center;
+  }
+  .opt-kv-risk .kv-pair {
+    display: contents;
   }
   /* Same per-cell fix as `.opt-kv-greeks .kv-v` above, same reason
      (plain `display: block` text doesn't re-center when the grid row
      stretches this cell taller than the value's own line-height to
-     match its label's). Unconditional — applies at every viewport,
-     not just the ≥1180px single-row layout below. */
+     match its label's). Unconditional — applies at every viewport. */
   .opt-kv-risk .kv-v {
     display: inline-flex;
     align-items: center;
-  }
-  /* Risk block: single row on desktop */
-  @media (min-width: 1180px) {
-    .opt-kv-risk {
-      grid-template-columns: repeat(6, max-content auto);
-      column-gap: 0;
-      row-gap: 0;
-    }
-    .opt-kv-risk .kv-pair {
-      display: contents;
-    }
-    .opt-kv-risk .kv-v {
-      margin-left: 0.2rem;
-      margin-right: 0.8rem;
-      text-align: left;
-    }
+    text-align: left;
   }
   .kv-pos { color: var(--c-long); }
   .kv-neg { color: var(--c-short); }
@@ -8319,6 +8356,40 @@
       minmax(62px, max-content);           /* ev */
     column-gap: 0.35rem;
     width: max-content;
+  }
+  /* St-column track removed entirely on the unpaired 'legs' view (2026-11
+     operator correction, reversing the earlier "keep St visible on all 3
+     views" decision — see `legsTab === 'legs'` guards on `.cand-state-hdr`/
+     `.cand-state-cell` above). Byte-identical to `.cand-grid` above MINUS the
+     28px pos-state track — every other track keeps its exact sizing, so
+     columns reflow left by one slot with no leftover gap. KEEP THIS LIST IN
+     SYNC with `.cand-grid` above (one comment line removed, nothing else
+     changed); the markup side of this pairing is guarded by a Playwright
+     track-count assertion (derivatives_legs_paired_expclose_dropdown.spec.js). */
+  .cand-grid.cand-grid-no-state {
+    grid-template-columns:
+      minmax(28px, max-content)            /* checkbox */
+      minmax(max-content, max-content)     /* symbol (hyphenated, carries expiry) */
+      minmax(62px, max-content)            /* ltp */
+      minmax(48px, max-content)            /* chg % */
+      minmax(44px, max-content)            /* lots */
+      minmax(48px, max-content)            /* qty */
+      minmax(52px, max-content)            /* O/N qty - overnight carry */
+      minmax(62px, max-content)            /* avg (cost basis) */
+      minmax(72px, max-content)            /* prev close */
+      minmax(46px, max-content)            /* day pnl - today */
+      minmax(54px, max-content)            /* pnl - cumulative */
+      minmax(50px, max-content)            /* pnl % - lifetime P&L as % of cost basis */
+      minmax(54px, max-content)            /* exp pnl @ current spot */
+      minmax(50px, max-content)            /* capt % - pnl as % of exp pnl */
+      minmax(54px, max-content)            /* extrinsic (time value in P&L terms) */
+      minmax(max-content, max-content)     /* account */
+      minmax(52px, max-content)            /* iv */
+      minmax(56px, max-content)            /* delta */
+      minmax(56px, max-content)            /* gamma */
+      minmax(62px, max-content)            /* theta */
+      minmax(56px, max-content)            /* vega */
+      minmax(62px, max-content);           /* ev */
   }
   /* Body wrapper (markup: see `.cand-body-rows` div above, between
      `.cand-headrow` and `.cand-row-total`) — a grid item of `.cand-grid`

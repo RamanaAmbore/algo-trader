@@ -600,23 +600,42 @@ test.describe('Static source checks — derivatives +page.svelte (kv-pair alignm
     expect(body).toMatch(/text-align:\s*left/);
   });
 
-  test('.opt-kv-greeks gets a flex-wrap override below 600px so Greek pairs never overflow', () => {
-    // First attempt used `repeat(auto-fit, minmax(0, max-content) auto)`,
-    // which is INVALID CSS — auto-fit/auto-fill require every track in
-    // the repeated pattern to be fixed-size, and a bare `auto` track
-    // disqualifies it, so browsers silently drop the whole declaration
-    // and keep the rigid 5-pair grid (verified via CSS.supports() in the
-    // live check below). Fixed: switch display modes instead — flex-wrap
-    // on the container, and `.kv-pair` reverts from `display: contents`
-    // to `display: flex` so each pair's label+value wraps together as
-    // one unit instead of splitting across lines.
-    const anchorIdx = content.indexOf('Narrow viewports (<600px)');
-    expect(anchorIdx, 'the .opt-kv-greeks narrow-viewport comment anchor must exist').toBeGreaterThan(-1);
-    const block = content.slice(anchorIdx, anchorIdx + 1200);
-    expect(block).toMatch(/\.opt-kv-greeks\s*\{[^}]*display:\s*flex;[^}]*flex-wrap:\s*wrap;/);
-    expect(block).toMatch(/\.opt-kv-greeks\s*\.kv-pair\s*\{[^}]*display:\s*flex;/);
-    // Regression guard against reintroducing the invalid grid track.
-    expect(block).not.toMatch(/grid-template-columns:\s*repeat\(auto-fit/);
+  test('.opt-kv-greeks stays a 2-row grid at every viewport and scrolls horizontally instead of wrapping (2026-11-18 restructure)', () => {
+    // 2026-11-18: the operator asked for a true header-row (5 Greek
+    // symbols) + value-row (5 values) grid, not 5 independent
+    // label+value flex pairs. A flex-wrap-below-600px fallback (the OLD
+    // design this test used to guard) would have broken that 2-row
+    // shape by reflowing pairs onto their own lines at mobile widths.
+    // The new design keeps the grid unconditional at every viewport and
+    // lets `overflow-x: auto` absorb any mobile-width overflow instead
+    // — no Greek is ever clipped/hidden, and the header/value row
+    // pairing survives at every width.
+    const body = ruleBody(content, '.opt-kv-greeks');
+    expect(body, '.opt-kv-greeks rule must exist').not.toBeNull();
+    expect(body).toMatch(/grid-template-columns:\s*repeat\(5,\s*minmax\(max-content,\s*1fr\)\)/);
+    expect(body).toMatch(/overflow-x:\s*auto/);
+    // Regression guard: the old flex-wrap-below-600px fallback, and the
+    // invalid auto-fit grid track it replaced, must both stay gone from
+    // THIS rule specifically (`.opt-side-row` elsewhere in the file
+    // legitimately uses `repeat(auto-fit, minmax(220px, 1fr))` for the
+    // 3-card row layout — unrelated, must not false-positive on it).
+    expect(body).not.toMatch(/display:\s*flex;[\s\S]*flex-wrap:\s*wrap;/);
+    expect(body).not.toMatch(/repeat\(auto-fit/);
+  });
+
+  test('.opt-kv-risk is a strict 2-column grid (label | value) with no responsive single-row override', () => {
+    // 2026-11-18 restructure: the old "2 pairs per row below 1180px,
+    // 6-pairs-in-1-row above 1180px" responsive shape is replaced by an
+    // unconditional 2-column grid, one metric per row, at every
+    // viewport — no header row, straight into the first metric.
+    const body = ruleBody(content, '.opt-kv-risk');
+    expect(body, '.opt-kv-risk rule must exist').not.toBeNull();
+    expect(body).toMatch(/grid-template-columns:\s*max-content\s+minmax\(max-content,\s*1fr\)/);
+    const pairBody = ruleBody(content, '.opt-kv-risk .kv-pair');
+    expect(pairBody, '.opt-kv-risk .kv-pair rule must exist').not.toBeNull();
+    expect(pairBody).toMatch(/display:\s*contents/);
+    // Regression guard: the old ≥1180px single-row 6-column override is gone.
+    expect(content).not.toMatch(/@media \(min-width: 1180px\)\s*\{\s*\.opt-kv-risk\s*\{/);
   });
 
   test('.opt-section-meta no longer right-pushes via margin-left: auto', () => {
@@ -732,10 +751,12 @@ test.describe('Live — MarketPulse Symbols label + StrategyPicker cluster on th
 
 test.describe('Live — .opt-kv-greeks narrow-viewport containment (<600px)', () => {
   test('regression guard: repeat(auto-fit, ..., auto) is invalid CSS in this browser', async ({ page }) => {
-    // Confirms WHY the grid-track approach was abandoned for flex-wrap —
-    // if this ever starts returning true (future CSS spec change), the
-    // grid-based fix becomes viable again and this guard should be
-    // revisited, not silently left green for the wrong reason.
+    // Historical guard — confirms WHY the earlier auto-fit grid-track
+    // attempt was abandoned (first for flex-wrap, now for the
+    // 2026-11-18 header-row/value-row grid + overflow-x:auto design).
+    // If this ever starts returning true (future CSS spec change), an
+    // auto-fit-based layout becomes viable again and this guard should
+    // be revisited, not silently left green for the wrong reason.
     await page.goto('about:blank');
     const supported = await page.evaluate(() =>
       CSS.supports('grid-template-columns', 'repeat(auto-fit, minmax(0, max-content) auto)')
@@ -743,7 +764,14 @@ test.describe('Live — .opt-kv-greeks narrow-viewport containment (<600px)', ()
     expect(supported).toBe(false);
   });
 
-  test('Greeks block does not horizontally overflow its card at a 360px mobile viewport', async ({ page }) => {
+  test('Greeks grid scrolls horizontally (never clips/hides a Greek) at a 360px mobile viewport, and the card itself stays within the viewport', async ({ page }) => {
+    // 2026-11-18 restructure: the Greeks card is now an unconditional
+    // 2-row (header + value) grid at every viewport. At 360px the 5
+    // columns can legitimately not all fit — the contract is that the
+    // GRID scrolls horizontally (`overflow-x: auto`), never that a
+    // column shrinks below its own content and ellipsizes/clips a
+    // Greek, and never that the surrounding `.opt-block` card itself
+    // is pushed wider than the viewport.
     test.setTimeout(60000);
     await page.setViewportSize({ width: 360, height: 800 });
     await loginAsAdmin(page);
@@ -757,17 +785,30 @@ test.describe('Live — .opt-kv-greeks narrow-viewport containment (<600px)', ()
       return;
     }
 
-    const display = await greeks.evaluate((el) => getComputedStyle(el).display);
-    expect(display, '.opt-kv-greeks should compute to flex at <600px (grid fallback did not silently win)').toBe('flex');
+    const { display, overflowX } = await greeks.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return { display: cs.display, overflowX: cs.overflowX };
+    });
+    expect(display, '.opt-kv-greeks stays a grid at <600px (no flex-wrap reflow)').toBe('grid');
+    expect(overflowX, '.opt-kv-greeks must be horizontally scrollable at <600px').toBe('auto');
 
-    const { scrollW, clientW } = await greeks.evaluate((el) => ({
-      scrollW: el.scrollWidth,
-      clientW: el.clientWidth,
-    }));
-    expect(scrollW, 'Greeks block content must not exceed its own box width').toBeLessThanOrEqual(clientW + 1);
+    // No individual Greek value may be clipped/ellipsized inside its
+    // own cell — each value's content must fit within its own cell,
+    // even if the overall grid scrolls to reach it.
+    const kvValueOverflows = await greeks.evaluate((el) =>
+      [...el.querySelectorAll('.kv-v')].map((v) => ({
+        scrollW: v.scrollWidth,
+        clientW: v.clientWidth,
+      }))
+    );
+    expect(kvValueOverflows.length).toBeGreaterThanOrEqual(4); // 5 Greeks, rho may be absent in some payloads
+    for (const v of kvValueOverflows) {
+      expect(v.scrollW, 'a Greek value must not overflow its own cell').toBeLessThanOrEqual(v.clientW + 1);
+    }
 
     // The card wrapping the Greeks block must not be pushed wider than
-    // the 360px viewport either.
+    // the 360px viewport — the scrollbar is internal to the grid, not
+    // a card-level overflow.
     const optBlock = page.locator('.opt-block', { has: greeks }).first();
     const blockBox = await optBlock.boundingBox().catch(() => null);
     if (blockBox) {
