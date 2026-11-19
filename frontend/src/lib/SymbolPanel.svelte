@@ -2635,9 +2635,16 @@
               <span class="oes-basket-pill-side">{leg.side === 'BUY' ? 'B' : 'S'}</span>
               <span class="oes-basket-pill-sym"><LegLabel sym={leg.sym} compact={true} /></span>
               <button type="button" class="oes-basket-pill-step"
-                      title="Decrease lots"
-                      disabled={basketSubmitting || (leg.lots || 1) <= 1}
-                      onclick={() => updateLegByKey(leg.key, b => ({ ...b, lots: Math.max(1, (b.lots || 1) - 1) }))}>−</button>
+                      title={(leg.lots || 1) - 1 <= 0 ? 'Remove leg from basket' : 'Decrease lots'}
+                      disabled={basketSubmitting}
+                      onclick={() => {
+                        // Stepping to 0 (or below) removes the leg outright —
+                        // matches Chain's own strike +/- (_netAgainstBasket in
+                        // OptionChainTab.svelte), which already does this.
+                        // Same removeBasketLeg(i) the × button calls (:2701).
+                        if ((leg.lots || 1) - 1 <= 0) { removeBasketLeg(i); return; }
+                        updateLegByKey(leg.key, b => ({ ...b, lots: (b.lots || 1) - 1 }));
+                      }}>−</button>
               <span class="oes-basket-pill-lots">{leg.lots || 1}</span>
               <button type="button" class="oes-basket-pill-step"
                       title="Increase lots"
