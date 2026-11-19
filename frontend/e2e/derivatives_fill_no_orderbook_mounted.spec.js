@@ -124,6 +124,30 @@ async function _mockCommonEndpoints(page, state) {
     });
   });
 
+  // The layout's fill-watch backstop cadence is settings-driven
+  // (`polling.slow_ms`, settings.py default 60000 ms — the SLOW cadence
+  // since commits 7574df2d / 1c1b5d41). This spec's contract is "refresh
+  // lands within one layout-poller tick (5s) of the order log showing
+  // COMPLETE", so pin the cadence to 5000 ms by rewriting ONLY that row of
+  // the real settings response. Every other setting passes through
+  // untouched. The layout re-arms its interval once this response lands.
+  await page.route('**/api/admin/settings**', async (route) => {
+    if (route.request().method() !== 'GET') return route.continue();
+    const resp = await route.fetch();
+    const json = await resp.json();
+    const isWrapped = !Array.isArray(json);
+    const rows = isWrapped ? (json.settings || []) : json;
+    const patched = rows.map((r) => (r?.key === 'polling.slow_ms'
+      ? { ...r, value: 5000, default_value: 5000 }
+      : r));
+    if (!patched.some((r) => r?.key === 'polling.slow_ms')) {
+      patched.push({ key: 'polling.slow_ms', value: 5000, default_value: 5000 });
+    }
+    const body = isWrapped ? { ...json, settings: patched } : patched;
+    state.settingsServed = true;
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+  });
+
   await page.route('**/api/instruments**', (route) => {
     route.fulfill({
       status: 200, contentType: 'application/json',
@@ -197,7 +221,7 @@ test.describe('Derivatives page with NO OrderBook/LogPanel mounted anywhere', ()
   test('a fill detected ONLY via the layout-level poll (no WS event, no OrderBook/LogPanel mounted) still forces a fresh books/strategy refetch', async ({ page }) => {
     await loginAsAdmin(page);
 
-    const state = { qty: 5, cachedQty: 5, orderStatus: 'OPEN', strategyCalls: [] };
+    const state = { qty: 5, cachedQty: 5, orderStatus: 'OPEN', strategyCalls: [], settingsServed: false };
     await _mockCommonEndpoints(page, state);
 
     // Connect the WS route but NEVER send anything over it — proves the
@@ -228,6 +252,9 @@ test.describe('Derivatives page with NO OrderBook/LogPanel mounted anywhere', ()
     // fresh position quantity becomes available — but the (unbusted)
     // positions cache keeps serving the OLD quantity to any non-fresh
     // caller. No WS message is sent at any point in this test.
+    // Cadence re-arm must have landed before the fill, or the first
+    // post-fill tick would still be the 60s default.
+    await expect.poll(() => state.settingsServed, { timeout: 10_000 }).toBe(true);
     state.orderStatus = 'COMPLETE';
     state.qty = 10;
     const _fillVisibleAt = Date.now();
@@ -260,7 +287,7 @@ test.describe('Derivatives page with NO OrderBook/LogPanel mounted anywhere', ()
     // opening the derivatives page well after a fill happened. Must be
     // treated as pre-existing state (seeding pass), not a "just
     // happened" transition.
-    const state = { qty: 5, cachedQty: 5, orderStatus: 'COMPLETE', strategyCalls: [] };
+    const state = { qty: 5, cachedQty: 5, orderStatus: 'COMPLETE', strategyCalls: [], settingsServed: false };
     await _mockCommonEndpoints(page, state);
 
     await page.routeWebSocket('**/ws/performance', () => {});
