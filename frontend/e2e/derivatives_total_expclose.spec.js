@@ -143,21 +143,47 @@ test.describe('derivatives page (TOTAL row + Exp Close tab)', () => {
     const legsCard = page.locator('.legs-card, [class*="legs"], .algo-card').first();
     await legsCard.waitFor({ timeout: 15000 });
 
-    // Find the Exp Close tab button. Look for text "Exp Close" or "expiry" in tab buttons.
-    // Tabs are typically in `.algo-tabs` or `.tab-list` or similar structure.
-    const tabButtons = page.locator('[role="button"][class*="tab"], button[class*="tab"]');
+    // 2026-11: the Legs/Exp-Close 2-option AlgoTabs strip (both options
+    // rendered simultaneously as `[role="tab"]`/`button[class*="tab"]`
+    // elements, which the old broad text search above found directly)
+    // was replaced by a 3-option Legs/Paired/Exp Close `<Select>`
+    // dropdown (`#opt-legs-view`). The OTHER two options now live
+    // inside the closed `<li role="option">` panel, which doesn't
+    // exist in the DOM until the trigger is clicked — a bare
+    // button/tab text search can no longer find "Exp Close" at all,
+    // which silently vacuous-skipped this test. Open the dropdown
+    // first, then pick the option by its accessible role/name.
+    const viewTrigger = page.locator('#opt-legs-view');
     let expCloseBtn = null;
-    const count = await tabButtons.count();
-    for (let i = 0; i < count; i++) {
-      const text = await tabButtons.nth(i).textContent();
-      if (text?.toLowerCase().includes('exp') && text?.toLowerCase().includes('close')) {
-        expCloseBtn = tabButtons.nth(i);
-        break;
+    if (await viewTrigger.isVisible({ timeout: 10_000 }).catch(() => false)) {
+      await viewTrigger.click();
+      const expCloseOption = page.getByRole('option', { name: /^Exp Close/ });
+      if (await expCloseOption.isVisible({ timeout: 5_000 }).catch(() => false)) {
+        expCloseBtn = expCloseOption;
+      } else {
+        // Dropdown opened but no matching option — close it again so
+        // the fallback searches below don't operate with a stray open
+        // panel still on screen.
+        await viewTrigger.click();
       }
-      // Fallback: check for "expiry" text.
-      if (text?.toLowerCase().includes('expiry')) {
-        expCloseBtn = tabButtons.nth(i);
-        break;
+    }
+
+    if (!expCloseBtn) {
+      // Fallback — broader search, in case the dropdown markup itself
+      // changes again in the future (same tolerant design as before).
+      const tabButtons = page.locator('[role="button"][class*="tab"], button[class*="tab"]');
+      const count = await tabButtons.count();
+      for (let i = 0; i < count; i++) {
+        const text = await tabButtons.nth(i).textContent();
+        if (text?.toLowerCase().includes('exp') && text?.toLowerCase().includes('close')) {
+          expCloseBtn = tabButtons.nth(i);
+          break;
+        }
+        // Fallback: check for "expiry" text.
+        if (text?.toLowerCase().includes('expiry')) {
+          expCloseBtn = tabButtons.nth(i);
+          break;
+        }
       }
     }
 
@@ -180,7 +206,7 @@ test.describe('derivatives page (TOTAL row + Exp Close tab)', () => {
       return;
     }
 
-    // Click the Exp Close tab.
+    // Click the Exp Close tab/option.
     await expCloseBtn.click();
     await page.waitForTimeout(500); // Brief pause for tab content to render.
 

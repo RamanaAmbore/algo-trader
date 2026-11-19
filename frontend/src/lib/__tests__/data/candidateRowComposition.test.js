@@ -7,7 +7,8 @@
  * Five quality dimensions:
  *  1. SSOT  — tests the real `composeDisplayedCandidates`, and the
  *             null-sort case against the real `sortRowsByPairGroup`
- *             (no re-derivation of its sort key rules).
+ *             ('paired' mode) / `sortRowsByAccountOnly` ('legs' mode)
+ *             (no re-derivation of either's sort key rules).
  *  2. Perf  — asserts `applyColumnSort` is never invoked when
  *             direction == null (via a spy columnSpecs accessor).
  *  3. Stale — CRITICAL regression guard: CLAUDE.md documents two prior
@@ -22,11 +23,19 @@
  *  5. UX    — the Exp Close tab is proven completely unaffected by any
  *             candSort state, matching the "header clicks stay inert on
  *             that tab" requirement.
+ *
+ * 2026-11: widened from the 2-mode `isExpiryTab: boolean` param to the
+ * 3-mode `mode: 'legs'|'paired'|'expiry'` param (Legs/Paired/Exp Close
+ * dropdown). The 'paired' mode is the literal renamed continuation of
+ * the old `isExpiryTab: false` byte-identical-invariant tests below —
+ * same assertions, same fixture, only the option key changed. A new
+ * 'legs' describe block covers the new unpaired, account-grouped mode
+ * against the real `sortRowsByAccountOnly`.
  */
 
 import { describe, it, expect } from 'vitest';
 import { composeDisplayedCandidates } from '$lib/data/candidateRowComposition.js';
-import { sortRowsByPairGroup } from '$lib/data/pairGroupSort.js';
+import { sortRowsByPairGroup, sortRowsByAccountOnly } from '$lib/data/pairGroupSort.js';
 
 function row(symbol, account, extra = {}) {
   return { symbol, account, source: 'live', ...extra };
@@ -56,10 +65,10 @@ const FIXTURE = [
   row('NIFTY26JUN22000CE', 'ZJ6294'),                                    // 5 orphan (no pair_group_key)
 ];
 
-describe('composeDisplayedCandidates — null-sort path (CRITICAL byte-identical invariant)', () => {
+describe("composeDisplayedCandidates — null-sort path, mode: 'paired' (CRITICAL byte-identical invariant)", () => {
   it('equals sortRowsByPairGroup(rows) followed by the drafts-last reshuffle — the literal pre-column-sort code', () => {
     const out = composeDisplayedCandidates(FIXTURE, {
-      isExpiryTab: false,
+      mode: 'paired',
       sortState: { column: null, direction: null },
       columnSpecs: {},
     });
@@ -76,7 +85,7 @@ describe('composeDisplayedCandidates — null-sort path (CRITICAL byte-identical
 
   it('drafts sort into their PAIR-GROUP order (by account), not their raw array order — proves sort-then-partition, not partition-then-sort', () => {
     const out = composeDisplayedCandidates(FIXTURE, {
-      isExpiryTab: false,
+      mode: 'paired',
       sortState: { column: null, direction: null },
       columnSpecs: {},
     });
@@ -100,10 +109,98 @@ describe('composeDisplayedCandidates — null-sort path (CRITICAL byte-identical
       symbol: spec('text', () => { throw new Error('accessor must not be called when direction is null'); }),
     };
     expect(() => composeDisplayedCandidates(FIXTURE, {
-      isExpiryTab: false,
+      mode: 'paired',
       sortState: { column: 'symbol', direction: null },
       columnSpecs: throwingSpecs,
     })).not.toThrow();
+  });
+});
+
+// Dedicated fixture for the paired-vs-legs DIVERGENCE proof below — the
+// shared FIXTURE above does NOT discriminate the two modes (its
+// account→root→tier→strike ordering happens to coincide with its own
+// pair_group_key ordering), so a fixture engineered to disagree is
+// needed: pair_group_key order is P1 (23000 CE) then P2 (22000 PE),
+// the OPPOSITE of strike-ascending order.
+const DIVERGENT_FIXTURE = [
+  row('NIFTY26JUN23000CE', 'ACC1', { pair_group_key: 'P1' }),
+  row('NIFTY26JUN22000PE', 'ACC1', { pair_group_key: 'P2' }),
+];
+
+describe("composeDisplayedCandidates — null-sort path, mode: 'legs' (new unpaired, account-grouped view)", () => {
+  it('equals sortRowsByAccountOnly(rows) followed by the drafts-last reshuffle, NOT sortRowsByPairGroup(rows)', () => {
+    const out = composeDisplayedCandidates(FIXTURE, {
+      mode: 'legs',
+      sortState: { column: null, direction: null },
+      columnSpecs: {},
+    });
+
+    const ref = sortRowsByAccountOnly(FIXTURE);
+    const refOrdered = ref.filter((c) => c.source !== 'draft').concat(ref.filter((c) => c.source === 'draft'));
+
+    expect(out.map((r) => r.symbol + '|' + r.account)).toEqual(
+      refOrdered.map((r) => r.symbol + '|' + r.account)
+    );
+  });
+
+  it("genuinely runs a DIFFERENT ordering function than 'paired' — strike-ASC order, not pair_group_key order", () => {
+    const legsOut = composeDisplayedCandidates(DIVERGENT_FIXTURE, {
+      mode: 'legs',
+      sortState: { column: null, direction: null },
+      columnSpecs: {},
+    });
+    const pairedOut = composeDisplayedCandidates(DIVERGENT_FIXTURE, {
+      mode: 'paired',
+      sortState: { column: null, direction: null },
+      columnSpecs: {},
+    });
+
+    // 'paired' clusters by pair_group_key: P1 (23000 CE) before P2
+    // (22000 PE).
+    expect(pairedOut.map((r) => r.symbol)).toEqual([
+      'NIFTY26JUN23000CE',
+      'NIFTY26JUN22000PE',
+    ]);
+    // 'legs' never clusters by pair group — same root, same tier, so
+    // strike ASC wins: 22000 PE before 23000 CE. The exact reverse of
+    // 'paired' for this fixture.
+    expect(legsOut.map((r) => r.symbol)).toEqual([
+      'NIFTY26JUN22000PE',
+      'NIFTY26JUN23000CE',
+    ]);
+  });
+
+  it('drafts still render last, even under the unpaired account-only sort', () => {
+    const out = composeDisplayedCandidates(FIXTURE, {
+      mode: 'legs',
+      sortState: { column: null, direction: null },
+      columnSpecs: {},
+    });
+    const draftIdx = out.findIndex((r) => r.source === 'draft');
+    expect(out.slice(draftIdx).every((r) => r.source === 'draft')).toBe(true);
+  });
+
+  it('never calls applyColumnSort when direction is null', () => {
+    const throwingSpecs = {
+      symbol: spec('text', () => { throw new Error('accessor must not be called when direction is null'); }),
+    };
+    expect(() => composeDisplayedCandidates(FIXTURE, {
+      mode: 'legs',
+      sortState: { column: 'symbol', direction: null },
+      columnSpecs: throwingSpecs,
+    })).not.toThrow();
+  });
+
+  it('an active column sort still overrides sortRowsByAccountOnly, same as it overrides sortRowsByPairGroup', () => {
+    const columnSpecs = { symbol: spec('text', (c) => c.symbol) };
+    const out = composeDisplayedCandidates(FIXTURE, {
+      mode: 'legs',
+      sortState: { column: 'symbol', direction: 'asc' },
+      columnSpecs,
+    });
+    const realSymbols = out.filter((r) => r.source !== 'draft').map((r) => r.symbol);
+    expect(realSymbols).toEqual([...realSymbols].sort());
+    expect(out.slice(-2).every((r) => r.source === 'draft')).toBe(true);
   });
 });
 
@@ -112,7 +209,7 @@ describe('composeDisplayedCandidates — active column sort', () => {
 
   it('column-sorts the real rows, and drafts still render last unconditionally', () => {
     const out = composeDisplayedCandidates(FIXTURE, {
-      isExpiryTab: false,
+      mode: 'paired',
       sortState: { column: 'symbol', direction: 'asc' },
       columnSpecs,
     });
@@ -132,7 +229,7 @@ describe('composeDisplayedCandidates — active column sort', () => {
 
   it('descending sort reverses real-row order; drafts are still last', () => {
     const out = composeDisplayedCandidates(FIXTURE, {
-      isExpiryTab: false,
+      mode: 'paired',
       sortState: { column: 'symbol', direction: 'desc' },
       columnSpecs,
     });
@@ -149,12 +246,12 @@ describe('composeDisplayedCandidates — Exp Close tab is completely unaffected 
       { symbol: 'B', _band: 'otm' },
     ];
     const outNull = composeDisplayedCandidates(expiryRows, {
-      isExpiryTab: true,
+      mode: 'expiry',
       sortState: { column: null, direction: null },
       columnSpecs: {},
     });
     const outActive = composeDisplayedCandidates(expiryRows, {
-      isExpiryTab: true,
+      mode: 'expiry',
       sortState: { column: 'symbol', direction: 'desc' },
       columnSpecs: { symbol: spec('text', (c) => c.symbol) },
     });
@@ -165,7 +262,7 @@ describe('composeDisplayedCandidates — Exp Close tab is completely unaffected 
   it('still stamps _ord (shared {#each} key fallback needs it on both tabs)', () => {
     const expiryRows = [{ symbol: 'A' }, { symbol: 'B' }];
     const out = composeDisplayedCandidates(expiryRows, {
-      isExpiryTab: true,
+      mode: 'expiry',
       sortState: { column: null, direction: null },
       columnSpecs: {},
     });

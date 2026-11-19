@@ -145,3 +145,92 @@ export function sortRowsByPairGroup(rows) {
     .map(x => x.r);
 }
 
+// Tier rank used ONLY by sortRowsByAccountOnly below — mirrors
+// pulseUnified.js's own `_TIER_RANK` exactly (spot/eq/idx before fut
+// before opt), NOT `_rowTier()`'s 2-tier (opt vs everything-else)
+// scheme used by pairGroupOrderKey/sortRowsByPairGroup above. The two
+// tier schemes deliberately differ: sortRowsByPairGroup groups by
+// `pair_group_key` first, so a lone future only needs to rank "above
+// options" in general; sortRowsByAccountOnly has no pair-group
+// clustering at all, so a future must rank strictly between the
+// underlying/equity rows and its own options within the same root,
+// matching how pulseUnified.js's Pulse Positions grid already orders
+// a root's rows (spot/eq → fut → opt).
+const _ACCOUNT_ONLY_TIER_RANK = { idx: 0, eq: 0, fut: 1, opt: 2 };
+
+// CE before PE at the same strike — identical convention to
+// pulseUnified.js's `_OPT_TYPE_RANK`.
+const _ACCOUNT_ONLY_OPT_TYPE_RANK = { CE: 0, PE: 1 };
+
+/**
+ * sortRowsByAccountOnly(rows) — pure-array sort for the derivatives Legs
+ * grid's unpaired "Legs" view (2026-11, operator: convert the 2-option
+ * Legs/Exp-Close AlgoTabs strip into a 3-option Legs/Paired/Exp Close
+ * dropdown — "Legs" becomes the new unpaired default, "Paired" is
+ * today's CE/PE auto-paired view relabeled, via `sortRowsByPairGroup`
+ * above). Groups rows by account ONLY — NO CE/PE pair-group clustering
+ * at all, which is the entire point of this view: every leg renders in
+ * a flat, account-grouped list instead of being clustered by its
+ * `pair_group_key`.
+ *
+ * Account grouping uses plain lexicographic `<`/`>` comparison —
+ * deliberately NOT `accountSort.js`'s operator-configured
+ * `display_order` — because `sortRowsByPairGroup` above (the "Paired"
+ * view) ALSO orders accounts lexicographically via `_rowAccount`; using
+ * a different convention here would make the two views disagree about
+ * account order when switching between them.
+ *
+ * Within each account, rows sort by: `decomposeSymbol` root (alpha) →
+ * tier (underlying/equity → future → option, `_ACCOUNT_ONLY_TIER_RANK`
+ * above — mirrors pulseUnified.js's `_compareSameGroup` ordering
+ * exactly) → strike ASC (options only) → CE before PE → symbol (alpha,
+ * final tiebreak) → original index (stable). The tier segment is not
+ * explicitly called out in the original spec but is required for
+ * correctness: a future's `strike` is always `null`, so without a tier
+ * rank a future would sort arbitrarily relative to its own root's
+ * options depending on how `null` coerces against a real strike number,
+ * instead of always anchoring above them (the 2026-10-17 rule this
+ * module's own `pairGroupOrderKey` already encodes for the Paired view).
+ *
+ * @param {any[]} rows — plain row objects carrying `account`/`symbol`
+ *                        (or `tradingsymbol`)
+ * @returns {any[]} new array; does not mutate the input.
+ */
+export function sortRowsByAccountOnly(rows) {
+  if (!rows || rows.length === 0) return rows ?? [];
+  return rows
+    .map((r, i) => ({
+      r,
+      i,
+      d: decomposeSymbol(String(r?.tradingsymbol ?? r?.symbol ?? '')),
+    }))
+    .sort((a, b) => {
+      const acctA = _rowAccount(a.r);
+      const acctB = _rowAccount(b.r);
+      if (acctA !== acctB) return acctA < acctB ? -1 : 1;
+
+      if (a.d.root !== b.d.root) return a.d.root < b.d.root ? -1 : 1;
+
+      const tierA = _ACCOUNT_ONLY_TIER_RANK[a.d.kind] ?? 0;
+      const tierB = _ACCOUNT_ONLY_TIER_RANK[b.d.kind] ?? 0;
+      if (tierA !== tierB) return tierA - tierB;
+
+      if (tierA === 2) {
+        // Both options, same root — strike ASC, then CE before PE.
+        const sa = a.d.strike ?? 0, sb = b.d.strike ?? 0;
+        if (sa !== sb) return sa - sb;
+        const oa = _ACCOUNT_ONLY_OPT_TYPE_RANK[a.d.optType] ?? 2;
+        const ob = _ACCOUNT_ONLY_OPT_TYPE_RANK[b.d.optType] ?? 2;
+        if (oa !== ob) return oa - ob;
+      }
+
+      const symA = String(a.r?.symbol ?? a.r?.tradingsymbol ?? '');
+      const symB = String(b.r?.symbol ?? b.r?.tradingsymbol ?? '');
+      const symCmp = symA.localeCompare(symB);
+      if (symCmp !== 0) return symCmp;
+
+      return a.i - b.i; // stable
+    })
+    .map(x => x.r);
+}
+

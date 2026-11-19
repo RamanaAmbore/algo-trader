@@ -174,12 +174,18 @@ test.describe('CardHeader sweep round 3 — Part A regression guard: explicit --
 test.describe('CardHeader sweep round 3 — Part B: tab-strip-as-title panels remain genuinely labeled (zero-edit decision, evidence)', () => {
   test.use({ viewport: { width: 1440, height: 900 } });
 
-  test('admin/derivatives Legs card — no title prop, but AlgoTabs "Legs"/"Exp close" in middle is always visible', async ({ page }) => {
+  test('admin/derivatives Legs card — no title prop, but the Legs/Paired/Exp Close view-picker "Legs (N)" trigger in middle is always visible', async ({ page }) => {
+    // 2026-11: the 2-option AlgoTabs strip (role="tab") was replaced by
+    // a 3-option Select dropdown (role="button", trigger text "Legs
+    // (N)"/"Paired (N)"/"Exp Close (N)") — selector updated to match;
+    // the underlying claim (this card is never a bare unlabeled header)
+    // is unchanged.
     await loginAsAdmin(page);
     await page.goto('/admin/derivatives', { waitUntil: 'domcontentloaded' });
 
-    const legsTab = page.getByRole('tab', { name: /^Legs/ }).first();
-    await expect(legsTab, 'Legs card must show its own identifying tab label, confirming it is not a bare unlabeled header').toBeVisible({ timeout: 20_000 });
+    const legsViewTrigger = page.locator('#opt-legs-view');
+    await expect(legsViewTrigger, 'Legs card must show its own identifying view-picker label, confirming it is not a bare unlabeled header').toBeVisible({ timeout: 20_000 });
+    await expect(legsViewTrigger).toHaveText(/^Legs/);
   });
 
   test('dashboard Capital/Equity card — no title prop, but AlgoTabs "P&L"/"Capital"/"Equity" in middle is always visible', async ({ page }) => {

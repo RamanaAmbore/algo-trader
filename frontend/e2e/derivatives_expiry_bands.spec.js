@@ -55,6 +55,40 @@ const MATH_PATH = path.resolve(
   'src/lib/data/derivativesMath.js'
 );
 
+/**
+ * Open the Legs/Paired/Exp Close view-picker and select "Exp Close".
+ *
+ * 2026-11: the old Legs/Exp-Close 2-option `<AlgoTabs>` strip rendered
+ * BOTH options simultaneously as `button, [role="tab"]` elements with
+ * literal text, so `page.locator('button, [role="tab"]').filter({
+ * hasText: /expiry/i })` could find "Exp close" directly without
+ * opening anything. It was replaced by a 3-option Legs/Paired/Exp
+ * Close `<Select>` dropdown (`#opt-legs-view`) — the other two options
+ * now live inside the closed `<li role="option">` panel, absent from
+ * the DOM until the trigger is clicked, so the old locator silently
+ * found nothing and every call site below vacuous-skipped. This opens
+ * the dropdown first, then picks the option by its accessible
+ * role/name, same convention the derivatives_legs_paired_expclose_
+ * dropdown.spec.js regression test uses.
+ *
+ * @param {import('@playwright/test').Page} page
+ * @returns {Promise<boolean>} true if the Exp Close view was selected.
+ */
+async function _selectExpCloseView(page) {
+  const trigger = page.locator('#opt-legs-view');
+  if (!(await trigger.isVisible({ timeout: 3000 }).catch(() => false))) return false;
+  await trigger.click();
+  const expCloseOption = page.getByRole('option', { name: /^Exp Close/ });
+  if (!(await expCloseOption.isVisible({ timeout: 3000 }).catch(() => false))) {
+    // Dropdown opened but the option never appeared — close it again
+    // rather than leaving a stray open panel on screen.
+    await trigger.click();
+    return false;
+  }
+  await expCloseOption.click();
+  return true;
+}
+
 // ── SSOT / stale-code checks (static source scan) ──────────────────────────
 
 test('SSOT: expiryCloseAnalysis reads spot via three-tier lookup, not strategy?.spot directly', () => {
@@ -318,13 +352,11 @@ for (const vp of VIEWPORTS) {
         'No JS errors on derivatives page'
       ).toHaveLength(0);
 
-      // If the expiry tab button exists, click it and verify band header
-      // labels render (the page may have no positions — that's OK, we just
-      // check the tab is clickable and the band CSS is present in the DOM).
-      const expiryTabBtn = page.locator('button, [role="tab"]').filter({ hasText: /expiry/i }).first();
-      if (await expiryTabBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
-        await expiryTabBtn.click();
-
+      // If the Exp Close view can be selected, select it and verify band
+      // header labels render (the page may have no positions — that's OK,
+      // we just check the view-picker is usable and the band CSS is
+      // present in the DOM).
+      if (await _selectExpCloseView(page)) {
         // The expiry band header container should be present (or empty state).
         const bandHeaderOrEmpty = page.locator('.expiry-band-header, .expiry-empty, :text("No ITM")');
         await bandHeaderOrEmpty.first().waitFor({ timeout: 5000 }).catch(() => { /* empty book */ });
@@ -358,13 +390,10 @@ for (const vp of VIEWPORTS) {
         timeout: 20000,
       }).catch(() => { /* no positions */ });
 
-      const expiryTabBtn = page.locator('button, [role="tab"]').filter({ hasText: /expiry/i }).first();
-      if (!(await expiryTabBtn.isVisible({ timeout: 3000 }).catch(() => false))) {
-        test.skip(true, 'No expiry tab visible — no positions; SSOT checks cover logic');
+      if (!(await _selectExpCloseView(page))) {
+        test.skip(true, 'No Exp Close view selectable — no positions; SSOT checks cover logic');
         return;
       }
-
-      await expiryTabBtn.click();
 
       // If band headers are present, their labels must be the human-readable
       // strings from BAND_LABELS, not the raw internal keys.
@@ -433,12 +462,10 @@ for (const vp of VIEWPORTS) {
         timeout: 20000,
       }).catch(() => { /* no positions */ });
 
-      const expiryTabBtn = page.locator('button, [role="tab"]').filter({ hasText: /expiry/i }).first();
-      if (!(await expiryTabBtn.isVisible({ timeout: 3000 }).catch(() => false))) {
-        test.skip(true, 'No expiry tab — no positions in book');
+      if (!(await _selectExpCloseView(page))) {
+        test.skip(true, 'No Exp Close view selectable — no positions in book');
         return;
       }
-      await expiryTabBtn.click();
       await page.waitForTimeout(1000); // let the derived settle
 
       // Locate any OTM section rows that contain a PE symbol chip.

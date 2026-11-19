@@ -37,7 +37,6 @@
   import CardControls from '$lib/CardControls.svelte';
   import CardHeader from '$lib/CardHeader.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
-  import AlgoTabs from '$lib/AlgoTabs.svelte';
   import {
     loadInstruments, suggestUnderlyings,
     listExpiries, listStrikes, findOption,
@@ -746,12 +745,19 @@
     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fn(); }
   }
 
-  // Tab inside the Legs card — 'legs' shows the full candidate
-  // grid; 'expiry' shows positions identified for close before
-  // expiry day (equity rules: every ITM contract; commodity rules:
-  // only unhedged ITM legs where CE qty + PE qty per
-  // (underlying, expiry) doesn't net to zero).
-  /** @typedef {'legs' | 'expiry'} LegsTab */
+  // View inside the Legs card, picked via the Legs/Paired/Exp Close
+  // dropdown (2026-11, replaces the old 2-option Legs/Exp-Close
+  // AlgoTabs strip) — 'legs' shows the full candidate set, unpaired,
+  // grouped by account only (`sortRowsByAccountOnly`, no CE/PE
+  // clustering); 'paired' shows the SAME candidate set, CE/PE
+  // auto-paired (`sortRowsByPairGroup` — this is the old default
+  // 'legs' behavior, relabeled, not removed); 'expiry' shows positions
+  // identified for close before expiry day (equity rules: every ITM
+  // contract; commodity rules: only unhedged ITM legs where CE qty +
+  // PE qty per (underlying, expiry) doesn't net to zero).
+  /** @typedef {'legs' | 'paired' | 'expiry'} LegsTab */
+  // Default stays the literal 'legs' — it now MEANS the new unpaired,
+  // account-grouped view rather than the old pair-auto-grouped one.
   let legsTab = $state(/** @type {LegsTab} */ ('legs'));
 
   // Expiry-close analysis. Derived from candidatePositions + the
@@ -893,17 +899,19 @@
       const q = _filterLegs.toUpperCase();
       rows = rows.filter(c => String(c.symbol || '').toUpperCase().includes(q));
     }
-    // Composition (column-sort plan, Section E) — pulled into
+    // Composition (column-sort plan, Section E; widened 2026-11 to the
+    // 3-mode Legs/Paired/Exp Close contract) — pulled into
     // candidateRowComposition.js so the exact composition order (stamp
-    // `_ord` → pair-group-or-column-sort real+draft rows together →
+    // `_ord` → mode-specific-or-column-sort real+draft rows together →
     // drafts-last reshuffle) is Vitest-testable directly, not via a
     // hand-mirrored copy. CRITICAL invariant, see that module's own
     // header comment: when no column sort is active
-    // (`candSort.direction == null`), this is BYTE-IDENTICAL to the
-    // pre-column-sort code — CLAUDE.md documents two prior live
-    // incidents from corrupting this exact pair-group block ordering.
+    // (`candSort.direction == null`), 'legs'/'paired' are each
+    // BYTE-IDENTICAL to their own respective pre-column-sort sort
+    // function — CLAUDE.md documents two prior live incidents from
+    // corrupting this exact pair-group block ordering.
     return composeDisplayedCandidates(rows, {
-      isExpiryTab: legsTab === 'expiry',
+      mode: legsTab,
       sortState: { column: candSort.column, direction: candSort.direction },
       columnSpecs: CAND_COLUMN_SPECS,
     });
@@ -920,12 +928,13 @@
    *  P&L, the payoff curve's leg set, and the CSV export; a qty=0
    *  non-tradable row has no business entering any of those. Gated on at
    *  least one real CE/PE being present (same gate `mergeUnderlyingAnchors`
-   *  uses) and on the Legs tab only — the Exp Close tab has its own
-   *  expiry-band grouping. Spot/close/chg% reuse `resolveUnderlyingSpotTriple`
-   *  — the SAME extracted formula the Snapshot grid's row for this exact
-   *  underlying already computes, so the two surfaces can never disagree. */
+   *  uses) and on the non-Exp-Close views ('legs' or 'paired') — the Exp
+   *  Close tab has its own expiry-band grouping. Spot/close/chg% reuse
+   *  `resolveUnderlyingSpotTriple` — the SAME extracted formula the
+   *  Snapshot grid's row for this exact underlying already computes, so
+   *  the two surfaces can never disagree. */
   const legsUnderlyingAnchor = $derived.by(() => {
-    if (legsTab !== 'legs' || !selectedUnderlying) return null;
+    if (legsTab === 'expiry' || !selectedUnderlying) return null;
     if (!candidatePositions.some(c => c.kind === 'opt')) return null;
     const { ltp, close, pct, resolvedTs, exchange } = resolveUnderlyingSpotTriple(selectedUnderlying, {
       positions, holdings, undLive: _undLive, underlyingQuotes: _underlyingQuotes, findNearestFuture,
@@ -5994,11 +6003,13 @@
   <div class="algo-status-card cmd-surface p-3 opt-legs-card"
     data-status="inactive"
     class:fs-card-on={_fsLegs}>
-    <!-- Legs header — 2026-10 CardHeader adoption sweep. AlgoTabs is
+    <!-- Legs header — 2026-10 CardHeader adoption sweep; view picker
+         migrated from a 2-option AlgoTabs strip to a 3-option Select
+         dropdown in 2026-11 (Legs/Paired/Exp Close). The dropdown is
          still the card identifier (no `title` prop, same as the
          Payoff/Snapshot precedent elsewhere on this page), now carried
          in CardHeader's `middle` zone; the underlying chip moves to
-         `prefix` (renders before the tabs, matching its old left-most
+         `prefix` (renders before it, matching its old left-most
          position); CardControls' own props map 1:1 onto CardHeader's
          forwarded props, so the full button set (search/download/
          fullscreen/refresh) is unchanged — only the wrapper
@@ -6035,37 +6046,34 @@
       )}
     >
       {#snippet middle()}
-        <!-- Tabs replace the static title — operator flips between
-             the full leg list and the close-list summary. Expiry
-             tab carries its count in a rose-colored badge variant
-             so an unfilled close-before-expiry surface flags as
-             warning vs the neutral leg count on Legs. -->
-        <AlgoTabs
-          tabs={[
-            { id: 'legs', label: 'Legs',
-              /* 2026-10-22 fix — this used to read `candidatePositions`
-                 (pre-holdings-toggle, pre-search-filter), which could
-                 show a nonzero badge while the grid directly below
-                 simultaneously renders "No candidates" — e.g. the
-                 underlying's only candidate is an equity holding and
-                 `_includeHoldings` is OFF, or the Legs search box
-                 excludes it. The badge now counts the same
-                 `displayedCandidates` set the grid (and its empty-state
-                 message) actually renders, so the two can never
-                 disagree. */
-              badge: displayedCandidates.length > 0 ? displayedCandidates.length : null },
-            { id: 'expiry', label: 'Exp close',
-              /* Operator (2026-07-01): "active tab text color must be
-                 consistent". Warning cue for unfilled expiry-close
-                 total moves to the badge count only — the tab itself
-                 always renders in canonical amber. */
-              color: /** @type {const} */ ('amber'),
-              badge: expiryCloseTotal > 0 ? expiryCloseTotal : null },
-          ]}
-          value={legsTab}
-          onChange={(id) => { legsTab = /** @type {'legs'|'expiry'} */ (id); }}
-          compact={true}
-        />
+        <!-- View picker replaces the static title — operator switches
+             between the unpaired leg list, the CE/PE auto-paired leg
+             list, and the close-list summary. 2026-11: converted from
+             a 2-option AlgoTabs strip (Legs/Exp close) to this
+             3-option Select dropdown (Legs/Paired/Exp Close) — same
+             `$lib/Select.svelte` component already used for the
+             Underlying picker above (`id="opt-und"`), same bind:value
+             convention. Each option's live row count is folded into
+             its own label text (operator-confirmed) rather than a
+             separate badge, since a closed dropdown can only show one
+             label at a time.
+             NOTE: `displayedCandidates.length` (used for both 'legs'
+             and 'paired' labels below) depends on the CURRENTLY
+             selected `legsTab` — it is the Exp Close rows' count while
+             'expiry' is active, not the Legs/Paired rows' count. This
+             reuses the exact expression the pre-existing AlgoTabs
+             badge computed (same quirk carried forward, not
+             introduced here) rather than adding a second, independent
+             row-count derivation. -->
+        <div class="cand-view-select">
+          <Select id="opt-legs-view"
+            bind:value={legsTab}
+            options={[
+              { value: 'legs',   label: `Legs (${displayedCandidates.length})` },
+              { value: 'paired', label: `Paired (${displayedCandidates.length})` },
+              { value: 'expiry', label: `Exp Close (${expiryCloseTotal})` },
+            ]} />
+        </div>
       {/snippet}
       {#snippet right()}
         <!-- 2026-10 round 2: hidden entirely at 0 selected (was: always
@@ -8186,16 +8194,40 @@
      plain `title="Positions"` (2026-10-13 — replaced the underlying-
      chip prefix per operator request, so this card gets the standard
      border-left+padding label decoration every other header has,
-     instead of a bespoke chip) and the Legs/Exp-close AlgoTabs in
-     `middle` (see the card markup above). .legs-underlying-chip and
-     .legs-header-sep (a manual divider span, removed separately) are
+     instead of a bespoke chip) and the Legs/Paired/Exp Close view
+     picker in `middle` (see the card markup above). .legs-underlying-chip
+     and .legs-header-sep (a manual divider span, removed separately) are
      both fully retired now — no remaining markup user. */
 
-  /* Legs / Expiry tabs migrated to canonical AlgoTabs (compact
-     amber; expiry switches to rose color when expiryCloseTotal>0
-     so the unfilled-close alert reads as warning instead of
-     neutral). All `.legs-tab*` CSS retired — AlgoTabs owns the
-     decoration via `.algo-tab` in app.css. */
+  /* Legs/Expiry AlgoTabs (2-option: Legs/Exp close) retired 2026-11 —
+     replaced by the 3-option Legs/Paired/Exp Close `<Select>` dropdown
+     (`.cand-view-select`, markup above). All `.legs-tab*` CSS was
+     already retired when AlgoTabs itself was adopted (2026-10); its
+     decoration lived entirely in `.algo-tab` (app.css), none of it
+     page-local, so there is nothing further to remove here beyond the
+     markup change itself. */
+  /* 11rem "ideal" width so the dropdown trigger doesn't stretch across
+     the whole CardHeader `.ch-middle` zone (that zone is `flex:1 1 0`,
+     and Select's own trigger is `width:100%` by design, for its OTHER
+     usage as a page-level picker-bar field that's SUPPOSED to fill its
+     column) — but `flex: 0 1 11rem` + `min-width` (not `flex: 0 0
+     auto`) so it can still SHRINK below 11rem on a narrow mobile
+     header. Measured live at the project's own 360px mobile-portrait
+     viewport (`playwright.config.js`): the Legs card's `.ch-middle`
+     resolves to only ~170px there (title + 4 button-group icons eat
+     the rest), 6px narrower than a rigid 11rem trigger — a rigid width
+     either clipped the caret (the only visual cue this is a dropdown)
+     or forced `.ch-middle`'s own `scroll-x` fallback to kick in for a
+     control that should just fit. `min-width` stops it from shrinking
+     to the point the "Exp Close (N)" label becomes unreadable;
+     `.rbq-select-label`'s own `overflow:hidden; text-overflow:ellipsis;
+     white-space:nowrap` (Select.svelte) ellipsizes the label text
+     first, and the caret span is `flex:0 0 auto` so it never gets
+     squeezed out. */
+  .cand-view-select {
+    flex: 0 1 11rem;
+    min-width: 6.5rem;
+  }
 
   /* Expiry tab band tints, expiry-band-header, expiry-id-chip, and
      all cand-row variant styles moved to CandidateLegRow.svelte. */

@@ -302,7 +302,7 @@ test.describe('CardHeader adoption sweep — Dashboard NAV/Capital/Equity tabbed
 });
 
 test.describe('CardHeader adoption sweep — Derivatives Legs card', () => {
-  test('"Positions" title + Legs/Exp-close tabs + Search/Download still work, no Collapse button, shade present', async ({ page }) => {
+  test('"Positions" title + Legs/Paired/Exp Close view picker + Search/Download still work, no Collapse button, shade present', async ({ page }) => {
     await loginAsAdmin(page);
     await page.goto('/admin/derivatives', { waitUntil: 'domcontentloaded' });
 
@@ -313,11 +313,21 @@ test.describe('CardHeader adoption sweep — Derivatives Legs card', () => {
 
     // 1. Title (2026-10-13 — replaced the underlying-chip prefix with a
     // plain title="Positions", gaining the standard border-left+padding
-    // label decoration every other header has) + AlgoTabs identity —
-    // Legs / Exp close tabs render alongside it.
+    // label decoration every other header has) + view-picker identity —
+    // 2026-11: the 2-option AlgoTabs strip (role="tab") was replaced by
+    // a 3-option Select dropdown (role="button", trigger shows the
+    // CURRENTLY selected option's own "Legs (N)"/"Paired (N)"/"Exp Close
+    // (N)" label — all three options only exist inside the closed
+    // panel, not simultaneously on screen like the old tab strip, so
+    // this now opens the dropdown to assert the other two options exist).
     await expect(header.locator('.ch-title')).toHaveText('Positions');
-    await expect(header.getByRole('tab', { name: /^Legs/ })).toBeVisible();
-    await expect(header.getByRole('tab', { name: /Exp close/ })).toBeVisible();
+    const viewTrigger = header.locator('#opt-legs-view');
+    await expect(viewTrigger).toBeVisible();
+    await expect(viewTrigger).toHaveText(/^Legs/);
+    await viewTrigger.click();
+    await expect(page.getByRole('option', { name: /^Paired/ })).toBeVisible();
+    await expect(page.getByRole('option', { name: /^Exp Close/ })).toBeVisible();
+    await viewTrigger.click(); // close the panel again before continuing
 
     // 2. Collapse removed 2026-10-13 (header button-group standardization)
     // — no caret/collapse button renders anywhere on this card, and the
