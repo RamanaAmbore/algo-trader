@@ -1972,3 +1972,127 @@ class TestBareTwoTupleRenderersSendAgentLabelAtTop:
 
 async def _async_empty_agents():
     return []
+
+
+class _FakeEventsLogger:
+    """Captures `.info`/`.warning` calls the same way `_FakeTraceLogger`
+    above captures `.debug`/`.warning` — used here to verify the
+    2026-11-18 temporary `_send_channel` audit-trace instrumentation
+    (success + failure + capability-gate-skip lines) without touching a
+    real logger/log_events."""
+
+    def __init__(self):
+        self.info_calls: list[str] = []
+        self.warning_calls: list[str] = []
+
+    def info(self, msg, *args):
+        self.info_calls.append(msg % args if args else msg)
+
+    def warning(self, msg, *args):
+        self.warning_calls.append(msg % args if args else msg)
+
+
+@pytest.mark.asyncio
+async def test_send_channel_trace_logs_success_and_stays_non_alert_shaped(monkeypatch, senders):
+    """2026-11-18 temporary audit instrumentation: a successful channel
+    send logs one INFO 'send-returned' trace line through `_EVENTS_LOGGER`
+    (NOT this module's own skip-listed `_logger` — a skip-listed logger
+    would make the trace invisible to the exact log_events-table audit
+    it exists to support). The trace must never itself become a second
+    alertable record: no known alert tag is ever stamped on it, so
+    `_looks_alert_shaped()` — the function `UNROUTED_ALERT_AGENT`'s own
+    catch-all scan relies on — must read False for it, and it must never
+    match ERROR_AGENT's own catch-all condition either."""
+    fake = _FakeEventsLogger()
+    monkeypatch.setattr(event_agents, "_EVENTS_LOGGER", fake)
+    ch = {"channel": "telegram", "enabled": True}
+    out = ("Title", "Body")
+    agent = SimpleNamespace(slug="t", tier="medium")
+
+    sent = await event_agents._send_channel(ch, out, agent, {"extra": {"alert_event": "filled"}})
+
+    assert sent is True
+    assert len(fake.info_calls) == 1
+    assert len(fake.warning_calls) == 0
+    msg = fake.info_calls[0]
+    assert "send-returned" in msg
+    assert "channel=telegram" in msg
+    assert "agent=t" in msg
+    assert "alert_event=filled" in msg
+
+    # The trace record itself must never look alert-shaped (no known
+    # alert tag), and must never match ERROR_AGENT's own condition.
+    fake_rec = {"level": "INFO", "tags": ["info", "events"], "extra": {}, "message": msg}
+    assert event_agents._looks_alert_shaped(fake_rec) is False
+    error_agent = SimpleNamespace(conditions=event_agents.ERROR_AGENT["conditions"])
+    assert event_agents._record_matches_any_agent(fake_rec, [error_agent]) is False
+
+
+@pytest.mark.asyncio
+async def test_send_channel_trace_logs_failure_without_changing_return_value(monkeypatch):
+    """A channel send that raises still returns False exactly as before
+    (zero behavior change) — the new WARNING trace line is purely
+    additive. WARNING (never ERROR) is load-bearing: `tags_for()` only
+    auto-stamps the 'error' tag for an ERROR/CRITICAL record, and
+    ERROR_AGENT's catch-all is `tag="error", min_level="ERROR"` — a
+    WARNING-level trace structurally cannot match it, so this
+    instrumentation can never recursively re-enter the dispatch
+    pipeline, even though it is reporting the exact kind of send
+    failure ERROR_AGENT exists to catch elsewhere in the system."""
+    import backend.shared.helpers.utils as u
+    monkeypatch.setattr(u, "is_enabled", lambda cap: True)
+    fake = _FakeEventsLogger()
+    monkeypatch.setattr(event_agents, "_EVENTS_LOGGER", fake)
+
+    def _boom(title, body, tg, **_kw):
+        raise RuntimeError("boom: connection refused")
+
+    monkeypatch.setitem(event_agents.CHANNELS, "telegram", ("telegram", _boom))
+    ch = {"channel": "telegram", "enabled": True}
+    out = ("Title", "Body")
+    agent = SimpleNamespace(slug="t", tier="medium")
+
+    sent = await event_agents._send_channel(ch, out, agent, {"extra": {"alert_event": "filled"},
+                                                               "logger": "backend.brokers.kite_ticker",
+                                                               "process": "conn"})
+
+    assert sent is False
+    assert len(fake.warning_calls) == 1
+    assert len(fake.info_calls) == 0
+    msg = fake.warning_calls[0]
+    assert "FAILED" in msg
+    assert "channel=telegram" in msg
+    assert "agent=t" in msg
+    assert "alert_event=filled" in msg
+    assert "rec_logger=backend.brokers.kite_ticker" in msg
+    assert "rec_process=conn" in msg
+    assert "boom: connection refused" in msg
+
+    # Same non-recursion guarantee as the success path.
+    fake_rec = {"level": "WARNING", "tags": ["warning", "events"], "extra": {}, "message": msg}
+    assert event_agents._looks_alert_shaped(fake_rec) is False
+    error_agent = SimpleNamespace(conditions=event_agents.ERROR_AGENT["conditions"])
+    assert event_agents._record_matches_any_agent(fake_rec, [error_agent]) is False
+
+
+@pytest.mark.asyncio
+async def test_send_channel_trace_logs_capability_gate_skip(monkeypatch):
+    """The silent early-return when a channel's capability is disabled
+    also gets one additive INFO trace line, so a future audit can tell
+    'never attempted' apart from 'attempted and failed'."""
+    import backend.shared.helpers.utils as u
+    monkeypatch.setattr(u, "is_enabled", lambda cap: False)
+    fake = _FakeEventsLogger()
+    monkeypatch.setattr(event_agents, "_EVENTS_LOGGER", fake)
+    ch = {"channel": "telegram", "enabled": True, "gate": True}
+    out = ("Title", "Body")
+    agent = SimpleNamespace(slug="t", tier="medium")
+
+    sent = await event_agents._send_channel(ch, out, agent)
+
+    assert sent is False
+    assert len(fake.info_calls) == 1
+    msg = fake.info_calls[0]
+    assert "skipped" in msg
+    assert "channel=telegram" in msg
+    assert "agent=t" in msg
