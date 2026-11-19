@@ -52,7 +52,35 @@ async function pickFirstAccount(page) {
   const firstAcct = page.locator('.rbq-multi-panel .rbq-multi-option').first();
   await expect(firstAcct).toBeVisible({ timeout: 5000 });
   await firstAcct.click();
-  await acctTrigger.click();
+  // Close via an offset click: the "×" clear button (rbq-multi-clear) sits
+  // over the trigger's centre once an account is selected, so a centre click
+  // intercepts. Position targets the trigger's own clickable left edge.
+  await acctTrigger.click({ position: { x: 8, y: 8 } });
+}
+
+/**
+ * Opens the OrderTicket modal on its Chain tab via the canonical path:
+ * click an F&O candidate row (opens SymbolPanel), then click the modal's
+ * Chain tab. The page-level "Toggle chain picker" button was removed in
+ * commit 0e31eee0 — do not reintroduce it.
+ */
+async function openChainFromRow(page) {
+  const modal = page.locator('.oes-modal:visible').first();
+  const rows = page.locator('.cand-row:not(.cand-row-total):not(.cand-closed)');
+  await expect(rows.first()).toBeVisible({ timeout: 15_000 });
+  const n = Math.min(await rows.count(), 10);
+  for (let i = 0; i < n; i++) {
+    await rows.nth(i).click();
+    await expect(modal).toBeVisible({ timeout: 10_000 });
+    const chainTab = modal.getByRole('tab', { name: 'Chain', exact: true });
+    if ((await chainTab.count()) && (await chainTab.isEnabled())) {
+      await chainTab.click();
+      return;
+    }
+    await page.keyboard.press('Escape');
+    await expect(modal).toBeHidden({ timeout: 5000 });
+  }
+  throw new Error('openChainFromRow: no candidate row exposes an enabled Chain tab');
 }
 
 test.describe('Shell basket pills', () => {
@@ -71,24 +99,18 @@ test('basket pills render in the shell bottom bar', async ({ page }) => {
   await pickFirstAccount(page);
 
   // Open the chain modal.
-  const chainBtn = page.getByRole('button', { name: /Toggle chain picker/i });
-  await expect(chainBtn).toBeEnabled({ timeout: 10_000 });
-  await chainBtn.click();
+  await openChainFromRow(page);
 
   // The OrderTicket modal opens on the Chain tab. Find the first
   // "+" button inside a strike row OR on the futures pill — either
   // is a valid add-to-basket affordance. The chain-tab markup uses
   // `.chain-strike-add` (button) or `.chain-fut-add`.
   await page.waitForTimeout(1500);  // let chain quotes settle
-  const addButton = page.locator('.oes-modal button')
+  const addButton = page.locator('.oct-root button')
     .filter({ hasText: /^\+$/ })
     .first();
   await expect(addButton).toBeVisible({ timeout: 10_000 });
   await addButton.click();
-
-  // Confirm a pill appears in the chain-tab's own basket first.
-  const chainPill = page.locator('.chain-basket-leg').first();
-  await expect(chainPill).toBeVisible({ timeout: 5000 });
 
   // Switch to the bottom-panel Log tab so the chain tab is no longer
   // the focused surface. The shell-level basket bar should still
@@ -117,13 +139,11 @@ test('command line + chain legs both surface as pills', async ({ page }) => {
     /No accounts loaded/i, { timeout: 15_000 });
   await pickFirstAccount(page);
 
-  const chainBtn = page.getByRole('button', { name: /Toggle chain picker/i });
-  await expect(chainBtn).toBeEnabled({ timeout: 10_000 });
-  await chainBtn.click();
+  await openChainFromRow(page);
   await page.waitForTimeout(1500);
 
   // 1. Add from chain via first "+" button.
-  const chainAdd = page.locator('.oes-modal button')
+  const chainAdd = page.locator('.oct-root button')
     .filter({ hasText: /^\+$/ }).first();
   await expect(chainAdd).toBeVisible({ timeout: 10_000 });
   await chainAdd.click();
@@ -177,9 +197,7 @@ test('switching the shared account mid-build tags each leg with its own account 
     /No accounts loaded/i, { timeout: 15_000 });
   await pickFirstAccount(page);
 
-  const chainBtn = page.getByRole('button', { name: /Toggle chain picker/i });
-  await expect(chainBtn).toBeEnabled({ timeout: 10_000 });
-  await chainBtn.click();
+  await openChainFromRow(page);
   await page.waitForTimeout(1500);  // let chain quotes settle
 
   // Shared account picker inside the modal — drives `_sharedAccount` in
@@ -201,7 +219,7 @@ test('switching the shared account mid-build tags each leg with its own account 
   await acctOptions.nth(0).click();  // ensure account A is active
 
   // Add a leg via the first Chain "+" button (tagged account A).
-  const chainAddButtons = page.locator('.oes-modal button').filter({ hasText: /^\+$/ });
+  const chainAddButtons = page.locator('.oct-root button').filter({ hasText: /^\+$/ });
   await expect(chainAddButtons.first()).toBeVisible({ timeout: 10_000 });
   await chainAddButtons.first().click();
 

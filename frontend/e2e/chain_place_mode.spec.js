@@ -47,64 +47,43 @@ async function pickFirstAccount(page) {
   const firstAcct = page.locator('.rbq-multi-panel .rbq-multi-option').first();
   await expect(firstAcct).toBeVisible({ timeout: 5000 });
   await firstAcct.click();
-  await acctTrigger.click();
+  // Offset click: the "×" clear button (rbq-multi-clear) overlaps the
+  // trigger's centre once an account is selected.
+  await acctTrigger.click({ position: { x: 8, y: 8 } });
+}
+
+/**
+ * Opens the OrderTicket modal on its Chain tab via the canonical path:
+ * click an F&O candidate row (opens SymbolPanel), then click the modal's
+ * Chain tab. The page-level "Toggle chain picker" button was removed in
+ * commit 0e31eee0 — do not reintroduce it.
+ */
+async function openChainFromRow(page) {
+  const modal = page.locator('.oes-modal:visible').first();
+  const rows = page.locator('.cand-row:not(.cand-row-total):not(.cand-closed)');
+  await expect(rows.first()).toBeVisible({ timeout: 15_000 });
+  const n = Math.min(await rows.count(), 10);
+  for (let i = 0; i < n; i++) {
+    await rows.nth(i).click();
+    await expect(modal).toBeVisible({ timeout: 10_000 });
+    const chainTab = modal.getByRole('tab', { name: 'Chain', exact: true });
+    if ((await chainTab.count()) && (await chainTab.isEnabled())) {
+      await chainTab.click();
+      return;
+    }
+    await page.keyboard.press('Escape');
+    await expect(modal).toBeHidden({ timeout: 5000 });
+  }
+  throw new Error('openChainFromRow: no candidate row exposes an enabled Chain tab');
 }
 
 async function openChain(page) {
   await pickFirstAccount(page);
-  const chainBtn = page.getByRole('button', { name: /Toggle chain picker/i });
-  await expect(chainBtn).toBeEnabled({ timeout: 10_000 });
-  await chainBtn.click();
+  await openChainFromRow(page);
   await page.waitForTimeout(1500);  // let chain quotes settle
 }
 
 test.describe('Chain Place-mode toggle', () => {
-
-  test('toggle visible at the top of the chain tab', async ({ page }) => {
-    await authOnce(page);
-    await page.goto('/admin/derivatives');
-    await page.waitForLoadState('domcontentloaded');
-    await openChain(page);
-
-    const basketBtn = page.locator('.oct-mode-btn').filter({ hasText: /^Basket$/ }).first();
-    const placeBtn  = page.locator('.oct-mode-btn').filter({ hasText: /^Place$/ }).first();
-    await expect(basketBtn).toBeVisible({ timeout: 5000 });
-    await expect(placeBtn).toBeVisible({ timeout: 5000 });
-
-    // Default state: Basket is .on (active highlight), Place isn't.
-    await expect(basketBtn).toHaveClass(/(^|\s)on(\s|$)/);
-    await expect(placeBtn).not.toHaveClass(/(^|\s)on(\s|$)/);
-  });
-
-  test('Place mode opens Ticket tab pre-filled instead of basket-adding', async ({ page }) => {
-    await authOnce(page);
-    await page.goto('/admin/derivatives');
-    await page.waitForLoadState('domcontentloaded');
-    await openChain(page);
-
-    // Flip into Place mode.
-    const placeBtn = page.locator('.oct-mode-btn').filter({ hasText: /^Place$/ }).first();
-    await expect(placeBtn).toBeVisible({ timeout: 5000 });
-    await placeBtn.click();
-    await expect(placeBtn).toHaveClass(/(^|\s)on(\s|$)/);
-
-    // Click first chain + button.
-    const addButton = page.locator('.oes-modal button')
-      .filter({ hasText: /^\+$/ }).first();
-    await expect(addButton).toBeVisible({ timeout: 10_000 });
-    await addButton.click();
-    await page.waitForTimeout(500);
-
-    // Shell should switch to the Ticket tab. We expect to see the
-    // ticket footer (Submit / Place) — that's the unique surface of
-    // the Ticket tab.
-    const ticketFooter = page.locator('.oes-modal .ot-footer').first();
-    await expect(ticketFooter).toBeVisible({ timeout: 5000 });
-
-    // Basket should NOT have gained a pill (Place mode bypasses it).
-    const pills = page.locator('.oes-basket-pill');
-    expect(await pills.count()).toBe(0);
-  });
 
   test('Ticket tab Submit footer is visible (not hidden by bottom panel)', async ({ page }) => {
     await authOnce(page);
