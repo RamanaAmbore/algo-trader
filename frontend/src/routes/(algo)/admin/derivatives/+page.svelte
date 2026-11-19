@@ -13,12 +13,12 @@
   import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
   import StrategyPicker from '$lib/StrategyPicker.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
-  import { isMarketOpen, isNseOpen, isMcxOpen } from '$lib/marketHours';
+  import { isNseOpen, isMcxOpen } from '$lib/marketHours';
   import { createPerformanceSocket } from '$lib/ws';
   import { bookChanged } from '$lib/data/bookChanged';
   import {
     fetchSimStatus, fetchStrategyAnalytics,
-    fetchAccounts, fetchOptionsSpot, fetchChainQuotes,
+    fetchAccounts,
     placeTicketOrder, fetchLiveStatus,
     fetchWatchlists, fetchWatchlist, addWatchlistItem,
   } from '$lib/api';
@@ -39,7 +39,7 @@
   import RefreshButton from '$lib/RefreshButton.svelte';
   import {
     loadInstruments, suggestUnderlyings,
-    listExpiries, listStrikes, findOption,
+    listExpiries, findOption,
     listFutures, getInstrument, getOptionUnderlyingLot,
     findNearestFuture, hasFNO,
     instrumentsCacheVersion,
@@ -184,11 +184,6 @@
   // Sim status — when true, the candidates panel shows sim positions
   // instead of live. Polled every few seconds.
   let simActive = $state(false);
-
-  // "+ Add" panel toggle — when on, the option-chain picker opens to
-  // let the operator browse strikes for the underlying and drop legs
-  // into Drafts.
-  let showAddPanel = $state(false);
 
   // Drafts — hypothetical positions the operator types in. They sit
   // beside live + sim positions in the Candidates panel and feed into
@@ -3909,205 +3904,16 @@
     // expiries on the same dates, so checking one is enough.
     return listExpiries(chainUnderlying.toUpperCase(), 'CE');
   });
-  // Strike grid for the picked (underlying, expiry).
-  const chainStrikes = $derived.by(() => {
-    if (!instrumentsReady || !chainUnderlying || !chainExpiry) return [];
-    return listStrikes(chainUnderlying.toUpperCase(), 'CE', chainExpiry);
-  });
-
-  /** Spot fetched directly via /api/options/spot for the current
-   *  (chainUnderlying, chainExpiry) pair. Lets the chain picker
-   *  anchor the ATM highlight + spot pill on whatever underlying
-   *  the operator switches to, even when it doesn't match the
-   *  page's primary underlying. Refreshes on every chain pivot
-   *  (effect below). Stays null until the first fetch lands; the
-   *  derived `chainSpot` falls back to strategy.spot when this is
-   *  unavailable. */
-  /** @type {{spot:number, source:string, prevClose:number|null, contract:string|null} | null} */
-  let chainSpotFetched = $state(null);
-  let chainSpotKey = ''; // last-fetched cache key — skip duplicate calls
-  $effect(() => {
-    void chainUnderlying; void chainExpiry; void showAddPanel;
-    untrack(() => {
-      if (!showAddPanel || !chainUnderlying) {
-        chainSpotFetched = null;
-        chainSpotKey = '';
-        return;
-      }
-      const key = `${chainUnderlying.toUpperCase()}|${chainExpiry || ''}`;
-      if (key === chainSpotKey) return;
-      chainSpotKey = key;
-      const u = chainUnderlying;
-      const e = chainExpiry || null;
-      fetchOptionsSpot(u, e).then((r) => {
-        // Race guard — operator may have flipped the picker between
-        // the request and this resolution.
-        if (chainSpotKey !== key) return;
-        chainSpotFetched = r ? {
-          spot:      Number(r.spot) || 0,
-          source:    String(r.spot_source || ''),
-          prevClose: r.spot_prev_close != null ? Number(r.spot_prev_close) : null,
-          contract:  r.spot_anchor_contract ? String(r.spot_anchor_contract) : null,
-        } : null;
-      }).catch(() => {
-        if (chainSpotKey !== key) return;
-        // 502 / 4xx — broker unreachable. Suppress the highlight
-        // rather than anchoring on a synthetic value.
-        chainSpotFetched = null;
-      });
-    });
-  });
-
-  /** Per-strike CE + PE bid/ask map, populated by
-   *  /api/options/chain-quotes whenever (chainUnderlying, chainExpiry)
-   *  changes while the panel is open. Keyed by strike → {ce, pe} →
-   *  {bid, ask}. Stays null until the first fetch resolves; UI shows
-   *  '—' for absent sides so layout doesn't jump as data lands. */
+  /** Per-strike CE + PE bid/ask map, keyed by strike → {ce, pe} →
+   *  {bid, ask}. Only reader left is the dead local `addOptionToBasket`
+   *  below (zero callers) — nothing writes this any more since the
+   *  showAddPanel-gated quotes-poll effect that used to populate it
+   *  was removed (2026-11, dead-code sweep). Stays permanently null. */
   /** @type {Record<string,{
    *    ce:{bid:number|null,ask:number|null},
    *    pe:{bid:number|null,ask:number|null}
    *  }> | null} */
   let chainQuotesMap = $state(null);
-  let chainQuotesKey = '';
-  let chainQuotesPoll = /** @type {any} */ (null);
-  function _refreshChainQuotes({ force = false } = {}) {
-    if (!showAddPanel || !chainUnderlying || !chainExpiry) return;
-    // Bid/ask quotes are static when both NSE + MCX are closed —
-    // the marketAwareInterval below only fires the periodic poll during
-    // market hours. But the FIRST call on panel-open must fire even
-    // during closed hours so operators see the last-known bid/ask
-    // snapshot; the backend serves the ohlc close from cache. The
-    // `force` flag from that first invocation bypasses the market-open
-    // gate; the periodic interval calls with no arg → gates as normal.
-    if (!force && !isMarketOpen()) return;
-    const u = chainUnderlying.toUpperCase();
-    const e = chainExpiry;
-    fetchChainQuotes(u, e).then((r) => {
-      if (chainQuotesKey !== `${u}|${e}`) return;
-      /** @type {Record<string,{ce:{bid:number|null,ask:number|null},pe:{bid:number|null,ask:number|null}}>} */
-      const map = {};
-      for (const row of (r?.rows || [])) {
-        map[String(row.k)] = {
-          ce: {
-            bid: row.ce_bid == null ? null : Number(row.ce_bid),
-            ask: row.ce_ask == null ? null : Number(row.ce_ask),
-          },
-          pe: {
-            bid: row.pe_bid == null ? null : Number(row.pe_bid),
-            ask: row.pe_ask == null ? null : Number(row.pe_ask),
-          },
-        };
-      }
-      chainQuotesMap = map;
-    }).catch(() => { /* swallow — UI shows '—' */ });
-  }
-  $effect(() => {
-    void chainUnderlying; void chainExpiry; void showAddPanel;
-    untrack(() => {
-      if (chainQuotesPoll) {
-        chainQuotesPoll();
-        chainQuotesPoll = null;
-      }
-      if (!showAddPanel || !chainUnderlying || !chainExpiry) {
-        chainQuotesMap = null;
-        chainQuotesKey = '';
-        return;
-      }
-      const key = `${chainUnderlying.toUpperCase()}|${chainExpiry}`;
-      if (key !== chainQuotesKey) {
-        chainQuotesMap = null;       // clear stale rows on pivot
-        chainQuotesKey = key;
-      }
-      _refreshChainQuotes({ force: true });
-      // marketAwareInterval — same self-pausing as visibleInterval but
-      // also short-circuits outside trading hours, so the chain poll
-      // stops calling isMarketOpen() + new Date() per tick when the
-      // operator leaves the page open overnight.
-      chainQuotesPoll = marketAwareInterval(_refreshChainQuotes, 5000);
-    });
-  });
-  onDestroy(() => {
-    if (chainQuotesPoll) chainQuotesPoll();
-  });
-  const _fmtLtp = priceFmt;
-
-  /** Spot for the chain underlying. Prefers the strategy response's
-   *  spot when chainUnderlying matches the page's primary underlying
-   *  (free, no extra round-trip); otherwise uses whatever the
-   *  /options/spot fetch returned. Null when neither is available
-   *  — the picker collapses the ATM highlight + spot pill rather
-   *  than anchoring on a synthetic value. */
-  const chainSpot = $derived.by(() => {
-    if (!chainUnderlying) return null;
-    const cU = chainUnderlying.toUpperCase();
-    if (strategy) {
-      const sUnd = String(strategy.underlying || '').toUpperCase();
-      if (sUnd && sUnd === cU) return Number(strategy.spot) || null;
-    }
-    if (chainSpotFetched && chainSpotFetched.spot > 0) {
-      return chainSpotFetched.spot;
-    }
-    return null;
-  });
-
-  /** Strike closest to the underlying spot — the ATM row. Used to
-   *  highlight the row in the chain table and auto-scroll it into
-   *  view when the chain opens. Null when chainSpot is unknown
-   *  (different underlying or no strategy yet). */
-  const chainAtmStrike = $derived.by(() => {
-    if (chainSpot == null || !chainStrikes.length) return null;
-    let best = chainStrikes[0];
-    let bestDiff = Math.abs(best - chainSpot);
-    for (const k of chainStrikes) {
-      const d = Math.abs(k - chainSpot);
-      if (d < bestDiff) { best = k; bestDiff = d; }
-    }
-    return best;
-  });
-
-  /** ATM-row DOM ref — captured via the `chainAtmRow` Svelte action
-   *  attached to the ATM <tr>. The action fires when the element
-   *  mounts (or remounts due to a key change), updates the ref, and
-   *  the effect below scrolls it into view. Using an action sidesteps
-   *  the `bind:this` constraint (which only accepts a plain
-   *  identifier, not a conditional expression). */
-  /** @type {HTMLTableRowElement | null} */
-  let chainAtmRowEl = $state(null);
-  /** Svelte action — captures the <tr> element on mount, releases it
-   *  on destroy. Used in place of `bind:this` since the ATM row's
-   *  identity flips between strike rows as the underlying spot moves. */
-  /** @type {(node: HTMLTableRowElement) => { destroy(): void }} */
-  const chainAtmRow = (node) => {
-    chainAtmRowEl = node;
-    return {
-      destroy() { if (chainAtmRowEl === node) chainAtmRowEl = null; },
-    };
-  };
-  $effect(() => {
-    void chainAtmRowEl;
-    void chainAtmStrike;
-    void showAddPanel;
-    if (chainAtmRowEl && showAddPanel) {
-      // Defer one tick so the row has been laid out before we scroll.
-      queueMicrotask(() => {
-        // Scroll INSIDE .chain-grid-wrap only — earlier we used
-        // rowEl.scrollIntoView({block:'center'}) which propagates up
-        // every scrollable ancestor and yanks the whole page up,
-        // hiding the Account / Underlying / Expiry picker bar at the
-        // top of the panel. Computing scrollTop on the wrapper keeps
-        // the page in place and only moves the chain grid.
-        const row  = chainAtmRowEl;
-        if (!row) return;
-        const wrap = row.closest('.chain-grid-wrap');
-        if (wrap) {
-          const target = row.offsetTop - (wrap.clientHeight - row.offsetHeight) / 2;
-          wrap.scrollTop = Math.max(0, target);
-        } else {
-          row.scrollIntoView({ block: 'nearest', behavior: 'auto' });
-        }
-      });
-    }
-  });
 
   // Futures contracts on the same underlying — surfaced as a quick-add
   // row above the strike grid. Filter to the selected expiry first; if
@@ -4190,34 +3996,6 @@
     }
     if (realAccounts.length === 1) return realAccounts[0];
     return '';
-  }
-  // Per-row buttons pass the side explicitly. Default to chainSide so
-  // any caller that hasn't been migrated yet still works. Qty sizing:
-  // contract lot size × chainLots, clamped so a 0/blank lots input
-  // doesn't post a zero-qty order.
-  function addChainDraft(/** @type {number} */ strike,
-                         /** @type {'CE'|'PE'} */ optType,
-                         /** @type {'long'|'short'} */ side = chainSide) {
-    if (!chainUnderlying || !chainExpiry) return;
-    const inst = findOption(chainUnderlying.toUpperCase(), optType, strike, chainExpiry);
-    if (!inst) return;
-    const lot  = Number(inst.ls || 1);
-    openTicket({
-      defaultTab: 'chain',
-      symbol:   inst.s,
-      // Exchange comes from the instruments cache (Kite's authoritative
-      // `e` field per contract). CRUDEOIL options live on MCX, NIFTY
-      // options on NFO, BSE options on BFO — hardcoding NFO would route
-      // every depth lookup to the wrong exchange and the ladder would
-      // come back empty.
-      exchange: inst.e || 'NFO',
-      side:     side === 'long' ? 'BUY' : 'SELL',
-      // Add path: always 1 lot. Operator steps it up in the ticket.
-      qty:      lot,
-      lotSize:  lot,
-      accounts: ticketAccounts,
-      account:  _ticketAccountDefault(),
-    });
   }
   function addFutureDraft(/** @type {string} */ sym,
                           /** @type {number} */ lotSize,
