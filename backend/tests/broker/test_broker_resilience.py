@@ -1236,22 +1236,22 @@ class TestHealthHeartbeat:
 class TestDhanLoginCooloffPersist:
     """_login_blocked_until must survive a process restart via disk persistence."""
 
-    def setup_method(self):
-        """Clean up the cooloff file before each test."""
-        import os
-        _p = "/tmp/ramboq_dhan_login_cooloff.json"
-        if os.path.exists(_p):
-            os.remove(_p)
+    @pytest.fixture(autouse=True)
+    def _isolated_cooloff_paths(self, tmp_path, monkeypatch):
+        """Redirect the real cooloff + token-cache paths into a per-test tmp dir.
 
-    def teardown_method(self):
-        """Clean up after each test."""
-        import os
-        _p = "/tmp/ramboq_dhan_login_cooloff.json"
-        if os.path.exists(_p):
-            os.remove(_p)
+        The production code reads these module globals at call time, so
+        patching the module object is enough. No shared /tmp state is touched,
+        so no other test (or run order) can leak into this class.
+        """
+        import backend.brokers.connections as _conn_mod
+        self._cooloff = str(tmp_path / "ramboq_dhan_login_cooloff.json")
+        monkeypatch.setattr(_conn_mod, "_DHAN_LOGIN_COOLOFF_PATH", self._cooloff)
+        monkeypatch.setattr(_conn_mod, "_TOKEN_CACHE_PATH", tmp_path / "tokens.json")
+        yield
 
     def test_failed_login_persists_cooloff_to_disk(self):
-        """_mint_and_build failure must write cooloff to /tmp/ramboq_dhan_login_cooloff.json."""
+        """_mint_and_build failure must write cooloff to the isolated cooloff file."""
         import json
         import os
         import time as _time
@@ -1282,7 +1282,7 @@ class TestDhanLoginCooloffPersist:
                     except RuntimeError:
                         pass
 
-        _p = "/tmp/ramboq_dhan_login_cooloff.json"
+        _p = self._cooloff
         assert os.path.exists(_p), "Cooloff file must be written on login failure"
         data = json.loads(open(_p).read())
         assert "DH_PERSIST_TEST" in data, "Account must be keyed in cooloff file"
@@ -1299,7 +1299,7 @@ class TestDhanLoginCooloffPersist:
 
         # Write a future cooloff into the file
         future_ts = _time.time() + 90.0
-        _p = "/tmp/ramboq_dhan_login_cooloff.json"
+        _p = self._cooloff
         with open(_p, "w") as f:
             json.dump({"DH_RESTORE_TEST": future_ts}, f)
 
@@ -1328,7 +1328,7 @@ class TestDhanLoginCooloffPersist:
         from backend.brokers.connections import DhanConnection
 
         future_ts = _time.time() + 90.0
-        _p = "/tmp/ramboq_dhan_login_cooloff.json"
+        _p = self._cooloff
         with open(_p, "w") as f:
             json.dump({"DH_BLOCK_TEST": future_ts}, f)
 
@@ -1355,7 +1355,7 @@ class TestDhanLoginCooloffPersist:
         from backend.brokers.connections import DhanConnection
 
         # Pre-write a cooloff entry
-        _p = "/tmp/ramboq_dhan_login_cooloff.json"
+        _p = self._cooloff
         with open(_p, "w") as f:
             json.dump({"DH_CLEAR_TEST": _time.time() + 60}, f)
 
