@@ -70,9 +70,14 @@ describe('RefreshButton.svelte — lastRefreshAt gated on market-open', () => {
 });
 
 describe('derivatives +page.svelte — loadPositions() lastRefreshAt gate', () => {
-  it('imports isNseOpen/isMcxOpen alongside the pre-existing isMarketOpen import', () => {
+  it('imports isNseOpen/isMcxOpen from $lib/marketHours', () => {
+    // isMarketOpen was removed from this import in the 2026-11-18 dead-code
+    // removal (commit d0c93496) — its only use in this file was the
+    // showAddPanel spot-fetch effect's `if (!force && !isMarketOpen())
+    // return;`, which was removed in the same commit. The lastRefreshAt
+    // gate below has only ever used isNseOpen()/isMcxOpen().
     expect(derivativesSrc).toMatch(
-      /import\s*\{\s*isMarketOpen,\s*isNseOpen,\s*isMcxOpen\s*\}\s*from\s*'\$lib\/marketHours'/
+      /import\s*\{\s*isNseOpen,\s*isMcxOpen\s*\}\s*from\s*'\$lib\/marketHours'/
     );
   });
 
