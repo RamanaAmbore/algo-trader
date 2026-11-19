@@ -152,4 +152,101 @@ test('command line + chain legs both surface as pills', async ({ page }) => {
   expect(count).toBeGreaterThanOrEqual(1);
 });
 
+/**
+ * Regression spec: Issue 1 — basket leg tagged to stale account after
+ * switching accounts mid-build (OptionChainTab.svelte `_mergeIntoBasket`/
+ * `_netAgainstBasket` matching by sym+side only, ignoring account).
+ *
+ * Before the fix: adding a leg via the same Chain "+" button (same
+ * symbol+side) under account A, then switching the modal's shared
+ * account picker to account B and re-pressing the SAME "+" button,
+ * silently folded the second add into the FIRST leg (lots += 1),
+ * keeping it tagged account A — no second pill ever appeared.
+ *
+ * After the fix: the account is part of the match key, so the second
+ * add can't match the account-A leg and instead pushes a genuinely new
+ * pill tagged account B. This asserts exactly that: 2 distinct pills,
+ * each carrying its own correct, distinct account.
+ */
+test('switching the shared account mid-build tags each leg with its own account (Issue 1)', async ({ page }) => {
+  await authOnce(page);
+  await page.goto('/admin/derivatives');
+  await page.waitForLoadState('domcontentloaded');
+  await expect(page.locator('button#opt-acct')).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('button#opt-acct')).not.toContainText(
+    /No accounts loaded/i, { timeout: 15_000 });
+  await pickFirstAccount(page);
+
+  const chainBtn = page.getByRole('button', { name: /Toggle chain picker/i });
+  await expect(chainBtn).toBeEnabled({ timeout: 10_000 });
+  await chainBtn.click();
+  await page.waitForTimeout(1500);  // let chain quotes settle
+
+  // Shared account picker inside the modal — drives `_sharedAccount` in
+  // SymbolPanel.svelte, which feeds the `account` prop into both the
+  // Chain tab (OptionChainTab.svelte) and the Ticket tab (OrderTicket.svelte).
+  const acctTrigger = page.locator('.oes-account-pick .rbq-select-trigger').first();
+  await expect(acctTrigger).toBeVisible({ timeout: 10_000 });
+  await acctTrigger.click();
+  const acctOptions = page.locator('.oes-account-pick .rbq-select-panel li.rbq-select-option');
+  const acctCount = await acctOptions.count();
+  if (acctCount < 2) {
+    await page.keyboard.press('Escape');
+    test.skip(true, `need ≥2 broker accounts in the modal account picker — got ${acctCount}`);
+    return;
+  }
+  const accountA = (await acctOptions.nth(0).locator('.rbq-select-option-label').innerText()).trim();
+  const accountB = (await acctOptions.nth(1).locator('.rbq-select-option-label').innerText()).trim();
+  console.log(`[switch-acct] accountA=${accountA} accountB=${accountB}`);
+  await acctOptions.nth(0).click();  // ensure account A is active
+
+  // Add a leg via the first Chain "+" button (tagged account A).
+  const chainAddButtons = page.locator('.oes-modal button').filter({ hasText: /^\+$/ });
+  await expect(chainAddButtons.first()).toBeVisible({ timeout: 10_000 });
+  await chainAddButtons.first().click();
+
+  const pills = page.locator('.oes-basket-pill');
+  await expect(pills.first()).toBeVisible({ timeout: 5000 });
+  expect(await pills.count(), 'first leg should produce exactly 1 basket pill').toBe(1);
+
+  // Switch the shared account to B.
+  await acctTrigger.click();
+  await expect(page.locator('.oes-account-pick .rbq-select-panel')).toBeVisible({ timeout: 5000 });
+  await acctOptions.nth(1).click();
+
+  // Re-click the SAME "+" button (same symbol + same side). Pre-fix,
+  // OptionChainTab's `_mergeIntoBasket` matched by sym+side only
+  // (ignoring account) and would silently fold this into the existing
+  // account-A leg's lot count instead of creating a new account-B leg.
+  await chainAddButtons.first().click();
+
+  await expect(pills.nth(1),
+    'second leg (different account, same sym+side) should produce a SECOND pill, not merge into the first'
+  ).toBeVisible({ timeout: 5000 });
+  expect(await pills.count(), 'two distinct-account legs should NOT merge into one pill').toBe(2);
+
+  // Read each pill's displayed account — per-leg Select when ≥2
+  // accounts are loaded (confirmed above), else the static span.
+  async function pillAccount(pill) {
+    const trig = pill.locator('.oes-basket-pill-acct-wrap .rbq-select-trigger');
+    if (await trig.count()) {
+      return (await trig.locator('.rbq-select-label').innerText()).trim();
+    }
+    const stat = pill.locator('.oes-basket-pill-acct-static');
+    if (await stat.count()) return (await stat.innerText()).trim();
+    return '';
+  }
+  const leg1Acct = await pillAccount(pills.nth(0));
+  const leg2Acct = await pillAccount(pills.nth(1));
+  console.log(`[switch-acct] leg1=${leg1Acct} leg2=${leg2Acct}`);
+
+  expect(leg1Acct, `leg 1 should stay tagged accountA=${accountA}`).toBe(accountA);
+  expect(leg2Acct,
+    `DEFECT LOCATION: leg 2 should be tagged accountB=${accountB} — got "${leg2Acct}". ` +
+    `An account-blind merge key (OptionChainTab._mergeIntoBasket/_netAgainstBasket) ` +
+    `would fold this into the account-A leg instead.`
+  ).toBe(accountB);
+  expect(leg1Acct, 'the two legs must carry distinct accounts').not.toBe(leg2Acct);
+});
+
 });

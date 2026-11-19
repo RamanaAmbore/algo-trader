@@ -591,8 +591,9 @@
     activeOptionRow = { strike, optType };
   }
 
-  function _mergeIntoBasket(/** @type {{sym:string,side:'BUY'|'SELL',lots:number}} */ incoming) {
-    const idx = chainBasket.findIndex(b => b.sym === incoming.sym && b.side === incoming.side);
+  function _mergeIntoBasket(/** @type {{sym:string,side:'BUY'|'SELL',lots:number,account?:string}} */ incoming) {
+    const idx = chainBasket.findIndex(b => b.sym === incoming.sym && b.side === incoming.side
+      && (b.account || '') === (incoming.account || ''));
     if (idx < 0) return false;
     if (_externalBasket && onUpdateLeg) {
       // Single-pass map update on the shell's $state. Avoids the
@@ -614,9 +615,10 @@
     return true;
   }
 
-  function _netAgainstBasket(/** @type {string} */ sym, /** @type {'BUY'|'SELL'} */ sideTag) {
+  function _netAgainstBasket(/** @type {string} */ sym, /** @type {'BUY'|'SELL'} */ sideTag, /** @type {string} */ acct) {
     const oppSide = sideTag === 'BUY' ? 'SELL' : 'BUY';
-    const idx = chainBasket.findIndex(b => b.sym === sym && b.side === oppSide);
+    const idx = chainBasket.findIndex(b => b.sym === sym && b.side === oppSide
+      && (b.account || '') === (acct || ''));
     if (idx < 0) return false;
     const leg = chainBasket[idx];
     const newLots = (leg.lots || 1) - 1;
@@ -685,10 +687,10 @@
       _flashToast(_quickKeyOpt(strike, optType), '→ ticket');
       return;
     }
-    if (_netAgainstBasket(String(inst.s), sideTag)) {
+    if (_netAgainstBasket(String(inst.s), sideTag, _account)) {
       basketError = ''; _flashToast(_quickKeyOpt(strike, optType), 'netted'); return;
     }
-    if (_mergeIntoBasket({ sym: String(inst.s), side: sideTag, lots: 1 })) {
+    if (_mergeIntoBasket({ sym: String(inst.s), side: sideTag, lots: 1, account: _account })) {
       basketError = ''; _flashToast(_quickKeyOpt(strike, optType), '+1 lot'); return;
     }
     const q = chainQuotesMap?.[String(strike)]?.[optType.toLowerCase()];
@@ -771,10 +773,10 @@
       _flashToast(_quickKeyFut(sym), '→ ticket');
       return;
     }
-    if (_netAgainstBasket(String(sym), sideTag)) {
+    if (_netAgainstBasket(String(sym), sideTag, _account)) {
       basketError = ''; _flashToast(_quickKeyFut(sym), 'netted'); return;
     }
-    if (_mergeIntoBasket({ sym: String(sym), side: sideTag, lots: 1 })) {
+    if (_mergeIntoBasket({ sym: String(sym), side: sideTag, lots: 1, account: _account })) {
       basketError = ''; _flashToast(_quickKeyFut(sym), '+1 lot'); return;
     }
     _pushToBasket({

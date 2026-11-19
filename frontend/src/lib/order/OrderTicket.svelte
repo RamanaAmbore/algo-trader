@@ -1553,6 +1553,18 @@
     }
   });
 
+  // Sync from a shell-pushed prop change (operator switched account in
+  // another tab — e.g. Chain — while this tab sits hidden behind it,
+  // `display:none` but still mounted). Without this, `_account` never
+  // re-syncs after its one-time seed above, so `_basketPayload()` keeps
+  // tagging every leg added via `onAddToBasket` with the stale account.
+  // Mirrors OptionChainTab.svelte's own inbound-prop-sync effect.
+  $effect(() => {
+    if (account && _isRealAcct(account) && account !== untrack(() => _account)) {
+      _account = account;
+    }
+  });
+
   // Push picker changes back to the shell so the other tabs (command /
   // chain) re-sync. Guard against the no-op echo (when shell pushes
   // a new prop value, our $effect above sets `_account` to match,
@@ -1560,6 +1572,11 @@
   // callback read.
   let _lastNotifiedAcct = '';
   $effect(() => {
+    // Suspended (hidden behind another tab, e.g. Chain) — the stale-
+    // account-no-longer-in-list fallback branch above can still fire
+    // while hidden; don't let it echo back and clobber the shared
+    // account other tabs are using.
+    if (suspended) return;
     if (_account && _account !== _lastNotifiedAcct && _account !== account) {
       _lastNotifiedAcct = _account;
       onAccountChange?.(_account);
