@@ -214,6 +214,20 @@ _PER_SLUG_OVERRIDES: dict[str, list[dict]] = {
     "gtt-orphan-cancelled-alert": [
         {"channel": "telegram", "enabled": True, "gate": False},
     ],
+    # 2026-11-19 (added BEFORE `app-message-alert` folds into
+    # `event_agents._COLLAPSED_DETECTOR_SPECS`) — this agent had NO
+    # per-slug override before this; it resolved via
+    # `_TIER_DEFAULTS["high"]` (telegram + ntfy[priority="high"]). This
+    # row freezes that exact resolution verbatim. Without it, folding the
+    # spec into the collapsed table would make
+    # `_build_alert_event_dispatch_table()` default its channel list to
+    # `[]` (a missing override), silently dropping every CRITICAL
+    # AppMessage again — the exact 2026-11-08 bug this agent exists to
+    # fix. See `test_app_message_critical_delivery.py`'s parity test.
+    "app-message-alert": [
+        {"channel": "telegram", "enabled": True},
+        {"channel": "ntfy", "enabled": True, "priority": "high"},
+    ],
     # 2026-11 channel-authoring retirement — two of the handful of alert
     # paths that still embedded their own hardcoded channel LITERAL
     # directly in the producer's log-record `extra` (not a `notify=[...]`

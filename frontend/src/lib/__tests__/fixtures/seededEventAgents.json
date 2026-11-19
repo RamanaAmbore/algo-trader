@@ -203,26 +203,6 @@
     ]
   },
   {
-    "slug": "gtt-orphan-cancelled-alert",
-    "name": "GTT orphan cancelled",
-    "conditions": {
-      "log": {
-        "tag": "alert",
-        "min_level": "INFO",
-        "where": {
-          "alert_event": "gtt_orphan_cancelled"
-        }
-      }
-    },
-    "events": [],
-    "actions": [
-      {
-        "type": "render",
-        "render": "generic_notice"
-      }
-    ]
-  },
-  {
     "slug": "agent-close-hold-alert",
     "name": "Agent close held",
     "conditions": {
@@ -251,26 +231,6 @@
         "min_level": "INFO",
         "where": {
           "alert_event": "draft_sweep"
-        }
-      }
-    },
-    "events": [],
-    "actions": [
-      {
-        "type": "render",
-        "render": "generic_notice"
-      }
-    ]
-  },
-  {
-    "slug": "app-message-alert",
-    "name": "App message alert",
-    "conditions": {
-      "log": {
-        "tag": "alert",
-        "min_level": "INFO",
-        "where": {
-          "alert_event": "app_message"
         }
       }
     },
@@ -320,20 +280,46 @@
                                                                     {
                                                                       "any": [
                                                                         {
-                                                                          "log": {
-                                                                            "tag": "alert",
-                                                                            "min_level": "CRITICAL",
-                                                                            "where": {
-                                                                              "alert_event": "cancel_unconfirmed"
+                                                                          "any": [
+                                                                            {
+                                                                              "any": [
+                                                                                {
+                                                                                  "log": {
+                                                                                    "tag": "alert",
+                                                                                    "min_level": "CRITICAL",
+                                                                                    "where": {
+                                                                                      "alert_event": "cancel_unconfirmed"
+                                                                                    }
+                                                                                  }
+                                                                                },
+                                                                                {
+                                                                                  "log": {
+                                                                                    "tag": "alert",
+                                                                                    "min_level": "CRITICAL",
+                                                                                    "where": {
+                                                                                      "alert_event": "partial_gtt"
+                                                                                    }
+                                                                                  }
+                                                                                }
+                                                                              ]
+                                                                            },
+                                                                            {
+                                                                              "log": {
+                                                                                "tag": "alert",
+                                                                                "min_level": "WARNING",
+                                                                                "where": {
+                                                                                  "alert_event": "wing_unprotected"
+                                                                                }
+                                                                              }
                                                                             }
-                                                                          }
+                                                                          ]
                                                                         },
                                                                         {
                                                                           "log": {
                                                                             "tag": "alert",
                                                                             "min_level": "CRITICAL",
                                                                             "where": {
-                                                                              "alert_event": "partial_gtt"
+                                                                              "alert_event": "wing_hard_reject"
                                                                             }
                                                                           }
                                                                         }
@@ -344,7 +330,7 @@
                                                                         "tag": "alert",
                                                                         "min_level": "WARNING",
                                                                         "where": {
-                                                                          "alert_event": "wing_unprotected"
+                                                                          "alert_event": "wing_skip"
                                                                         }
                                                                       }
                                                                     }
@@ -353,9 +339,9 @@
                                                                 {
                                                                   "log": {
                                                                     "tag": "alert",
-                                                                    "min_level": "CRITICAL",
+                                                                    "min_level": "WARNING",
                                                                     "where": {
-                                                                      "alert_event": "wing_hard_reject"
+                                                                      "alert_event": "wing_offset_skip"
                                                                     }
                                                                   }
                                                                 }
@@ -366,7 +352,7 @@
                                                                 "tag": "alert",
                                                                 "min_level": "WARNING",
                                                                 "where": {
-                                                                  "alert_event": "wing_skip"
+                                                                  "alert_event": "order_failure"
                                                                 }
                                                               }
                                                             }
@@ -377,7 +363,7 @@
                                                             "tag": "alert",
                                                             "min_level": "WARNING",
                                                             "where": {
-                                                              "alert_event": "wing_offset_skip"
+                                                              "alert_event": "order_correction"
                                                             }
                                                           }
                                                         }
@@ -386,9 +372,9 @@
                                                     {
                                                       "log": {
                                                         "tag": "alert",
-                                                        "min_level": "WARNING",
+                                                        "min_level": "INFO",
                                                         "where": {
-                                                          "alert_event": "order_failure"
+                                                          "alert_event": "template_guard"
                                                         }
                                                       }
                                                     }
@@ -399,7 +385,7 @@
                                                     "tag": "alert",
                                                     "min_level": "WARNING",
                                                     "where": {
-                                                      "alert_event": "order_correction"
+                                                      "alert_event": "template_attach_fail"
                                                     }
                                                   }
                                                 }
@@ -410,7 +396,7 @@
                                                 "tag": "alert",
                                                 "min_level": "INFO",
                                                 "where": {
-                                                  "alert_event": "template_guard"
+                                                  "alert_event": "mcp_ping"
                                                 }
                                               }
                                             }
@@ -421,7 +407,7 @@
                                             "tag": "alert",
                                             "min_level": "WARNING",
                                             "where": {
-                                              "alert_event": "template_attach_fail"
+                                              "alert_event": "gtt_asymmetric"
                                             }
                                           }
                                         }
@@ -430,9 +416,9 @@
                                     {
                                       "log": {
                                         "tag": "alert",
-                                        "min_level": "INFO",
+                                        "min_level": "WARNING",
                                         "where": {
-                                          "alert_event": "mcp_ping"
+                                          "alert_event": "oco_double_fire"
                                         }
                                       }
                                     }
@@ -441,9 +427,9 @@
                                 {
                                   "log": {
                                     "tag": "alert",
-                                    "min_level": "WARNING",
+                                    "min_level": "INFO",
                                     "where": {
-                                      "alert_event": "gtt_asymmetric"
+                                      "alert_event": "ticker_recovered"
                                     }
                                   }
                                 }
@@ -454,7 +440,7 @@
                                 "tag": "alert",
                                 "min_level": "WARNING",
                                 "where": {
-                                  "alert_event": "oco_double_fire"
+                                  "alert_event": "ticker_degraded"
                                 }
                               }
                             }
@@ -463,9 +449,9 @@
                         {
                           "log": {
                             "tag": "alert",
-                            "min_level": "INFO",
+                            "min_level": "ERROR",
                             "where": {
-                              "alert_event": "ticker_recovered"
+                              "alert_event": "gtt_not_accepted"
                             }
                           }
                         }
@@ -474,9 +460,10 @@
                     {
                       "log": {
                         "tag": "alert",
-                        "min_level": "WARNING",
+                        "min_level": "INFO",
                         "where": {
-                          "alert_event": "ticker_degraded"
+                          "alert_event": "filled",
+                          "mode": "live"
                         }
                       }
                     }
@@ -485,9 +472,9 @@
                 {
                   "log": {
                     "tag": "alert",
-                    "min_level": "ERROR",
+                    "min_level": "INFO",
                     "where": {
-                      "alert_event": "gtt_not_accepted"
+                      "alert_event": "user_registered"
                     }
                   }
                 }
@@ -498,8 +485,7 @@
                 "tag": "alert",
                 "min_level": "INFO",
                 "where": {
-                  "alert_event": "filled",
-                  "mode": "live"
+                  "alert_event": "gtt_orphan_cancelled"
                 }
               }
             }
@@ -510,7 +496,7 @@
             "tag": "alert",
             "min_level": "INFO",
             "where": {
-              "alert_event": "user_registered"
+              "alert_event": "app_message"
             }
           }
         }
@@ -563,20 +549,46 @@
                                                                     {
                                                                       "any": [
                                                                         {
-                                                                          "log": {
-                                                                            "tag": "alert",
-                                                                            "min_level": "CRITICAL",
-                                                                            "where": {
-                                                                              "alert_event": "cancel_unconfirmed"
+                                                                          "any": [
+                                                                            {
+                                                                              "any": [
+                                                                                {
+                                                                                  "log": {
+                                                                                    "tag": "alert",
+                                                                                    "min_level": "CRITICAL",
+                                                                                    "where": {
+                                                                                      "alert_event": "cancel_unconfirmed"
+                                                                                    }
+                                                                                  }
+                                                                                },
+                                                                                {
+                                                                                  "log": {
+                                                                                    "tag": "alert",
+                                                                                    "min_level": "CRITICAL",
+                                                                                    "where": {
+                                                                                      "alert_event": "partial_gtt"
+                                                                                    }
+                                                                                  }
+                                                                                }
+                                                                              ]
+                                                                            },
+                                                                            {
+                                                                              "log": {
+                                                                                "tag": "alert",
+                                                                                "min_level": "WARNING",
+                                                                                "where": {
+                                                                                  "alert_event": "wing_unprotected"
+                                                                                }
+                                                                              }
                                                                             }
-                                                                          }
+                                                                          ]
                                                                         },
                                                                         {
                                                                           "log": {
                                                                             "tag": "alert",
                                                                             "min_level": "CRITICAL",
                                                                             "where": {
-                                                                              "alert_event": "partial_gtt"
+                                                                              "alert_event": "wing_hard_reject"
                                                                             }
                                                                           }
                                                                         }
@@ -587,7 +599,7 @@
                                                                         "tag": "alert",
                                                                         "min_level": "WARNING",
                                                                         "where": {
-                                                                          "alert_event": "wing_unprotected"
+                                                                          "alert_event": "wing_skip"
                                                                         }
                                                                       }
                                                                     }
@@ -596,9 +608,9 @@
                                                                 {
                                                                   "log": {
                                                                     "tag": "alert",
-                                                                    "min_level": "CRITICAL",
+                                                                    "min_level": "WARNING",
                                                                     "where": {
-                                                                      "alert_event": "wing_hard_reject"
+                                                                      "alert_event": "wing_offset_skip"
                                                                     }
                                                                   }
                                                                 }
@@ -609,7 +621,7 @@
                                                                 "tag": "alert",
                                                                 "min_level": "WARNING",
                                                                 "where": {
-                                                                  "alert_event": "wing_skip"
+                                                                  "alert_event": "order_failure"
                                                                 }
                                                               }
                                                             }
@@ -620,7 +632,7 @@
                                                             "tag": "alert",
                                                             "min_level": "WARNING",
                                                             "where": {
-                                                              "alert_event": "wing_offset_skip"
+                                                              "alert_event": "order_correction"
                                                             }
                                                           }
                                                         }
@@ -629,9 +641,9 @@
                                                     {
                                                       "log": {
                                                         "tag": "alert",
-                                                        "min_level": "WARNING",
+                                                        "min_level": "INFO",
                                                         "where": {
-                                                          "alert_event": "order_failure"
+                                                          "alert_event": "template_guard"
                                                         }
                                                       }
                                                     }
@@ -642,7 +654,7 @@
                                                     "tag": "alert",
                                                     "min_level": "WARNING",
                                                     "where": {
-                                                      "alert_event": "order_correction"
+                                                      "alert_event": "template_attach_fail"
                                                     }
                                                   }
                                                 }
@@ -653,7 +665,7 @@
                                                 "tag": "alert",
                                                 "min_level": "INFO",
                                                 "where": {
-                                                  "alert_event": "template_guard"
+                                                  "alert_event": "mcp_ping"
                                                 }
                                               }
                                             }
@@ -664,7 +676,7 @@
                                             "tag": "alert",
                                             "min_level": "WARNING",
                                             "where": {
-                                              "alert_event": "template_attach_fail"
+                                              "alert_event": "gtt_asymmetric"
                                             }
                                           }
                                         }
@@ -673,9 +685,9 @@
                                     {
                                       "log": {
                                         "tag": "alert",
-                                        "min_level": "INFO",
+                                        "min_level": "WARNING",
                                         "where": {
-                                          "alert_event": "mcp_ping"
+                                          "alert_event": "oco_double_fire"
                                         }
                                       }
                                     }
@@ -684,9 +696,9 @@
                                 {
                                   "log": {
                                     "tag": "alert",
-                                    "min_level": "WARNING",
+                                    "min_level": "INFO",
                                     "where": {
-                                      "alert_event": "gtt_asymmetric"
+                                      "alert_event": "ticker_recovered"
                                     }
                                   }
                                 }
@@ -697,7 +709,7 @@
                                 "tag": "alert",
                                 "min_level": "WARNING",
                                 "where": {
-                                  "alert_event": "oco_double_fire"
+                                  "alert_event": "ticker_degraded"
                                 }
                               }
                             }
@@ -706,9 +718,9 @@
                         {
                           "log": {
                             "tag": "alert",
-                            "min_level": "INFO",
+                            "min_level": "ERROR",
                             "where": {
-                              "alert_event": "ticker_recovered"
+                              "alert_event": "gtt_not_accepted"
                             }
                           }
                         }
@@ -717,9 +729,10 @@
                     {
                       "log": {
                         "tag": "alert",
-                        "min_level": "WARNING",
+                        "min_level": "INFO",
                         "where": {
-                          "alert_event": "ticker_degraded"
+                          "alert_event": "filled",
+                          "mode": "live"
                         }
                       }
                     }
@@ -728,9 +741,9 @@
                 {
                   "log": {
                     "tag": "alert",
-                    "min_level": "ERROR",
+                    "min_level": "INFO",
                     "where": {
-                      "alert_event": "gtt_not_accepted"
+                      "alert_event": "user_registered"
                     }
                   }
                 }
@@ -741,8 +754,7 @@
                 "tag": "alert",
                 "min_level": "INFO",
                 "where": {
-                  "alert_event": "filled",
-                  "mode": "live"
+                  "alert_event": "gtt_orphan_cancelled"
                 }
               }
             }
@@ -753,7 +765,7 @@
             "tag": "alert",
             "min_level": "INFO",
             "where": {
-              "alert_event": "user_registered"
+              "alert_event": "app_message"
             }
           }
         }
@@ -806,20 +818,46 @@
                                                                     {
                                                                       "any": [
                                                                         {
-                                                                          "log": {
-                                                                            "tag": "alert",
-                                                                            "min_level": "CRITICAL",
-                                                                            "where": {
-                                                                              "alert_event": "cancel_unconfirmed"
+                                                                          "any": [
+                                                                            {
+                                                                              "any": [
+                                                                                {
+                                                                                  "log": {
+                                                                                    "tag": "alert",
+                                                                                    "min_level": "CRITICAL",
+                                                                                    "where": {
+                                                                                      "alert_event": "cancel_unconfirmed"
+                                                                                    }
+                                                                                  }
+                                                                                },
+                                                                                {
+                                                                                  "log": {
+                                                                                    "tag": "alert",
+                                                                                    "min_level": "CRITICAL",
+                                                                                    "where": {
+                                                                                      "alert_event": "partial_gtt"
+                                                                                    }
+                                                                                  }
+                                                                                }
+                                                                              ]
+                                                                            },
+                                                                            {
+                                                                              "log": {
+                                                                                "tag": "alert",
+                                                                                "min_level": "WARNING",
+                                                                                "where": {
+                                                                                  "alert_event": "wing_unprotected"
+                                                                                }
+                                                                              }
                                                                             }
-                                                                          }
+                                                                          ]
                                                                         },
                                                                         {
                                                                           "log": {
                                                                             "tag": "alert",
                                                                             "min_level": "CRITICAL",
                                                                             "where": {
-                                                                              "alert_event": "partial_gtt"
+                                                                              "alert_event": "wing_hard_reject"
                                                                             }
                                                                           }
                                                                         }
@@ -830,7 +868,7 @@
                                                                         "tag": "alert",
                                                                         "min_level": "WARNING",
                                                                         "where": {
-                                                                          "alert_event": "wing_unprotected"
+                                                                          "alert_event": "wing_skip"
                                                                         }
                                                                       }
                                                                     }
@@ -839,9 +877,9 @@
                                                                 {
                                                                   "log": {
                                                                     "tag": "alert",
-                                                                    "min_level": "CRITICAL",
+                                                                    "min_level": "WARNING",
                                                                     "where": {
-                                                                      "alert_event": "wing_hard_reject"
+                                                                      "alert_event": "wing_offset_skip"
                                                                     }
                                                                   }
                                                                 }
@@ -852,7 +890,7 @@
                                                                 "tag": "alert",
                                                                 "min_level": "WARNING",
                                                                 "where": {
-                                                                  "alert_event": "wing_skip"
+                                                                  "alert_event": "order_failure"
                                                                 }
                                                               }
                                                             }
@@ -863,7 +901,7 @@
                                                             "tag": "alert",
                                                             "min_level": "WARNING",
                                                             "where": {
-                                                              "alert_event": "wing_offset_skip"
+                                                              "alert_event": "order_correction"
                                                             }
                                                           }
                                                         }
@@ -872,9 +910,9 @@
                                                     {
                                                       "log": {
                                                         "tag": "alert",
-                                                        "min_level": "WARNING",
+                                                        "min_level": "INFO",
                                                         "where": {
-                                                          "alert_event": "order_failure"
+                                                          "alert_event": "template_guard"
                                                         }
                                                       }
                                                     }
@@ -885,7 +923,7 @@
                                                     "tag": "alert",
                                                     "min_level": "WARNING",
                                                     "where": {
-                                                      "alert_event": "order_correction"
+                                                      "alert_event": "template_attach_fail"
                                                     }
                                                   }
                                                 }
@@ -896,7 +934,7 @@
                                                 "tag": "alert",
                                                 "min_level": "INFO",
                                                 "where": {
-                                                  "alert_event": "template_guard"
+                                                  "alert_event": "mcp_ping"
                                                 }
                                               }
                                             }
@@ -907,7 +945,7 @@
                                             "tag": "alert",
                                             "min_level": "WARNING",
                                             "where": {
-                                              "alert_event": "template_attach_fail"
+                                              "alert_event": "gtt_asymmetric"
                                             }
                                           }
                                         }
@@ -916,9 +954,9 @@
                                     {
                                       "log": {
                                         "tag": "alert",
-                                        "min_level": "INFO",
+                                        "min_level": "WARNING",
                                         "where": {
-                                          "alert_event": "mcp_ping"
+                                          "alert_event": "oco_double_fire"
                                         }
                                       }
                                     }
@@ -927,9 +965,9 @@
                                 {
                                   "log": {
                                     "tag": "alert",
-                                    "min_level": "WARNING",
+                                    "min_level": "INFO",
                                     "where": {
-                                      "alert_event": "gtt_asymmetric"
+                                      "alert_event": "ticker_recovered"
                                     }
                                   }
                                 }
@@ -940,7 +978,7 @@
                                 "tag": "alert",
                                 "min_level": "WARNING",
                                 "where": {
-                                  "alert_event": "oco_double_fire"
+                                  "alert_event": "ticker_degraded"
                                 }
                               }
                             }
@@ -949,9 +987,9 @@
                         {
                           "log": {
                             "tag": "alert",
-                            "min_level": "INFO",
+                            "min_level": "ERROR",
                             "where": {
-                              "alert_event": "ticker_recovered"
+                              "alert_event": "gtt_not_accepted"
                             }
                           }
                         }
@@ -960,9 +998,10 @@
                     {
                       "log": {
                         "tag": "alert",
-                        "min_level": "WARNING",
+                        "min_level": "INFO",
                         "where": {
-                          "alert_event": "ticker_degraded"
+                          "alert_event": "filled",
+                          "mode": "live"
                         }
                       }
                     }
@@ -971,9 +1010,9 @@
                 {
                   "log": {
                     "tag": "alert",
-                    "min_level": "ERROR",
+                    "min_level": "INFO",
                     "where": {
-                      "alert_event": "gtt_not_accepted"
+                      "alert_event": "user_registered"
                     }
                   }
                 }
@@ -984,8 +1023,7 @@
                 "tag": "alert",
                 "min_level": "INFO",
                 "where": {
-                  "alert_event": "filled",
-                  "mode": "live"
+                  "alert_event": "gtt_orphan_cancelled"
                 }
               }
             }
@@ -996,7 +1034,7 @@
             "tag": "alert",
             "min_level": "INFO",
             "where": {
-              "alert_event": "user_registered"
+              "alert_event": "app_message"
             }
           }
         }

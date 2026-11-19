@@ -380,26 +380,27 @@ def test_seeded_agents_is_exactly_the_post_collapse_13():
     plus the 3 new generic channel agents, plus `MARKET_STATUS_ALERT_AGENT`
     and `ORDER_CANCELLED_AGENT` (2026-11-03, alert-agent audit Waves 1/3
     — brand-new dedicated agents, unrelated to the collapse), plus
-    `GTT_ORPHAN_CANCELLED_AGENT` (2026-11-04, also brand-new and
-    unrelated to the collapse), plus `AGENT_CLOSE_HOLD_ALERT_AGENT`
-    (2026-11 channel-authoring retirement — replaces the retired
-    `ACTION_NOTIFY_AGENT`/`action-notify-alert` Wave 2 slot, a brand-new
-    dedicated agent, not a retrofit of the retired one), plus
-    `DRAFT_SWEEP_AGENT` (2026-11, alert-agent audit fix — another
-    brand-new, unrelated standalone agent). None of the 16 collapsed
-    specs appear, and `action-notify-alert` no longer appears either."""
+    `AGENT_CLOSE_HOLD_ALERT_AGENT` (2026-11 channel-authoring retirement
+    — replaces the retired `ACTION_NOTIFY_AGENT`/`action-notify-alert`
+    Wave 2 slot, a brand-new dedicated agent, not a retrofit of the
+    retired one), plus `DRAFT_SWEEP_AGENT` (2026-11, alert-agent audit
+    fix — another brand-new, unrelated standalone agent). None of the
+    16 originally-collapsed specs appear, `action-notify-alert` no
+    longer appears either, and (2026-11-19 fold) neither do
+    `GTT_ORPHAN_CANCELLED_AGENT`/`APP_MESSAGE_AGENT` any more — both now
+    fold into `_COLLAPSED_DETECTOR_SPECS` alongside the original 16."""
     expected = {
         ea.ERROR_AGENT["slug"], ea.DEPLOY_SYNC_AGENT["slug"], ea.RICH_ALERT_AGENT["slug"],
         ea.SUMMARY_AGENT["slug"], ea.BREACH_AGENT["slug"], ea.VISITOR_REPORT_AGENT["slug"],
         ea.UNROUTED_ALERT_AGENT["slug"], ea.TELEGRAM_CHANNEL_AGENT["slug"],
         ea.NTFY_CHANNEL_AGENT["slug"], ea.EMAIL_CHANNEL_AGENT["slug"],
         ea.MARKET_STATUS_ALERT_AGENT["slug"], ea.AGENT_CLOSE_HOLD_ALERT_AGENT["slug"],
-        ea.ORDER_CANCELLED_AGENT["slug"], ea.GTT_ORPHAN_CANCELLED_AGENT["slug"],
-        ea.DRAFT_SWEEP_AGENT["slug"], ea.APP_MESSAGE_AGENT["slug"],
+        ea.ORDER_CANCELLED_AGENT["slug"],
+        ea.DRAFT_SWEEP_AGENT["slug"],
     }
     actual = {spec["slug"] for spec in ea.SEEDED_AGENTS}
     assert actual == expected
-    assert len(ea.SEEDED_AGENTS) == 16
+    assert len(ea.SEEDED_AGENTS) == 14
     assert ea.ACTION_NOTIFY_AGENT["slug"] not in actual, (
         "action-notify-alert must be retired from SEEDED_AGENTS"
     )

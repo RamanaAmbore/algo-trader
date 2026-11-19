@@ -137,30 +137,40 @@ async def test_error_level_app_message_does_not_double_fire(chans):
 
 
 @pytest.mark.asyncio
-async def test_without_dedicated_agent_the_record_is_silently_dropped(chans):
-    """Negative control — reproduces the ORIGINAL bug directly: with
-    `app-message-alert` removed from the agent list (simulating the
-    pre-fix world, where only `self_alerted` existed with no dedicated
-    agent — or more precisely, the pre-fix world where NEITHER existed),
+async def test_without_dedicated_agent_the_record_is_silently_dropped(chans, monkeypatch):
+    """Negative control — reproduces the ORIGINAL bug directly: with the
+    `app_message` dispatch mechanism removed (simulating the pre-fix
+    world, where only `self_alerted` existed with no dedicated delivery
+    path — or more precisely, the pre-fix world where NEITHER existed),
     a CRITICAL AppMessage sends to NOTHING. This is the exact silent
     failure mode confirmed in production and is what makes the positive
-    test above meaningful rather than accidental."""
+    test above meaningful rather than accidental.
+
+    2026-11-19 — `app-message-alert` folded into `event_agents.
+    _COLLAPSED_DETECTOR_SPECS`; it is no longer a standalone
+    `SEEDED_AGENTS` entry to filter out of the agent list. Its real
+    delivery path now runs through the 3 generic channel agents, keyed
+    on `ALERT_EVENT_DISPATCH["app_message"]` — so this negative control
+    removes THAT dispatch-table entry instead (`monkeypatch.delitem`,
+    auto-restored). The 3 channel agents' own shared condition still
+    structurally matches the record (it was built from the full table
+    at import time), but `_dispatch_channel_agent()`'s own `entry is
+    None: continue` guard means a missing table entry sends nothing —
+    exactly reproducing "the dedicated mechanism is absent"."""
     row = await _capture_row(AppMessage(
         level="critical", tags=["order"], body="broker auth failed", title="Auth failure",
     ))
     # Simulate the pre-fix world precisely: strip self_alerted AND drop
-    # the dedicated agent — ERROR_AGENT's condition matches, but its own
-    # self-alerted gate (pre-fix: keyed only on CRITICAL+alert_event,
-    # with no self_alerted flag needed) still silently refuses to send,
-    # because pre-fix `_error_agent_self_alerted()` already returned
-    # True for any CRITICAL record carrying a truthy `alert_event` —
-    # exactly this record's shape.
-    agents_without_dedicated = [
-        a for a in _all_seeded_agents() if a.slug != ea.APP_MESSAGE_AGENT["slug"]
-    ]
-    sent_count = await ea.dispatch([row], agents_without_dedicated)
+    # the dedicated dispatch entry — ERROR_AGENT's condition matches,
+    # but its own self-alerted gate (pre-fix: keyed only on
+    # CRITICAL+alert_event, with no self_alerted flag needed) still
+    # silently refuses to send, because pre-fix `_error_agent_self_
+    # alerted()` already returned True for any CRITICAL record carrying
+    # a truthy `alert_event` — exactly this record's shape.
+    monkeypatch.delitem(ea.ALERT_EVENT_DISPATCH, "app_message")
+    sent_count = await ea.dispatch([row], _all_seeded_agents())
 
-    assert chans["telegram"] == [], "no agent should deliver this record once the dedicated agent is removed"
+    assert chans["telegram"] == [], "no agent should deliver this record once the dedicated mechanism is removed"
     assert chans["ntfy"] == []
     assert chans["email"] == []
     assert sent_count == 0

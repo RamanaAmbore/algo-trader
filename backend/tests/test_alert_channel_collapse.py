@@ -89,7 +89,11 @@ def _freeze_ts(monkeypatch):
 # detectors) = 13, PLUS `gtt-orphan-cancelled-alert` (2026-11-04, SEED_
 # VERSION 6 -> 7 — see event_agents.py's own comment on that bump) = 14,
 # PLUS `draft-sweep-alert` (2026-11 alert-agent audit fix, SEED_VERSION
-# 9 -> 10) = 15.
+# 9 -> 10) = 15, PLUS `app-message-alert` (2026-11-08 audit fix item 9,
+# SEED_VERSION 9 -> 10) = 16, MINUS `gtt-orphan-cancelled-alert` and
+# `app-message-alert` both FOLDED into `_COLLAPSED_DETECTOR_SPECS`
+# (2026-11-19, SEED_VERSION 10 -> 11 — see event_agents.py's own comment
+# on that bump) = 14.
 # ─────────────────────────────────────────────────────────────────────────
 
 def test_seeded_agents_count_is_13_not_23():
@@ -100,19 +104,22 @@ def test_seeded_agents_count_is_13_not_23():
     # fix — `draft-sweep-alert` is a brand-new standalone agent
     # (`background.py:_ds_tick_draft_sweep()` no longer calls
     # `alert_utils._send_telegram_info()` directly); count is now 15.
-    assert len(ea.SEEDED_AGENTS) == 16
+    # 2026-11-19 — `gtt-orphan-cancelled-alert`/`app-message-alert` fold
+    # into `_COLLAPSED_DETECTOR_SPECS` (count was briefly 16 after
+    # `app-message-alert`'s own addition); count is back to 14.
+    assert len(ea.SEEDED_AGENTS) == 14
     slugs = {s["slug"] for s in ea.SEEDED_AGENTS}
     assert slugs == {
         "error-alert", "deploy-sync-alert", "agent-alert-rich", "market-summary",
         "cycle-breach-alert", "visitor-report-alert", "unrouted-alert-catch-all",
         "alert-channel-telegram", "alert-channel-ntfy", "alert-channel-email",
         "market-status-alert", "agent-close-hold-alert", "order-cancelled-alert",
-        "gtt-orphan-cancelled-alert", "draft-sweep-alert", "app-message-alert",
+        "draft-sweep-alert",
     }
 
 
-def test_alert_event_dispatch_has_18_entries_from_16_specs():
-    assert len(ea.ALERT_EVENT_DISPATCH) == 18
+def test_alert_event_dispatch_has_20_entries_from_18_specs():
+    assert len(ea.ALERT_EVENT_DISPATCH) == 20
     two_event_slugs = {"template-attach-urgent", "template-attach-high"}
     by_source = {}
     for entry in ea.ALERT_EVENT_DISPATCH.values():
@@ -130,8 +137,10 @@ def test_every_collapsed_spec_slug_is_retired():
     # 16 collapsed-detector slugs + `action-notify-alert` (2026-11
     # channel-authoring retirement, unioned in separately via
     # `_NOTIFY_ACTION_RETIRED_SLUGS` — see event_agents.py's own
-    # comment above `_RETIRED_SLUGS`) = 17.
-    assert len(ea._RETIRED_SLUGS) == 17
+    # comment above `_RETIRED_SLUGS`) = 17, PLUS `gtt-orphan-cancelled-
+    # alert`/`app-message-alert` folded into `_COLLAPSED_DETECTOR_SPECS`
+    # (2026-11-19) = 19.
+    assert len(ea._RETIRED_SLUGS) == 19
     assert "action-notify-alert" in ea._RETIRED_SLUGS
     assert "action-notify-alert" not in seeded_slugs
 
@@ -571,6 +580,60 @@ async def test_gtt_not_accepted_identical_via_channel_agents(chans):
     assert len(chans["email"]) == 1
     assert len(chans["ntfy"]) == 1
     assert chans["ntfy"][0][2] == "urgent"
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 2026-11-19 fold — `gtt-orphan-cancelled-alert` + `app-message-alert`
+# join `_COLLAPSED_DETECTOR_SPECS`. Parity checks: each resolves to the
+# exact same channel set via the 3 channel agents as it did as a
+# standalone seeded agent before the fold.
+# ─────────────────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_gtt_orphan_cancelled_identical_via_channel_agents(chans):
+    rec = {"ts": _dt.datetime(2026, 10, 6, 4, 45, 30, tzinfo=_dt.timezone.utc), "level": "INFO",
+           "tags": ["gtt", "alert"],
+           "extra": {"tags": ["gtt", "alert"], "alert_event": "gtt_orphan_cancelled",
+                     "symbol": "NIFTY26OCTFUT", "agent_id": None,
+                     "source_type": "process", "source_name": "GTT orphan sweep"}}
+    await ea.dispatch([rec], _channel_agents())
+    # gtt-orphan-cancelled-alert's own `_PER_SLUG_OVERRIDES` row is
+    # telegram-only ("nothing to act on for ntfy") — unchanged by the fold.
+    assert len(chans["telegram"]) == 1
+    assert chans["ntfy"] == []
+    assert chans["email"] == []
+
+
+@pytest.mark.asyncio
+async def test_app_message_alert_identical_via_channel_agents(chans):
+    """Parity check — the exact regression the 2026-11-19 fold must not
+    reintroduce. Before this fold, `app-message-alert` had NO per-slug
+    override and resolved via `alert_routing._TIER_DEFAULTS["high"]`
+    (telegram + ntfy[priority="high"]). A new per-slug override row was
+    added to `alert_routing.py` BEFORE the fold landed, freezing that
+    exact resolution. This proves the fold's real dispatch (through the
+    3 generic channel agents + `ALERT_EVENT_DISPATCH`) delivers the
+    identical channel set `_TIER_DEFAULTS["high"]` would have produced —
+    confirming the new per-slug override is actually consulted by
+    `_build_alert_event_dispatch_table()`, not silently defaulted to
+    `[]` (which would reopen the 2026-11-08 CRITICAL-AppMessage
+    silent-drop bug this agent exists to fix)."""
+    from backend.api.algo import alert_routing
+    expected = alert_routing._TIER_DEFAULTS["high"]
+    assert alert_routing.resolve_channels(
+        name="app-message-alert", priority="high", agent_events=[],
+    ) == expected
+
+    rec = {"ts": _dt.datetime(2026, 10, 6, 4, 45, 30, tzinfo=_dt.timezone.utc), "level": "CRITICAL",
+           "tags": ["alert"],
+           "extra": {"tags": ["alert"], "alert_event": "app_message", "self_alerted": True,
+                     "title": "Auth failure", "body": "broker auth failed",
+                     "source_type": "process", "source_name": "App message"}}
+    await ea.dispatch([rec], _channel_agents())
+    assert len(chans["telegram"]) == 1, "app-message-alert must still deliver exactly one telegram message"
+    assert len(chans["ntfy"]) == 1, "app-message-alert must still deliver exactly one ntfy message"
+    assert chans["ntfy"][0][2] == "high", "ntfy priority must still be 'high', matching the frozen override"
+    assert chans["email"] == [], "'high' tier default (and the frozen override) carry no email channel"
 
 
 # ─────────────────────────────────────────────────────────────────────────

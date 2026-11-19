@@ -298,6 +298,17 @@ class TestSeededAgentsGateKeysAreDeclared:
         `gate: False`, same convention as every other agent here — added
         when the 08:00 draft-sweep notice was converted from a direct
         `_send_telegram_info` call to log-then-dispatch.
+
+        2026-11-19 — `gtt-orphan-cancelled-alert` leaves this set: it
+        folds into `event_agents._COLLAPSED_DETECTOR_SPECS` and is no
+        longer a standalone `SEEDED_AGENTS` entry, so this
+        `SEEDED_AGENTS`-only sweep can no longer enumerate it (its
+        `gate: False` channel still exists verbatim inside
+        `ALERT_EVENT_DISPATCH`, same as the 11 collapsed slugs noted
+        above). `app-message-alert` (also folded the same commit) never
+        belonged in this set either way — its channels came from
+        `_TIER_DEFAULTS["high"]` (no `gate` key) before the fold, and
+        its new per-slug override row also carries no `gate` key.
         """
         slugs = {
             agent["slug"]
@@ -306,7 +317,7 @@ class TestSeededAgentsGateKeysAreDeclared:
         }
         assert slugs == {
             "unrouted-alert-catch-all", "agent-alert-rich", "market-summary",
-            "visitor-report-alert", "deploy-sync-alert", "gtt-orphan-cancelled-alert",
+            "visitor-report-alert", "deploy-sync-alert",
             "draft-sweep-alert",
         }
 

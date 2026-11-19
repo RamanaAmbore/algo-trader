@@ -141,8 +141,10 @@ def test_commodity_agent_condition_fires_on_unhedged_itm_goldm():
     ExpiryEngine.scan_positions(), called from the action, not
     evaluated via this condition tree). This test still proves the
     `mcx_unhedged`/`is_itm` resolvers themselves are correct — they
-    remain live, used today by the still-active expiry-mcx-risk-alert
-    agent.
+    remain live, used today by the MCX branch of `expiry-nfo-risk-alert`
+    (2026-11-19 — `expiry-mcx-risk-alert` was merged into that one agent
+    in place; see `agent_engine.py`'s own comment above
+    `_EXPIRY_RISK_AGENTS`).
 
     2026-11 classifier re-base (operator decision): `mcx_unhedged` now
     classifies via the real `ExpiryEngine` 4-rule netting, not a crude

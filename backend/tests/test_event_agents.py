@@ -1060,23 +1060,36 @@ def test_generic_notice_agents_are_every_spec_in_the_shared_table():
     # collapsed and no longer in SEEDED_AGENTS at all) — kept for
     # documentation continuity with the historical exclusion rule.
     #
-    # 2026-11-04 fix — GTT_ORPHAN_CANCELLED_AGENT is a SECOND deliberate
+    # 2026-11-04 fix — GTT_ORPHAN_CANCELLED_AGENT was a SECOND deliberate
     # standalone `generic_notice` user, outside `_GENERIC_NOTICE_SPECS`
     # entirely (see its own dict comment in event_agents.py for why it
     # was kept standalone rather than folded into the heavily-pinned
-    # 16/18-entry collapsed table). 2026-11 alert-agent audit fix —
-    # DRAFT_SWEEP_AGENT is a THIRD such standalone user, same reasoning.
-    # 2026-11-08 audit fix (item 9) — APP_MESSAGE_AGENT is built from
+    # 16/18-entry collapsed table at the time). 2026-11 alert-agent audit
+    # fix — DRAFT_SWEEP_AGENT is a THIRD such standalone user, same
+    # reasoning (and the one still genuinely standalone, see below).
+    # 2026-11-08 audit fix (item 9) — APP_MESSAGE_AGENT was built from
     # `_GENERIC_NOTICE_SPECS` too (unlike the other three, which are
-    # standalone literals outside the table), so it shows up here for a
-    # different reason: it's a genuinely new, non-collapsed table entry.
+    # standalone literals outside the table), so it used to show up here
+    # for a different reason: it was a genuinely new, non-collapsed
+    # table entry.
+    #
+    # 2026-11-19 fold — `GTT_ORPHAN_CANCELLED_AGENT` and
+    # `APP_MESSAGE_AGENT` both fold into `_COLLAPSED_DETECTOR_SPECS` and
+    # are no longer standalone `SEEDED_AGENTS` entries, so neither shows
+    # up in this `SEEDED_AGENTS`-only sweep any more (their render
+    # contract still exists, verbatim, inside `ALERT_EVENT_DISPATCH` —
+    # see `test_alert_channel_collapse.py`'s own parity tests for both).
+    # `draft-sweep-alert` could not be folded the same way — its sole
+    # channel is `telegram_info`, which the 3 generic channel agents'
+    # `only_channel` filter cannot route to — so it remains the one
+    # genuinely standalone `generic_notice` user besides `visitor-
+    # report-alert`.
     standalone_generic_notice_slugs = {
         spec["slug"] for spec in ea.SEEDED_AGENTS
         if any(isinstance(a, dict) and a.get("render") == "generic_notice" for a in spec.get("actions") or [])
     } - {ea.UNROUTED_ALERT_AGENT["slug"], ea.USER_REGISTERED_AGENT["slug"]}
     assert standalone_generic_notice_slugs == {
-        "visitor-report-alert", "gtt-orphan-cancelled-alert", "draft-sweep-alert",
-        "app-message-alert",
+        "visitor-report-alert", "draft-sweep-alert",
     }
     for alert_event, source_slug in [
         ("gtt_asymmetric", "gtt-asymmetric-alert"), ("oco_double_fire", "oco-double-fire-alert"),

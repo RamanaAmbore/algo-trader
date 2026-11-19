@@ -78,10 +78,17 @@ def test_fixture_has_all_13_agents_and_covers_both_log_and_any_shapes():
     # `alert_utils._send_telegram_info()` directly). 2026-11-08 audit
     # fix (item 9): 15 -> 16 — `app-message-alert`, a brand-new
     # standalone dedicated agent closing the CRITICAL AppMessage
-    # silent-drop gap (`app_message.py:_route_sinks()`).
+    # silent-drop gap (`app_message.py:_route_sinks()`). 2026-11-19
+    # fold (SEED_VERSION 10 -> 11): 16 -> 14 — `gtt-orphan-cancelled-
+    # alert` and `app-message-alert` both fold into
+    # `event_agents._COLLAPSED_DETECTOR_SPECS` and are no longer
+    # standalone `SEEDED_AGENTS` entries (their channels still resolve
+    # identically via the 3 generic channel agents + `ALERT_EVENT_
+    # DISPATCH` — see `test_alert_channel_collapse.py`'s own parity
+    # tests for both).
     with open(_FIXTURE_PATH, "r", encoding="utf-8") as f:
         fixture = json.load(f)
-    assert len(fixture) == 16
+    assert len(fixture) == 14
     has_plain_log = any("log" in a["conditions"] for a in fixture)
     has_any_of_logs = any("any" in a["conditions"] for a in fixture)
     has_nonempty_events = any(a["events"] for a in fixture)

@@ -1701,7 +1701,7 @@ async def _dispatch_channel_agent(agent, records: list[dict], channel_key: str) 
 
     Mirrors `_dispatch_agent`'s own per-record loop (DEBUG exemption,
     condition match, `_log_only` suppression) but deliberately omits two
-    things that don't apply to any of the 16 collapsed specs: the
+    things that don't apply to any of the 18 collapsed specs: the
     repeat-gate (`_gate_spec`/`_gate_passes` — none of them set
     `actions[0]['gate']`) and `_error_agent_self_alerted` (keyed on
     `ERROR_AGENT`'s own slug, never this agent's)."""
@@ -2752,13 +2752,14 @@ GTT_ORPHAN_CANCELLED_AGENT = {
     # means], the gtt order on that position [should be] closed
     # automatically... also, this should generate an alert in telegram,
     # as there is nothing to act on for ntfy") — `background.py`'s
-    # `_oco_cancel_closed_position_gtts()` is the producer. Standalone
-    # dedicated agent (same shape as VISITOR_REPORT_AGENT/MARKET_STATUS_
-    # ALERT_AGENT above), not folded into `_GENERIC_NOTICE_SPECS` /
-    # `_COLLAPSED_DETECTOR_SPECS` — that table's 16/18 counts are pinned
-    # byte-for-byte across several tests (test_alert_channel_collapse.py,
-    # test_event_agents.py); a 17th/19th entry there is a much larger,
-    # unrelated-to-this-fix ripple than one more standalone seeded row.
+    # `_oco_cancel_closed_position_gtts()` is the producer.
+    #
+    # 2026-11-19 — folded into `_COLLAPSED_DETECTOR_SPECS` below (no
+    # longer a standalone seeded row in `SEEDED_AGENTS`). Its real
+    # channel (telegram-only — "nothing to act on for ntfy") is unchanged,
+    # still carried via `alert_routing._PER_SLUG_OVERRIDES["gtt-orphan-
+    # cancelled-alert"]`, which `_build_alert_event_dispatch_table()`
+    # reads the same way it reads every other collapsed spec's override.
     "conditions": {"log": {"tag": "alert", "min_level": "INFO",
                            "where": {"alert_event": "gtt_orphan_cancelled"}}},
     "priority": "info",
@@ -2773,12 +2774,14 @@ DRAFT_SWEEP_AGENT = {
     # 2026-11 alert-agent audit fix — `background.py:_ds_tick_draft_
     # sweep()` used to call `alert_utils._send_telegram_info()`
     # directly, bypassing this file's log-then-dispatch pipeline
-    # entirely (no agent, no routing). Standalone dedicated agent, same
-    # shape as GTT_ORPHAN_CANCELLED_AGENT/VISITOR_REPORT_AGENT above —
-    # its real channel is `telegram_info` only (matching the old direct
-    # call's own channel), not folded into `_GENERIC_NOTICE_SPECS` /
-    # `_COLLAPSED_DETECTOR_SPECS` for the same byte-for-byte-pinned-
-    # count reason GTT_ORPHAN_CANCELLED_AGENT's own comment gives.
+    # entirely (no agent, no routing). Standalone dedicated agent — its
+    # real channel is `telegram_info` only (matching the old direct
+    # call's own channel), which the 3 generic channel agents' own
+    # `only_channel` filter (exact match against "telegram"/"ntfy"/
+    # "email") cannot route to. NOT folded into `_COLLAPSED_DETECTOR_
+    # SPECS` for that structural reason — same as `visitor-report-alert`/
+    # `deploy-sync-alert`/`market-summary` staying dedicated (2026-11-19
+    # fold's own block comment, above `_COLLAPSED_DETECTOR_SPECS`).
     "conditions": {"log": {"tag": "alert", "min_level": "INFO",
                            "where": {"alert_event": "draft_sweep"}}},
     "priority": "info",
@@ -2786,7 +2789,20 @@ DRAFT_SWEEP_AGENT = {
 }
 
 
-SEED_VERSION = 10
+SEED_VERSION = 11
+# 2026-11-19 (SEED_VERSION 10 -> 11) — folds `GTT_ORPHAN_CANCELLED_AGENT`
+# and `APP_MESSAGE_AGENT` into `_COLLAPSED_DETECTOR_SPECS`, removing both
+# from `SEEDED_AGENTS`. This changes the 3 generic channel agents'
+# `_CHANNEL_AGENT_CONDITION` (it gains 2 more `any[]` leaves, one per
+# folded spec's own `alert_event`), so `TELEGRAM_CHANNEL_AGENT`/
+# `NTFY_CHANNEL_AGENT`/`EMAIL_CHANNEL_AGENT`'s own `conditions` hash
+# changes and the bump is required to re-sync those 3 already-seeded
+# rows. The 2 folded slugs' own already-seeded rows are deactivated (not
+# deleted) by `_retire_collapsed_event_agents()`, same mechanism as the
+# 2026-10-25 collapse. `alert_routing._PER_SLUG_OVERRIDES["app-message-
+# alert"]` was added FIRST (same commit) so this fold cannot silently
+# drop its channels to `[]`.
+#
 # 2026-11 (SEED_VERSION 9 -> 10) — alert-agent audit fix: inserts the
 # new DRAFT_SWEEP_AGENT row. Standalone dedicated agent (own per-slug
 # `telegram_info`-only channel override in alert_routing.py), not a
@@ -2975,6 +2991,23 @@ _COLLAPSED_DETECTOR_SPECS: tuple[dict, ...] = (
     TEMPLATE_GUARD_AGENT, TEMPLATE_ATTACH_FAIL_AGENT, MCP_PING_AGENT,
     GTT_ASYMMETRIC_AGENT, OCO_DOUBLE_FIRE_AGENT, TICKER_RECOVERED_AGENT,
     TICKER_DEGRADED_AGENT, GTT_NOT_ACCEPTED_AGENT, FILL_AGENT, USER_REGISTERED_AGENT,
+    # 2026-11-19 (SEED_VERSION 10 -> 11) — two more stragglers folded in,
+    # byte-identical `conditions`/`actions`/`slug`/`name`, same shape as
+    # every other entry above. `GTT_ORPHAN_CANCELLED_AGENT` already had
+    # its own `alert_routing._PER_SLUG_OVERRIDES` row (telegram-only, left
+    # unchanged). `APP_MESSAGE_AGENT` had NO override row before this —
+    # it resolved via `_TIER_DEFAULTS["high"]` — so a new per-slug row was
+    # added to `alert_routing.py` FIRST, freezing that exact resolution
+    # (telegram + ntfy[priority=high]), so folding it here cannot silently
+    # drop to `[]` (the table's own default for a missing override) and
+    # reopen the 2026-11-08 CRITICAL-AppMessage silent-drop bug this agent
+    # exists to fix. `draft-sweep-alert` is NOT folded — its sole channel
+    # is `telegram_info`, which the 3 generic channel agents' `only_channel`
+    # filter (exact match against "telegram"/"ntfy"/"email") cannot route
+    # to, the same reason `visitor-report-alert`/`deploy-sync-alert`/
+    # `market-summary` stay dedicated (see the block comment above this
+    # tuple).
+    GTT_ORPHAN_CANCELLED_AGENT, APP_MESSAGE_AGENT,
 )
 
 
@@ -3025,7 +3058,7 @@ def _build_alert_event_dispatch_table() -> dict[str, dict]:
 
 
 # Public — read by `_dispatch_channel_agent()` above and by
-# `test_alert_event_channel_collapse.py`. 18 entries (16 specs, 2 of
+# `test_alert_event_channel_collapse.py`. 20 entries (18 specs, 2 of
 # which contribute 2 `alert_event` keys each).
 ALERT_EVENT_DISPATCH: dict[str, dict] = _build_alert_event_dispatch_table()
 
@@ -3095,17 +3128,25 @@ EMAIL_CHANNEL_AGENT = _channel_agent_spec("alert-channel-email", "Alert channel:
 SEEDED_AGENTS = (
     ERROR_AGENT, DEPLOY_SYNC_AGENT, RICH_ALERT_AGENT, SUMMARY_AGENT, BREACH_AGENT,
     VISITOR_REPORT_AGENT, UNROUTED_ALERT_AGENT, MARKET_STATUS_ALERT_AGENT,
-    ORDER_CANCELLED_AGENT, GTT_ORPHAN_CANCELLED_AGENT, AGENT_CLOSE_HOLD_ALERT_AGENT,
-    DRAFT_SWEEP_AGENT, APP_MESSAGE_AGENT,
+    ORDER_CANCELLED_AGENT, AGENT_CLOSE_HOLD_ALERT_AGENT,
+    DRAFT_SWEEP_AGENT,
     TELEGRAM_CHANNEL_AGENT, NTFY_CHANNEL_AGENT, EMAIL_CHANNEL_AGENT,
 )
+# `GTT_ORPHAN_CANCELLED_AGENT`/`APP_MESSAGE_AGENT` are deliberately absent
+# above — folded into `_COLLAPSED_DETECTOR_SPECS` (2026-11-19, SEED_VERSION
+# 10 -> 11). They are still real module-level dicts (read by
+# `_COLLAPSED_DETECTOR_SPECS`, `_build_alert_event_dispatch_table()`, and
+# several tests), just no longer standalone `Agent` rows — their already-
+# seeded DB rows are deactivated (never deleted) by
+# `_retire_collapsed_event_agents()` below, which picks both up
+# automatically via `_RETIRED_SLUGS`'s union over `_COLLAPSED_DETECTOR_SPECS`.
 
-# The 16 collapsed specs' own slugs — deactivated (never deleted) by
+# The 18 collapsed specs' own slugs — deactivated (never deleted) by
 # `_retire_collapsed_event_agents()` on the next `seed_event_agents()`
 # run. `seed_event_agents()`'s own insert/update loop only ever touches
 # a slug present in `SEEDED_AGENTS` — a slug removed from that tuple is
 # otherwise just left alone forever, so without this an already-seeded
-# 'active' row for one of these 16 slugs would keep loading in
+# 'active' row for one of these 18 slugs would keep loading in
 # `load_agents()` (which filters on `status == 'active'`, not on
 # `SEEDED_AGENTS` membership) and double-deliver every one of its
 # alert_events alongside the new generic channel agents. Deactivated,

@@ -270,8 +270,11 @@ def test_mcx_unhedged_classifier_exception_fails_loud_not_quiet(monkeypatch, cap
 
 
 def test_mcx_unhedged_classifier_exception_triggers_real_agent_condition():
-    """End-to-end: evaluate the REAL `expiry-mcx-risk-alert` condition
-    tree (same shape as the seeded agent in `agent_engine.py`) against a
+    """End-to-end: evaluate the REAL MCX branch condition tree (2026-11-19
+    — `expiry-mcx-risk-alert` was merged into `expiry-nfo-risk-alert`'s
+    own `any[]` condition in place; this sub-tree is byte-identical to
+    what used to be that agent's own top-level condition, see
+    `agent_engine.py`'s own comment above `_EXPIRY_RISK_AGENTS`) against a
     ctx whose classifier raises. The fail-loud fallback rows must carry
     enough real data (`pnl`) for the condition's own metric leaf to
     actually fire — proving the fix reaches the agent, not just the
@@ -341,7 +344,7 @@ def test_mcx_unhedged_classifier_exception_triggers_real_agent_condition():
             REGISTRY.operators.pop('>=', None)
 
     assert matches, (
-        "the real expiry-mcx-risk-alert condition must evaluate as "
-        "TRIGGERED when the classifier raises — a quiet [] scope result "
-        "would silently pass this condition instead"
+        "the real MCX branch of expiry-nfo-risk-alert's condition must "
+        "evaluate as TRIGGERED when the classifier raises — a quiet [] "
+        "scope result would silently pass this condition instead"
     )

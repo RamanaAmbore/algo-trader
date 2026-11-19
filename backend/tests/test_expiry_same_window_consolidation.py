@@ -1,26 +1,37 @@
 """2026-11 same-window consolidation — operator finding: on an expiry
 day, `market-preclose-nonmcx` (generic reminder), `expiry-day-preclose-
 alert` (the richer, expiry-specific alert with the real position
-breakdown) and `expiry-nfo-risk-alert`/`expiry-mcx-risk-alert` could
-all fire within about a minute of each other, 30 minutes before that
-exchange's close.
+breakdown) and the expiry risk alert could all fire within about a
+minute of each other, 30 minutes before that exchange's close.
+
+2026-11-19 — `expiry-nfo-risk-alert` and `expiry-mcx-risk-alert` were
+merged into ONE agent (`expiry-nfo-risk-alert`, edited in place — see
+`agent_engine.py`'s own comment above `_EXPIRY_RISK_AGENTS`). Its
+`conditions` is now a top-level `{"any": [<NFO all[] branch>, <MCX
+all[] branch>]}`; each branch keeps its OWN exchange-scoped pre-close
+suppression leaf. `expiry-mcx-risk-alert`'s own slug no longer exists
+in `BUILTIN_AGENTS` — it is pruned (deleted) by
+`_ae_prune_retired_builtins()`, not migrated.
 
 Covers:
   - `market-preclose-nonmcx` is suppressed on an NSE expiry day, fires
     normally on a non-expiry day; `market-preclose-mcx-v2` is
     untouched either way.
-  - `expiry-nfo-risk-alert`/`expiry-mcx-risk-alert` are suppressed
-    specifically inside their OWN exchange's 30-minute pre-close
-    window on an expiry day (where `expiry-day-preclose-alert` already
-    covers the same position), and fire normally outside that window
-    and on non-expiry days.
+  - The merged `expiry-nfo-risk-alert` agent's NFO branch and MCX
+    branch each fire independently of the other, and each is
+    suppressed specifically inside its OWN exchange's 30-minute
+    pre-close window on an expiry day (where `expiry-day-preclose-
+    alert` already covers the same position) — and, critically, one
+    exchange's own pre-close window must NEVER suppress the OTHER
+    exchange's breach.
   - BUILTIN_AGENTS shape (slug/schedule/cooldown/tier/events) is
-    unchanged for all three agents — only the condition tree gained a
-    suppression leaf.
+    unchanged for the merged agent and for `market-preclose-nonmcx` —
+    only the condition tree gained a suppression leaf (and, for the
+    merged agent, the `any[]` merge).
   - The table-driven content-matched one-time migration
     (`_ae_apply_content_matched_cond_migration`) upgrades an
-    already-seeded pre-consolidation row and leaves an
-    operator-customized row alone.
+    already-seeded pre-merge row and leaves an operator-customized row
+    alone.
 """
 
 from __future__ import annotations
@@ -138,19 +149,33 @@ class TestMarketPrecloseNonmcxSuppression:
         }
 
 
-# ── expiry-nfo-risk-alert ─────────────────────────────────────────────
+# ── expiry-nfo-risk-alert (merged NFO + MCX, 2026-11-19) ──────────────
 
-class TestExpiryNfoRiskAlertSuppression:
+class TestExpiryRiskAlertMerged:
     def test_shape_unchanged(self):
         agent = next(a for a in BUILTIN_AGENTS if a["slug"] == "expiry-nfo-risk-alert")
         assert agent["schedule"] == "market_hours"
         assert agent["cooldown_minutes"] == 60
         assert agent["tier"] == "high"
 
+    def test_mcx_slug_retired_not_a_separate_agent(self):
+        """`expiry-mcx-risk-alert` no longer exists as its own
+        BUILTIN_AGENTS entry — it was merged into `expiry-nfo-risk-alert`
+        in place, not left behind as a second row."""
+        assert not any(a["slug"] == "expiry-mcx-risk-alert" for a in BUILTIN_AGENTS)
+
+    def test_condition_is_top_level_any_of_two_branches(self):
+        cond = _agent_cond("expiry-nfo-risk-alert")
+        assert set(cond.keys()) == {"any"}
+        assert len(cond["any"]) == 2
+
+    # ── NFO branch ──────────────────────────────────────────────────
+
     def test_suppressed_inside_nse_preclose_window(self):
         """An ITM NFO position exists AND it's within 30 min of NSE
         close on an NSE expiry day — expiry-day-preclose-alert already
-        reports this; the risk alert must go quiet."""
+        reports this; the NFO branch must go quiet. No MCX position
+        exists, so the MCX branch contributes nothing either way."""
         now = datetime(2025, 4, 24, 9, 30, tzinfo=timezone.utc)  # ~15:00 IST, 30 min to 15:30 close
         ctx = _ctx(now=now, position_rows=[
             {"tradingsymbol": "NIFTY25APR22000CE", "exchange": "NFO", "quantity": 50},
@@ -159,7 +184,7 @@ class TestExpiryNfoRiskAlertSuppression:
         matches = evaluate(_agent_cond("expiry-nfo-risk-alert"), ctx)
         assert matches == [], "must be suppressed inside NSE's own pre-close window"
 
-    def test_fires_outside_preclose_window_same_expiry_day(self):
+    def test_fires_outside_nse_preclose_window_same_expiry_day(self):
         """Same expiry day, but well before the 30-min pre-close
         window — the risk alert's earlier-warning cadence must survive."""
         now = datetime(2025, 4, 24, 4, 0, tzinfo=timezone.utc)  # ~09:30 IST — market just opened
@@ -183,30 +208,23 @@ class TestExpiryNfoRiskAlertSuppression:
         matches = evaluate(_agent_cond("expiry-nfo-risk-alert"), ctx)
         assert matches == [], "no expiring position at all ⇒ nothing to flag either way"
 
-
-# ── expiry-mcx-risk-alert ─────────────────────────────────────────────
-
-class TestExpiryMcxRiskAlertSuppression:
-    def test_shape_unchanged(self):
-        agent = next(a for a in BUILTIN_AGENTS if a["slug"] == "expiry-mcx-risk-alert")
-        assert agent["schedule"] == "market_hours"
-        assert agent["cooldown_minutes"] == 60
-        assert agent["tier"] == "high"
+    # ── MCX branch ──────────────────────────────────────────────────
 
     def test_suppressed_inside_mcx_preclose_window(self):
         """A lone unhedged GOLDM leg, within 30 min of MCX close on an
         MCX expiry day — must go quiet (expiry-day-preclose-alert
-        already covers it)."""
+        already covers it). No NFO position exists, so the NFO branch
+        contributes nothing either way."""
         today_dt = datetime(2025, 5, 29, 17, 30, tzinfo=timezone.utc)  # ~23:00 IST, 30 min to 23:30 close
         ctx = _ctx(now=today_dt, position_rows=[
             {"tradingsymbol": "GOLDM25MAY75000CE", "exchange": "MCX", "account": "A1",
              "quantity": 1, "last_price": 500.0},
         ], spot_prices={"GOLDM": 76000.0},
                    segment_flags={"mcx_open": True, "minutes_until_mcx_close": 30})
-        matches = evaluate(_agent_cond("expiry-mcx-risk-alert"), ctx)
+        matches = evaluate(_agent_cond("expiry-nfo-risk-alert"), ctx)
         assert matches == [], "must be suppressed inside MCX's own pre-close window"
 
-    def test_fires_outside_preclose_window_same_expiry_day(self):
+    def test_fires_outside_mcx_preclose_window_same_expiry_day(self):
         # GOLDM25MAY's parsed expiry is 2025-05-30 — ref must stay
         # within `_scope_positions_expiring_today`'s <=1.5-day window
         # of that date's 23:30 IST MCX close, so 14:00 IST (08:30 UTC)
@@ -217,8 +235,64 @@ class TestExpiryMcxRiskAlertSuppression:
              "quantity": 1, "last_price": 500.0},
         ], spot_prices={"GOLDM": 76000.0},
                    segment_flags={"mcx_open": True, "minutes_until_mcx_close": 360})
-        matches = evaluate(_agent_cond("expiry-mcx-risk-alert"), ctx)
+        matches = evaluate(_agent_cond("expiry-nfo-risk-alert"), ctx)
         assert matches != [], "must still fire well outside the 30-min pre-close window"
+
+    # ── Cross-exchange independence — the actual risk of this merge ──
+
+    def test_nse_preclose_window_does_not_suppress_mcx_breach(self):
+        """Inside NSE's own 30-min pre-close window (no NFO position
+        held at all, so the NFO branch contributes nothing), a lone
+        unhedged MCX leg that is NOT inside ITS OWN pre-close window
+        must still fire — NSE's suppression leaf must never reach
+        across to the MCX branch. GOLDM25APR's parsed expiry must stay
+        within `_scope_positions_expiring_today`'s <=1.5-day window of
+        this same 2025-04-24 "today", matching the NFO-side fixtures'
+        own April expiry date above."""
+        now = datetime(2025, 4, 24, 9, 30, tzinfo=timezone.utc)  # ~15:00 IST — NSE 30 min to close
+        ctx = _ctx(now=now, position_rows=[
+            {"tradingsymbol": "GOLDM25APR75000CE", "exchange": "MCX", "account": "A1",
+             "quantity": 1, "last_price": 500.0},
+        ], spot_prices={"GOLDM": 76000.0},
+                   segment_flags={"nse_open": True, "minutes_until_nse_close": 30,
+                                  "mcx_open": True, "minutes_until_mcx_close": 360})
+        matches = evaluate(_agent_cond("expiry-nfo-risk-alert"), ctx)
+        assert matches != [], (
+            "MCX branch must fire even while NSE's own pre-close window is active"
+        )
+
+    def test_mcx_preclose_window_does_not_suppress_nfo_breach(self):
+        """Inside MCX's own 30-min pre-close window (no MCX position
+        held at all, so the MCX branch contributes nothing), an ITM NFO
+        position that is NOT inside ITS OWN pre-close window must still
+        fire — MCX's suppression leaf must never reach across to the
+        NFO branch."""
+        today_dt = datetime(2025, 4, 24, 17, 0, tzinfo=timezone.utc)  # ~22:30 IST — MCX 30 min to close, NSE long closed
+        ctx = _ctx(now=today_dt, position_rows=[
+            {"tradingsymbol": "NIFTY25APR22000CE", "exchange": "NFO", "quantity": 50},
+        ], spot_prices={"NIFTY": 22200.0},
+                   segment_flags={"nse_open": False, "minutes_until_nse_close": 360,
+                                  "mcx_open": True, "minutes_until_mcx_close": 30})
+        matches = evaluate(_agent_cond("expiry-nfo-risk-alert"), ctx)
+        assert matches != [], (
+            "NFO branch must fire even while MCX's own pre-close window is active"
+        )
+
+    def test_both_branches_can_fire_independently_in_one_evaluation(self):
+        """Both an ITM NFO leg and an unhedged MCX leg are held
+        simultaneously, neither inside its own pre-close window — the
+        merged `any[]` condition must surface matches from BOTH
+        branches, not just whichever is listed first."""
+        now = datetime(2025, 4, 24, 4, 0, tzinfo=timezone.utc)  # ~09:30 IST — both exchanges well open
+        ctx = _ctx(now=now, position_rows=[
+            {"tradingsymbol": "NIFTY25APR22000CE", "exchange": "NFO", "quantity": 50},
+            {"tradingsymbol": "GOLDM25APR75000CE", "exchange": "MCX", "account": "A1",
+             "quantity": 1, "last_price": 500.0},
+        ], spot_prices={"NIFTY": 22200.0, "GOLDM": 76000.0},
+                   segment_flags={"nse_open": True, "minutes_until_nse_close": 360,
+                                  "mcx_open": True, "minutes_until_mcx_close": 360})
+        matches = evaluate(_agent_cond("expiry-nfo-risk-alert"), ctx)
+        assert matches != [], "both branches held and neither suppressed ⇒ must fire"
 
 
 # ── Content-matched one-time migration ────────────────────────────────

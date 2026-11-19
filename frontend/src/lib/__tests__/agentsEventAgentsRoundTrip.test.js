@@ -57,7 +57,7 @@ function compile(text, opts = {}) {
   return compileAgentCliStatement(text, CATALOG, opts);
 }
 
-describe('Wave 2 — byte-identical compile gate: all 16 real SEEDED_AGENTS shapes', () => {
+describe('Wave 2 — byte-identical compile gate: all 14 real SEEDED_AGENTS shapes', () => {
   // 2026-10-25 alert-channel collapse (commit 7d2b51fc): 23 -> 10 seeded
   // kind='event' agents. See CLAUDE.md's "Alert-channel collapse" entry.
   // 2026-11-03: 10 -> 11 -> 12 -> 13 — the alert-agent audit's own
@@ -74,7 +74,13 @@ describe('Wave 2 — byte-identical compile gate: all 16 real SEEDED_AGENTS shap
   // CLAUDE.md's `_RETIRED_SLUGS` convention) when `notify=` was removed
   // from the DSL, and `app-message-alert` was added the same round to
   // fix a silent CRITICAL-drop bug (`APP_MESSAGE_AGENT`). Net +1.
-  expect(seededAgents.length).toBe(16);
+  // 2026-11-19 alert-agent consolidation: 16 -> 14 — `gtt-orphan-
+  // cancelled-alert` and `app-message-alert` folded into
+  // `ALERT_EVENT_DISPATCH` (SEED_VERSION 10 -> 11), same retire-not-
+  // delete `_RETIRED_SLUGS` convention as `action-notify-alert` above.
+  // `draft-sweep-alert` stays dedicated (its `telegram_info`-only
+  // channel can't route through the 3 generic channel agents).
+  expect(seededAgents.length).toBe(14);
 
   for (const agent of seededAgents) {
     it(`${agent.slug}: decompile -> recompile reproduces the EXACT stored conditions/events/actions`, () => {

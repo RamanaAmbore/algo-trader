@@ -2678,34 +2678,49 @@ _EXPIRY_RISK_AGENT_DEFAULTS = dict(
 # shapes live in `_ae_sync_existing_builtin` (see
 # `_AE_CONTENT_MATCHED_COND_MIGRATIONS` below) — a bare edit here does
 # NOT reach an already-seeded prod/dev row on its own.
+#
+# 2026-11-19 — `expiry-mcx-risk-alert` is merged into this one row
+# (edited IN PLACE, not a new slug — builtin-agent retirement
+# (`_ae_prune_retired_builtins()`) DELETES rows, unlike the event-agent
+# deactivate-never-delete path, so editing one existing slug keeps one
+# row's history instead of losing both). The merged `conditions` is a
+# top-level `{"any": [<old NFO all[] tree>, <old MCX all[] tree>]}` —
+# each branch keeps its OWN exchange-scoped pre-close suppression leaf
+# (`nse_*` for the NFO branch, `mcx_*` for the MCX branch). This is
+# deliberate: hoisting a single shared outer suppression leaf would make
+# one exchange's pre-close window silently suppress the OTHER exchange's
+# breach too. `_EXPIRY_RISK_AGENT_DEFAULTS["topic"] = "expiry_warning"`
+# still applies to this one row; `_compute_topic_suppression()` is left
+# untouched (generic, still needed for any future same-topic pair) and
+# simply becomes inert for this pair now that only one agent carries the
+# topic. `expiry-mcx-risk-alert`'s own dict is removed entirely — it is
+# pruned (deleted) from the DB on next boot via the existing
+# `_ae_prune_retired_builtins()` mechanism, no new retirement code
+# needed.
 _EXPIRY_RISK_AGENTS = [
     {
         "slug": "expiry-nfo-risk-alert",
-        "name": "NFO expiry risk — ITM options or open futures",
-        "long_name": "when:positions.expiring_today.nfo.(is_itm==1 OR is_future==1) AND NOT(nse_preclose_window)   alert:high/tg+email+ntfy(high)+log   do:notify-only",
-        "description": "Fires on expiry day when any NFO position is ITM (option) or is an open future — both require active management. Suppressed during NSE's own 30-min pre-close window, where expiry-day-preclose-alert already reports the same thing.",
-        "conditions": {"all": [
-            {"any": [
-                {"op": "==", "scope": "positions.expiring_today.nfo", "metric": "is_itm",    "value": 1.0},
-                {"op": "==", "scope": "positions.expiring_today.nfo", "metric": "is_future", "value": 1.0},
+        "name": "NFO or MCX expiry risk — ITM/unhedged options or open futures",
+        "long_name": "when:(positions.expiring_today.nfo.(is_itm==1 OR is_future==1) AND NOT(nse_preclose_window)) OR (positions.expiring_today.mcx_unhedged.pnl>=-inf AND NOT(mcx_preclose_window))   alert:high/tg+email+ntfy(high)+log   do:notify-only",
+        "description": "Fires on expiry day when any NFO position is ITM (option) or is an open future, OR any MCX option position is unhedged after the real engine's 4-rule netting (or UNKNOWN-moneyness) — all three require active management, and MCX additionally risks an unfavourable broker auto-settlement. A lone expiring MCX future with no option leg is never itself flagged (futures are netting partners only, never a needs_close candidate in their own right). Each exchange's own branch is suppressed during that exchange's own 30-min pre-close window, where expiry-day-preclose-alert already reports the same thing — the other exchange's branch keeps firing normally.",
+        "conditions": {"any": [
+            {"all": [
+                {"any": [
+                    {"op": "==", "scope": "positions.expiring_today.nfo", "metric": "is_itm",    "value": 1.0},
+                    {"op": "==", "scope": "positions.expiring_today.nfo", "metric": "is_future", "value": 1.0},
+                ]},
+                {"not": {"all": [
+                    {"op": "==", "scope": "funds.total", "metric": "is_nse_expiry_today",        "value": 1.0},
+                    {"op": "<=", "scope": "funds.total", "metric": "minutes_until_nse_close",     "value": 30},
+                ]}},
             ]},
-            {"not": {"all": [
-                {"op": "==", "scope": "funds.total", "metric": "is_nse_expiry_today",        "value": 1.0},
-                {"op": "<=", "scope": "funds.total", "metric": "minutes_until_nse_close",     "value": 30},
-            ]}},
-        ]},
-    },
-    {
-        "slug": "expiry-mcx-risk-alert",
-        "name": "MCX expiry risk — unhedged options or open futures",
-        "long_name": "when:positions.expiring_today.mcx_unhedged.pnl>=-inf AND NOT(mcx_preclose_window)   alert:high/tg+email+ntfy(high)+log   do:notify-only",
-        "description": "Fires on expiry day when any MCX option position is unhedged after the real engine's 4-rule netting (or UNKNOWN-moneyness) — broker will auto-settle without manual close. A lone expiring future with no option leg is never itself flagged (futures are netting partners only, never a needs_close candidate in their own right). Suppressed during MCX's own 30-min pre-close window, where expiry-day-preclose-alert already reports the same thing.",
-        "conditions": {"all": [
-            {"op": ">=", "scope": "positions.expiring_today.mcx_unhedged", "metric": "pnl", "value": -999999999},
-            {"not": {"all": [
-                {"op": "==", "scope": "funds.total", "metric": "is_mcx_expiry_today",        "value": 1.0},
-                {"op": "<=", "scope": "funds.total", "metric": "minutes_until_mcx_close",     "value": 30},
-            ]}},
+            {"all": [
+                {"op": ">=", "scope": "positions.expiring_today.mcx_unhedged", "metric": "pnl", "value": -999999999},
+                {"not": {"all": [
+                    {"op": "==", "scope": "funds.total", "metric": "is_mcx_expiry_today",        "value": 1.0},
+                    {"op": "<=", "scope": "funds.total", "metric": "minutes_until_mcx_close",     "value": 30},
+                ]}},
+            ]},
         ]},
     },
 ]
@@ -3349,13 +3364,26 @@ _AE_CONTENT_MATCHED_COND_MIGRATIONS: dict[str, dict] = {
     "market-preclose-nonmcx": {
         "op": "<=", "scope": "funds.total", "metric": "minutes_until_nse_close", "value": 30,
     },
-    "expiry-nfo-risk-alert": {"any": [
-        {"op": "==", "scope": "positions.expiring_today.nfo", "metric": "is_itm",    "value": 1.0},
-        {"op": "==", "scope": "positions.expiring_today.nfo", "metric": "is_future", "value": 1.0},
+    # 2026-11-19 — updated from the bare pre-suppression-leaf
+    # `{"any": [is_itm, is_future]}` shape (the 2026-11-12 same-window-
+    # consolidation migration's own trigger shape, now moot since that
+    # migration already ran against any live row) to the CURRENT
+    # pre-merge `all[]` tree — this is the trigger shape an already-
+    # seeded row must match to force-upgrade to the new merged `any[]`
+    # shape (see `_EXPIRY_RISK_AGENTS`'s own 2026-11-19 comment above).
+    # `expiry-mcx-risk-alert`'s own entry is removed — its slug no
+    # longer exists in `BUILTIN_AGENTS`, so it is pruned (deleted) by
+    # `_ae_prune_retired_builtins()` instead of migrated.
+    "expiry-nfo-risk-alert": {"all": [
+        {"any": [
+            {"op": "==", "scope": "positions.expiring_today.nfo", "metric": "is_itm",    "value": 1.0},
+            {"op": "==", "scope": "positions.expiring_today.nfo", "metric": "is_future", "value": 1.0},
+        ]},
+        {"not": {"all": [
+            {"op": "==", "scope": "funds.total", "metric": "is_nse_expiry_today",        "value": 1.0},
+            {"op": "<=", "scope": "funds.total", "metric": "minutes_until_nse_close",     "value": 30},
+        ]}},
     ]},
-    "expiry-mcx-risk-alert": {
-        "op": ">=", "scope": "positions.expiring_today.mcx_unhedged", "metric": "pnl", "value": -999999999,
-    },
 }
 
 
