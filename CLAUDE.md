@@ -2834,6 +2834,42 @@ derivatives page.
   `grid-template-columns` block in lockstep. A guard added to one row type alone silently mis-aligns the
   grid.
 
+**Derivatives Legs dropdown narrowed; Greeks header decoration; Risk & EV goes responsive with its
+own header row (2026-11-19, uncommitted this session)** — Three follow-ups to the 2026-11-18 entry above, all on
+the derivatives page.
+- **Legs view-picker narrowed ~30%.** `.cand-view-select` (the Legs / Paired / Exp Close dropdown in
+  [`+page.svelte`](<frontend/src/routes/(algo)/admin/derivatives/+page.svelte>)) changed from
+  `flex: 0 1 11rem; min-width: 6.5rem;` to `flex: 0 1 7.7rem; min-width: 4.5rem;`. No markup change.
+- **Greeks header and value cells take the grid-header decoration.** The header row (Δ Γ Θ 𝒱 ρ) and the
+  value row of `.opt-kv-greeks` now use the same `--grid-header-*` tokens that `.cand-headrow` and
+  `.byund-headrow` already use: a background band and amber bottom border on headers, a faint bottom
+  border on values. Before this, these cells shrink-wrapped with `inline-flex` and had no header
+  decoration. The rules are scoped to `.opt-kv-greeks .kv-k-greek` and `.opt-kv-greeks .kv-v` only. The
+  shared base `.kv-k-greek` and `.kv-v` rules are deliberately untouched, because Risk & EV reuses them.
+- **Risk & EV is a responsive, header-bearing grid.** It was a single column, one metric per row, with no
+  header row, per the 2026-11-18 design. The layout is now:
+  - Default and mobile floor: 4 tracks, two metric|value pairs per row.
+  - `@media (min-width: 1180px)`: 6 tracks, three pairs per row. This reuses the breakpoint the file
+    already uses for the Payoff and Legs two-up row, not a new magic number.
+  - A 6-span `Metric | Value | Metric | Value | Metric | Value` header row was added. Its 5th and 6th
+    cells are hidden below 1180px and shown above it, using `nth-child` plus the same media query.
+  - Why this shape: a flex-pair or `repeat(auto-fit, …)` redesign was rejected. The grid keeps its
+    `minmax(max-content, 1fr)` overflow safety, so a long value such as three breakevens forces the grid
+    to scroll and is never silently ellipsis-clipped. The header cell count also stays deterministic,
+    not computed at runtime.
+  - `.kv-pair { display: contents; }` and the existing `.opt-kv-risk .kv-v` vertical-centring rules are
+    unchanged. The six `.kv-pair` divs have no markup change.
+- **Mid-task design reversal.** The Risk & EV card was first scoped as deliberately header-less, matching
+  the 2026-11-18 original. The operator then said it "can have a header too". That request produced the
+  design in the bullet above.
+- **Specs rewritten to match.**
+  - `frontend/e2e/derivatives_greeks_risk_restructure.spec.js`: static CSS and shape assertions, plus a
+    live test across two viewport tiers.
+  - `frontend/e2e/alignment_overflow_audit.spec.js`: its strict two-column `.opt-kv-risk` assertion is now
+    the 4/6-track responsive shape.
+- Invariant: the Risk & EV header's visible cell count and the grid's actual track count are driven by the
+  identical `@media (min-width: 1180px)` query, so they can never disagree.
+
 ---
 
 ## UI Card Button Group
@@ -4505,7 +4541,7 @@ now caches + returns a `stale` flag; `/api/nav/by-account` masks `errors` for no
 | Forced email for action-required alerts | `event_agents.py:_apply_action_required_email_gate` (applied in `_dispatch_record_channels`) |
 | Alerts tab: merge of `alert`-tagged log rows | `backend/api/routes/alerts.py:_build_log_alert_stmt` / `_log_event_to_alert` / `alert_history` |
 | DSL-rendered email table cell wrap / styling (`format_html_table`) | `backend/api/algo/grammar_tokens/format_html_table.py:_html_table` (every `th`/`td` style literal). The alert email body is a separate helper in `alert_utils.py` |
-| Derivatives Greeks / Risk card layout, St column on Legs view | `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` (`.opt-kv-greeks`, `.opt-kv-risk`, `.cand-grid-no-state`, `legsTab` guards) + `CandidateLegRow.svelte` St cell |
+| Derivatives Greeks / Risk card layout and header decoration, Legs dropdown width, St column on Legs view | `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` (`.opt-kv-greeks`, `.opt-kv-greeks .kv-k-greek`, `.opt-kv-risk`, `.opt-kv-risk .kv-risk-colhdr`, `.cand-view-select`, `.cand-grid-no-state`, `legsTab` guards) + `CandidateLegRow.svelte` St cell |
 | Plain-text Telegram send (no `parse_mode`) | `backend/shared/helpers/alert_utils.py:_send_telegram` / `_send_telegram_info` |
 | Origin line on every alert | `backend/shared/helpers/alert_utils.py:format_notification_header` |
 | Trailing action-agent/alert-agent tag (hashtag/pill) on every alert | `backend/api/algo/event_agents.py:_send_channel` (`_agent_tag_line`, `_agent_pill_html`, `_alert_agent_source_slug`, `_tag_token`) |

@@ -19,6 +19,16 @@
  *      when `strategy.risk.ev_pct` is null/undefined (the `{#if}` drops
  *      the whole pair, never a blank trailing row).
  *
+ * 2026-11-19 follow-up — Risk & EV only. The card was first described
+ * (above) as having no header row; the operator then said it "can have
+ * a header too". The card is now responsive: a 4-track grid (2 of the 3
+ * metric|value pairs per row, with a real header row of 4 visible
+ * `.kv-risk-colhdr` cells) below 1180px, widening to a 6-track grid (all
+ * 3 pairs in one row, all 6 header cells visible) at ≥1180px — the same
+ * breakpoint the Payoff+Legs row already uses elsewhere in this file.
+ * The Greeks card and its 2026-11-18 shape are unaffected by this
+ * follow-up (still exactly 2 rows, no responsive variant).
+ *
  * Every InfoHint tooltip, every formatter (pctFmt/fmtPct/fmtMoney), and
  * every kv-pos/kv-neg sign-coloring class is unchanged — this spec only
  * guards the NEW grid shape, not the pre-existing formatting/tooltip
@@ -34,14 +44,16 @@
  *               network round-trips.
  *   3. Stale  — regression guards against the OLD shapes (kv-pair-per-
  *               Greek, 2-pairs-per-row Risk, flex-wrap mobile fallback,
- *               ≥1180px single-row Risk override) reappearing.
+ *               unconditional-2-column Risk with no header row)
+ *               reappearing.
  *   4. Reuse  — static checks reuse the same `ruleBody`-style regex
  *               helper pattern already used by alignment_overflow_audit.
  *               spec.js for this exact file.
  *   5. UX     — live checks run at a 360px mobile viewport (this
- *               project's own mobile-check convention) as well as
- *               desktop, confirming no Greek is clipped and no Risk row
- *               is broken at a phone width.
+ *               project's own mobile-check convention), a ≥1180px
+ *               desktop viewport, and the project's standard 1440px
+ *               desktop viewport, confirming no Greek is clipped and the
+ *               Risk header/row count tracks the active breakpoint.
  *
  * Run:
  *   cd frontend && npx playwright test e2e/derivatives_greeks_risk_restructure.spec.js
@@ -124,15 +136,20 @@ test.describe('Static source checks — Greeks/Risk restructure shape', () => {
     expect(src).not.toMatch(/\.opt-kv-greeks\s*\{[^}]*display:\s*flex;[^}]*flex-wrap:\s*wrap;/);
   });
 
-  test('Risk block: exactly 6 .kv-pair rows (R:R, Risk-of-ruin, Breakevens, POP, EV, EV/cost), no header row', () => {
+  test('Risk block: exactly 6 .kv-pair rows (R:R, Risk-of-ruin, Breakevens, POP, EV, EV/cost), preceded by 6 .kv-risk-colhdr header cells (2026-11-19)', () => {
     const pairCount = (riskBlock.match(/class="kv-pair"/g) || []).length;
     expect(pairCount).toBe(6);
-    // No header row: the block's first real child element must be the
-    // first .kv-pair, not a dedicated header/label-row wrapper.
+    // Header row: exactly 6 `.kv-risk-colhdr` spans (3 Metric|Value
+    // pairs) must appear, all BEFORE the first `.kv-pair`, in document
+    // order, with the correct alternating text.
+    const hdrMatches = [...riskBlock.matchAll(/<span class="kv-risk-colhdr"[^>]*>([^<]*)<\/span>/g)];
+    expect(hdrMatches.length, '6 header cells').toBe(6);
+    const expectedHdrText = ['Metric', 'Value', 'Metric', 'Value', 'Metric', 'Value'];
+    expect(hdrMatches.map((m) => m[1].trim())).toEqual(expectedHdrText);
     const firstPairIdx = riskBlock.indexOf('class="kv-pair"');
-    const firstHeaderRowIdx = riskBlock.search(/class="[^"]*-header-row/);
-    expect(firstHeaderRowIdx, 'no dedicated header-row wrapper may exist in the Risk block').toBe(-1);
+    const lastHdrIdx = hdrMatches[hdrMatches.length - 1].index;
     expect(firstPairIdx).toBeGreaterThan(-1);
+    expect(lastHdrIdx, 'every header cell must precede the first .kv-pair').toBeLessThan(firstPairIdx);
   });
 
   test('Risk block: EV/cost pair is wrapped by the ev_pct != null guard in full (no blank row when absent)', () => {
@@ -143,12 +160,14 @@ test.describe('Static source checks — Greeks/Risk restructure shape', () => {
     expect(afterGuard).toMatch(/EV \/ cost/);
   });
 
-  test('Risk grid CSS: unconditional 2-column grid, no responsive single-row/2-per-row overrides remain', () => {
+  test('Risk grid CSS: 4-track default grid, widening to 6-track at >=1180px, with a matching header-cell toggle (2026-11-19)', () => {
     const cssMatch = src.match(/\.opt-kv-risk\s*\{([^}]*)\}/);
     expect(cssMatch, '.opt-kv-risk rule must exist').not.toBeNull();
     const body = cssMatch[1];
     expect(body).toMatch(/display:\s*grid/);
-    expect(body).toMatch(/grid-template-columns:\s*max-content\s+minmax\(max-content,\s*1fr\)/);
+    expect(body).toMatch(
+      /grid-template-columns:\s*max-content\s+minmax\(max-content,\s*1fr\)\s+max-content\s+minmax\(max-content,\s*1fr\)/
+    );
     expect(body).toMatch(/flex:\s*1/);
     expect(body).toMatch(/align-content:\s*center/);
     // Same defensive overflow handling as Greeks — a worst-case long
@@ -158,8 +177,26 @@ test.describe('Static source checks — Greeks/Risk restructure shape', () => {
     const pairCssMatch = src.match(/\.opt-kv-risk\s+\.kv-pair\s*\{([^}]*)\}/);
     expect(pairCssMatch, '.opt-kv-risk .kv-pair rule must exist').not.toBeNull();
     expect(pairCssMatch[1]).toMatch(/display:\s*contents/);
-    // Regression guards against the old responsive shapes.
-    expect(src).not.toMatch(/@media \(min-width: 1180px\)\s*\{\s*\.opt-kv-risk\s*\{/);
+    // 2026-11-19: a real >=1180px widening override MUST exist (reverses
+    // the 2026-11-18 "no responsive override" decision for this card
+    // only), widening to 6 tracks (3 metric|value pairs in one row).
+    const mediaMatch = src.match(
+      /@media \(min-width:\s*1180px\)\s*\{\s*\.opt-kv-risk\s*\{([^}]*)\}/
+    );
+    expect(mediaMatch, '>=1180px .opt-kv-risk widening override must exist').not.toBeNull();
+    expect(mediaMatch[1]).toMatch(
+      /grid-template-columns:\s*repeat\(3,\s*max-content\s+minmax\(max-content,\s*1fr\)\)/
+    );
+    // The same breakpoint must toggle the 3rd pair's own 2 header cells
+    // (nth-child 5/6) from hidden (default) to visible (>=1180px).
+    expect(src).toMatch(
+      /\.opt-kv-risk\s+\.kv-risk-colhdr:nth-child\(5\),\s*\n?\s*\.opt-kv-risk\s+\.kv-risk-colhdr:nth-child\(6\)\s*\{\s*display:\s*none;/
+    );
+    const hdrMediaMatch = src.match(
+      /@media \(min-width:\s*1180px\)\s*\{\s*\.opt-kv-risk\s+\.kv-risk-colhdr:nth-child\(5\),\s*\n?\s*\.opt-kv-risk\s+\.kv-risk-colhdr:nth-child\(6\)\s*\{([^}]*)\}/
+    );
+    expect(hdrMediaMatch, '>=1180px header-cell reveal override must exist').not.toBeNull();
+    expect(hdrMediaMatch[1]).toMatch(/display:\s*flex/);
   });
 });
 
@@ -229,7 +266,7 @@ for (const vp of [
       }
     });
 
-    test('Risk: no header row — 6 (or 5 without EV/cost) two-column label|value rows, each pair on its own row', async ({ page }) => {
+    test('Risk: a real header row renders above the data, with the pairs-per-row count and visible header-cell count tracking the active breakpoint (2026-11-19)', async ({ page }) => {
       await gotoDerivativesWithStrategy(page);
       const risk = page.locator('.opt-kv-risk').first();
       const visible = await risk.isVisible({ timeout: 5000 }).catch(() => false);
@@ -239,50 +276,66 @@ for (const vp of [
       }
 
       const shape = await risk.evaluate((el) => {
+        const hdrs = [...el.querySelectorAll('.kv-risk-colhdr')].filter(
+          (h) => getComputedStyle(h).display !== 'none'
+        );
         const pairs = [...el.querySelectorAll('.kv-pair')];
         const rect = (node) => node.getBoundingClientRect();
-        return pairs.map((p) => {
-          const k = p.querySelector('.kv-k');
-          const v = p.querySelector('.kv-v');
-          return {
-            label: k ? k.textContent.trim().replace(/\s+/g, ' ') : null,
-            kTop: k ? Math.round(rect(k).top) : null,
-            vTop: v ? Math.round(rect(v).top) : null,
-            kLeft: k ? Math.round(rect(k).left) : null,
-            vLeft: v ? Math.round(rect(v).left) : null,
-          };
-        });
+        return {
+          hdrTops: hdrs.map((h) => Math.round(rect(h).top)),
+          hdrLefts: hdrs.map((h) => Math.round(rect(h).left)),
+          hdrTexts: hdrs.map((h) => h.textContent.trim()),
+          pairs: pairs.map((p) => {
+            const k = p.querySelector('.kv-k');
+            const v = p.querySelector('.kv-v');
+            return {
+              label: k ? k.textContent.trim().replace(/\s+/g, ' ') : null,
+              kTop: k ? Math.round(rect(k).top) : null,
+              vTop: v ? Math.round(rect(v).top) : null,
+              kLeft: k ? Math.round(rect(k).left) : null,
+              vLeft: v ? Math.round(rect(v).left) : null,
+            };
+          }),
+        };
       });
 
       // 6 rows normally, 5 when EV/cost's data is absent (ev_pct == null).
-      expect([5, 6]).toContain(shape.length);
+      expect([5, 6]).toContain(shape.pairs.length);
 
-      // No header row: the first row's label must be a real metric name,
-      // not a generic column header (e.g. "Metric"/"Label"/"Value").
-      expect(shape[0].label).not.toMatch(/^(Metric|Label|Value)$/i);
-      expect(shape[0].label).toMatch(/R:R/);
+      const isWideBreakpoint = vp.width >= 1180;
+      // Below 1180px only the first 2 pairs' header cells (4 of 6) are
+      // visible; at >=1180px all 3 pairs' header cells (6) are visible.
+      expect(shape.hdrTops.length, `visible header cells at ${vp.width}px`).toBe(isWideBreakpoint ? 6 : 4);
+      expect(shape.hdrTexts).toEqual(isWideBreakpoint
+        ? ['Metric', 'Value', 'Metric', 'Value', 'Metric', 'Value']
+        : ['Metric', 'Value', 'Metric', 'Value']);
 
-      // Each row's own label and value share one row top (same row).
-      for (const row of shape) {
+      // The header row sits above the first data row.
+      const hdrTopRef = shape.hdrTops[0];
+      for (const t of shape.hdrTops) expect(Math.abs(t - hdrTopRef)).toBeLessThanOrEqual(2);
+      const firstPairTop = Math.min(...shape.pairs.map((p) => p.kTop ?? Infinity));
+      expect(firstPairTop, 'first data row must sit below the header row').toBeGreaterThan(hdrTopRef);
+
+      // Each pair's own label and value share one row top (same row).
+      for (const row of shape.pairs) {
         expect(row.kTop, `row "${row.label}" label must render`).not.toBeNull();
         expect(row.vTop, `row "${row.label}" value must render`).not.toBeNull();
         expect(Math.abs(row.kTop - row.vTop)).toBeLessThanOrEqual(2);
       }
 
-      // Rows are stacked vertically — every row's top is strictly greater
-      // than the previous row's (one metric per row, not 2-per-row).
-      for (let i = 1; i < shape.length; i++) {
-        expect(shape[i].kTop, `row ${i} ("${shape[i].label}") must sit below row ${i - 1} ("${shape[i - 1].label}")`)
-          .toBeGreaterThan(shape[i - 1].kTop);
-      }
-
-      // Every label shares one left edge (column 1), every value shares
-      // another left edge (column 2) — a true 2-column grid, not a
-      // per-row-independent layout.
-      const kLeftRef = shape[0].kLeft;
-      for (const row of shape) expect(Math.abs(row.kLeft - kLeftRef)).toBeLessThanOrEqual(2);
-      const vLeftRef = shape[0].vLeft;
-      for (const row of shape) expect(Math.abs(row.vLeft - vLeftRef)).toBeLessThanOrEqual(2);
+      // Distinct left-edge (kLeft) columns across all pairs — 4 at the
+      // narrow breakpoint (2 pairs per row), 6 at >=1180px (3 pairs per
+      // row): each pair's label sits in its own column track, and the
+      // grid wraps after 2 (or 3) pairs onto the next row.
+      const distinctLefts = (vals) => {
+        const uniq = [];
+        for (const v of vals) {
+          if (!uniq.some((u) => Math.abs(u - v) <= 2)) uniq.push(v);
+        }
+        return uniq.length;
+      };
+      const allLefts = shape.pairs.flatMap((p) => [p.kLeft, p.vLeft]);
+      expect(distinctLefts(allLefts), `distinct left-edge columns at ${vp.width}px`).toBe(isWideBreakpoint ? 6 : 4);
     });
   });
 }

@@ -1,230 +1,115 @@
-# Plan: Alert-agent consolidation + frontend reload/SWR extension
+# Plan: Derivatives page — Legs dropdown width, Greeks grid decoration, Risk & EV four-column layout with header
 
-## Context
+## Task
 
-Two tasks the operator approved earlier this session, now dispatched as their own
-plan per "wait for dprod to finish, then plan both." Both were explicitly deferred
-so they wouldn't collide with the just-shipped derivatives/alert-email batch.
+Three coupled UI tweaks on `/admin/derivatives` (`frontend/src/routes/(algo)/admin/derivatives/+page.svelte`), CSS-only plus one small markup addition:
 
-1. **Alert-agent consolidation** — audit found that 3 remaining `generic_notice`
-   stragglers could fold into the existing `ALERT_EVENT_DISPATCH` table (the
-   2026-10-25 collapse pattern), and the NFO/MCX expiry-risk alerts could merge
-   into one `any[]`-conditioned agent. Deep exploration (this session) found real
-   mechanical blockers in both — decided below, not re-litigated.
-2. **Reload/tab-switch reset-to-blank** — the `createDataStore` SWR pattern
-   (Tier-1 `$state` + Tier-2 localStorage, already live for 8 broker-data domains
-   in `marketDataStores.svelte.js`) isn't applied to the Orders page's visible
-   grid, LogPanel's tabs, or Derivatives' `strategy`/underlying-spot state — so
-   those surfaces blank to empty/"Loading…" on reload or tab-switch-back instead
-   of showing last-good data while a background refetch happens.
+1. **`.cand-view-select`** (Legs view-picker dropdown) — reduce width ~30%: `flex: 0 1 11rem; min-width: 6.5rem;` → `flex: 0 1 7.7rem; min-width: 4.5rem;`. No markup change.
 
-## Part A — Backend: alert-agent consolidation
+2. **Greeks (position) card decoration** — `.opt-kv-greeks .kv-k-greek` (5 header cells, Δ Γ Θ 𝒱 ρ) and `.opt-kv-greeks .kv-v` (5 value cells) currently shrink-wrap (`inline-flex`) with no header-row decoration, unlike `.cand-headrow`/`.byund-headrow` elsewhere in this file. Add, scoped under `.opt-kv-greeks` only (do NOT touch the shared base `.kv-k-greek`/`.kv-v` rules — Risk & EV reuses those same base classes):
+   - `.opt-kv-greeks .kv-k-greek`: add `display:flex; width:100%; box-sizing:border-box; padding:0.15rem 0.35rem; background:var(--grid-header-bg); border-bottom:1px solid var(--algo-amber-border-soft);` — keep existing font-size/font-weight.
+   - `.opt-kv-greeks .kv-v` (rule already exists ~line 7150): add `width:100%; box-sizing:border-box; padding:0.15rem 0.35rem; border-bottom:1px solid rgba(126,151,184,0.10);` — keep existing font-size/text-align:left/display:inline-flex/align-items:center (2026-11-03 vertical-centering fix must survive).
+   - No `justify-content:center` — keep left-alignment so the existing "value aligns under its own header" left-edge test keeps passing.
 
-**A1. Fold `gtt-orphan-cancelled-alert` + `app-message-alert` into `ALERT_EVENT_DISPATCH`.**
-`draft-sweep-alert` stays dedicated — its only channel is `telegram_info`, which
-the 3 generic channel agents' `only_channel` filter (exact string match against
-`"telegram"`/`"ntfy"`/`"email"`) cannot route to; this is the identical reason
-`visitor-report-alert`/`deploy-sync-alert`/`market-summary` were deliberately kept
-dedicated in the 2026-10-25 collapse. Building a 4th generic channel agent for one
-straggler isn't worth it.
+3. **Risk & expected value card — responsive N columns (param, value, param, value, ...) + header row.**
+   Current: `.opt-kv-risk { grid-template-columns: max-content minmax(max-content, 1fr); }`,
+   `.kv-pair { display: contents; }`, 6 (or 5) metrics one-per-row, explicitly no header row.
+   Operator clarified mid-task: the 4-column (2-pair) shape below is the **mobile** baseline; on
+   **desktop**, where the card has more width, the "param name, value" column pair should **repeat
+   again** if space allows (3 pairs instead of 2) — not stay hardcoded at 2 forever.
+   - **Layout, responsive via `@media`** (matching this file's own existing viewport-breakpoint
+     convention — no container queries are used anywhere else in this codebase, so none are
+     introduced here):
+     - Default (mobile and up, the floor): 4 tracks (2 pairs) —
+       `grid-template-columns: max-content minmax(max-content, 1fr) max-content minmax(max-content, 1fr);`
+     - `@media (min-width: 1180px)` (same desktop threshold this file already uses for the
+       Payoff+Legs 2-up row, line ~7244 — reused for consistency, not a new magic number): widen to
+       6 tracks (3 pairs) — `grid-template-columns: repeat(3, max-content minmax(max-content, 1fr));`
+     - Everything else on `.opt-kv-risk` unchanged at both tiers (gaps, `overflow-x:auto`,
+       `min-width:0`, `flex:1`, `align-content:center`). `.kv-pair { display: contents; }` and
+       `.opt-kv-risk .kv-v { display:inline-flex; align-items:center; text-align:left; }` stay
+       exactly as-is — **no markup change to the 6 `.kv-pair` divs**. Row-major auto-placement
+       re-flows automatically at each tier: 4 tracks → (R:R, RoR) / (BE, POP) / (EV, EV/cost), 3
+       rows; 6 tracks → (R:R, RoR, BE) / (POP, EV, EV/cost), 2 rows. Chosen over a flex-pair or
+       `repeat(auto-fit, ...)` redesign specifically to preserve the `minmax(max-content,1fr)`
+       overflow-safety invariant (a long value like 3 breakevens must force the grid to scroll,
+       never silently ellipsis-clip — see the existing forced-overflow Playwright test) and to keep
+       the header-cell count deterministic (see below) rather than depending on a runtime-computed
+       fit count.
+   - **Header row (new)**: add 6 `<span class="kv-risk-colhdr" role="columnheader">` cells — text
+     "Metric", "Value", "Metric", "Value", "Metric", "Value" — immediately before the first
+     `.kv-pair` div inside `<div class="opt-kv opt-kv-risk">`. Document-order auto-placement lands
+     these in row 1, pushing the `.kv-pair`s to rows 2+ automatically — no explicit `grid-row`. The
+     3rd pair's header cells (the 5th/6th spans) are hidden by default and revealed at the same
+     1180px breakpoint, so the header's visible cell count always matches the grid's current track
+     count — they can never disagree, since both are driven by the identical media query:
+     ```css
+     .opt-kv-risk .kv-risk-colhdr:nth-child(5),
+     .opt-kv-risk .kv-risk-colhdr:nth-child(6) {
+       display: none;
+     }
+     @media (min-width: 1180px) {
+       .opt-kv-risk .kv-risk-colhdr:nth-child(5),
+       .opt-kv-risk .kv-risk-colhdr:nth-child(6) {
+         display: flex;
+       }
+     }
+     ```
+     Decorate all 6 with the shared `--grid-header-*` tokens (fuller header typography than Greeks,
+     since these are plain text labels not Greek glyphs):
+     ```css
+     .opt-kv-risk .kv-risk-colhdr {
+       display: flex;
+       width: 100%;
+       box-sizing: border-box;
+       padding: 0.15rem 0.35rem;
+       background: var(--grid-header-bg);
+       border-bottom: 1px solid var(--algo-amber-border-soft);
+       font-size: var(--grid-header-font-size);
+       font-weight: var(--grid-header-font-weight);
+       letter-spacing: var(--grid-header-letter-spacing);
+       text-transform: uppercase;
+       color: var(--text-muted);
+     }
+     ```
 
-In `backend/api/algo/event_agents.py`:
-- Move `GTT_ORPHAN_CANCELLED_AGENT` and `APP_MESSAGE_AGENT`'s dict literals into
-  `_COLLAPSED_DETECTOR_SPECS` (byte-identical `conditions`/`actions`/`slug`/`name`,
-  same shape every other collapsed spec already has there). Remove them from
-  `SEEDED_AGENTS`.
-- `app-message-alert` currently has **no** `alert_routing._PER_SLUG_OVERRIDES` row
-  — it resolves live via `_TIER_DEFAULTS["high"]` (`[telegram, ntfy(high)]`).
-  `_build_alert_event_dispatch_table()` defaults a missing override to `[]`, which
-  would silently drop every CRITICAL AppMessage (the exact bug this agent was
-  built to close in 2026-11-08). **Add `_PER_SLUG_OVERRIDES["app-message-alert"] =
-  [{"channel":"telegram","enabled":True},{"channel":"ntfy","enabled":True,"priority":"high"}]`
-  in `alert_routing.py` BEFORE the fold lands** — freezes exactly what it resolves
-  to today, same convention every other migrated agent's override row followed.
-  `gtt-orphan-cancelled-alert` already has a `_PER_SLUG_OVERRIDES` row
-  (telegram-only) — no change needed there.
-- `_RETIRED_SLUGS`/`_retire_collapsed_event_agents()` pick both up automatically
-  (no separate list to touch) — they deactivate (never delete) the two rows.
-- Bump `SEED_VERSION` (currently 10 → 11): `_CHANNEL_AGENT_CONDITION`'s hash
-  changes for all 3 channel-agent rows since it gains 2 more `any[]` leaves.
-- Update pinned literals in `backend/tests/test_alert_channel_collapse.py`:
-  `SEEDED_AGENTS` count 16→14, `ALERT_EVENT_DISPATCH` count 18→20 (each spec
-  contributes exactly one `alert_event` key).
-
-**A2. Merge `expiry-nfo-risk-alert` + `expiry-mcx-risk-alert`.**
-Edit `expiry-nfo-risk-alert`'s row **in place** (not a new slug) — builtin-agent
-retirement (`_ae_prune_retired_builtins()`) **deletes** rows, unlike the
-event-agent path, so in-place-edit-one keeps one row's history vs. a fresh slug
-losing both.
-
-In `backend/api/algo/agent_engine.py`:
-- `expiry-nfo-risk-alert`'s `conditions` becomes:
-  ```python
-  {"any": [
-      <verbatim current expiry-nfo-risk-alert "all" tree, unchanged>,
-      <verbatim current expiry-mcx-risk-alert "all" tree, unchanged>,
-  ]}
-  ```
-  Each branch keeps its own exchange-specific pre-close suppression leaf
-  (`nse_*` vs `mcx_*` — do NOT hoist a shared outer `not{...}`, that would apply
-  one exchange's suppression window to both). Update the agent's `name`/
-  `description` to say "NFO or MCX" instead of just NFO.
-- Remove `expiry-mcx-risk-alert`'s dict from `_EXPIRY_RISK_AGENTS` entirely — it
-  gets pruned (deleted) from the DB on next boot via the existing
-  `_ae_prune_retired_builtins()` mechanism. No new retirement code needed.
-- Update `_AE_CONTENT_MATCHED_COND_MIGRATIONS["expiry-nfo-risk-alert"]`: its value
-  must become the CURRENT (pre-merge) `all[...]` tree shown above (the one
-  already live since 2026-11-12) so an already-seeded row force-upgrades to the
-  merged shape on restart. Remove the now-irrelevant
-  `_AE_CONTENT_MATCHED_COND_MIGRATIONS["expiry-mcx-risk-alert"]` entry (its slug
-  no longer exists in `BUILTIN_AGENTS`).
-- Leave `_compute_topic_suppression()` (the per-cycle `topic="expiry_warning"`
-  tie-break/merge mechanism) untouched — it's generic and still needed for any
-  future same-topic pair; it simply becomes inert for this specific pair since
-  there's only one agent left in that topic.
-
-**A3. Test ripple (backend-test agent):**
-- `test_alert_channel_collapse.py` — update the two pinned counts (A1).
-- `test_expiry_same_window_consolidation.py` — per-slug lookups for
-  `expiry-mcx-risk-alert` need updating/removing; add coverage for the merged
-  `any[]` shape firing on either exchange's leaf independently, and verify each
-  branch's pre-close suppression is still exchange-scoped (an MCX pre-close
-  window must not suppress an NFO breach, and vice versa).
-- `test_agent_latch.py` (~line 280, `test_suppressed_rows_merged_into_winner_not_dropped`)
-  — uses both slugs as its literal example; needs a different same-topic pair
-  (or a synthetic one) since only one of these two agents exists after the merge.
-- `test_mcx_preclose_agent.py` (~line 778) — check if it references
-  `expiry-mcx-risk-alert`'s slug directly; update if so.
-- New test: app-message-alert's `_PER_SLUG_OVERRIDES` row resolves to the same
-  channels it resolved to via `_TIER_DEFAULTS["high"]` before the fold (parity
-  check — the exact regression this fold must not reintroduce).
-
-## Part B — Frontend: reload/SWR extension
-
-Reuse `frontend/src/lib/data/persistentCache.js` (`cachedRead`/`cachedWrite`,
-`rbq.cache.` prefix, TTL buckets) as the shared Tier-2 mechanism throughout —
-not always the full `createDataStore()` wrapper, since two of the three targets
-have per-instance (not module-singleton) state or existing hand-rolled
-keep-last-good logic that `createDataStore`'s generation-guard/fetcher-must-throw
-contract doesn't cleanly fit. Each target below picks the right-sized tool.
-
-**B1. Orders page's visible grid.** Correcting the original premise: the page's
-own `orders = $state([])` is nearly dead (only feeds an unused `_scopedOrders`).
-The actual blank-on-reload grid is `OrderBook.svelte`'s own `orderRows`/`_loading`
-— shown as "Loading…" until its first fetch resolves. Fix: promote this to a new
-shared `createDataStore` singleton in `marketDataStores.svelte.js` (`md.orders`,
-mirroring `positionsStore`'s shape), with a `fetcher` that wraps the existing
-`fetchOrders()` + `fetchAlgoOrdersRecent()` merge and **throws** on a genuinely
-failed broker leg (restructuring the current `Promise.allSettled`-swallows-errors
-logic to surface failure to `createDataStore`'s keep-last-good path, rather than
-re-inventing that freeze logic a second time). `OrderBook.svelte` reads
-`ordersStore.value`/`.loading` instead of its own local state + `visibleInterval`
-poll; the existing 5s poll cadence becomes `ordersStore.load()` on the same
-interval (dedup'd for free by `createDataStore`'s in-flight guard). Leave
-`HeldOrdersCard.svelte` and `ChaseCard.svelte` out of scope (lower-traffic,
-not the reported pain point, and `OrderBook` benefits every page that mounts it,
-not just `/orders`) — flag as a known residual gap, not silently fixed.
-
-**B2. LogPanel tabs.** Given the gotchas found (mode-switch effect wipes state
-right after mount; fetchers aren't key-stable across `mode`/`simScope`;
-`_loadOrders` uses `Promise.allSettled` and doesn't throw on partial failure),
-do NOT force these into full `createDataStore`. Instead, add a lightweight
-Tier-2 hydrate-and-persist pair directly via `persistentCache.js`'s
-`cachedRead`/`cachedWrite`, scoped per-instance at component init:
-- On mount, before the first fetch, synchronously `cachedRead()` each tab's own
-  key (`log.order.${mode}`, `log.agent.${simScope}`, `log.alerts`, etc. — key
-  must encode the same discriminators the fetcher branches on, so a Tier-2 hit
-  can never mix sim/live or wrong-mode rows) and seed the `$state` array from it
-  if present, BEFORE the mode-switch-wipe effect's own guard (`_lastMode` must be
-  initialized from the hydrated mode, not `null`, so the wipe effect doesn't
-  immediately erase what was just hydrated).
-- On every successful load (existing try/catch's success path, not the
-  keep-last-good catch branch), `cachedWrite()` the same key.
-- Short TTL bucket (`TTL.minute` or `TTL.short`) — this is about surviving a
-  reload/tab-switch, not long-term caching; keep-last-good-on-error already
-  covers the "network blip while open" case.
-- Apply to `orderRows`/`orderEvents`/`gttRows`, `agentLog`, `alertsLog` (the
-  three tabs started eagerly on mount — `systemLog`/`connEvents`/`simLog` start
-  lazily on first click and are lower priority; include only if trivial once the
-  pattern is established, otherwise flag as deferred).
-
-**B3. Derivatives page — swap existing sessionStorage cache to the shared
-persistentCache mechanism, keep everything else.** The page already has a
-3-tier pattern for `strategy` (hand-rolled generation guard, "never null on
-underlying switch" behavior, per-underlying staleness check via
-`_strategyStale`) — only its Tier-2 storage backend is the gap: `sessionStorage`
-(dies on tab close, 5-minute cap) instead of the shared `localStorage`-backed
-`persistentCache.js` every other domain uses. Fix: replace `_saveCache()`/
-`_loadCache()`'s raw `sessionStorage.setItem`/`getItem` calls with
-`cachedWrite()`/`cachedRead()` from `persistentCache.js`, same key shape
-(`{ts, strategy, drafts, selectedAccounts, selectedUnderlying, selectedExpiries,
-enabledSymbols}`), a TTL bucket appropriate to its existing 5-minute max-age
-semantics. Do NOT touch the generation guard, the "never null `strategy`"
-comment-protected behavior, or the `legsKey`-based memoization — only the
-storage tier changes. Also add Tier-2 to `underlyingSpotStore.svelte.js`'s
-`_quotes` (currently zero persistence at all) via the same `cachedWrite`/
-`cachedRead` pair, keyed per-symbol, short TTL — this directly fixes "payoff/spot
-resets empty on reload" since derivatives' spot/prev-close math reads this store.
-Leave `simActive`, `_payoffSnapshotByRoot`, and `payoffDrafts.svelte.js` out of
-scope (lower priority, not the reported pain point) — flag as residual gaps.
-
-**B4. Cache-invalidation note (no new code needed):** `authStore.login()`/
-`.logout()` already wipe every `rbq.cache.*` localStorage key wholesale — any new
-`persistentCache`-backed key from B1–B3 is automatically flushed on login/logout
-with zero extra plumbing. Keep the derivatives page's own existing
-`sessionStorage.removeItem(_CACHE_KEY)` auth-switch handler but update it to call
-the new storage API's delete instead (don't leave a dead sessionStorage call next
-to the new cachedWrite path).
-
-**B5. Tests:**
-- Vitest: `dataStore.svelte.js`/`persistentCache.js` already have test coverage
-  for the shared mechanics — add cases for the new `md.orders` store (B1) mirroring
-  the existing `positionsStore`/`moversStore` test shape, and for
-  `underlyingSpotStore`'s new Tier-2 (B3).
-- Playwright: one spec per surface confirming last-good data survives a hard
-  reload before the first network response lands (mock/delay the fetch, assert
-  the grid/chart shows cached data immediately, not "Loading…"/blank) — Orders
-  grid (B1), one LogPanel tab (B2), Derivatives strategy+spot after switching
-  underlying then reloading (B3, must also assert the per-underlying key
-  prevents cross-underlying contamination per `_strategyStale`'s existing
-  invariant).
+Update the comment blocks above `.opt-kv-greeks` and `.opt-kv-risk` to record this as a dated 2026-11-19 follow-up to the 2026-11-18 restructure already documented there (don't delete that history), including the mid-task reversal on the Risk header-row question (first "no header expected", then operator explicitly said "it can have header too").
 
 ## Agents
 
-- **backend**: Part A (A1, A2) — `event_agents.py`, `alert_routing.py`,
-  `agent_engine.py`.
-- **backend-test**: A3 — all pinned-literal and ripple-test updates.
-- **frontend**: Part B (B1, B2, B3, B4) — `marketDataStores.svelte.js`,
-  `OrderBook.svelte`, `LogPanel.svelte`, derivatives `+page.svelte`,
-  `underlyingSpotStore.svelte.js`.
-- **playwright**: B5 Playwright specs (reload-survival per surface).
-- Bundle backend-test's vitest-side work (dataStore/underlyingSpotStore cases)
-  into the frontend agent's own commit instead of a separate dispatch — same
-  files, avoids a second agent touching what the frontend agent just wrote.
-- broker: skip.
-- doc: after both land, one CLAUDE.md pass — new entries for the alert fold
-  (counts, slug changes) and the SWR extension (which 3 surfaces, what's
-  deliberately left out of scope per B1/B2/B3's residual-gap notes).
+- **frontend**: Make all CSS + the one markup change above in `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`. Then update the Playwright specs that hard-pin the exact shapes being changed, in the same commit:
+  - `frontend/e2e/derivatives_greeks_risk_restructure.spec.js`:
+    - The static "Risk block: exactly 6 .kv-pair rows..., no header row" test must flip: still exactly 6 `.kv-pair`s, but now assert all 6 `.kv-risk-colhdr` header cells exist, in document order before the first `.kv-pair`, with the right text ("Metric"/"Value" ×3).
+    - The static "Risk grid CSS: unconditional 2-column grid..." test's `grid-template-columns` regex → match the new default 4-track value, plus a new assertion that a `@media (min-width: 1180px)` block exists for `.opt-kv-risk` widening to 6 tracks (`repeat(3, max-content minmax(max-content, 1fr))`), and that the same breakpoint also toggles `.kv-risk-colhdr:nth-child(5)`/`:nth-child(6)` to `display: flex`. `pairCssMatch[1]).toMatch(/display:\s*contents/)` stays as-is.
+    - The live "Risk: no header row — each pair on its own row" test → rewrite into two viewport cases: at the default/mobile viewport, 2 pairs per row (4 distinct left-edge columns, only 4 header cells visible); at a ≥1180px desktop viewport, 3 pairs per row (6 distinct left-edge columns, all 6 header cells visible). Both cases assert the header row renders above the first data row.
+    - Leave every Greeks-side test in this file untouched.
+  - `frontend/e2e/alignment_overflow_audit.spec.js`: the `.opt-kv-risk is a strict 2-column grid...` test's `grid-template-columns` regex + description → update to the default 4-track shape plus the new `@media (min-width: 1180px)` 6-track override; `display:\s*contents` check unchanged.
+  - `frontend/e2e/derivatives_greeks_risk_vertical_centering.spec.js`: verify it still passes unchanged (its assertions target `.opt-kv-risk .kv-v`'s inline-flex/align-items and `.opt-kv-risk`'s own flex-grow/align-content — none of which this plan removes). Only touch it if a real failure surfaces.
+  - `frontend/e2e/derivatives_smoke_candidatelegrow.spec.js`, `derivatives_greek_header_chip_infohint.spec.js`, `derivatives_tick_flash.spec.js`: markup/InfoHint/tf-cell presence only — confirm green, don't edit unless a real failure surfaces.
+  - Run the full affected spec files locally and fix any real failures before handing off:
+    `npx playwright test e2e/derivatives_greeks_risk_restructure.spec.js e2e/alignment_overflow_audit.spec.js e2e/derivatives_greeks_risk_vertical_centering.spec.js e2e/derivatives_smoke_candidatelegrow.spec.js e2e/derivatives_greek_header_chip_infohint.spec.js e2e/derivatives_tick_flash.spec.js`
+- **backend**: skip.
+- **broker**: skip.
+- **doc**: Add one dated (2026-11-19) addendum under the existing 2026-11-18 "Derivatives Legs grid — St column removed... Greeks and Risk cards rebuilt as CSS grids" entry in `CLAUDE.md`: dropdown width change, Greeks header/value decoration, Risk & EV's 4-track layout + new header row (and why 4-track was chosen over a flex-pair redesign — preserves the overflow-safety invariant).
+- **backend-test**: skip.
+- **playwright**: covered by the frontend agent above (bundled — same file, same task).
 
 ## Tests
 
-- pytest: yes
+- pytest: no
 - svelte-check: yes
-- playwright: yes
+- playwright: yes — the 6 spec files listed above
 
 ## Commit message
 
-Two separate commits (backend alert consolidation; frontend SWR extension) —
-unrelated surfaces, no shared files, no reason to bundle per the one-issue-at-a-time
-convention.
+```
+style(derivatives): shrink Legs dropdown, decorate Greeks grid, add 4-column header to Risk & EV
+```
 
 ## Done when
 
-- Backend: `radon cc` clean, pytest full suite green twice, the two pinned-count
-  tests pass with new values, a live app-message CRITICAL alert still resolves to
-  telegram+ntfy(high) (parity check), both expiry-risk branches fire independently
-  with exchange-scoped pre-close suppression verified by test.
-- Frontend: svelte-check 0 errors, vitest green, new Playwright reload-survival
-  specs pass (genuinely fail against pre-fix code, not just pass trivially) for
-  Orders grid, one LogPanel tab, and Derivatives strategy+spot — each showing
-  last-good data immediately on reload instead of blank/"Loading…".
+- `.cand-view-select` is ~30% narrower.
+- Greeks header row (Δ Γ Θ 𝒱 ρ) and value row show background band / border decoration matching `.cand-headrow`/`.byund-headrow`.
+- Risk & expected value renders a "Metric | Value | Metric | Value" header row, same decoration, followed by 3 rows of 2 metrics each (6 metrics; 5 when EV/cost is absent, row 3 half-empty).
+- All 6 listed Playwright spec files pass; no pre-existing test left red, silently skipped, or deleted.
+- CLAUDE.md has a dated entry for this change.

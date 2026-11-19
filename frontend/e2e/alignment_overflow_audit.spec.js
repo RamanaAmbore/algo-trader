@@ -623,19 +623,33 @@ test.describe('Static source checks — derivatives +page.svelte (kv-pair alignm
     expect(body).not.toMatch(/repeat\(auto-fit/);
   });
 
-  test('.opt-kv-risk is a strict 2-column grid (label | value) with no responsive single-row override', () => {
+  test('.opt-kv-risk is a 4-track grid below 1180px, widening to 6-track at >=1180px, with a header row (2026-11-19)', () => {
     // 2026-11-18 restructure: the old "2 pairs per row below 1180px,
-    // 6-pairs-in-1-row above 1180px" responsive shape is replaced by an
-    // unconditional 2-column grid, one metric per row, at every
-    // viewport — no header row, straight into the first metric.
+    // 6-pairs-in-1-row above 1180px" responsive shape was first replaced
+    // by an unconditional 2-column grid, one metric per row.
+    // 2026-11-19 follow-up — the operator then said this card "can have
+    // a header too", which reopened that decision: the grid is
+    // responsive again (4 tracks below 1180px, 6 tracks at >=1180px),
+    // but now with a real `.kv-risk-colhdr` header row rather than the
+    // old header-less single-row override this guard used to forbid.
     const body = ruleBody(content, '.opt-kv-risk');
     expect(body, '.opt-kv-risk rule must exist').not.toBeNull();
-    expect(body).toMatch(/grid-template-columns:\s*max-content\s+minmax\(max-content,\s*1fr\)/);
+    expect(body).toMatch(
+      /grid-template-columns:\s*max-content\s+minmax\(max-content,\s*1fr\)\s+max-content\s+minmax\(max-content,\s*1fr\)/
+    );
     const pairBody = ruleBody(content, '.opt-kv-risk .kv-pair');
     expect(pairBody, '.opt-kv-risk .kv-pair rule must exist').not.toBeNull();
     expect(pairBody).toMatch(/display:\s*contents/);
-    // Regression guard: the old ≥1180px single-row 6-column override is gone.
-    expect(content).not.toMatch(/@media \(min-width: 1180px\)\s*\{\s*\.opt-kv-risk\s*\{/);
+    // The >=1180px widening override must exist (reverses the earlier
+    // "no responsive override" guard for this card only).
+    expect(content).toMatch(/@media \(min-width: 1180px\)\s*\{\s*\.opt-kv-risk\s*\{/);
+    const wideMatch = content.match(
+      /@media \(min-width:\s*1180px\)\s*\{\s*\.opt-kv-risk\s*\{([^}]*)\}/
+    );
+    expect(wideMatch, '>=1180px .opt-kv-risk override must exist').not.toBeNull();
+    expect(wideMatch[1]).toMatch(
+      /grid-template-columns:\s*repeat\(3,\s*max-content\s+minmax\(max-content,\s*1fr\)\)/
+    );
   });
 
   test('.opt-section-meta no longer right-pushes via margin-left: auto', () => {

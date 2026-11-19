@@ -6419,14 +6419,36 @@
                 panel title="Risk &amp; expected value" text={'Aggregate risk + expected value across all legs. Probability-weighted outcomes integrated against the lognormal pdf of the underlying using a qty-weighted IV proxy. POP × magnitudes captures the asymmetry that POP alone misses.'} />
             {/snippet}
           </CardHeader>
-          <!-- Strict 2-column grid, no header row (2026-11-18 restructure,
-               operator request): `.opt-kv-risk` is `grid-template-columns:
-               max-content 1fr` with each `.kv-pair` set to `display:
+          <!-- 2026-11-18 restructure (operator request): a strict 2-column
+               grid (label | value) with each `.kv-pair` set to `display:
                contents` so its own label + value cells fall directly into
                the grid as one row — one metric per row, 6 rows (5 when
-               EV/cost's `{#if}` guard below hides it), straight into the
-               first metric with no leading header row. -->
+               EV/cost's `{#if}` guard below hides it).
+               2026-11-19 follow-up — first described (immediately above)
+               as "no header row expected"; the operator then said this
+               card "can have a header too", so a real header row was
+               added. The 6 `.kv-risk-colhdr` spans below are the header
+               cells for 3 metric|value pairs, laid out responsively: 2
+               pairs per row (4 tracks) below 1180px, all 3 pairs in one
+               row (6 tracks) at ≥1180px — the same breakpoint the
+               Payoff+Legs row already uses elsewhere in this file. No
+               explicit `grid-row` is needed: with the headers placed
+               before the first `.kv-pair` in markup order, the browser's
+               default row-major auto-placement fills row 1 with the 6
+               header cells and lets the `.kv-pair`s (each `display:
+               contents`) flow into the rows below. A flex-pair or
+               `repeat(auto-fit, ...)` redesign was considered and
+               rejected — both would have given up the `minmax(max-content,
+               1fr)` overflow-safety invariant (a long value, e.g. 3
+               breakevens, must force the grid to scroll, never silently
+               clip — see the overflow-x:auto comment below). -->
           <div class="opt-kv opt-kv-risk">
+            <span class="kv-risk-colhdr" role="columnheader">Metric</span>
+            <span class="kv-risk-colhdr" role="columnheader">Value</span>
+            <span class="kv-risk-colhdr" role="columnheader">Metric</span>
+            <span class="kv-risk-colhdr" role="columnheader">Value</span>
+            <span class="kv-risk-colhdr" role="columnheader">Metric</span>
+            <span class="kv-risk-colhdr" role="columnheader">Value</span>
             <div class="kv-pair">
               <span class="kv-k kv-k-greek" bind:this={_sumHintAnchor.rr} role="button" tabindex="0"
                     aria-expanded={_sumHintOpen.rr}
@@ -7112,7 +7134,16 @@
      headers, in markup order) and row 2 with the next 5 (the `.kv-v`
      values, in the SAME order) — each value lands in the same column
      track as its own header, so it's visually aligned underneath it
-     for free, no explicit `grid-row`/`grid-column` bookkeeping needed. */
+     for free, no explicit `grid-row`/`grid-column` bookkeeping needed.
+     2026-11-19 follow-up: the 5 header cells and 5 value cells were
+     still shrink-wrapped `inline-flex` content with none of the real
+     grid-header decoration this app's other grids use (`.cand-headrow`,
+     `.byund-headrow`). `.opt-kv-greeks .kv-k-greek` now gets the same
+     full-width header-cell treatment (background/border-bottom via the
+     shared `--grid-header-*` tokens), and `.opt-kv-greeks .kv-v` gets a
+     matching full-width value-cell treatment (padding + a fainter
+     bottom border) — both scoped to this grid only, so the shared base
+     `.kv-k-greek` rule (also used by Risk & EV's labels) is untouched. */
   .opt-kv-greeks {
     display: grid;
     grid-template-columns: repeat(5, minmax(max-content, 1fr));
@@ -7147,6 +7178,19 @@
     flex: 1;
     align-content: center;
   }
+  /* 2026-11-19 — real grid-header decoration for the 5 Greek header
+     cells, matching `.cand-headrow`/`.byund-headrow`'s own treatment
+     elsewhere in this file. Scoped to `.opt-kv-greeks .kv-k-greek`
+     only — the shared base `.kv-k-greek` rule (also used by Risk &
+     EV's 6 labels) is untouched, so this does not affect those. */
+  .opt-kv-greeks .kv-k-greek {
+    display: flex;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 0.15rem 0.35rem;
+    background: var(--grid-header-bg);
+    border-bottom: 1px solid var(--algo-amber-border-soft);
+  }
   .opt-kv-greeks .kv-v {
     font-size: var(--fs-md);
     text-align: left;
@@ -7165,6 +7209,16 @@
        deliberately left untouched). */
     display: inline-flex;
     align-items: center;
+    /* 2026-11-19 — match the header cells' full-width treatment above
+       so the value row reads as a real grid-value row, not a
+       shrink-wrapped flex pair. A fainter bottom border than the
+       header's (`--algo-amber-border-soft`) separates the value row
+       from whatever sits below it without competing visually with the
+       header's own border. */
+    width: 100%;
+    box-sizing: border-box;
+    padding: 0.15rem 0.35rem;
+    border-bottom: 1px solid rgba(126,151,184,0.10);
   }
   /* Risk & expected value card — 2026-11-18 restructure (operator
      request): a strict 2-column grid (label | value), no header row,
@@ -7177,10 +7231,26 @@
      EV/cost pair, further down in the markup, hides it — the `{#if}`
      drops that whole pair, not just its text, so there is never a
      blank trailing row) auto-flow into 6 (or 5) rows with no leading
-     header row — the grid goes straight into the first metric. */
+     header row — the grid goes straight into the first metric.
+     2026-11-19 follow-up — this card was first described (just above)
+     as having "no header row expected". The operator then explicitly
+     said this card "can have a header too", which reopens that
+     decision: the grid now floors at 4 tracks (2 metric|value pairs
+     per row, with a real header row) below 1180px, and widens to 6
+     tracks (all 3 pairs in one row) at ≥1180px — the exact same
+     breakpoint the Payoff+Legs row already uses elsewhere in this
+     file (see `.opt-payoff-legs-row`'s own `@media (min-width:
+     1180px)` block, reused rather than inventing a new number). A
+     flex-pair redesign, or `repeat(auto-fit, minmax(...))`, was
+     considered and rejected for the same reason `.opt-kv-greeks`
+     already rejected `auto-fit` above: either would give up the
+     `minmax(max-content, 1fr)` overflow-safety invariant — a long
+     value (3+ breakevens) must force the grid to scroll horizontally,
+     never silently clip. `repeat(3, max-content minmax(max-content,
+     1fr))` at the wide breakpoint keeps that invariant per pair. */
   .opt-kv-risk {
     display: grid;
-    grid-template-columns: max-content minmax(max-content, 1fr);
+    grid-template-columns: max-content minmax(max-content, 1fr) max-content minmax(max-content, 1fr);
     column-gap: 0.6rem;
     row-gap: 0.3rem;
     /* Same defensive overflow handling as `.opt-kv-greeks` above — the
@@ -7207,6 +7277,13 @@
     flex: 1;
     align-content: center;
   }
+  /* 2026-11-19 — widen to 6 tracks (3 metric|value pairs in one row)
+     at the same ≥1180px breakpoint the Payoff+Legs row uses. */
+  @media (min-width: 1180px) {
+    .opt-kv-risk {
+      grid-template-columns: repeat(3, max-content minmax(max-content, 1fr));
+    }
+  }
   .opt-kv-risk .kv-pair {
     display: contents;
   }
@@ -7218,6 +7295,36 @@
     display: inline-flex;
     align-items: center;
     text-align: left;
+  }
+  /* 2026-11-19 — the new header row (`.kv-risk-colhdr`, 6 spans,
+     3 Metric|Value pairs, see the markup comment above `.opt-kv-risk`'s
+     markup). Below 1180px only 2 of the 3 pairs are visible per row, so
+     only the first 4 header cells (pairs 1-2) should show; the 3rd
+     pair's own 2 header cells (`:nth-child(5)`/`:nth-child(6)`) hide
+     below that breakpoint and reveal at ≥1180px, matching the grid's
+     own 4-track/6-track split above exactly. */
+  .opt-kv-risk .kv-risk-colhdr:nth-child(5),
+  .opt-kv-risk .kv-risk-colhdr:nth-child(6) {
+    display: none;
+  }
+  @media (min-width: 1180px) {
+    .opt-kv-risk .kv-risk-colhdr:nth-child(5),
+    .opt-kv-risk .kv-risk-colhdr:nth-child(6) {
+      display: flex;
+    }
+  }
+  .opt-kv-risk .kv-risk-colhdr {
+    display: flex;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 0.15rem 0.35rem;
+    background: var(--grid-header-bg);
+    border-bottom: 1px solid var(--algo-amber-border-soft);
+    font-size: var(--grid-header-font-size);
+    font-weight: var(--grid-header-font-weight);
+    letter-spacing: var(--grid-header-letter-spacing);
+    text-transform: uppercase;
+    color: var(--text-muted);
   }
   .kv-pos { color: var(--c-long); }
   .kv-neg { color: var(--c-short); }
@@ -7849,8 +7956,8 @@
      first, and the caret span is `flex:0 0 auto` so it never gets
      squeezed out. */
   .cand-view-select {
-    flex: 0 1 11rem;
-    min-width: 6.5rem;
+    flex: 0 1 7.7rem;
+    min-width: 4.5rem;
   }
 
   /* Expiry tab band tints, expiry-band-header, expiry-id-chip, and
