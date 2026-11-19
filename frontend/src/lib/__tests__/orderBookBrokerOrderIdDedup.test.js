@@ -1,10 +1,22 @@
 /**
  * orderBookBrokerOrderIdDedup.test.js
  *
- * Unit tests for the Sprint 2a dedup fix in OrderBook.svelte /
- * LogPanel.svelte's `_loadOrders()` merge step, and the companion
- * `_isOpenBroker` origin check — exercised as pure functions, no Svelte
- * mounting, mirroring the existing ChaseCard.inflight.test.js pattern.
+ * Unit tests for the Sprint 2a dedup fix, originally in both
+ * OrderBook.svelte's and LogPanel.svelte's own `_loadOrders()` merge
+ * step, and the companion `_isOpenBroker` origin check — exercised as
+ * pure functions (no `?raw` source-scan, no Svelte mounting), mirroring
+ * the existing ChaseCard.inflight.test.js pattern. These mirrors never
+ * read either file's real source, so they stay valid regardless of
+ * where the real logic physically lives, as long as the algorithm
+ * itself is unchanged.
+ *
+ * PLAN.md Part B, item B1 (2026-11) relocated OrderBook.svelte's half of
+ * this — the merge/dedup/`_rowOrigin` logic this file mirrors — into
+ * `_fetchOrdersMerged()` in `marketDataStores.svelte.js` (ported
+ * verbatim, algorithm unchanged; see `ordersStore.test.js` for that
+ * module's own dedicated coverage). LogPanel.svelte keeps its own
+ * independent copy of this same logic unchanged (see B2's own rationale
+ * in that file for why it wasn't also moved).
  *
  * Context: `AlgoOrderInfo` never carried an `order_id` field (that's a
  * broker-only shape). The old dedup compared a broker row's `order_id`

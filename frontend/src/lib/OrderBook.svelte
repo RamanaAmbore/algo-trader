@@ -44,8 +44,8 @@
    */
   import { onMount, onDestroy, untrack } from 'svelte';
   import { visibleInterval, formatDualTz, withGuard } from '$lib/stores';
-  import { isCurrentTradingSession } from '$lib/dateFormat.js';
-  import { fetchOrders, fetchAlgoOrdersRecent, cancelOrder, reconcileSingleOrder, fetchOrderEventsById } from '$lib/api';
+  import { fetchAlgoOrdersRecent, cancelOrder, reconcileSingleOrder, fetchOrderEventsById } from '$lib/api';
+  import { ordersStore } from '$lib/data/marketDataStores.svelte.js';
   import { priceFmt } from '$lib/format';
   import { acctColor } from '$lib/account';
   import OrderCard from '$lib/order/OrderCard.svelte';
@@ -56,7 +56,6 @@
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
   import CardHeader from '$lib/CardHeader.svelte';
   import { toast } from '$lib/data/toastStore.svelte.js';
-  import { noteOrderPollFills } from '$lib/data/orderFillDetector.js';
   import { isDraftOrderRow } from '$lib/data/draftOrderRow.js';
   import { groupPropFor } from '$lib/data/pulseDetached.svelte.js';
   import { isSymbolInWatchlist } from '$lib/data/watchlistContextActions.js';
@@ -81,9 +80,46 @@
     isFullscreen  = $bindable(false),
   } = $props();
 
-  // ── Data ─────────────────────────────────────────────────────────────
-  let orderRows = $state(/** @type {any[]} */ ([]));
-  let _loading  = $state(true);
+  // ── Data (B1 SWR extension, PLAN.md Part B) ────────────────────────────
+  // `orderRows`/`_loading` used to be local $state assigned from this
+  // component's own `_loadOrders()` merge. Both the merge logic (broker +
+  // algo dedup, chase cancel-and-replace supersede tracking, session-
+  // boundary filter) and the fetch itself are now owned by the shared
+  // `ordersStore` singleton (marketDataStores.svelte.js) so every mount of
+  // this component shares one poll AND paints last-good rows immediately
+  // on reload instead of "Loading…" — see that module's own "Orders"
+  // section header comment for the full rationale. LogPanel.svelte keeps
+  // its own independent order merge (its Orders/Console tabs) — unaffected
+  // by this; see that file's own Tier-2 hydrate-and-persist pair (PLAN.md
+  // B2) for its treatment of the identical reload-blank problem.
+  const orderRows = $derived(ordersStore.value ?? []);
+  // `_loading` here means "we have no data yet to show" (cold start with
+  // no Tier-2 cache hit, first fetch still pending), NOT "a fetch happens
+  // to be in flight right now". `ordersStore.loading` flips `true` at the
+  // START of EVERY poll (createDataStore's own `_fetch`, success or not)
+  // and back to `false` once it lands — using it directly here would
+  // blank the grid to "Loading…" on every single ~5s poll tick (via
+  // `_defaultActiveId`'s own `_loading`-gated branch below, which would
+  // resolve to `null` → `_applyStatusFilter` returns `[]`), and would ALSO
+  // hide an already-hydrated Tier-2 cache hit behind "Loading…" for the
+  // brief window between mount and the first fetch resolving — exactly
+  // the blank-on-reload problem B1 exists to remove. `ordersStore.value`
+  // stays non-null (even an empty array) once ANY fetch has ever
+  // succeeded OR failed (stale-while-error keeps the prior value, never
+  // resets to null), so this mirrors the original local `_loading`
+  // $state's one-shot-false-forever behaviour exactly.
+  //
+  // `!ordersStore.meta.fetchFailed` (not just `!ordersStore.error`) —
+  // `_error` is reset to `null` SYNCHRONOUSLY at the start of every poll
+  // attempt (dataStore.svelte.js's `_fetch`), including a retry during a
+  // sustained cold-start outage with no cache — without this,
+  // `value==null && !error` would flip back `true` for the duration of
+  // every retry, flickering the grid between "Loading…" and "No orders
+  // today" each poll cycle. `meta.fetchFailed` stays `true` across
+  // repeated failures (only cleared by the NEXT success — see
+  // markFetchFailedMeta's own doc in dataStore.svelte.js), so once a
+  // genuine failure has been recorded, this gate stays stable at `false`.
+  const _loading  = $derived(ordersStore.value == null && !ordersStore.error && !ordersStore.meta.fetchFailed);
 
   // `_internalStatus` is set the moment the operator clicks a chip and
   // stays sticky (exclusive single-status filter) from then on — unchanged
@@ -92,293 +128,29 @@
   // (now-inert) `statusFilter` prop — see its JSDoc above for why.
   let _internalStatus = $state(/** @type {string|null} */ (null));
 
-  // ── Chase cancel-and-replace dedup (2026-10-23 fix) ────────────────────
-  // During a chase cancel-and-replace, the algo row moves on to a NEW
-  // `broker_order_id` immediately, but the broker's own order book can lag
-  // behind the cancel by a second or more (confirmed via logs: a
-  // transient `CANCEL PENDING` broker status). In that gap, the just-
-  // superseded OLD broker_order_id no longer matches any algo row's
-  // CURRENT broker_order_id, so the existing dedup (`algoOnly` filter
-  // below) can't catch it — it rendered as its own independent, unlinked
-  // "open" card right alongside the new repriced order. Plain (non-
-  // reactive) bookkeeping Maps — never rendered directly, so no need for
-  // `$state`.
-  /** Previous poll's algo-row id → broker_order_id, used only to detect a
-   *  same-row id whose broker_order_id just changed between polls. */
-  let _prevAlgoBrokerIdById = new Map();
-  /** Just-superseded broker_order_id → {algoOrderId, ts} for a short
-   *  grace window, pruned every poll. */
-  let _supersededBrokerIds = /** @type {Map<string, {algoOrderId: any, ts: number}>} */ (new Map());
-  const _SUPERSEDED_GRACE_MS = 25_000;
-
-  // ── Backend-authoritative supersede detection (plan: starry-tickling-
-  // dolphin, frontend item 2) ────────────────────────────────────────────
-  // `superseded_broker_order_ids` on `AlgoOrderInfo` has NOT shipped yet
-  // as of this writing (confirmed via grep against
-  // backend/api/routes/orders_helpers.py / orders.py before this change) —
-  // when the backend item lands, it's the authoritative fix for the
-  // cancel-and-replace poll-timing race the grace-window map above exists
-  // to paper over: the chase engine knows its own cancel-and-replace
-  // history directly, no inference from poll-to-poll diffing needed.
-  // `_backendSupersededShipped` flips true the first poll any algo row
-  // carries the KEY (an empty array is a valid "shipped, nothing
-  // superseded right now" answer — presence of the key is the signal, not
-  // a non-empty array), at which point `_isSupersededBrokerId` below
-  // switches to it as the sole source of truth. Until then both stay at
-  // their initial empty state and it falls back to `_supersededBrokerIds`.
-  // TODO(starry-tickling-dolphin, frontend item 2): once backend item 6
-  // ships the field, the poll-diffing block above
-  // (`_prevAlgoBrokerIdById`/`_supersededBrokerIds`/`_SUPERSEDED_GRACE_MS`)
-  // can likely be deleted outright rather than kept as a permanent
-  // fallback — re-evaluate once that lands.
-  let _backendSupersededShipped = false;
-  let _backendSupersededIds = /** @type {Set<string>} */ (new Set());
-
-  /** Single predicate both the merge filter (`_loadOrders`) and the
-   *  Cancel-button guard (`_cancelRow`) call, so they can never disagree
-   *  about which broker_order_id counts as superseded. */
-  function _isSupersededBrokerId(/** @type {string} */ bid) {
-    if (_backendSupersededShipped) return _backendSupersededIds.has(bid);
-    return _supersededBrokerIds.has(bid);
-  }
+  // ── Chase cancel-and-replace dedup / row-timestamp / session-boundary
+  // filter — all moved to the shared `ordersStore` fetcher in
+  // marketDataStores.svelte.js (B1 SWR extension). See that module's
+  // `_fetchOrdersMerged`/`isOrderSuperseded`/`_ordersRowTsMs`/
+  // `_ordersIsCurrentSessionRow` for the ported-verbatim logic — this
+  // component no longer needs its own copy of any of it.
 
   /**
-   * Row timestamp → epoch-ms, tolerant of both source field conventions
-   * this merged view carries: Kite's `order_timestamp` ("YYYY-MM-DD
-   * HH:MM:SS", IST, no offset — Safari's Date.parse rejects the
-   * space-separated non-ISO form outright, so normalize to ISO+offset
-   * explicitly rather than passing the raw string through) and
-   * AlgoOrder's `created_at` (naive UTC `isoformat()`, no trailing 'Z' —
-   * Date.parse without an explicit offset is spec'd as LOCAL time, so
-   * append 'Z' explicitly rather than relying on engine defaults).
-   * Returns NaN when unparseable.
+   * Trigger a background refresh of the shared `ordersStore`.
+   * `opts.force=true` bypasses createDataStore's in-flight dedup — used
+   * by every MANUAL trigger (CardHeader's refresh button, the post-
+   * cancel/post-reconcile reloads below) so an operator-initiated
+   * refresh is never silently coalesced into an already-in-flight
+   * routine poll's result — mirrors this function's pre-B1 contract,
+   * where the raw (unguarded) `_loadOrders()` always ran a genuinely
+   * fresh fetch regardless of any poll tick in flight. The routine poll
+   * tick (onMount/visibleInterval below) deliberately omits `force` —
+   * `createDataStore`'s own in-flight dedup means overlapping ticks are
+   * free, no second guard needed.
+   * @param {{force?: boolean}} [opts]
    */
-  function _rowTsMs(/** @type {any} */ o) {
-    if (o?.order_timestamp) {
-      const s = String(o.order_timestamp).trim();
-      const m = s.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})/);
-      return m ? Date.parse(`${m[1]}T${m[2]}+05:30`) : Date.parse(s);
-    }
-    if (o?.created_at) {
-      const s = String(o.created_at).trim();
-      if (!s) return NaN;
-      return /[Zz]|[+-]\d{2}:\d{2}$/.test(s) ? Date.parse(s) : Date.parse(`${s}Z`);
-    }
-    return NaN;
-  }
-
-  /**
-   * Drops TERMINAL rows from a PRIOR trading session (08:00 IST rollover —
-   * see `isCurrentTradingSession`). This is a display-only filter applied
-   * upstream to `orderRows` itself (not just the rendered grid) so every
-   * downstream consumer — status counts, the active status filter, CSV
-   * export — automatically only ever sees today's-session terminal orders
-   * with no separate/duplicate filtering logic.
-   *
-   * Still-working rows (OPEN/TRIGGER PENDING) are NEVER dropped by this
-   * filter regardless of age — operator explicit instruction (2026-09-30,
-   * reversing the initial default): "keep them visible until reconciled."
-   * A resting order from a prior session is exactly the kind of thing an
-   * operator needs to SEE and act on (cancel / reconcile), not have
-   * silently disappear at the next 08:00 rollover.
-   */
-  function _isCurrentSessionRow(/** @type {any} */ o) {
-    const st = (o?.status || '').toUpperCase();
-    if (_STATUS_PREDICATES.open(st)) return true;
-    // HELD/CANCEL_FAILED rows are never session-filtered either, same
-    // rationale as `open` above — a row awaiting operator review, or one
-    // whose cancel request may have failed and could still be live at the
-    // broker, must stay visible across the 08:00 IST rollover until the
-    // operator actually resolves it (audit fix, 2026-10 — see `held`
-    // predicate below for why both statuses are grouped together).
-    if (_STATUS_PREDICATES.held(st)) return true;
-    const ms = _rowTsMs(o);
-    if (!Number.isFinite(ms)) return true; // can't judge — keep, don't hide data we can't classify
-    return isCurrentTradingSession(ms);
-  }
-
-  async function _loadOrders() {
-    // Merge broker orders + algo orders so the book carries the same data
-    // LogPanel's order tab renders — broker rows plus paper/sim/shadow rows
-    // that never reach the broker. Broker rows win on duplicate order_id.
-    try {
-      const [brokerResp, algoResp] = await Promise.allSettled([
-        fetchOrders(),
-        fetchAlgoOrdersRecent(100, 'all'),
-      ]);
-      // Audit fix — "cancelled orders showing as OPEN again": fetchOrders()
-      // (the broker book — authoritative for CANCELLED/COMPLETE/REJECTED,
-      // confirmed at the exchange) can transiently reject (network blip,
-      // 5xx). Pre-fix, a rejected brokerResp silently fell through to
-      // brokerRows=[], so EVERY row in the merged view came from the algo
-      // book instead — whose status field can lag a just-confirmed
-      // cancel/fill until the postback/reconcile pass catches up. The next
-      // poll after a genuine cancel could then render that order back as
-      // OPEN purely because the broker fetch (not the order) failed. Freeze
-      // to the last-known-good merged view instead of recomputing from
-      // partial data — matches this app's staleness-freeze convention
-      // elsewhere (positions/holdings/NAV).
-      if (brokerResp.status !== 'fulfilled') {
-        _loading = false;
-        return;
-      }
-      const brokerRows = Array.isArray(brokerResp.value?.rows) ? brokerResp.value.rows : [];
-      const algoRows = (algoResp.status === 'fulfilled' && Array.isArray(algoResp.value))
-        ? algoResp.value
-        : [];
-      // Chase-field passthrough (plan: starry-tickling-dolphin, frontend
-      // item 1) — a broker-fetched row never carries chase bookkeeping
-      // (attempts/current_limit/next_attempt_at live only on the
-      // AlgoOrder row). Without this, "broker rows win" below (see
-      // `brokerRowsVisible`/`merged`) silently dropped those fields the
-      // instant a live chased order reached the broker book, so the
-      // "Chase in flight" chip (`_isChaseInFlight`) and OrderCard's
-      // `chase:#N` marker never fired for a REAL live chase — only for
-      // paper/sim orders, which never have a broker-row counterpart to
-      // begin with and so never hit this branch. Mirrors the equivalent
-      // fix in LogPanel.svelte's own merge.
-      const _algoByBrokerId = new Map();
-      for (const row of algoRows) {
-        const bid = String(row?.broker_order_id || '');
-        if (bid) _algoByBrokerId.set(bid, row);
-      }
-      // Recomputed every poll (see declaration above for the full
-      // rationale) so a field that's absent one poll and present the
-      // next (e.g. a deploy landing mid-session) is picked up immediately
-      // without needing a page reload.
-      _backendSupersededShipped = algoRows.some(r => r && Object.prototype.hasOwnProperty.call(r, 'superseded_broker_order_ids'));
-      _backendSupersededIds = new Set(
-        algoRows.flatMap(r => Array.isArray(r?.superseded_broker_order_ids)
-          ? r.superseded_broker_order_ids.map(String)
-          : [])
-      );
-      // Chase cancel-and-replace dedup (2026-10-23 fix — see
-      // _prevAlgoBrokerIdById/_supersededBrokerIds declared near the top
-      // of the component for the full rationale). Gated on a genuinely
-      // fresh algo poll — a rejected algoResp (network blip) must not
-      // overwrite the previous-ids history, which would blind the very
-      // next poll to a supersede that's still mid-flight.
-      if (algoResp.status === 'fulfilled') {
-        const _now = Date.now();
-        // Prune expired grace-window entries first so the map never
-        // grows unbounded across a long-running session.
-        for (const [bid, info] of _supersededBrokerIds) {
-          if (_now - info.ts > _SUPERSEDED_GRACE_MS) _supersededBrokerIds.delete(bid);
-        }
-        // Diff against the PREVIOUS poll's algo rows (by algo row `id`,
-        // stable across a cancel-and-replace) to detect a broker_order_id
-        // that just changed — that's the signal a cancel-and-replace is
-        // in flight and the OLD id is about to go stale at the broker.
-        for (const row of algoRows) {
-          const rid = row?.id;
-          if (rid == null) continue;
-          const prevBid = _prevAlgoBrokerIdById.get(rid);
-          const curBid = String(row?.broker_order_id || '');
-          if (prevBid && curBid && prevBid !== curBid) {
-            _supersededBrokerIds.set(prevBid, { algoOrderId: rid, ts: _now });
-          }
-        }
-        const _nextAlgoSnapshot = new Map();
-        for (const row of algoRows) {
-          if (row?.id != null) _nextAlgoSnapshot.set(row.id, String(row?.broker_order_id || ''));
-        }
-        _prevAlgoBrokerIdById = _nextAlgoSnapshot;
-      }
-      const brokerIds = new Set(brokerRows.map(o => String(o?.order_id || '')));
-      // Dedup key fix (Sprint 2a, docs/proposals/SPRINT2_LAYER_INTEGRATION.md
-      // §1 finding 2 / §2) — `AlgoOrderInfo` never carried an `order_id`
-      // field (that's a broker-only shape); comparing against
-      // `o.order_id || o.id` silently fell through to the algo row's own
-      // internal DB `id`, which can never equal a broker `order_id` — the
-      // dedup never matched and a live, algo-tracked order rendered TWICE
-      // (once as a bare broker row, once as an algo row). `broker_order_id`
-      // is now a real surfaced field on `AlgoOrderInfo` and is the actual
-      // shared identity key between the two row shapes. An algo row with
-      // no `broker_order_id` has no broker counterpart yet (paper/sim/
-      // shadow, or a live order whose placement hasn't reached the broker
-      // book on this particular poll) and must stay in algoOnly.
-      const algoOnly  = algoRows.filter(o => {
-        const bid = String(o?.broker_order_id || '');
-        return !bid || !brokerIds.has(bid);
-      });
-      // Session-boundary filter applied HERE (before assigning orderRows,
-      // not down in the filteredOrderRows derived chain) — a still-OPEN
-      // order resting since a prior session (rare — e.g. a GTT-adjacent
-      // order) is judgment-called to hide here too, same as terminal
-      // rows. No clear precedent in this app scopes to "keep showing a
-      // stale resting order in a live order-book grid" (expiry_freeze.py's
-      // position-freeze precedent is about serving the last-known
-      // POSITION snapshot when data is otherwise unavailable, a different
-      // situation from a live, always-available order feed) — flagged for
-      // reversal if the operator wants stale-OPEN rows to stay visible.
-      //
-      // `_rowOrigin` stamped here (not inferred later from shape) is the
-      // explicit origin flag `_isOpenBroker` below reads instead of the
-      // old `!o?.mode` heuristic — see that function's comment for why
-      // the heuristic needed replacing now rather than later.
-      //
-      // Drop a just-superseded broker row (chase cancel-and-replace gap,
-      // see above) UNLESS it's already terminal-filled — a late fill
-      // racing the cancel (the exact race the backend's
-      // `_ch_capture_late_fill` exists for) must still render and still
-      // feed `noteOrderPollFills` below, never be silently hidden. Every
-      // other status (still OPEN, CANCEL PENDING, etc.) is the
-      // "confusing second open card" this fix targets and is dropped —
-      // the simplest, safe default per the fix's own design: the live
-      // replacement order (already in `merged` via `brokerRows`/
-      // `algoOnly`) is the one card the operator needs to see.
-      const brokerRowsVisible = brokerRows.filter(o => {
-        const oid = String(o?.order_id || '');
-        if (!_isSupersededBrokerId(oid)) return true;
-        return _STATUS_PREDICATES.complete((o?.status || '').toUpperCase());
-      });
-      const merged = [
-        // Chase-field passthrough (see `_algoByBrokerId` above) — a
-        // matching algo row's attempts/current_limit/next_attempt_at ride
-        // along onto the broker row that otherwise wins the merge.
-        // `_algoId` (the algo row's own DB id, distinct from the broker
-        // `order_id`) rides along too — NOT for display, but so
-        // `_cancelRow`'s stale-broker-id guard can re-resolve this exact
-        // row against a FRESH fetch later, rather than re-checking the
-        // same stale poll data that already decided this row belongs in
-        // `brokerRowsVisible` in the first place (see that function's
-        // own comment for why re-checking stale data can never fire).
-        // 2026-11-02 (PLAN.md items 2/4) — `hold_json` added to the
-        // passthrough. A broker-fetched row never carries it (hold
-        // bookkeeping lives only on the AlgoOrder row); without this, the
-        // held-pending-release toast silently read `undefined` the
-        // instant a live, chased order reached the broker book — the
-        // exact same gap the pre-existing attempts/current_limit/
-        // next_attempt_at fields were added here to close.
-        // `template_id`/`attached_gtts_json` were part of this same
-        // passthrough until 2026-11 (Track 3, T3.6, Bracket/Template/GTT
-        // removal) dropped both columns from AlgoOrder/AlgoOrderInfo —
-        // removed here as the now-permanently-dead fields they'd become.
-        ...brokerRowsVisible.map(o => {
-          const _m = _algoByBrokerId.get(String(o?.order_id || ''));
-          return _m
-            ? { ...o, _rowOrigin: 'broker', attempts: _m.attempts, current_limit: _m.current_limit, next_attempt_at: _m.next_attempt_at, _algoId: _m.id, agent_origin: _m.agent_origin, hold_json: _m.hold_json }
-            : { ...o, _rowOrigin: 'broker' };
-        }),
-        ...algoOnly.map(o => ({ ...o, _rowOrigin: 'algo' })),
-      ].filter(_isCurrentSessionRow);
-      merged.sort((a, b) => {
-        const ta = _rowTsMs(a) || 0;
-        const tb = _rowTsMs(b) || 0;
-        return tb - ta;
-      });
-      orderRows = merged;
-      // Channel-agnostic fresh-books trigger (2026-09-30 follow-up to
-      // c90a9d04) — fires a shared bookChanged bump the moment ANY row
-      // in this poll transitions to FILLED/COMPLETE, regardless of
-      // whether a WS event ever arrived for it (live broker-order-book
-      // TTL refresh, 5-min open_order_watchdog sweep, admin reconcile —
-      // none of those backend paths broadcast today). See
-      // orderFillDetector.js header for the full channel inventory.
-      noteOrderPollFills(merged);
-    } catch (_) { /* keep last-good */ } finally {
-      _loading = false;
-    }
+  async function _loadOrders(opts) {
+    await ordersStore.load(opts);
   }
 
   // ── Per-order timeline drawer ───────────────────────────────────────
@@ -451,14 +223,19 @@
     // in-flight when the next visibleInterval tick fired, stacking a
     // second concurrent fetch for the same resource. Mirrors LogPanel's
     // `_every()` (LogPanel.svelte:392-404): the immediate call and every
-    // interval tick share the SAME guarded instance.
+    // interval tick share the SAME guarded instance. Belt-and-suspenders
+    // now that `_loadOrders` delegates to the shared `ordersStore` (B1 —
+    // see marketDataStores.svelte.js): `createDataStore`'s own in-flight
+    // dedup already makes two overlapping, non-forced `.load()` calls
+    // share one fetch for free, so this wrapper is mostly redundant but
+    // harmless to keep.
     //
     // Manual triggers (_cancelRow/_reconcileRow's post-action reload,
-    // CardHeader's onRefresh button) deliberately keep calling the RAW
-    // _loadOrders below, NOT this guarded wrapper — an operator-initiated
-    // refresh must never be silently dropped (guarded call returns
-    // undefined, no-op) just because a routine poll tick happens to be
-    // in-flight at that instant.
+    // CardHeader's onRefresh button) deliberately keep calling
+    // `_loadOrders({ force: true })` below, NOT this guarded wrapper —
+    // an operator-initiated refresh must never be silently coalesced into
+    // an already-in-flight routine poll's result just because a tick
+    // happens to be in-flight at that instant.
     const _guardedLoadOrders = withGuard(_loadOrders);
     _guardedLoadOrders();
     if (pollMs > 0 && typeof document !== 'undefined') {
@@ -597,17 +374,20 @@
     // POLL that rendered this Cancel button, sending Cancel now would
     // target a dead order while chase keeps working the new one.
     //
-    // Re-checking `_isSupersededBrokerId` against that SAME poll's data
-    // (the one `brokerRowsVisible` already used to decide this row
-    // belongs in the grid at all) can never fire here — a row only
-    // reaches a clickable Cancel button once that exact check has
-    // already passed for the current poll. The race this guards against
-    // happens strictly AFTER that poll and BEFORE the click, so this
-    // re-fetches `fetchAlgoOrdersRecent` fresh, right now, instead of
-    // trusting anything already sitting in `orderRows`/
-    // `_supersededBrokerIds`/`_backendSupersededIds`. `o._algoId` (stamped
-    // onto the merged row in `_loadOrders`) is how this row's algo
-    // counterpart is re-resolved against that fresh fetch.
+    // Re-checking `isOrderSuperseded`'s underlying data (marketDataStores.
+    // svelte.js's `_ordersBackendSupersededIds`/`_ordersSupersededBrokerIds`)
+    // against that SAME poll's state (the one `brokerRowsVisible` already
+    // used to decide this row belongs in the grid at all) can never fire
+    // here — a row only reaches a clickable Cancel button once that exact
+    // check has already passed for the current poll. The race this guards
+    // against happens strictly AFTER that poll and BEFORE the click, so
+    // this deliberately does its OWN independent re-fetch of
+    // `fetchAlgoOrdersRecent` right now (NOT a call to `isOrderSuperseded`
+    // itself, which only ever reflects the LAST poll's snapshot) instead of
+    // trusting anything already sitting in the shared `ordersStore`'s
+    // last-polled value. `o._algoId` (stamped onto the merged row by
+    // `ordersStore`'s fetcher) is how this row's algo counterpart is
+    // re-resolved against that fresh fetch.
     const _oid = String(o?.order_id || '');
     if (_oid && o?._algoId != null) {
       try {
@@ -621,7 +401,7 @@
           && r.superseded_broker_order_ids.map(String).includes(_oid));
         if (_movedOn || _freshSuperseded) {
           toast.warning('Order superseded — refresh to retry', { timeoutMs: 4000 });
-          await _loadOrders();
+          await _loadOrders({ force: true });
           return;
         }
       } catch (_) {
@@ -635,7 +415,7 @@
     _cancelErr = '';
     try {
       await cancelOrder(o.order_id, o.account, o.variety || 'regular');
-      await _loadOrders();
+      await _loadOrders({ force: true });
     } catch (e) {
       _cancelErr = /** @type {any} */ (e)?.message || 'cancel failed';
       setTimeout(() => { _cancelErr = ''; }, 3000);
@@ -660,7 +440,7 @@
     _reconciling = new Set([..._reconciling, key]);
     try {
       const res = await reconcileSingleOrder(o.order_id, o.account);
-      if (res?.updated) await _loadOrders();
+      if (res?.updated) await _loadOrders({ force: true });
     } catch (e) {
       _cancelErr = /** @type {any} */ (e)?.message || 'reconcile failed';
       setTimeout(() => { _cancelErr = ''; }, 3000);
@@ -673,7 +453,8 @@
 
   // ── Status counts (computed once per render, not 5× inline) ─────────
   // Reads the ACCOUNT-FILTERED rows (not raw orderRows) — already
-  // session-boundary-filtered in _loadOrders — so every count here is
+  // session-boundary-filtered by the shared `ordersStore` fetcher (see
+  // marketDataStores.svelte.js) — so every count here is
   // scoped to today's session AND the current account filter, matching
   // the grid it labels. Without this, selecting an account could default-highlight a chip
   // (e.g. Chase) whose only rows belong to a DIFFERENT account, showing
@@ -781,7 +562,7 @@
 <!-- Header -->
 <CardHeader title={title} showSearch={false} bind:isFullscreen
   detectOverflow={false}
-  onRefresh={() => { _loadOrders(); }}
+  onRefresh={() => { _loadOrders({ force: true }); }}
   onDownload={_downloadCsv}
 >
   {#snippet left()}

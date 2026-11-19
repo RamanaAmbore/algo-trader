@@ -28,6 +28,7 @@
   import { groupPropFor } from '$lib/data/pulseDetached.svelte.js';
   import { isSymbolInWatchlist } from '$lib/data/watchlistContextActions.js';
   import { isSharedContextAction, dispatchSharedContextAction } from '$lib/data/symbolContextDispatch.js';
+  import { cachedRead, cachedWrite, TTL } from '$lib/data/persistentCache.js';
 
   // mode (sim/paper/live/shadow/replay): when set, auto-flips logTab to
   // the mapped tab AND auto-applies the matching order filter — sim →
@@ -261,17 +262,39 @@
   // the condition), see mode is still 'sim', and slam logTab back to
   // 'simulator' — locking the operator on one tab.
   let _lastMode = $state(/** @type {string | null} */ (null));
+  // One-shot (plain var, not $state — write-once/read-once bookkeeping,
+  // never rendered): the `mode` prop's value at the moment the Tier-2
+  // hydrate IIFE ran (see below), `undefined` until that IIFE sets it.
+  // Consumed on THIS effect's first real run to decide whether the
+  // stale-rows clear below is actually needed — a real caller
+  // (ReplayPanel.svelte passes `mode="replay"` on initial mount) depends
+  // on the mode→tab/filter ROUTING branches running unconditionally on
+  // first mount, so the hydrate fix must only ever skip the CLEAR, never
+  // the routing — see the hydrate IIFE's own comment for the full
+  // rationale and the earlier (confirmed wrong) "no live caller passes
+  // mode" claim this corrects.
+  let _hydratedForMode;
   $effect(() => {
     if (!mode) return;
     if (mode === _lastMode) return;
+    // Only the very first time this effect's clearing logic would run
+    // (_lastMode still at its initial `null`) AND only when the current
+    // `mode` matches what the hydrate IIFE actually saw — the hydrated
+    // orderRows/agentLog/simLog are already correct for THIS mode, so
+    // wiping them would just reintroduce the exact blank-flash B2 exists
+    // to remove. Any later genuine mode change (including a flip back to
+    // the same value after visiting another mode) clears normally.
+    const skipClear = _lastMode === null && mode === _hydratedForMode;
     _lastMode = mode;
     // Clear stale in-memory rows on mode switch so the chip filter
     // doesn't briefly render wrong-mode rows before the next poll
     // lands. Each stream refetches immediately via _every() / the
     // poll cadence — no functional gap, just no flash of stale data.
-    orderRows = [];
-    agentLog  = [];
-    simLog    = [];
+    if (!skipClear) {
+      orderRows = [];
+      agentLog  = [];
+      simLog    = [];
+    }
     if (mode === 'sim') {
       orderModeFilter = 'sim';
       if (tabs.includes('simulator')) logTab = 'simulator';
@@ -295,6 +318,81 @@
   let connEvents  = $state(/** @type {any[]} */ ([]));
   let simLog      = $state(/** @type {any[]} */ ([]));
   let alertsLog   = $state(/** @type {any[]} */ ([]));   // AlertEvent rows (agent-fire history)
+
+  // ── Tier-2 hydrate-and-persist (PLAN.md Part B, item B2) ────────────────
+  // The reload/tab-switch SWR extension (`createDataStore`, Tier-1 $state
+  // + Tier-2 localStorage) isn't a clean fit for this component's own
+  // streams: the mode-switch-wipe $effect above clears state right after
+  // mount, `_loadAgents`'s fetcher branches on `wantSim` (not key-stable),
+  // and `_loadOrders`/`_loadAlerts` use `Promise.allSettled`/try-catch
+  // without throwing on partial failure (keep-last-good is already
+  // hand-rolled per-stream here, unlike OrderBook.svelte's B1 fix — see
+  // that file's own comment for why ITS merge moved into a real
+  // `createDataStore`). Instead: a lightweight, per-component-instance
+  // read-before-first-fetch + write-on-success pair directly against
+  // `persistentCache.js`'s localStorage-backed cache — just enough to
+  // paint last-good rows on a hard reload instead of blank/"Loading…",
+  // with none of createDataStore's generation-guard/fetcher-must-throw
+  // machinery this shape doesn't need.
+  //
+  // Keys encode the SAME discriminator each tab's own fetcher branches
+  // on, so a cache hit can never mix sim/live or wrong-mode rows:
+  //   - order tab (orderRows/orderEvents/gttRows, bundled as one entry —
+  //     `_loadOrders` fetches all three together) keyed by the `mode`
+  //     prop, mirroring the mode-switch-wipe effect's own clear scope.
+  //   - agent tab keyed by `wantSim` (the same boolean `_loadAgents`
+  //     computes from `simScope`/`gateByMode`+executionMode).
+  //   - alerts tab has no discriminator (`_loadAlerts` always fetches the
+  //     same params) — a single constant key.
+  function _logOrderTabCacheKey() {
+    return `log.order.${mode ?? 'none'}`;
+  }
+  function _logAgentTabCacheKey(/** @type {boolean} */ wantSim) {
+    return `log.agent.${wantSim ? 'sim' : 'real'}`;
+  }
+  const _LOG_ALERTS_CACHE_KEY = 'log.alerts';
+
+  function _persistOrderTabCache() {
+    cachedWrite(_logOrderTabCacheKey(), { orderRows, orderEvents, gttRows }, TTL.minute);
+  }
+  function _persistAgentTabCache(/** @type {boolean} */ wantSim) {
+    cachedWrite(_logAgentTabCacheKey(wantSim), agentLog, TTL.minute);
+  }
+  function _persistAlertsCache() {
+    cachedWrite(_LOG_ALERTS_CACHE_KEY, alertsLog, TTL.minute);
+  }
+
+  // Synchronous read, BEFORE onMount's first fetch (this runs as part of
+  // the component's own synchronous setup, which always completes before
+  // any onMount callback fires).
+  (function _hydrateLogPanelTier2() {
+    try {
+      const orderCached = cachedRead(_logOrderTabCacheKey());
+      const ov = orderCached?.value;
+      if (ov && typeof ov === 'object') {
+        if (Array.isArray(ov.orderRows))   orderRows   = ov.orderRows;
+        if (Array.isArray(ov.orderEvents)) orderEvents = ov.orderEvents;
+        if (Array.isArray(ov.gttRows))     gttRows     = ov.gttRows;
+      }
+      // Same `wantSim` computation _loadAgents uses — see that function.
+      const _wantSimAtInit = simScope || (gateByMode && $executionMode === 'sim');
+      const agentCached = cachedRead(_logAgentTabCacheKey(_wantSimAtInit));
+      if (Array.isArray(agentCached?.value)) agentLog = agentCached.value;
+      const alertsCached = cachedRead(_LOG_ALERTS_CACHE_KEY);
+      if (Array.isArray(alertsCached?.value)) alertsLog = alertsCached.value;
+    } catch { /* localStorage unavailable (SSR / private mode) */ }
+    // Record the mode this hydration ran under — NOT `_lastMode` itself.
+    // The mode-switch-wipe $effect above reads `_hydratedForMode` to
+    // decide whether to SKIP ONLY its stale-rows clear on its first real
+    // run (the hydrated rows are already correct for this exact mode);
+    // its mode→tab/filter ROUTING branches (orderModeFilter/logTab) still
+    // run unconditionally on that same first run, exactly as before this
+    // change — a real caller (ReplayPanel.svelte passes `mode="replay"`
+    // on initial mount, confirmed via grep for the `{mode}` prop-shorthand
+    // pattern, which an earlier `mode=` literal-only grep missed) depends
+    // on that routing firing on first mount, not only on a later change.
+    _hydratedForMode = mode;
+  })();
 
   // ── Alerts tab capability gate ──────────────────────────────────────
   // The 'alerts' tab (folded in from the retired /admin/alerts page,
@@ -634,6 +732,9 @@
       const data = wantSim ? await fetchSimEvents(100)
                            : await fetchRecentAgentEvents(100);
       agentLog = Array.isArray(data) ? data : [];
+      // Tier-2 persist (B2) — success path only, so a keep-last-good
+      // catch never writes a degraded/empty result over a good cache.
+      _persistAgentTabCache(wantSim);
     } catch (_) { /* keep last-good */ }
   }
   async function _loadSystem() {
@@ -663,6 +764,8 @@
     try {
       const data = await fetchAlertsHistory({ limit: 200, since_minutes: 1440, sim_mode: false });
       alertsLog = Array.isArray(data?.events) ? data.events : (Array.isArray(data) ? data : []);
+      // Tier-2 persist (B2) — success path only.
+      _persistAlertsCache();
     } catch (_) { /* keep last-good */ }
   }
 
@@ -963,12 +1066,22 @@
         // open_order_watchdog sweep, admin reconcile — none broadcast a
         // WS event today).
         noteOrderPollFills(merged);
+        // Tier-2 persist (B2) — success path only. orderEvents/gttRows
+        // haven't landed yet (fire-and-forget below); their own .then()
+        // callbacks re-persist the combined entry once they do.
+        _persistOrderTabCache();
       }
     } catch (_) { /* keep last-good */ }
     // Fire-and-forget: fetch order lifecycle events in parallel for the
     // order tab event log. Does not block orderRows from rendering.
-    fetchOrderEvents(200, 'all').then(evts => { orderEvents = Array.isArray(evts) ? evts : (evts?.events ?? []); }).catch(() => {});
-    fetchGtts().then(r => { gttRows = Array.isArray(r?.gtts) ? r.gtts : []; }).catch(() => {});
+    fetchOrderEvents(200, 'all').then(evts => {
+      orderEvents = Array.isArray(evts) ? evts : (evts?.events ?? []);
+      _persistOrderTabCache();
+    }).catch(() => {});
+    fetchGtts().then(r => {
+      gttRows = Array.isArray(r?.gtts) ? r.gtts : [];
+      _persistOrderTabCache();
+    }).catch(() => {});
   }
 
   // Deferred poll flags — system and sim ticks are low-traffic tabs that

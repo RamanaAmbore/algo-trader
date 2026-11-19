@@ -36,8 +36,10 @@
  *               that was showing a real price
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { applyUnderlyingTickLtp, buildUnderlyingQuoteUpdate } from '$lib/data/underlyingQuoteUtils.js';
+import { cachedRead, cachedWrite, cachedDelete, TTL } from '$lib/data/persistentCache.js';
+import src from '$lib/data/underlyingSpotStore.svelte.js?raw';
 
 /** Mirror of getUnderlyingSpot's store-level lookup (post front-month resolution). */
 function getSpot(quotes, root) {
@@ -448,5 +450,148 @@ describe('buildUnderlyingQuoteUpdate — per-root ordering (race) guard', () => 
       {}, {}, 5_000,
     );
     expect(result.NIFTY.ltp).toBe(24200);
+  });
+});
+
+// ── Test 10: Tier-2 persistence (PLAN.md Part B, item B3) ───────────────
+//
+// underlyingSpotStore.svelte.js previously had ZERO persistence — a
+// reload wiped `_quotes` back to `{}`, resetting NavStrip's Exp P&L pill
+// and the derivatives Payoff chart's spot/prev-close math to 0 until the
+// next loadUnderlyingSpots() round-trip landed. The store is keyed PER
+// ROOT (not one blob), because the tracked-root set is page-decided and
+// unknown at module-eval time — see the store's own header comment.
+//
+// `underlyingSpotStore.svelte.js` has a top-level `$state({})`, so (same
+// constraint as every other `.svelte.js` module with runes in this repo)
+// it can't be imported directly. Coverage here is the same two-part
+// shape used throughout this file and in marketDataStoresMeta.test.js:
+//  1. A behavioural test against the REAL `cachedRead`/`cachedWrite`/
+//     `cachedDelete` from persistentCache.js (a plain JS module, safely
+//     importable) combined with a pure mirror of the per-root key
+//     format and the lazy-hydrate rule, proving the actual mechanism the
+//     store delegates to behaves correctly end-to-end.
+//  2. A source-scan confirming the real shipped file wires `_uspotCacheKey`/
+//     `cachedRead`/`cachedWrite`/`cachedDelete` into
+//     `loadUnderlyingSpots`, `pruneUnderlyingSpotRoots`, and
+//     `patchUnderlyingSpot` — and confirms `getUnderlyingSpot` stays a
+//     PURE read with no hydration of its own (see that function's own
+//     comment: it's called from inside `$derived.by(...)` all over the
+//     app, e.g. portfolioStore.svelte.js's `_rootSpotCache`, where
+//     mutating `$state` would throw `state_unsafe_mutation`).
+
+/** Mirror of underlyingSpotStore.svelte.js's own `_uspotCacheKey`. */
+function uspotCacheKey(root) {
+  return `uspot.${root}`;
+}
+
+/** Mirror of the hydrate-from-cache rule `loadUnderlyingSpots` applies
+ *  inline, per root, before its batchQuote await: lazily seeds a quotes
+ *  map entry from a Tier-2 cache hit, only when the live map doesn't
+ *  already have the root (never overwrites a value a real fetch/tick
+ *  already set). This is no longer a standalone store function (it's
+ *  inlined into `loadUnderlyingSpots` so it only ever runs from a safe,
+ *  effect-driven context) — this mirror exists purely to test the RULE
+ *  in isolation. */
+function hydrateRootFromCache(quotes, root) {
+  if (quotes[root] !== undefined) return quotes;
+  const cached = cachedRead(uspotCacheKey(root));
+  const v = cached?.value;
+  if (v && typeof v === 'object') {
+    return { ...quotes, [root]: v };
+  }
+  return quotes;
+}
+
+describe('underlyingSpotStore — Tier-2 persistence (B3, pure mirror over the real persistentCache)', () => {
+  beforeEach(() => {
+    cachedDelete(uspotCacheKey('CRUDEOIL'));
+    cachedDelete(uspotCacheKey('NIFTY'));
+    cachedDelete(uspotCacheKey('GOLD'));
+  });
+  afterEach(() => {
+    cachedDelete(uspotCacheKey('CRUDEOIL'));
+    cachedDelete(uspotCacheKey('NIFTY'));
+    cachedDelete(uspotCacheKey('GOLD'));
+  });
+
+  it('a value written via cachedWrite is read back under the per-root key', () => {
+    cachedWrite(uspotCacheKey('CRUDEOIL'), { ltp: 5788, day_pct: 1.5, prev_close: 5700 }, TTL.short);
+    const cached = cachedRead(uspotCacheKey('CRUDEOIL'));
+    expect(cached?.value).toEqual({ ltp: 5788, day_pct: 1.5, prev_close: 5700 });
+  });
+
+  it('hydrateRootFromCache seeds an empty map from a Tier-2 hit', () => {
+    cachedWrite(uspotCacheKey('NIFTY'), { ltp: 24200, day_pct: 0.8, prev_close: 24000 }, TTL.short);
+    const seeded = hydrateRootFromCache({}, 'NIFTY');
+    expect(seeded.NIFTY).toEqual({ ltp: 24200, day_pct: 0.8, prev_close: 24000 });
+  });
+
+  it('hydrateRootFromCache never overwrites a root the live map already has', () => {
+    cachedWrite(uspotCacheKey('NIFTY'), { ltp: 24200, day_pct: 0.8, prev_close: 24000 }, TTL.short);
+    const live = { NIFTY: { ltp: 24500, day_pct: 1.0, prev_close: 24000 } };
+    const result = hydrateRootFromCache(live, 'NIFTY');
+    expect(result).toBe(live); // unchanged reference — no stale overwrite
+    expect(result.NIFTY.ltp).toBe(24500);
+  });
+
+  it('hydrateRootFromCache is a no-op (same reference) on a cache miss', () => {
+    const quotes = {};
+    const result = hydrateRootFromCache(quotes, 'UNTRACKED_ROOT');
+    expect(result).toBe(quotes);
+  });
+
+  it('cachedDelete removes the entry so a later read is a genuine miss', () => {
+    cachedWrite(uspotCacheKey('GOLD'), { ltp: 74000, day_pct: 0.5, prev_close: 73600 }, TTL.short);
+    expect(cachedRead(uspotCacheKey('GOLD'))).not.toBeNull();
+    cachedDelete(uspotCacheKey('GOLD'));
+    expect(cachedRead(uspotCacheKey('GOLD'))).toBeNull();
+  });
+});
+
+describe('underlyingSpotStore.svelte.js — Tier-2 wiring (source scan)', () => {
+  it('defines the per-root cache key helper', () => {
+    expect(src).toMatch(/function _uspotCacheKey\(/);
+    expect(src).toMatch(/`uspot\.\$\{root\}`/);
+  });
+
+  it('getUnderlyingSpot stays a PURE read — no $state write (unsafe inside $derived.by, see portfolioStore.svelte.js callers)', () => {
+    const start = src.indexOf('export function getUnderlyingSpot(');
+    expect(start).toBeGreaterThan(-1);
+    const body = src.slice(start, start + 300);
+    expect(body).not.toMatch(/_quotes\s*=/);
+    expect(body).toMatch(/return pickUnderlyingSpot\(/);
+  });
+
+  it('loadUnderlyingSpots hydrates missing roots from Tier-2 BEFORE the batchQuote await (safe — always invoked from onMount/$effect, never $derived)', () => {
+    const start = src.indexOf('export async function loadUnderlyingSpots(');
+    expect(start).toBeGreaterThan(-1);
+    const body = src.slice(start, start + 2000);
+    const hydrateIdx = body.indexOf('cachedRead(_uspotCacheKey(p.root))');
+    const awaitIdx = body.indexOf('await batchQuote(keys)');
+    expect(hydrateIdx).toBeGreaterThan(-1);
+    expect(awaitIdx).toBeGreaterThan(-1);
+    expect(hydrateIdx).toBeLessThan(awaitIdx);
+  });
+
+  it('loadUnderlyingSpots persists each freshly-fetched root to Tier-2', () => {
+    // Whole-file match (not a sliced function body) — the pattern is
+    // specific enough (`p.root`/`v`/`TTL.short`) to be unambiguous, and
+    // avoids a brittle fixed-length slice as this function grows.
+    expect(src).toMatch(/cachedWrite\(_uspotCacheKey\(p\.root\), v, TTL\.short\)/);
+  });
+
+  it('pruneUnderlyingSpotRoots deletes the Tier-2 entry for every pruned root', () => {
+    const start = src.indexOf('export function pruneUnderlyingSpotRoots(');
+    expect(start).toBeGreaterThan(-1);
+    const body = src.slice(start, start + 800);
+    expect(body).toMatch(/cachedDelete\(_uspotCacheKey\(r\)\)/);
+  });
+
+  it('patchUnderlyingSpot persists a live-tick update to Tier-2', () => {
+    const start = src.indexOf('export function patchUnderlyingSpot(');
+    expect(start).toBeGreaterThan(-1);
+    const body = src.slice(start, start + 800);
+    expect(body).toMatch(/cachedWrite\(_uspotCacheKey\(root\), updated, TTL\.short\)/);
   });
 });

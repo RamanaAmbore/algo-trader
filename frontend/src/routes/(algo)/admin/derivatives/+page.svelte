@@ -23,6 +23,7 @@
     fetchWatchlists, fetchWatchlist, addWatchlistItem,
   } from '$lib/api';
   import { positionsStore, pulsePositionsStore, pulseHoldingsStore } from '$lib/data/marketDataStores.svelte.js';
+  import { cachedRead, cachedWrite, cachedDelete } from '$lib/data/persistentCache.js';
   import { holdingsDayPnlStore } from '$lib/data/holdingsDayPnlStore.svelte.js';
   import { positionsDerivedStore } from '$lib/data/positionsDerivedStore.svelte.js';
   import { loadWatchlistSymbols } from '$lib/data/watchlistSymbols.js';
@@ -4677,15 +4678,24 @@
   }
 
   // ── Stale-while-revalidate cache ──────────────────────────────────
-  // sessionStorage-backed snapshot of the page's data + operator
-  // selections so a tab reopen / SPA back-nav comes up with the
-  // previous view (chart, dropdowns, leg toggles, drafts) instead of
-  // a blank page. The first fresh fetch overwrites the snapshot;
-  // entries > 5 minutes old are discarded so the operator never sees
-  // a wildly stale chart.
+  // persistentCache.js (localStorage-backed, survives reload + deploy +
+  // browser close) snapshot of the page's data + operator selections so a
+  // tab reopen / SPA back-nav / hard reload comes up with the previous
+  // view (chart, dropdowns, leg toggles, drafts) instead of a blank page.
+  // The first fresh fetch overwrites the snapshot; entries > 5 minutes old
+  // are discarded so the operator never sees a wildly stale chart.
+  //
+  // PLAN.md Part B, item B3 — this used to be a raw `sessionStorage`
+  // read/write (dies on tab close, same 5-minute cap enforced by hand via
+  // `d.ts`). Swapped to the shared `cachedWrite`/`cachedRead` pair every
+  // other domain in this app uses (`$lib/data/persistentCache.js`) so the
+  // snapshot survives a full page reload too — ONLY the storage tier
+  // changed here. The stored payload shape, the generation guard, the
+  // "never null `strategy`" behaviour, and the `legsKey`-based
+  // memoization elsewhere in this file are all unchanged.
   const _CACHE_KEY = 'ramboq:options-state';
   const _CACHE_MAX_AGE_MS = 5 * 60 * 1000;
-  /** Persist the page snapshot to sessionStorage for stale-while-revalidate.
+  /** Persist the page snapshot for stale-while-revalidate.
    *  @param {object} [opts]
    *  @param {boolean} [opts.includeSelections=true]  When false, omits
    *    `enabledSymbols` from the payload. The positions-poll path sets this
@@ -4694,22 +4704,21 @@
    *    strategy-success path always includes selections so the full state is
    *    persisted after a confirmed working fetch. */
   function _saveCache(opts = { includeSelections: true }) {
-    if (typeof sessionStorage === 'undefined') return;
     try {
       // `positions` deliberately NOT persisted here (2026-09 Commit 2
       // completion) — it's now seeded synchronously from
       // portfolioStore.positions.rows (backed by positionsStore's own
       // Tier-2 localStorage cache, hydrated at module-eval time, well
-      // before this component's sessionStorage restore would run) on both
-      // cold load and every book-poller cycle, so a page-local copy here
+      // before this component's cache restore would run) on both cold
+      // load and every book-poller cycle, so a page-local copy here
       // would just be redundant, write-only, and could drift stale.
       // `_includeHoldings` is ALSO deliberately NOT persisted here (fixed
       // 2026-09, same divergence bug as `positions` above but for the
-      // canonical `includeHoldings` writable store): this sessionStorage
-      // snapshot used to restore its own copy of the flag independently of
+      // canonical `includeHoldings` writable store): this cache snapshot
+      // used to restore its own copy of the flag independently of
       // the store's localStorage persistence, so the two could diverge —
       // `_flipHoldings` computes off the local `_includeHoldings` mirror,
-      // so a stale sessionStorage restore could make the toggle appear
+      // so a stale cached restore could make the toggle appear
       // stuck (writable.set() no-ops when the computed value already
       // equals the store's current value) or silently revert on remount.
       // The store's own localStorage persistence (`opt.includeHoldings`)
@@ -4724,15 +4733,17 @@
       if (opts.includeSelections !== false) {
         payload.enabledSymbols = enabledSymbols;
       }
-      sessionStorage.setItem(_CACHE_KEY, JSON.stringify(payload));
+      cachedWrite(_CACHE_KEY, payload, _CACHE_MAX_AGE_MS);
     } catch (_) { /* quota / private mode — silent */ }
   }
   function _loadCache() {
-    if (typeof sessionStorage === 'undefined') return false;
     try {
-      const raw = sessionStorage.getItem(_CACHE_KEY);
-      if (!raw) return false;
-      const d = JSON.parse(raw);
+      const cached = cachedRead(_CACHE_KEY);
+      const d = cached?.value;
+      // `cachedRead` already enforces `ttl_ms` expiry internally (the
+      // entry wouldn't come back at all once stale) — the `d.ts` check is
+      // kept as a harmless belt-and-suspenders defense since the payload's
+      // own `ts` field is part of the preserved stored shape.
       if (!d || (Date.now() - (d.ts || 0)) > _CACHE_MAX_AGE_MS) return false;
       // Restore data first, then selections — derived state (candidates,
       // legs) recomputes off the restored drafts + the store-seeded
@@ -4749,7 +4760,7 @@
       if (Array.isArray(d.drafts))     drafts    = d.drafts;
       if (Array.isArray(d.selectedAccounts)) selectedAccounts = d.selectedAccounts;
       // URL param (set by onMount #1 which runs before this onMount #2)
-      // takes precedence over the sessionStorage snapshot. Only restore the
+      // takes precedence over the cached snapshot. Only restore the
       // cached underlying when the URL did NOT already seed one. In practice
       // `selectedUnderlying` is almost always already truthy by the time this
       // runs — onMount #1 now also peeks the cache via `_readCachedUnderlying()`
@@ -4780,7 +4791,7 @@
    *  `_loadCache()` restore used to be the only place reading this back) —
    *  Svelte's top-level effects/onMounts flush in creation order on initial
    *  mount, so the auto-select effect's `if (!cur)` branch always won,
-   *  picking the largest-position underlying before the sessionStorage
+   *  picking the largest-position underlying before the cache
    *  restore ever got a chance to run. Fix: peek the cache from onMount #1
    *  itself (before the auto-select effect's first flush) so a genuine
    *  operator pick is already in `selectedUnderlying` by the time
@@ -4788,11 +4799,9 @@
    *  rejects a truly stale pick (e.g. a root no longer in the book) exactly
    *  as before; see derivatives_payoff_default_underlying.spec.js. */
   function _readCachedUnderlying() {
-    if (typeof sessionStorage === 'undefined') return null;
     try {
-      const raw = sessionStorage.getItem(_CACHE_KEY);
-      if (!raw) return null;
-      const d = JSON.parse(raw);
+      const cached = cachedRead(_CACHE_KEY);
+      const d = cached?.value;
       if (!d || (Date.now() - (d.ts || 0)) > _CACHE_MAX_AGE_MS) return null;
       return (typeof d.selectedUnderlying === 'string' && d.selectedUnderlying) ? d.selectedUnderlying : null;
     } catch (_) { return null; }
@@ -4803,9 +4812,13 @@
   // identifiers from the previous session: masked (Z#####) for demo,
   // unmasked for signed-in admin. Without invalidation, the 30-s
   // poll eventually replaces them but the operator briefly sees the
-  // wrong shape. On every user-id transition, drop the sessionStorage
-  // cache + refire the loaders so the page reflects the active
-  // identity immediately.
+  // wrong shape. On every user-id transition, drop the cached snapshot
+  // + refire the loaders so the page reflects the active identity
+  // immediately. (B3 note: `authStore.login()`/`.logout()` already wipe
+  // every `rbq.cache.*` key wholesale on auth change — this explicit
+  // delete stays anyway since a same-process user-SWITCH, e.g. demo →
+  // admin without an intervening logout, doesn't necessarily go through
+  // either of those two functions.)
   let _lastAuthUserId = /** @type {string|null} */ (null);
   $effect(() => {
     const uid = String($authStore?.user?.id ?? $authStore?.user?.email ?? '');
@@ -4815,9 +4828,7 @@
     if (wasInitial) return;            // first run — onMount handles the load
     untrack(() => {
       try {
-        if (typeof sessionStorage !== 'undefined') {
-          sessionStorage.removeItem(_CACHE_KEY);
-        }
+        cachedDelete(_CACHE_KEY);
       } catch (_) { /* private mode / quota — ignore */ }
       // Wipe in-memory rows whose account values came from the
       // previous session. The fetches below repopulate from the
