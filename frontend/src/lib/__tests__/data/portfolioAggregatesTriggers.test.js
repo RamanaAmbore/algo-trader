@@ -237,12 +237,12 @@ describe('portfolioStore.svelte.js — _lastLiveXxx sentinels init to null, not 
 });
 
 describe('portfolioStore.svelte.js — cold-start defaults init day-delta fields to null, not 0 (real file)', () => {
-  it('_EMPTY_POSITIONS.total.day_pnl is null; its lifetime/aux fields are unchanged at 0', () => {
+  it('_EMPTY_POSITIONS.total.day_pnl and exp_pnl are null (both drive a visible NavStrip money pill); extrinsic/prev_mv remain the genuine 0 defaults', () => {
     const idx = src.indexOf('const _EMPTY_POSITIONS = {');
     expect(idx, '_EMPTY_POSITIONS not found').toBeGreaterThan(-1);
     const blockEnd = src.indexOf('\n};', idx);
     const block = src.slice(idx, blockEnd);
-    expect(block).toMatch(/total:\s*\{\s*day_pnl:\s*null,\s*exp_pnl:\s*0,\s*extrinsic:\s*0,\s*prev_mv:\s*0,\s*chg_pct:\s*null\s*\},/);
+    expect(block).toMatch(/total:\s*\{\s*day_pnl:\s*null,\s*exp_pnl:\s*null,\s*extrinsic:\s*0,\s*prev_mv:\s*0,\s*chg_pct:\s*null\s*\},/);
   });
 
   it('_EMPTY_HOLDINGS.total is null; its chg_pct/byKey/byAccount/rows/fresh fields are unchanged', () => {

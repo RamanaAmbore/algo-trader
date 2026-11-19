@@ -6,8 +6,8 @@
  * without changes.
  *
  * Consumers that read:
- *   .total           → { day_pnl, exp_pnl, extrinsic }
- *   .expiryTotal     → number (= total.exp_pnl)
+ *   .total           → { day_pnl: number|null, exp_pnl: number|null, extrinsic: number }
+ *   .expiryTotal     → number|null (= total.exp_pnl)
  *   .byKey           → { [sym]: { day_pnl, exp_pnl, extrinsic, pnl, prev_mv, chg_pct } }
  *   .expiryByAcct    → Map<account, expiry P&L>
  *

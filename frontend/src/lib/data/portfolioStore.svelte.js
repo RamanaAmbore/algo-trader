@@ -564,9 +564,12 @@ const _EMPTY_POSITIONS = {
   // first live positions cycle actually computes it; a confirmed-flat
   // book still yields a real 0 on that first cycle, which then freezes
   // forward via `_last` on every subsequent degraded cycle (see the
-  // `_portfolio` $derived below). exp_pnl/extrinsic/prev_mv are lifetime/
-  // aux fields, out of scope for this fix — left at 0.
-  total:          { day_pnl: null, exp_pnl: 0, extrinsic: 0, prev_mv: 0, chg_pct: null },
+  // `_portfolio` $derived below). exp_pnl: null (2026-11 fix) — same
+  // "genuinely unknown pre-load" rule as day_pnl; it is the one other
+  // field read through a visible fmtMoney pill (NavStrip PE pill, via
+  // PositionStrip.svelte). extrinsic/prev_mv are aux fields with no
+  // visible money-pill consumer — out of scope for this fix, left at 0.
+  total:          { day_pnl: null, exp_pnl: null, extrinsic: 0, prev_mv: 0, chg_pct: null },
   byKey:          {},
   byAccount:      {},
   byRootPositions:{},
