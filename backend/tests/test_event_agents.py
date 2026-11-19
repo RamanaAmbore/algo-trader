@@ -2096,3 +2096,54 @@ async def test_send_channel_trace_logs_capability_gate_skip(monkeypatch):
     assert "skipped" in msg
     assert "channel=telegram" in msg
     assert "agent=t" in msg
+
+
+class _ExplodingEventsLogger:
+    """`.info`/`.warning` both raise — exercises the 2026-11-18 trace
+    helpers' own swallow-all-exceptions `try/except Exception: pass`
+    (`_log_channel_send_trace_skipped` / `_log_channel_send_trace_outcome`,
+    extracted from `_send_channel` purely for the radon CC gate). A
+    broken trace logger must never change `_send_channel`'s own return
+    value on any of the three paths — skip, failure, success."""
+
+    def info(self, *_a, **_kw):
+        raise RuntimeError("trace sink down")
+
+    def warning(self, *_a, **_kw):
+        raise RuntimeError("trace sink down")
+
+
+@pytest.mark.asyncio
+async def test_send_channel_survives_broken_trace_logger_on_all_three_paths(monkeypatch):
+    """A trace-logger failure is purely diagnostic noise — it must never
+    propagate out of `_send_channel` and must never flip a real send
+    outcome, on the skip, failure, and success paths alike."""
+    import backend.shared.helpers.utils as u
+    monkeypatch.setattr(event_agents, "_EVENTS_LOGGER", _ExplodingEventsLogger())
+    agent = SimpleNamespace(slug="t", tier="medium")
+    out = ("Title", "Body")
+
+    # Skip path (capability gate off).
+    monkeypatch.setattr(u, "is_enabled", lambda cap: False)
+    skip_ch = {"channel": "telegram", "enabled": True, "gate": True}
+    assert await event_agents._send_channel(skip_ch, out, agent) is False
+
+    monkeypatch.setattr(u, "is_enabled", lambda cap: True)
+
+    # Failure path (the real sender raises).
+    def _boom(title, body, tg, **_kw):
+        raise RuntimeError("boom")
+    monkeypatch.setitem(event_agents.CHANNELS, "telegram", ("telegram", _boom))
+    fail_ch = {"channel": "telegram", "enabled": True}
+    assert await event_agents._send_channel(fail_ch, out, agent, {"extra": {}}) is False
+
+    # Success path (the real sender returns normally).
+    sent_calls = []
+    monkeypatch.setitem(
+        event_agents.CHANNELS, "telegram",
+        ("telegram", lambda t, b, *_a, **_kw: sent_calls.append((t, b))),
+    )
+    assert await event_agents._send_channel(fail_ch, out, agent, {"extra": {}}) is True
+    assert len(sent_calls) == 1
+    assert sent_calls[0][0] == "Title"
+    assert sent_calls[0][1].startswith("Body")

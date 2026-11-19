@@ -1274,30 +1274,103 @@ def _append_agent_pill_to_html(html_body: str, pill_html: str) -> str:
     return html_body + pill_html
 
 
+def _log_channel_send_trace_skipped(ch: dict, agent, capability) -> None:
+    """2026-11-18 TEMPORARY audit-only diagnostic trace (see the
+    send-attempt trace helpers below for the full rationale) — a
+    capability gate drops this send with no trace anywhere today.
+    Logged through `_EVENTS_LOGGER` (captured by `log_events`), never
+    this module's own skip-listed `_logger` (see that variable's
+    module-level comment). No `tags`/`alert_event` kwarg is set, so
+    this line can never itself be classified alert-shaped
+    (`_looks_alert_shaped()`) or match a real agent condition — it is
+    pure diagnostic tracing, remove once the live-audit question it was
+    added for is answered.
+
+    Extracted verbatim from `_send_channel`'s own capability-gate-skip
+    branch (2026-11-18, radon CC gate) — zero behavior change, same
+    swallow-all-exceptions try/except as before, just relocated so this
+    function's own `except` no longer counts against `_send_channel`'s
+    cyclomatic complexity."""
+    try:
+        _EVENTS_LOGGER.info(
+            "channel-send-trace skipped (capability gate off) channel=%s "
+            "agent=%s capability=%s",
+            ch.get("channel"), getattr(agent, "slug", None), capability,
+        )
+    except Exception:
+        pass
+
+
+def _log_channel_send_trace_outcome(
+    ch: dict, agent, rec: "dict | None", success: bool,
+    *, error: "Exception | None" = None, result=None,
+) -> None:
+    """2026-11-18 TEMPORARY audit-only diagnostic trace (live audit
+    found 2 genuine CRITICAL `conn`-process records matching
+    ERROR_AGENT's catch-all with nothing to explain a skip, but
+    `kind='event'` agents like ERROR_AGENT write no `AgentEvent` row —
+    the only observable effect is the real outbound send itself, which
+    left no queryable trace either way). Logged through
+    `_EVENTS_LOGGER` (`backend.api.algo.events`, captured by
+    `LogStoreHandler`/`log_events`), deliberately NOT this module's own
+    skip-listed `_logger` (see that variable's module-level comment —
+    a skip-listed logger would make this trace invisible to exactly
+    the DB-level audit it exists to support). Both lines are plain
+    INFO/WARNING with no `tags`/`alert_event` kwarg, so neither can
+    itself be classified alert-shaped (`_looks_alert_shaped()` needs a
+    known alert tag from `_known_alert_tags()`, and `tags_for()` only
+    auto-stamps the "error" tag for ERROR/CRITICAL — WARNING never
+    does) or match a real agent condition — this cannot recursively
+    re-enter the dispatch pipeline. All correlation fields are in the
+    message text (never in `extra`), so `_AccountMaskFilter` masks the
+    embedded exception text the same as any other record.
+
+    Note for whoever reads this during the audit: a successful send
+    returning without raising is NOT proof of delivery —
+    `alert_utils`'s/`channel_*.py`'s own low-level senders have their
+    own internal try/except and log through their own skip-listed
+    logger, so a real delivery failure there (e.g. a non-2xx HTTP
+    response) does not necessarily raise here. The success trace only
+    answers "did `_send_channel` itself see an exception", worded
+    "send-returned", not "delivered". Genuinely temporary — remove once
+    the audit question is answered.
+
+    Extracted verbatim from `_send_channel`'s own FAILED/send-returned
+    trace blocks (2026-11-18, radon CC gate) — `success` picks which of
+    the two original log lines to emit; every field is still computed
+    inside this function's own swallow-all-exceptions try/except,
+    exactly as it was computed inside each original inline block, so a
+    malformed `rec` still can never raise out into `_send_channel`
+    itself. Zero behavior change, just relocated."""
+    try:
+        if success:
+            _EVENTS_LOGGER.info(
+                "channel-send-trace send-returned channel=%s agent=%s alert_event=%s "
+                "rec_logger=%s rec_process=%s returned=%r",
+                ch.get("channel"), getattr(agent, "slug", None),
+                ((rec or {}).get("extra") or {}).get("alert_event"),
+                (rec or {}).get("logger"), (rec or {}).get("process"), result,
+            )
+        else:
+            _EVENTS_LOGGER.warning(
+                "channel-send-trace FAILED channel=%s agent=%s alert_event=%s "
+                "rec_logger=%s rec_process=%s error_type=%s error=%s",
+                ch.get("channel"), getattr(agent, "slug", None),
+                ((rec or {}).get("extra") or {}).get("alert_event"),
+                (rec or {}).get("logger"), (rec or {}).get("process"),
+                type(error).__name__, error,
+            )
+    except Exception:
+        pass
+
+
 async def _send_channel(ch: dict, out: tuple, agent, rec: "dict | None" = None) -> bool:
     spec = CHANNELS.get(ch.get("channel")) if isinstance(ch, dict) else None
     if spec is None or not ch.get("enabled"):
         return False
     capability, send = spec
     if ch.get("gate", True) and not _channel_enabled(capability):
-        # 2026-11-18 TEMPORARY audit-only diagnostic trace (see the
-        # send-attempt trace at the bottom of this function for the full
-        # rationale) — a capability gate drops this send with no trace
-        # anywhere today. Logged through `_EVENTS_LOGGER` (captured by
-        # `log_events`), never this module's own skip-listed `_logger`
-        # (see that variable's module-level comment). No `tags`/
-        # `alert_event` kwarg is set, so this line can never itself be
-        # classified alert-shaped (`_looks_alert_shaped()`) or match a
-        # real agent condition — it is pure diagnostic tracing, remove
-        # once the live-audit question it was added for is answered.
-        try:
-            _EVENTS_LOGGER.info(
-                "channel-send-trace skipped (capability gate off) channel=%s "
-                "agent=%s capability=%s",
-                ch.get("channel"), getattr(agent, "slug", None), capability,
-            )
-        except Exception:
-            pass
+        _log_channel_send_trace_skipped(ch, agent, capability)
         return False
     title, body = out[0], out[1]
     tg = out[2] if len(out) > 2 else None
@@ -1395,60 +1468,18 @@ async def _send_channel(ch: dict, out: tuple, agent, rec: "dict | None" = None) 
         # producer, not just this one.
         kwargs["agent_slug"] = ch.get("log_agent_slug") or getattr(agent, "slug", None)
         kwargs["sim_mode"] = ch.get("log_sim_mode", False)
-    # 2026-11-18 TEMPORARY audit-only diagnostic trace (live audit found
-    # 2 genuine CRITICAL `conn`-process records matching ERROR_AGENT's
-    # catch-all with nothing to explain a skip, but `kind='event'`
-    # agents like ERROR_AGENT write no `AgentEvent` row — the only
-    # observable effect is the real outbound send itself, which left no
-    # queryable trace either way). Logged through `_EVENTS_LOGGER`
-    # (`backend.api.algo.events`, captured by `LogStoreHandler`/
-    # `log_events`), deliberately NOT this module's own skip-listed
-    # `_logger` (see that variable's module-level comment just above —
-    # a skip-listed logger would make this trace invisible to exactly
-    # the DB-level audit it exists to support). Both lines are plain
-    # INFO/WARNING with no `tags`/`alert_event` kwarg, so neither can
-    # itself be classified alert-shaped (`_looks_alert_shaped()` needs a
-    # known alert tag from `_known_alert_tags()`, and `tags_for()` only
-    # auto-stamps the "error" tag for ERROR/CRITICAL — WARNING never
-    # does) or match a real agent condition — this cannot recursively
-    # re-enter the dispatch pipeline. All correlation fields are in the
-    # message text (never in `extra`), so `_AccountMaskFilter` masks the
-    # embedded exception text the same as any other record.
-    #
-    # Note for whoever reads this during the audit: `send(...)` returning
-    # without raising is NOT proof of delivery — `alert_utils`'s/
-    # `channel_*.py`'s own low-level senders have their own internal
-    # try/except and log through their own skip-listed logger, so a real
-    # delivery failure there (e.g. a non-2xx HTTP response) does not
-    # necessarily raise here. This trace only answers "did `_send_channel`
-    # itself see an exception", worded "send-returned", not "delivered".
-    # Genuinely temporary — remove once the audit question is answered.
+    # 2026-11-18 TEMPORARY audit-only diagnostic trace — see
+    # `_log_channel_send_trace_outcome`'s own docstring for the full
+    # rationale (live audit, ERROR_AGENT catch-all, non-alert-shaped
+    # guarantee). Genuinely temporary — remove once the audit question
+    # is answered.
     try:
         res = await asyncio.to_thread(send, title, body, tg, **kwargs)
     except Exception as e:
         sys.stderr.write(f"event_agents: {agent.slug} {capability} send failed: {e}\n")
-        try:
-            _EVENTS_LOGGER.warning(
-                "channel-send-trace FAILED channel=%s agent=%s alert_event=%s "
-                "rec_logger=%s rec_process=%s error_type=%s error=%s",
-                ch.get("channel"), getattr(agent, "slug", None),
-                ((rec or {}).get("extra") or {}).get("alert_event"),
-                (rec or {}).get("logger"), (rec or {}).get("process"),
-                type(e).__name__, e,
-            )
-        except Exception:
-            pass
+        _log_channel_send_trace_outcome(ch, agent, rec, False, error=e)
         return False
-    try:
-        _EVENTS_LOGGER.info(
-            "channel-send-trace send-returned channel=%s agent=%s alert_event=%s "
-            "rec_logger=%s rec_process=%s returned=%r",
-            ch.get("channel"), getattr(agent, "slug", None),
-            ((rec or {}).get("extra") or {}).get("alert_event"),
-            (rec or {}).get("logger"), (rec or {}).get("process"), res,
-        )
-    except Exception:
-        pass
+    _log_channel_send_trace_outcome(ch, agent, rec, True, result=res)
     return True
 
 
