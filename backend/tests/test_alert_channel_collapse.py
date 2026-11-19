@@ -324,8 +324,12 @@ async def test_order_failure_identical_via_channel_agents(chans):
     _, _, email_payload = chans["email"][0]
     subj, body = email_payload
     assert subj == "Source: Order Rejected NIFTY26OCTFUT BUY [Manual] | 10:15:30 IST"
+    # 2026-11-18 — same SHA update as test_alert_golden.py's own
+    # order-failure test (same fixture shape): format_html_table.py's
+    # th/td/td_total styles changed `white-space:nowrap` to
+    # `white-space:normal;word-break:break-word;overflow-wrap:break-word`.
     assert hashlib.sha256(body.encode()).hexdigest() == \
-        "be52c58997bdb252245c7902f834bf2a18c35d1e4ae166d4eedd3edf16f24174"
+        "2958523fce14650e66b46a9e0a360d57fb30008669111e7aa9e012ef1ccfdd51"
 
 
 @pytest.mark.asyncio

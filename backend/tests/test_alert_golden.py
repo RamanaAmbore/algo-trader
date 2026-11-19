@@ -444,7 +444,14 @@ async def test_order_failure_golden_text_channels_and_html(monkeypatch):
     _, addr, subj, body = sent["mail"][0]
     assert addr == "a@x.com"
     assert subj == "Source: Order Rejected NIFTY26OCTFUT BUY [Manual] | 10:15:30 IST"
-    assert hashlib.sha256(body.encode()).hexdigest() == "be52c58997bdb252245c7902f834bf2a18c35d1e4ae166d4eedd3edf16f24174"
+    # 2026-11-18 — format_html_table.py's _html_table() th/td/td_total
+    # styles changed `white-space:nowrap` to `white-space:normal;
+    # word-break:break-word;overflow-wrap:break-word` (mail-client
+    # sanitizers that force table-layout:fixed otherwise spill nowrap
+    # text past its own cell background). SHA re-derived by running the
+    # real pipeline; the body diff is scoped to that style-attribute
+    # change only (verified via a direct re-render + style-string diff).
+    assert hashlib.sha256(body.encode()).hexdigest() == "2958523fce14650e66b46a9e0a360d57fb30008669111e7aa9e012ef1ccfdd51"
 
 
 @pytest.mark.asyncio
