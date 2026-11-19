@@ -113,7 +113,14 @@
   // LogPanel.svelte already merge `current_limit` onto this row before
   // it reaches OrderCard, this was just never read here.
   const _limit     = $derived(order?.current_limit ?? order?.price ?? order?.initial_price ?? null);
-  const _filled    = $derived(order?.average_price ?? order?.fill_price ?? null);
+  // A resting/OPEN order genuinely reports average_price: 0.0 (non-optional
+  // float, backend-coerced via float(... or 0)) — plain `??` only falls
+  // through on null/undefined, so `0` used to win and permanently mask the
+  // chase-updating `_limit` above for the entire time an order stays OPEN
+  // (2026-11-18 fix). A real fill's average price is always a positive
+  // tradable number, so the `> 0` guard only ever excludes the degenerate
+  // zero/absent case, never a genuine fill.
+  const _filled    = $derived((Number(order?.average_price) > 0) ? Number(order.average_price) : (Number(order?.fill_price) > 0) ? Number(order.fill_price) : null);
   const _ts        = $derived(order?.order_timestamp || order?.created_at || null);
   const _qtyFilled = $derived(order?.filled_quantity ?? (order?.fill_price != null ? order?.quantity : 0));
 
@@ -126,7 +133,10 @@
     const isTerminalFilled = status === 'COMPLETE' || status === 'FILLED';
     if (!isTerminalFilled) return null;
     const lim = (o.price ?? o.initial_price);
-    const fil = (o.average_price ?? o.fill_price);
+    // Same non-positive-is-absent guard as `_filled` above — a terminal
+    // row with a `0` average_price mid-sync race must not be read as a
+    // real fill (was computing a wrong negative slippage).
+    const fil = (Number(o.average_price) > 0) ? Number(o.average_price) : (Number(o.fill_price) > 0) ? Number(o.fill_price) : null;
     if (lim == null || fil == null) return null;
     const p = Number(lim);
     if (!(p > 0)) return null;
