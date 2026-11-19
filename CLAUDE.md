@@ -1225,6 +1225,20 @@ action-layer channel naming, and `1a6edeab` fixed a seeded-agent count test. Nei
   consumed by an active agent or falls through to ERROR_AGENT. It is never dropped on the assumption
   that a consumer exists.
 
+**Temporary delivery trace on `_send_channel()` — audit-only, remove once answered (2026-11-18, commit
+`ff424d33`)** — A live audit found 2 genuine CRITICAL conn-service records that structurally matched
+`ERROR_AGENT` but could not be confirmed delivered or dropped. `kind='event'` agents never write an
+`AgentEvent` row, so nothing in the DB recorded either outcome. `_send_channel()`
+([`event_agents.py:1277`](backend/api/algo/event_agents.py#L1277)) now emits an INFO trace on channel
+success and a WARNING on failure (lines [:1294](backend/api/algo/event_agents.py#L1294),
+[:1431](backend/api/algo/event_agents.py#L1431), [:1443](backend/api/algo/event_agents.py#L1443)).
+Both go through `_EVENTS_LOGGER`, not the skip-listed module logger. The commit confirms the records
+are not alert-shaped, so they cannot recursively match `ERROR_AGENT` or `UNROUTED_ALERT_AGENT`. The
+code marks this block TEMPORARY ([:1283](backend/api/algo/event_agents.py#L1283),
+[:1398-1425](backend/api/algo/event_agents.py#L1398)). It is diagnostic only. Remove the trace once
+the audit question is answered. Invariant: a delivery trace is never alert-shaped, or it feeds back
+into the alert pipeline.
+
 **Alert identity SSOT — `resolve_source()` separates "who triggered it" from "which process produced
 it"; background processes stop borrowing a fake agent; trailing tag becomes four slots (2026-11-06
 IST; commits `631777aa` foundation, `a65b0a66` 8 background producers, `17e55448` order-scoped
@@ -2013,6 +2027,23 @@ Invariant: when a component is kept mounted-but-hidden for background-effect rea
 > **REMOVED — Bracket/Template/GTT (T3.1–T3.4, 2026-11).** Historical record only; do not
 > reintroduce without a new design decision.
 
+**Basket leg tagged to a stale account after switching accounts mid-build (2026-11-18, commit
+`c5dac304`)** — `OrderTicket.svelte`'s local `_account` mirror was a one-shot seed
+([:1532-1550](frontend/src/lib/order/OrderTicket.svelte#L1532)). Nothing re-synced it while the Ticket
+tab sat hidden behind Chain (`display:none`, still mounted), so `_basketPayload()`
+([:1784](frontend/src/lib/order/OrderTicket.svelte#L1784)) kept tagging new legs with the account from
+before the switch. Fix: a continuous re-sync effect
+([:1562-1566](frontend/src/lib/order/OrderTicket.svelte#L1562)) mirrors OptionChainTab's inbound-prop
+sync. The pre-existing account echo effect ([:1574](frontend/src/lib/order/OrderTicket.svelte#L1574))
+now returns early on `suspended`, so a hidden tab cannot push its stale value back to the shared
+account. Also, `OptionChainTab.svelte`'s `_mergeIntoBasket`
+([:594](frontend/src/lib/order/OptionChainTab.svelte#L594)) and `_netAgainstBasket`
+([:618](frontend/src/lib/order/OptionChainTab.svelte#L618)) match keys now include `account`, not only
+`sym` + `side`. Re-pressing +/- on an already-staged strike after an account switch no longer folds
+into, or nets against, the old leg's account. Invariant: an effect inside a mounted-but-hidden
+component never writes shared account state, and a basket leg is matched and tagged by the account
+it was staged under.
+
 **Bracket default scope resolved one way on the Ticket tab; side-flip flash no longer claims a
 re-arm (2026-11-01; commit `68f889a1`)** — Three places decided which scope the Bracket default
 resolves against. They disagreed for a bare-underlying option order, where the operator picks a
@@ -2287,6 +2318,16 @@ replace (not merge with) the ATM row's marker when a row is both ATM and active.
 
 **Order Ticket Chase/Bracket/Draft click-to-pin tooltips (2026-10-16, commit bd2f0946)** — Added small "(i)" InfoHint chips next to the CHASE/BRACKET/DRAFT labels in `SymbolPanel.svelte`, `TemplateBar.svelte`, and `OrderTicket.svelte`, separate from their own toggles so help-seeking clicks don't flip real order behavior. Chase tooltip displays per-tier wait times from `backend/api/routes/orders_helpers.py:_live_chase_config` (low=30s/30 attempts, med=20s/20 attempts, high=10s/10 attempts). Test: `frontend/e2e/order_ticket_chase_bracket_draft_tooltips.spec.js`.
 
+**Order pill never showed or updated its limit price — a resting order's `average_price: 0` read as a
+fill (2026-11-18, commit `db3756af`)** — `OrderCard.svelte`'s `_filled`
+([:123](frontend/src/lib/order/OrderCard.svelte#L123)) was `order?.average_price ?? order?.fill_price ??
+null`. `??` only falls through on null or undefined, so an OPEN order's genuine `average_price: 0.0`
+counted as a real fill. The chip then always preferred `_filled` (rendering "0.00") over the
+chase-updated `_limit`, for the whole time the order stayed OPEN. Fix: a value counts as a fill only
+when `Number(...) > 0`. The same rule applies to the equivalent read inside `_slippage()`
+([:139](frontend/src/lib/order/OrderCard.svelte#L139)). Invariant: a zero or missing average price is
+never a fill price. An OPEN order displays its live limit.
+
 **Order price tick-rounding carries floating-point residue (2026-09-28, commit 4c61e47f, CRITICAL)** — Order submission (`OrderTicket.svelte:_roundToTick`, line 1183; used by ticket, basket, chain, and modify routes) was snapping prices to the nearest tick but carrying genuine IEEE 754 floating-point residue from that snap operation. Example: 590.80 @ tick 0.05 snapped to 590.8000000000001 (before rounding), sent directly to Kite → rejected with "invalid price / decimal places" error. Live incident verified on multiple orders. Fix: after snapping to tick via `Math.round(px / tick) × tick`, re-round the result to the tick's own decimal precision: `Number(result.toFixed(decimalPlaces))`. Also applied in `backend/api/routes/orders_helpers.py:_align_price_to_tick` for POST endpoint validation. Invariant: tick-snap results are always rounded to the tick's own precision before transmission to broker.
 
 **Order-lifecycle races — final-status guards and locking (2026-09-28, commit 97ed1c8c)** — Five linked defects across postback fan-out, chase cancel-and-replace, admin reconcile, and take-profit armature converged around race windows during order fills. Key invariants:
@@ -2544,6 +2585,16 @@ broker response. All four now route through `get_broker_order_truth()` / `apply_
 
 **Multi-leg basket submit must not close the SymbolPanel modal mid-placement (2026-10-16)** — `SymbolPanel.svelte:submitBasket()` calls the host's `onSubmit` prop once PER PLACED LEG (same payload shape as a single-order submit), by design — SymbolPanel itself never closes on submit ("modal stays open after a successful chain submit so they can place more legs without re-opening"). Every host honors this except `MarketPulse.svelte`, whose `onSubmit={() => closeTicket()}` closed unconditionally on the very first callback — so a multi-leg Chain basket placed from MarketPulse vanished after leg 1 even though every leg genuinely placed. `derivatives/+page.svelte` and `orders/+page.svelte` already use a non-closing pattern (toast/refresh only); MarketPulse now matches — `onSubmit` shows a brief `toast.success(...)` instead of calling `closeTicket()` (which remains wired to the × button / `onClose` only). Invariant: a `SymbolPanel` host's `onSubmit` must never assume "called once" — basket submits call it N times, and closing on the first call truncates the UI mid-placement even when every leg succeeds.
 
+**Qty +/- stepper on a staged basket pill removes the leg at zero (2026-11-18, commit `46353a1d`)** —
+The Chain tab's strike +/- (`_netAgainstBasket`,
+[`OptionChainTab.svelte:618`](frontend/src/lib/order/OptionChainTab.svelte#L618)) already removed a
+leg that reached qty 0. The generic pill stepper shown under the chain for any staged leg
+([`SymbolPanel.svelte:2644-2645`](frontend/src/lib/SymbolPanel.svelte#L2644)) instead floored at 1 and
+disabled itself. Fix: decrementing to 0 now calls `removeBasketLeg(i)`, the same function the ×
+button calls ([:2708](frontend/src/lib/SymbolPanel.svelte#L2708)), instead of clamping. Invariant: a
+route that reduces a staged leg to zero removes it. No staged leg sits at qty 0 with its minus
+disabled.
+
 **Order-ticket "Market closed" false warning on MCX CE/PE cache miss (2026-10-23; commit
 `20b3b71a`)** — Live report: a GOLD CE ticket showed "Market closed — order will queue" while MCX
 was open. The 2026-10-22 root-future rescue in `exchangeOptions`
@@ -2694,6 +2745,24 @@ original-index tiebreak.
 Invariant: an account/pair-group sort composition's "no explicit sort" path must stay
 byte-identical to its pre-column-sort behaviour; a new explicit sort mode only ever REPLACES
 the default clustering call at the same structural point, never wraps or reorders around it.
+
+**Derivatives Legs view is a three-mode dropdown; the new default Legs view groups by account only
+(2026-11-18, commit `efe3dd67`)** — The two-option `<AlgoTabs>` (Legs / Exp Close) on the derivatives
+page was replaced by the existing `$lib/Select.svelte` dropdown, with three modes:
+- **Legs** (new default, `legsTab === 'legs'`): grouped by account and sorted within each account. No
+  CE/PE pairing. This mirrors the MarketPulse Positions grid convention.
+- **Paired**: the old "Legs" CE/PE auto-paired behaviour, relabelled.
+- **Exp Close**: unchanged.
+
+The Legs grouping is `sortRowsByAccountOnly()`
+([`pairGroupSort.js:199`](frontend/src/lib/data/pairGroupSort.js#L199)). It is selected inside
+`composeDisplayedCandidates()`
+([`candidateRowComposition.js:49`](frontend/src/lib/data/candidateRowComposition.js#L49)), which now
+takes a three-mode `{ mode }` contract. Same commit: a confirmed regression in the underlying-anchor
+row guard, which would have hidden the anchor on the Paired view. The guard now tests
+`legsTab === 'expiry'`, not `legsTab !== 'legs'`. Invariant: each mode's no-explicit-sort path is a
+pure grouping choice. An active column sort still overrides it at the same structural point, as in
+the hand-rolled grid entry above.
 
 ---
 
@@ -4241,6 +4310,16 @@ branchy logic is now replaced by single atomic formula. Incidents 8474a17e (clos
 removed — formula correct even at session open) and 1769cffc (short position oq check fixed 
 to `oq !== 0`) informed the current design's simplicity.
 
+**NavStrip Positions Expiry P&L (PE) pill shows `—` before first load, not `0` (2026-11-18, commit
+`6d193ecf`)** — `_EMPTY_POSITIONS.total.exp_pnl`
+([`portfolioStore.svelte.js:572`](frontend/src/lib/data/portfolioStore.svelte.js#L572)) defaulted to
+`0`. Its sibling `day_pnl` on the same line was already `null` from the earlier real-money fix, but
+`exp_pnl` was left out of scope then. A cold-start `0` rendered as a real money pill, which reads as a
+confirmed-flat book when the figure is genuinely unknown. Fix: `exp_pnl: null`, so `fmtMoney` renders
+`—`. `extrinsic` and `prev_mv` have no visible money-pill consumer and stay `0`. Guard assertion:
+`portfolioAggregatesTriggers.test.js` (the `_EMPTY_POSITIONS.total` null check). Invariant: a
+pre-load placeholder that renders through a visible money pill is `null`, never `0`.
+
 **Holdings day P&L — COALESCE bug (FIXED 2026-09)** — Previously: `_override_stale_close_for_holdings` 
 in `holdings.py` queried `COALESCE(daily_book.previous_close, ltp)` as ref_close; since `previous_close` 
 is from Kite's stale BHAV-copy API, the epsilon check always passed → no patching → wrong day P&L. 
@@ -4310,6 +4389,7 @@ now caches + returns a `stale` flag; `/api/nav/by-account` masks `errors` for no
 | 05:35 IST market-status alert (Telegram always; ntfy only when a segment is open) | `backend/api/background.py:_ds_tick_market_status_report` (trigger) + `backend/api/algo/actions_live.py:_action_live_send_market_status` (handler, registered in `_NOOP_ACTION_HANDLERS` in `backend/api/algo/actions.py`) + `backend/config/grammars/agent_grammar.yaml` (`send_market_status` token) + `market-status-report` built-in in `backend/api/algo/agent_engine.py` |
 | MCX evening-closed holiday handling | `backend/brokers/broker_apis.py:_fetch_mcx_evening_closed_dates` + `_upsert_mcx_evening_closed_sessions_coro` |
 | Pulse Chg% / Day P&L % denominator | `frontend/src/lib/data/pulseUnified.js` (`_prevCloseSsot`, `finalizeRows`) |
+| Derivatives Legs / Paired / Exp Close view (dropdown, default Legs grouping) | `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` (`legsTab`) + `frontend/src/lib/data/candidateRowComposition.js:composeDisplayedCandidates` + `frontend/src/lib/data/pairGroupSort.js:sortRowsByAccountOnly` |
 | Postback subscribe new instrument | `backend/api/routes/orders.py:_subscribe_filled_pairs()` — canonical helper resolves (symbol, exchange) to token and calls `subscribe_with_sym()` (NOT bare `subscribe()`, which silently drops ticks). Wired into: Kite/Dhan/Groww postbacks, admin reconcile sweep, open-order watchdog, chase terminal-fill detection |
 | `cancel_all_orders` CLI statement | `frontend/src/lib/command/grammars/agents.js` (bare-statement compile kind) + `backend/api/routes/orders.py` (`POST /api/orders/cancel-all`) + `backend/api/algo/actions_live.py` (`cancel_all_orders_scoped` shared helper) |
 | F&O order qty convention | `backend/api/routes/orders_place.py:_ticket_validate_input` + `frontend/src/lib/order/orderTicketSubmit.js` |
