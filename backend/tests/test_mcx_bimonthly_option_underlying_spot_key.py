@@ -1,0 +1,108 @@
+"""
+Tests for `option_underlying_quote_key()`'s MCX future resolution
+(backend/api/algo/derivatives.py) — the bi-monthly-cycle fix.
+
+Live incident (2026-11-20): GOLD options expire monthly on MCX, but GOLD
+futures trade only on a bi-monthly cycle (Dec/Feb/Apr/Jun/Aug/Oct — no
+November contract). `futures_symbol_for_expiry()` blindly built the
+same-month symbol "GOLD26NOVFUT", which doesn't exist, so
+`quote(['MCX:GOLD26NOVFUT'])` returned `{}` and every GOLD position's
+`underlying_ltp` stayed 0 — collapsing Greeks and the Payoff chart for
+every GOLD leg that month. Confirmed live against the real instruments
+cache and a real quote() call on prod before the fix.
+
+The fix (`_mcx_nearest_future_symbol`) falls back, via a sync peek of
+the instruments cache, to the nearest real listed future expiring on or
+after the option's own expiry — mirroring the async
+`lookup_mcx_future_for_expiry()` rule used elsewhere. It must be a
+no-op for commodities that DO trade every month (CRUDEOIL,
+NATURALGAS), and must degrade gracefully on a cold cache.
+"""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from backend.api.algo.derivatives import option_underlying_quote_key
+
+
+def _make_fut(sym: str, underlying: str, expiry: str) -> SimpleNamespace:
+    return SimpleNamespace(s=sym, u=underlying, e="MCX", t="FUT", x=expiry)
+
+
+# Real GOLD futures cycle confirmed live on prod 2026-11-20: Dec/Feb/Apr/
+# Jun/Aug/Oct only — no November contract.
+_GOLD_FUTS = [
+    _make_fut("GOLD26DECFUT", "GOLD", "2026-12-04"),
+    _make_fut("GOLD27FEBFUT", "GOLD", "2027-02-05"),
+    _make_fut("GOLD27APRFUT", "GOLD", "2027-04-05"),
+]
+
+# CRUDEOIL trades every month — the naive same-month symbol always exists.
+_CRUDEOIL_FUTS = [
+    _make_fut("CRUDEOIL26NOVFUT", "CRUDEOIL", "2026-11-19"),
+    _make_fut("CRUDEOIL26DECFUT", "CRUDEOIL", "2026-12-19"),
+]
+
+
+def _fake_cache_response(items):
+    return SimpleNamespace(items=items)
+
+
+def test_gold_november_option_resolves_to_real_december_future():
+    """The reported bug: a November GOLD option must NOT resolve to the
+    nonexistent 'GOLD26NOVFUT'. It should roll to the nearest real
+    listed future (December)."""
+    with patch("backend.api.cache.peek_stale",
+               return_value=_fake_cache_response(_GOLD_FUTS)):
+        key = option_underlying_quote_key("GOLD26NOV130000PE")
+    assert key == "MCX:GOLD26DECFUT"
+    assert "GOLD26NOVFUT" not in (key or "")
+
+
+def test_gold_put_and_call_same_strike_month_agree():
+    with patch("backend.api.cache.peek_stale",
+               return_value=_fake_cache_response(_GOLD_FUTS)):
+        put_key = option_underlying_quote_key("GOLD26NOV125000PE")
+        call_key = option_underlying_quote_key("GOLD26NOV125000CE")
+    assert put_key == call_key == "MCX:GOLD26DECFUT"
+
+
+def test_crudeoil_monthly_cycle_is_a_no_op():
+    """CRUDEOIL has a future every month — the naive same-month symbol
+    exists in the cache, so resolution must be unchanged (no regression
+    for commodities that already worked)."""
+    with patch("backend.api.cache.peek_stale",
+               return_value=_fake_cache_response(_CRUDEOIL_FUTS)):
+        key = option_underlying_quote_key("CRUDEOIL26NOV5800CE")
+    assert key == "MCX:CRUDEOIL26NOVFUT"
+
+
+def test_cold_instruments_cache_falls_back_to_naive_symbol():
+    """No regression when the instruments cache has never been warmed —
+    same degraded behaviour as before this fix, not a crash."""
+    with patch("backend.api.cache.peek_stale", return_value=None):
+        key = option_underlying_quote_key("GOLD26NOV130000PE")
+    assert key == "MCX:GOLD26NOVFUT"
+
+
+def test_no_futures_listed_for_underlying_falls_back_to_naive_symbol():
+    with patch("backend.api.cache.peek_stale",
+               return_value=_fake_cache_response(_CRUDEOIL_FUTS)):
+        key = option_underlying_quote_key("GOLD26NOV130000PE")
+    assert key == "MCX:GOLD26NOVFUT"
+
+
+def test_all_candidates_expire_before_option_falls_back_to_farthest_listed():
+    """Defensive edge case: every listed future for this root expires
+    before the option's own expiry (stale/cold cache lag). Must return
+    the farthest-out real contract rather than a dead symbol."""
+    stale_futs = [
+        _make_fut("GOLD25DECFUT", "GOLD", "2025-12-04"),
+        _make_fut("GOLD26FEBFUT", "GOLD", "2026-02-05"),
+    ]
+    with patch("backend.api.cache.peek_stale",
+               return_value=_fake_cache_response(stale_futs)):
+        key = option_underlying_quote_key("GOLD26NOV130000PE")
+    assert key == "MCX:GOLD26FEBFUT"

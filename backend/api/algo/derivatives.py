@@ -896,7 +896,7 @@ def option_underlying_quote_key(symbol: str) -> str | None:
         expiry = parsed.get("expiry")
         if not expiry:
             return None
-        return f"MCX:{futures_symbol_for_expiry(name, expiry)}"
+        return f"MCX:{_mcx_nearest_future_symbol(name, expiry)}"
     return underlying_ltp_key(name)
 
 
@@ -912,6 +912,49 @@ def futures_symbol_for_expiry(underlying: str, expiry: date) -> str:
     yy  = expiry.year % 100
     mon = _FUT_MONTH_CODES[expiry.month - 1]
     return f"{(underlying or '').upper()}{yy:02d}{mon}FUT"
+
+
+def _mcx_nearest_future_symbol(underlying: str, expiry: date) -> str:
+    """Resolve the real MCX future tradingsymbol to quote as the spot
+    proxy for an option expiring on `expiry`.
+
+    `futures_symbol_for_expiry()` assumes every month has a listed
+    future (true for CRUDEOIL/NATURALGAS). GOLD and SILVER trade on a
+    bi-monthly cycle (e.g. Dec/Feb/Apr/Jun/Aug/Oct) — a November GOLD
+    option has no "GOLD26NOVFUT" to quote at all, so the naive
+    same-month symbol 404s and the underlying spot silently stays 0
+    (confirmed live: `quote(['MCX:GOLD26NOVFUT'])` → `{}`).
+
+    Falls back, via a sync peek of the already-warm instruments cache
+    (no network call), to the first real listed future expiring on or
+    after the option's own expiry — the same "nearest contract" rule
+    `lookup_mcx_future_for_expiry()` already uses on the async spot-
+    resolution path in options_helpers.py. Returns the naive same-month
+    symbol unchanged when the cache is cold or that exact symbol is
+    actually listed — a no-op for every commodity that trades monthly.
+    """
+    naive = futures_symbol_for_expiry(underlying, expiry)
+    from backend.api import cache as _cache
+    cached = _cache.peek_stale("instruments")
+    if cached is None:
+        return naive
+    target_u = (underlying or "").upper()
+    candidates = [
+        inst for inst in cached.items
+        if inst.e == "MCX" and inst.t == "FUT"
+        and (inst.u or "").upper() == target_u
+        and inst.x
+    ]
+    if not candidates or any(c.s.upper() == naive.upper() for c in candidates):
+        return naive
+    expiry_iso = expiry.isoformat()
+    candidates.sort(key=lambda c: c.x or "")
+    for c in candidates:
+        if c.x and c.x >= expiry_iso:
+            return c.s
+    # Nothing listed expires on/after the option's own expiry — fall
+    # back to the farthest-out contract rather than a dead symbol.
+    return candidates[-1].s
 
 
 def _close_time_for_row(row: dict) -> tuple[int, int]:
