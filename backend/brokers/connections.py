@@ -68,6 +68,16 @@ from backend.shared.helpers.utils import generate_totp, secrets, config
 
 _DHAN_LOGIN_COOLOFF_PATH = "/tmp/ramboq_dhan_login_cooloff.json"
 
+# Kite's own cross-call login cool-off (mirrors _DHAN_LOGIN_COOLOFF_PATH).
+# Unlike Dhan's documented flat 2-minute generate_token rate limit, Zerodha
+# has no documented fixed login rate limit — but a live incident
+# (2026-11-19, account ZG0790) confirmed repeated automated-login failures
+# from this server's IP can trip Kite's own anomaly detection, which then
+# blocks further automated attempts from that IP while a manual browser
+# login from a different IP still succeeds. See KiteConnection.get_kite_conn
+# / _attempt_login_with_cooloff for the escalating cool-off this file uses.
+_KITE_LOGIN_COOLOFF_PATH = "/tmp/ramboq_kite_login_cooloff.json"
+
 
 def _get_source_ip_from_secrets(section: str, account: str) -> str | None:
     """Return source_ip from secrets.yaml for a broker section + account.
@@ -459,6 +469,17 @@ class KiteConnection:
         # cycle (~5 min per account) for every caller in the window.
         self._login_lock = threading.Lock()
 
+        # Login cool-off state — see _KITE_LOGIN_COOLOFF_PATH above and
+        # get_kite_conn / _attempt_login_with_cooloff below. Restored
+        # from disk (if still active) inside _try_restore_token(), same
+        # as DhanConnection does for its own cool-off. `_login_fail_streak`
+        # is in-memory only (not persisted) — same as Dhan, which also
+        # only persists the blocked-until timestamp, not a fail count.
+        # A process restart therefore keeps an already-active block but
+        # restarts escalation from the first tier on the next failure.
+        self._login_blocked_until: float = 0.0
+        self._login_fail_streak: int = 0
+
         self.kite = self._new_kite()
 
         # Login session uses plain requests (no source_ip binding).
@@ -482,6 +503,37 @@ class KiteConnection:
             self._conn_created_at = timestamp_indian()
             logger.info(f"Restored cached token for {self.account} (age: "
                         f"{(datetime.now(timezone.utc) - created).seconds // 3600}h)")
+        # Restore persisted login cool-off (survives process restarts so a
+        # restarted service doesn't immediately re-hammer Kite's login
+        # endpoint while an IP-level anomaly block is still active).
+        # Mirrors DhanConnection._try_restore_token's identical pattern.
+        # Uses max() so a disk read can never SHORTEN an in-memory block
+        # already set earlier in this same process (e.g. by a concurrent
+        # failed login attempt on another thread/instance for this
+        # account) — only ever extends or confirms it.
+        try:
+            if os.path.exists(_KITE_LOGIN_COOLOFF_PATH):
+                with open(_KITE_LOGIN_COOLOFF_PATH) as _cf:
+                    _cd = json.load(_cf)
+                _blocked = float(_cd.get(self.account, 0.0))
+                if _blocked > _time_mod.time():
+                    _prev = self._login_blocked_until
+                    self._login_blocked_until = max(self._login_blocked_until, _blocked)
+                    if self._login_blocked_until != _prev:
+                        _wait_s = int(self._login_blocked_until - _time_mod.time())
+                        _until_str = datetime.fromtimestamp(
+                            self._login_blocked_until
+                        ).strftime('%H:%M:%S')
+                        logger.warning(
+                            "[KITE-LOGIN-COOLOFF] %r: login cool-off restored from "
+                            "disk — %ds remaining; auth blocked until %s",
+                            self.account, _wait_s, _until_str,
+                        )
+        except Exception as _e:
+            logger.warning(
+                "[KITE-LOGIN-COOLOFF] %r: failed to read login cool-off file: %s",
+                self.account, _e,
+            )
 
     def _new_kite(self):
         """Create a KiteConnect instance, with IPv6 source binding if configured."""
@@ -569,6 +621,17 @@ class KiteConnection:
         Kite rejects parallel logins for the same app and invalidates
         both tokens — the symptom was ~5 min of 401s on every request
         until the retry loop cleared.
+
+        Login cool-off: once `_validate_or_clear_kite_token()` has
+        confirmed there's no usable cached token (so this call would
+        otherwise attempt a fresh `init_kite_conn()` login), a login
+        cool-off set by a PRIOR failed attempt (see
+        `_attempt_login_with_cooloff`) is checked and, if still active,
+        raised immediately with no network call. This gate intentionally
+        sits AFTER both the fast-path early-return above and
+        `_validate_or_clear_kite_token()` — a still-valid cached token
+        is always returned normally, cool-off or not. Only a genuinely
+        NEW login attempt is ever blocked.
         """
         now = timestamp_indian()
         with self._login_lock:
@@ -584,8 +647,91 @@ class KiteConnection:
                                 f"{now.strftime('%a, %b %d, %Y, %I:%M %p')}")
                 if self._validate_or_clear_kite_token():
                     return self.kite
-                self.init_kite_conn(test_conn=True)
+                if _time_mod.time() < self._login_blocked_until:
+                    wait_s = int(self._login_blocked_until - _time_mod.time())
+                    raise RuntimeError(
+                        f"Kite login cooling off for {self.account!r} — "
+                        f"wait {wait_s}s before retrying (non-transient login failure)"
+                    )
+                self._attempt_login_with_cooloff()
                 return self.kite
+
+    def _attempt_login_with_cooloff(self) -> None:
+        """Call `init_kite_conn(test_conn=True)`, tracking consecutive
+        login failures with an exponentially escalating cool-off.
+
+        Must be called inside `_login_lock` + `_cross_process_login_lock`,
+        after `get_kite_conn`'s own cool-off gate has already confirmed
+        we're not currently blocked.
+
+        Mirrors `DhanConnection._mint_and_build`'s cool-off bookkeeping,
+        with one deliberate difference: Dhan's `generate_token` endpoint
+        has a documented fixed 2-minute rate limit, so a flat 120s window
+        is correct there. Zerodha's login endpoint has no documented
+        fixed limit — repeated automated-login failures from one server
+        IP can trip Kite's own anomaly detection and block further
+        automated attempts from that IP (confirmed live, 2026-11-19,
+        account ZG0790: 800+ consecutive 400s on
+        kite.zerodha.com/api/login) while a manual browser login from a
+        different IP still succeeds. A flat short window would just keep
+        re-tripping that block, so consecutive failures escalate the
+        cool-off instead: 120s, 240s, 480s, 960s, capped at 1800s (30 min)
+        — same backoff shape `retry_kite_conn` itself already uses
+        (`min(2 ** attempt, 30)`), applied at the cross-call level.
+        """
+        try:
+            self.init_kite_conn(test_conn=True)
+        except Exception as e:
+            self._login_fail_streak += 1
+            cooloff_s = min(120 * (2 ** (self._login_fail_streak - 1)), 1800)
+            self._login_blocked_until = _time_mod.time() + cooloff_s
+            _next_retry = datetime.fromtimestamp(
+                self._login_blocked_until
+            ).strftime('%H:%M:%S')
+            logger.error(
+                "[KITE-LOGIN-COOLOFF] %r: login failed (streak=%d) — cooloff "
+                "active for %ds (persisted to disk). Next retry at %s. Cause: %s",
+                self.account, self._login_fail_streak, cooloff_s, _next_retry,
+                str(e)[:200],
+            )
+            # Persist so a process restart during the cool-off window
+            # doesn't reset the clock and allow immediate re-hammering of
+            # Kite's login endpoint — same read-merge-write pattern as
+            # DhanConnection._mint_and_build's own cooloff persistence.
+            try:
+                _cooloff_data: dict = {}
+                if os.path.exists(_KITE_LOGIN_COOLOFF_PATH):
+                    try:
+                        with open(_KITE_LOGIN_COOLOFF_PATH) as _cf:
+                            _cooloff_data = json.load(_cf)
+                    except Exception:
+                        _cooloff_data = {}
+                _cooloff_data[self.account] = self._login_blocked_until
+                with open(_KITE_LOGIN_COOLOFF_PATH, "w") as _cf:
+                    json.dump(_cooloff_data, _cf)
+            except Exception as _persist_err:
+                logger.warning(
+                    "[KITE-LOGIN-COOLOFF] %r: failed to persist login cooloff: %s",
+                    self.account, _persist_err,
+                )
+            # NOTE: login(), totp_authenticate(), and setup_access_token()
+            # each already call _emit_conn_event(..., "auth_fail", ...) on
+            # their own failure — don't add a second event here.
+            raise
+        else:
+            self._login_fail_streak = 0
+            self._login_blocked_until = 0.0
+            # Clear persisted cool-off so the next process restart doesn't
+            # restore a now-stale block.
+            try:
+                if os.path.exists(_KITE_LOGIN_COOLOFF_PATH):
+                    with open(_KITE_LOGIN_COOLOFF_PATH) as _cf:
+                        _cd = json.load(_cf)
+                    _cd.pop(self.account, None)
+                    with open(_KITE_LOGIN_COOLOFF_PATH, "w") as _cf:
+                        json.dump(_cd, _cf)
+            except Exception:
+                pass
 
     @retry_kite_conn(_retry_count)
     def login(self):

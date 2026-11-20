@@ -323,6 +323,59 @@ conn service so MCX/NCO contracts→lots translation happens correctly. Fixed 20
 Any new broker proxy layer must do the same — failing to do so sends raw contract qty
 (e.g. 100 contracts) as 100 lots to the Kite adapter, hitting the 50-lot ceiling.
 
+**Kite REST login hammered `kite.zerodha.com/api/login` for 6+ hours with no cooloff — no
+cross-call memory after a login failure (2026-11-20 NSE-open incident; uncommitted this session)** —
+Account ZG0790's REST login returned `400 Bad Request` from `https://kite.zerodha.com/api/login`
+continuously from the night of 2026-11-19 into NSE open on 2026-11-20. That is 800+ failures over
+6+ hours with zero successes. The operator's manual browser+TOTP login for the same account
+succeeded, which rules out bad credentials. The pattern matches a documented Kite-Connect developer-forum
+report: Zerodha's bot/anomaly detection flags the calling server IP after repeated automated attempts and
+rejects further automated requests from it. A manual login from a different IP still works.
+- **Why it never self-healed.** `get_kite_conn()` had no cross-call cooldown. Every broker-data request
+  (positions, holdings, margins, quote) re-triggered a fresh `login()` → `totp_authenticate()` →
+  `setup_access_token()` sequence. Each of those three, plus `get_kite_conn()` itself, is wrapped in
+  `@retry_kite_conn(_retry_count)` (default 3 attempts with exponential backoff). One `get_kite_conn()`
+  call could therefore fire up to ~9 real POSTs before giving up. The next request, seconds later,
+  repeated this with no memory of the prior failure. The process itself kept the provider-side block alive.
+- **The precedent that Kite never got.** `DhanConnection` already has a cross-call login cooloff.
+  `_DHAN_LOGIN_COOLOFF_PATH` ([connections.py:69](backend/brokers/connections.py#L69)) is set on failure
+  (`_login_blocked_until`, a flat 120 s window) and persisted to disk. The check is
+  `_check_login_rate_limit()` inside `DhanConnection` ([connections.py:656](backend/brokers/connections.py#L656)).
+  `KiteConnection` ([connections.py:434](backend/brokers/connections.py#L434)) had no equivalent.
+- **The fix.** `_KITE_LOGIN_COOLOFF_PATH` ([connections.py:79](backend/brokers/connections.py#L79)) +
+  `_login_blocked_until`/`_login_fail_streak` on `KiteConnection.__init__`
+  ([connections.py:480-481](backend/brokers/connections.py#L480)) + the restore-on-boot read
+  ([connections.py:515-516](backend/brokers/connections.py#L515)) + the cooloff gate inside
+  `get_kite_conn()` ([connections.py:616](backend/brokers/connections.py#L616)) + the new
+  `_attempt_login_with_cooloff()` ([connections.py:659](backend/brokers/connections.py#L659)), which
+  wraps `init_kite_conn()` and is the sole place the cooloff is set or cleared.
+  - *Per-account cooloff on login failure.* `_login_blocked_until` is set on each failed login. It is
+    persisted to disk, so a process restart does not re-arm immediate hammering.
+  - *Escalation across consecutive failures.* 120 s → 240 s → 480 s → 960 s, capped at 1800 s (30 min).
+    This deliberately escalates past Dhan's flat window. Zerodha's IP-level anomaly block has no
+    documented fixed duration, so a short flat window risks re-triggering it.
+  - *Short-circuit while cooling.* While in cooloff, `get_kite_conn()` raises immediately with no outbound
+    HTTP call.
+  - *A valid cached token is never blocked.* The gate sits after `_validate_or_clear_kite_token()`
+    returns `False`, so a still-valid cached access token is unaffected by the cooloff and still returns
+    normally — only a genuinely new login attempt is ever blocked.
+  - *The real chokepoint.* `_kite_or_none()` (`backend/shared/helpers/decorators.py`, used by
+    `@for_all_accounts`) calls `get_kite_conn(test_conn=True)` unconditionally on every broker-data
+    fetch for every account — this is why a stuck login retried on every poll cycle. Gating the one
+    `get_kite_conn()` chokepoint was sufficient; no other call site exists.
+  - Tests: `backend/tests/broker/test_kite_login_cooloff.py` (14 tests) +
+    `backend/tests/broker/conftest.py` (new autouse fixture isolating both the Kite and the
+    pre-existing Dhan cooloff disk paths to `tmp_path` for every broker test — closes a latent
+    test-isolation gap that existed for Dhan's cooloff too).
+- **Not fixed by this change — a separate, open issue.** Account ZJ6294, the active ticker account, has its
+  KiteTicker WebSocket rejecting every reconnect with `403 Forbidden`, since the scheduled 08:00 IST
+  daily ticker-restart boundary. Its REST token was renewing normally. This entry does NOT cover that
+  WebSocket failure. It remains an open follow-up and is not described as fixed here.
+- Invariant: a connection layer must never retry a non-transient auth failure unconditionally on every
+  call. A login failure needs the same cross-call cooldown memory `DhanConnection` already has,
+  escalating on repeated failures. The system must not itself become the reason a provider-side
+  anomaly or rate-limit block persists.
+
 **Execution mode resets to LIVE on admin/designated prod login (2026-11-02; commit `c7e66df7`)** — A
 forgotten Paper or Shadow toggle from a prior session no longer carries into a new one. On a successful
 prod `login` for role `admin` or `designated` ([`auth.py:855`](backend/api/routes/auth.py#L855)), the
