@@ -7182,14 +7182,64 @@
      cells, matching `.cand-headrow`/`.byund-headrow`'s own treatment
      elsewhere in this file. Scoped to `.opt-kv-greeks .kv-k-greek`
      only — the shared base `.kv-k-greek` rule (also used by Risk &
-     EV's 6 labels) is untouched, so this does not affect those. */
+     EV's 6 labels) is untouched, so this does not affect those.
+     2026-11-20 follow-up — this cell had the background/border but
+     none of the shared `--grid-header-*` FONT tokens (it was still
+     inheriting the base `.kv-k-greek` rule's `font-size: var(--fs-lg);
+     font-weight: 700;`, sized for the Greek SYMBOL glyph, not a grid
+     header label), no `min-height` pin (so this header's computed
+     height disagreed with `.cand-headrow`/`.opt-kv-risk .kv-risk-colhdr`
+     elsewhere in this file), and painted its background per-cell with
+     a real `column-gap` between cells (0.55rem, see `.opt-kv-greeks`
+     above) — a row of 5 disconnected color blocks instead of one
+     continuous band. Fixed: font tokens + `min-height` now match the
+     other two header rows exactly; the background now bleeds outward
+     by half the column-gap via a negative margin (compensated by equal
+     extra padding so the visible glyph position doesn't move) — the
+     standard gapless-background-across-a-grid-gap technique.
+     `:first-child`/`:nth-child(5)` (not `:last-child` — the grid's
+     actual last child is a `.kv-v` value cell, not this 5th header,
+     since the 5 headers + 5 values are flat siblings under row-major
+     auto-placement, see `.opt-kv-greeks`'s own comment above) stop the
+     bleed at this card's own left/right edges. Visually verified in the
+     dev server: Δ Γ Θ 𝒱 ρ stay legible at the smaller
+     `--grid-header-font-size` (0.65rem vs the base rule's 0.72rem) — no
+     deviation from the shared token was needed. */
   .opt-kv-greeks .kv-k-greek {
     display: flex;
-    width: 100%;
+    align-items: center;
+    /* No explicit `width` (removed from the pre-existing rule this
+       follow-up edits) — load-bearing for the bleed below. A grid item
+       with an EXPLICIT width resolves that percentage against the
+       track's own width regardless of margin, so a negative margin
+       only TRANSLATES the box sideways (shifting both edges together)
+       instead of expanding it — verified empirically (a translated box
+       cancels out between adjacent cells, leaving the full column-gap
+       visible as a seam on every pair except the very first). Leaving
+       width unset lets the default grid `stretch` alignment size the
+       box to (track width − margin-left − margin-right), which DOES
+       expand symmetrically for a negative margin — the behavior this
+       bleed technique actually depends on. Do not re-add `width: 100%`
+       here. */
     box-sizing: border-box;
-    padding: 0.15rem 0.35rem;
+    min-height: var(--grid-row-height);
     background: var(--grid-header-bg);
     border-bottom: 1px solid var(--algo-amber-border-soft);
+    font-size: var(--grid-header-font-size);
+    font-weight: var(--grid-header-font-weight);
+    letter-spacing: var(--grid-header-letter-spacing);
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin: 0 calc(0.55rem / -2);
+    padding: 0.1rem calc(0.2rem + 0.55rem / 2) 0.15rem;
+  }
+  .opt-kv-greeks .kv-k-greek:first-child {
+    margin-left: 0;
+    padding-left: 0.2rem;
+  }
+  .opt-kv-greeks .kv-k-greek:nth-child(5) {
+    margin-right: 0;
+    padding-right: 0.2rem;
   }
   .opt-kv-greeks .kv-v {
     font-size: var(--fs-md);
@@ -7313,11 +7363,34 @@
       display: flex;
     }
   }
+  /* 2026-11-20 — this header cell already carried the shared
+     `--grid-header-*` font tokens (unlike Greeks' `.kv-k-greek` above,
+     which didn't), but had no `min-height` pin and painted its
+     background per-cell with a real `column-gap` (0.6rem, see
+     `.opt-kv-risk` above) between cells — a row of disconnected color
+     blocks instead of one continuous band, same defect as Greeks.
+     Fixed the same way: `min-height` now matches `.cand-headrow`/
+     `.opt-kv-greeks .kv-k-greek`'s shared token, canonical padding, and
+     a half-column-gap background bleed. The "last visible cell" in
+     this bleed differs by breakpoint — below 1180px only header cells
+     1-4 are visible (5/6 are `display:none`, see the rule above), so
+     `:nth-child(4)` is the true last cell there; at >=1180px cells 5/6
+     become visible too and `:nth-child(6)` becomes the true last cell
+     instead (same breakpoint the `display:none` rule above already
+     uses). `:first-child` is unaffected by the breakpoint (child 1 is
+     always the first visible header), so it needs no media query. A
+     bare `:last-child` never matches any of these 6 spans at either
+     width — the grid's actual last children are the final `.kv-pair`'s
+     two flattened cells, same reasoning as the Greeks comment above. */
   .opt-kv-risk .kv-risk-colhdr {
     display: flex;
-    width: 100%;
+    align-items: center;
+    /* No explicit `width` — same reason as `.opt-kv-greeks .kv-k-greek`
+       above (removed from the pre-existing rule this follow-up edits).
+       Do not re-add `width: 100%` here; see that comment for the full
+       explanation of why it breaks this bleed technique. */
     box-sizing: border-box;
-    padding: 0.15rem 0.35rem;
+    min-height: var(--grid-row-height);
     background: var(--grid-header-bg);
     border-bottom: 1px solid var(--algo-amber-border-soft);
     font-size: var(--grid-header-font-size);
@@ -7325,6 +7398,31 @@
     letter-spacing: var(--grid-header-letter-spacing);
     text-transform: uppercase;
     color: var(--text-muted);
+    margin: 0 calc(0.6rem / -2);
+    padding: 0.1rem calc(0.2rem + 0.6rem / 2) 0.15rem;
+  }
+  .opt-kv-risk .kv-risk-colhdr:first-child {
+    margin-left: 0;
+    padding-left: 0.2rem;
+  }
+  .opt-kv-risk .kv-risk-colhdr:nth-child(4) {
+    margin-right: 0;
+    padding-right: 0.2rem;
+  }
+  @media (min-width: 1180px) {
+    /* nth-child(4) is now a middle cell (pairs 1-2 of 3 share row 1) —
+       restore its normal bleed instead of the "last cell" treatment
+       applied by default above. */
+    .opt-kv-risk .kv-risk-colhdr:nth-child(4) {
+      margin-right: calc(0.6rem / -2);
+      padding-right: calc(0.2rem + 0.6rem / 2);
+    }
+    /* nth-child(6) is now visible (see the display:none rule above) and
+       is the true last header cell at this width. */
+    .opt-kv-risk .kv-risk-colhdr:nth-child(6) {
+      margin-right: 0;
+      padding-right: 0.2rem;
+    }
   }
   .kv-pos { color: var(--c-long); }
   .kv-neg { color: var(--c-short); }

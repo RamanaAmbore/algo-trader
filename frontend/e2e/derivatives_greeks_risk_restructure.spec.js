@@ -235,8 +235,12 @@ for (const vp of [
           labels: ks.map((k) => [...k.textContent.trim()][0]),
           kTops: ks.map((k) => Math.round(rect(k).top)),
           vTops: vs.map((v) => Math.round(rect(v).top)),
-          kLefts: ks.map((k) => Math.round(rect(k).left)),
-          vLefts: vs.map((v) => Math.round(rect(v).left)),
+          // Column centres, not left edges: each header cell bleeds
+          // symmetrically into its column gap (negative margin on both
+          // sides), so its box starts ~4.8px left of the value cell's box
+          // while its centre sits on the same column track.
+          kCenters: ks.map((k) => { const b = rect(k); return Math.round((b.left + b.right) / 2); }),
+          vCenters: vs.map((v) => { const b = rect(v); return Math.round((b.left + b.right) / 2); }),
         };
       });
 
@@ -256,13 +260,13 @@ for (const vp of [
       for (const t of shape.vTops) expect(Math.abs(t - vTopRef)).toBeLessThanOrEqual(2);
       expect(vTopRef, 'value row must sit below the header row').toBeGreaterThan(kTopRef);
 
-      // Each value's left edge aligns with its own header's left edge
-      // (same column track) — within a small tolerance for cell padding.
+      // Each value's column centre aligns with its own header's centre
+      // (same column track) — within a small tolerance for rounding.
       for (let i = 0; i < 5; i++) {
         expect(
-          Math.abs(shape.vLefts[i] - shape.kLefts[i]),
+          Math.abs(shape.vCenters[i] - shape.kCenters[i]),
           `value[${i}] (${shape.labels[i]}) must align under its own header`
-        ).toBeLessThanOrEqual(4);
+        ).toBeLessThanOrEqual(2);
       }
     });
 
@@ -438,3 +442,171 @@ test.describe('Live — forced-overflow worst case at 320px (both cards)', () =>
     expect(forced.cardRight, 'card right edge must stay within the 320px viewport').toBeLessThanOrEqual(321);
   });
 });
+
+// ── Suite 4: header-row sync (2026-11-20 Part 2) ──────────────────────────
+//
+// The Greeks header cells (.opt-kv-greeks .kv-k-greek), the Risk & EV
+// header cells (.opt-kv-risk .kv-risk-colhdr) and the Legs grid header
+// (.cand-headrow) now share one --grid-row-height SSOT token (26px
+// desktop, 34px at <=720px). Each header cell bleeds into its column gap
+// via a negative margin, so adjacent header cells must touch edge to edge
+// with no visible seam. These checks are live, against a real loaded
+// strategy: the Greeks / Risk cards and the Legs header must all render,
+// and a missing card is a failure, not a skip.
+
+/**
+ * Pick the underlying through the page's own #opt-und picker and keep
+ * re-picking until the Greeks card renders. The `?u=` seed is not enough
+ * on its own: the picker's auto-select effect resets to the first option
+ * whenever positions (re)load, so a single pick can be silently undone.
+ * GOLD is the root with live F&O legs on the dev book (ZG0790 short MCX
+ * GOLD PE); Greeks/Risk only render once its strategy has loaded.
+ */
+async function pickUnderlying(page, root) {
+  const trigger = page.locator('button#opt-und');
+  const label = trigger.locator('.rbq-select-label');
+  const greeks = page.locator('.opt-kv-greeks').first();
+  await trigger.waitFor({ state: 'visible', timeout: 60_000 });
+  await expect.poll(async () => {
+    if (await greeks.isVisible().catch(() => false)) return true;
+    if ((await label.textContent())?.trim() !== root) {
+      const panelOpen = await page.locator('.rbq-select-panel').isVisible().catch(() => false);
+      if (!panelOpen) await trigger.click();
+      const opt = page.locator('.rbq-select-option-label', { hasText: new RegExp(`^${root}$`) }).first();
+      if (await opt.isVisible().catch(() => false)) await opt.click();
+    }
+    return false;
+  }, { timeout: 90_000, intervals: [1000, 2000] }).toBe(true);
+}
+
+async function gotoDerivativesLive(page) {
+  await loginAsAdmin(page);
+  await page.goto('/admin/derivatives', { waitUntil: 'domcontentloaded', timeout: 90_000 });
+  await pickUnderlying(page, 'GOLD');
+  await page.locator('.opt-kv-risk').first().waitFor({ state: 'visible', timeout: 30_000 });
+  await page.locator('.cand-headrow').first().waitFor({ state: 'attached', timeout: 30_000 });
+}
+
+/**
+ * Measure every visible header cell in the three header rows.
+ * Returns plain rects so the assertions run in Node, not in the page.
+ */
+async function measureHeaderRows(page) {
+  return page.evaluate(() => {
+    const visible = (els) => els.filter((e) => {
+      const b = e.getBoundingClientRect();
+      return getComputedStyle(e).display !== 'none' && b.width > 0 && b.height > 0;
+    });
+    const rect = (e) => {
+      const b = e.getBoundingClientRect();
+      return { top: b.top, left: b.left, right: b.right, bottom: b.bottom, height: b.height };
+    };
+    return {
+      vw: window.innerWidth,
+      tokenPx: getComputedStyle(document.documentElement).getPropertyValue('--grid-row-height').trim(),
+      greeks: visible([...document.querySelectorAll('.opt-kv-greeks .kv-k-greek')]).map(rect),
+      risk: visible([...document.querySelectorAll('.opt-kv-risk .kv-risk-colhdr')]).map(rect),
+      // The Legs header is one row box (.cand-headrow); its text spans are
+      // not header cells, so the row box is what is measured against the token.
+      candHead: visible([...document.querySelectorAll('.cand-headrow')]).map(rect),
+    };
+  });
+}
+
+/** Group rects into rows (same top within 2px), each row sorted by left. */
+function rowsOf(rects) {
+  const sorted = [...rects].sort((a, b) => a.top - b.top || a.left - b.left);
+  const rows = [];
+  for (const r of sorted) {
+    const row = rows.find((rw) => Math.abs(rw[0].top - r.top) <= 2);
+    if (row) row.push(r); else rows.push([r]);
+  }
+  return rows.map((rw) => rw.sort((a, b) => a.left - b.left));
+}
+
+/** Assert every adjacent pair in each row touches (zero gap, <=0.5px rounding). */
+function expectZeroGapRows(rects, label) {
+  for (const row of rowsOf(rects)) {
+    for (let i = 0; i < row.length - 1; i++) {
+      const gap = row[i + 1].left - row[i].right;
+      expect(Math.abs(gap), `${label}: gap between header cell ${i} and ${i + 1} (px)`).toBeLessThanOrEqual(0.5);
+    }
+  }
+}
+
+const TOKEN_PX = (vw) => (vw <= 720 ? 34 : 26);
+
+test.describe('Header-row sync — shared --grid-row-height and gapless header cells', () => {
+  // Picker re-pick loop (up to 90 s) plus page load needs more than the 90 s default.
+  test.setTimeout(150_000);
+  // Each test sets its own viewport, so it runs once under chromium-desktop
+  // rather than being repeated under every project's viewport.
+  test.beforeEach(({}, testInfo) => {
+    test.skip(testInfo.project.name !== 'chromium-desktop', 'viewport is set per test');
+  });
+
+  for (const vp of [
+    { name: 'desktop-1440', width: 1440, height: 900 },
+    { name: 'mobile-360', width: 360, height: 800 },
+  ]) {
+    test.describe(`[${vp.name}]`, () => {
+      test.use({ viewport: { width: vp.width, height: vp.height } });
+
+      test('Greeks, Risk & EV and Legs header cells all share the --grid-row-height token height', async ({ page }) => {
+        await gotoDerivativesLive(page);
+        const m = await measureHeaderRows(page);
+        const expected = TOKEN_PX(m.vw);
+        expect(parseFloat(m.tokenPx), '--grid-row-height token at this width').toBe(expected);
+        expect(m.greeks.length, 'Greeks header cells rendered').toBe(5);
+        expect(m.risk.length, 'Risk & EV header cells rendered').toBeGreaterThanOrEqual(4);
+        expect(m.candHead.length, 'Legs grid header row (.cand-headrow) rendered').toBe(1);
+        for (const [label, rects] of [['greeks', m.greeks], ['risk', m.risk], ['candHead', m.candHead]]) {
+          for (const r of rects) {
+            expect(Math.abs(r.height - expected), `${label} header cell height (${m.vw}px)`).toBeLessThanOrEqual(1);
+          }
+        }
+      });
+
+      test('no visible gap between adjacent Greeks header cells', async ({ page }) => {
+        await gotoDerivativesLive(page);
+        const m = await measureHeaderRows(page);
+        expectZeroGapRows(m.greeks, `greeks @${m.vw}px`);
+        // Greeks is one 5-cell row; the adjacency check must actually see it.
+        expect(rowsOf(m.greeks).length).toBe(1);
+        expect(rowsOf(m.greeks)[0].length).toBe(5);
+      });
+
+      test('no visible gap between adjacent Risk & EV header cells', async ({ page }) => {
+        await gotoDerivativesLive(page);
+        const m = await measureHeaderRows(page);
+        expectZeroGapRows(m.risk, `risk @${m.vw}px`);
+      });
+
+    });
+  }
+});
+
+// Risk & EV breakpoint: 4 visible header cells below 1180px, 6 at >=1180px.
+// Check both sides of the boundary, and that the zero-gap invariant holds
+// on each side (the grid reflows, so a wrong track count would show as a seam).
+for (const width of [1179, 1181]) {
+  test.describe(`Header-row sync at the Risk & EV 1180px breakpoint [${width}px]`, () => {
+    test.setTimeout(150_000);
+    test.use({ viewport: { width, height: 900 } });
+    test.beforeEach(({}, testInfo) => {
+      test.skip(testInfo.project.name !== 'chromium-desktop', 'viewport is set per test');
+    });
+
+    test('visible Risk header-cell count and row layout track the 1180px breakpoint; zero gap on both sides', async ({ page }) => {
+      await gotoDerivativesLive(page);
+      const m = await measureHeaderRows(page);
+      const expectedCount = width >= 1180 ? 6 : 4;
+      expect(m.risk.length, `visible Risk header cells at ${width}px`).toBe(expectedCount);
+      // All visible header cells sit in one row at both breakpoints
+      // (4 tracks = 2 pairs, 6 tracks = 3 pairs; each row is a single header row).
+      expect(rowsOf(m.risk).length, 'Risk header is a single row').toBe(1);
+      expectZeroGapRows(m.risk, `risk @${width}px`);
+      expectZeroGapRows(m.greeks, `greeks @${width}px`);
+    });
+  });
+}
