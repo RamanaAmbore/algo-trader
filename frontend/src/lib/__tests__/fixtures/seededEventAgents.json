@@ -243,6 +243,26 @@
     ]
   },
   {
+    "slug": "broker-login-blocked-alert",
+    "name": "Broker login blocked",
+    "conditions": {
+      "log": {
+        "tag": "alert",
+        "min_level": "WARNING",
+        "where": {
+          "alert_event": "broker_login_blocked"
+        }
+      }
+    },
+    "events": [],
+    "actions": [
+      {
+        "type": "render",
+        "render": "broker_login_blocked"
+      }
+    ]
+  },
+  {
     "slug": "alert-channel-telegram",
     "name": "Alert channel: Telegram",
     "conditions": {

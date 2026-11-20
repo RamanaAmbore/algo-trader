@@ -309,6 +309,13 @@ class TestSeededAgentsGateKeysAreDeclared:
         belonged in this set either way — its channels came from
         `_TIER_DEFAULTS["high"]` (no `gate` key) before the fold, and
         its new per-slug override row also carries no `gate` key.
+
+        2026-11-20 — `broker-login-blocked-alert` joins the set: its
+        per-slug override (`alert_routing._PER_SLUG_OVERRIDES["broker-
+        login-blocked-alert"]`) carries `gate: False` on all three
+        channels (telegram/ntfy/email), same convention as `order-
+        failure-alert` — this alert must reach the operator regardless
+        of capability-enabled toggles (live ZG0790 CAPTCHA incident).
         """
         slugs = {
             agent["slug"]
@@ -318,7 +325,7 @@ class TestSeededAgentsGateKeysAreDeclared:
         assert slugs == {
             "unrouted-alert-catch-all", "agent-alert-rich", "market-summary",
             "visitor-report-alert", "deploy-sync-alert",
-            "draft-sweep-alert",
+            "draft-sweep-alert", "broker-login-blocked-alert",
         }
 
     def test_inventory_action_level_gate_agent_count(self):

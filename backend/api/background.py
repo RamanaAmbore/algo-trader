@@ -2518,21 +2518,157 @@ async def _compute_lkg_stale_pairs(rows: "list") -> set:
     return _stale_pairs
 
 
+def _lkg_group_row(row: "object", grouped: dict, stale_pairs: set) -> None:
+    """Classify and append one `daily_book` row into `grouped` (mutated
+    in place), keyed `(account, cache_kind)` — the per-row body of
+    `_preload_db_lkg_cache`'s grouping loop, extracted (pure
+    extract-function refactor, 2026-11-20 F4 fix) to keep that function's
+    own cyclomatic complexity below the project's D-grade CC gate — same
+    rationale as `_compute_lkg_stale_pairs`/`_funds_row_to_margins_dict`
+    above.
+
+    A 'positions' row already past its own expiry-freeze window (per
+    `stale_pairs`, see `_compute_lkg_stale_pairs`) and a row with no
+    account/kind are both skipped. A 'funds' row is shaped by
+    `_funds_row_to_margins_dict` and stored under the "margins" cache
+    key (see that helper's docstring for why). Every other kind
+    ('holdings'/'positions') keeps the original tradingsymbol/exchange
+    shape, stored under its own literal `kind` string.
+    """
+    account = str(row.account or "")
+    kind = str(row.kind or "")
+    if not account or not kind:
+        return
+    if kind == "positions" and (str(row.symbol or ""), str(row.exchange or "")) in stale_pairs:
+        return
+    if kind == "funds":
+        grouped[(account, "margins")].append(_funds_row_to_margins_dict(row, account))
+        return
+    _avg = float(row.avg_cost or 0.0)
+    _ltp = float(row.ltp or 0.0)
+    _qty = int(row.qty or 0)
+    grouped[(account, kind)].append({
+        "account":          account,
+        "tradingsymbol":    str(row.symbol or ""),
+        "exchange":         str(row.exchange or ""),
+        "quantity":         _qty,
+        "opening_quantity": _qty,
+        "average_price":    _avg,
+        "last_price":       _ltp,
+        "prev_close":       _ltp,
+        "day_change_val":   float(row.day_pnl or 0.0),
+        "pnl":              float(row.total_pnl or 0.0),
+        # Pre-compute derived value columns so downstream consumers
+        # (_enrich_holdings / backfill_market_data) never see NaN/zero
+        # on the DB-LKG path when the live broker is unavailable.
+        "inv_val":          _avg * _qty,
+        "cur_val":          _ltp * _qty,
+    })
+
+
+def _funds_row_to_margins_dict(row: "object", account: str) -> dict:
+    """Shape one `daily_book` `kind='funds'` row into the flattened
+    Kite-margins()-response column names `_fetch_margins_local` builds
+    (via `json_normalize` + `add_prefix("util "/"avail ")`) and
+    `routes/funds.py`'s `_COL_MAP` reads — NOT the tradingsymbol/exchange
+    shape `_preload_db_lkg_cache`'s holdings/positions branch builds.
+
+    Column mapping, per `daily_snapshot.py:_funds_rows`:
+        qty       -> util.debits             avg_cost -> avail.cash
+        ltp       -> avail.opening_balance    day_pnl  -> util.realised_m2m
+        total_pnl -> net
+
+    Extracted out of `_preload_db_lkg_cache` (pure extract-function
+    refactor, 2026-11-20 F4 fix) to keep that function's own cyclomatic
+    complexity below the project's D-grade CC gate — same rationale as
+    `_compute_lkg_stale_pairs` above (that one already brought the
+    function down once, from E/31 to C/20; this branch alone pushed it
+    back up to D/26).
+
+    Missing-vs-zero convention preserved: a genuinely absent numeric
+    field stays `None`, never coerced to `0.0`.
+    """
+    return {
+        "account": account,
+        "type": "C",
+        "net": float(row.total_pnl) if row.total_pnl is not None else None,
+        "util debits": float(row.qty) if row.qty is not None else None,
+        "avail cash": float(row.avg_cost) if row.avg_cost is not None else None,
+        "avail opening_balance": float(row.ltp) if row.ltp is not None else None,
+        "util realised_m2m": float(row.day_pnl) if row.day_pnl is not None else None,
+    }
+
+
 async def _preload_db_lkg_cache() -> None:
     """Preload the DB-backed LKG cache from daily_book at startup.
 
-    Queries the most-recent batch of holdings + positions rows per account
-    (same batch-anchor logic as `_HOLDINGS_SNAPSHOT_SQL` in holdings.py)
-    and seeds `broker_apis.set_db_lkg_frame` for each account.
+    Queries the most-recent batch of holdings + positions + funds rows
+    per account (same batch-anchor logic as `_HOLDINGS_SNAPSHOT_SQL` in
+    holdings.py) and seeds `broker_apis.set_db_lkg_frame` for each
+    account.
 
     This ensures that after a cold restart where Dhan/Groww login is
     temporarily failing, `_stale_substitute_frame` can serve the previous
     session's data immediately — without waiting for a successful broker
     fetch to populate the in-memory LKG.
 
-    Called once at the start of `_task_performance` before the main loop.
+    F4 (2026-11-20 incident) — `kind='funds'` was added to this query.
+    Margins/funds previously had NO last-known-good that survived a
+    restart: ZG0790 had a real `daily_book` funds row sitting unused
+    while both conn_service restarts during the incident left margins
+    cold with zero substitution. `daily_book`'s funds rows (written by
+    `daily_snapshot.py:_funds_rows`) are segment-level cash figures, not
+    instrument rows, so they're shaped into the Kite-margins()-flattened
+    frame `broker_apis._fetch_margins_local`/`_stale_substitute_frame`
+    actually expect, in the per-row loop below — see the comment there
+    for why the DB-LKG cache KEY for these rows is "margins", not
+    "funds" ("funds" is only the daily_book row's own `kind` column
+    value; `_fetch_margins_local` reads the in-memory LKG back out under
+    the key "margins", the same string `_fetch_margins_local`'s own
+    `_stale_substitute_frame("margins", account)` calls already use).
+
+    Called once at the start of `_task_performance` before the main loop
+    (and, since the 2026-11-20 `1115a7b4` fix, also once at conn_service
+    startup via `_preload_db_lkg_on_startup` in
+    `backend/brokers/service/app.py` — both call this same function, so
+    extending it here covers both call sites with no second edit).
     Errors are swallowed — this is a best-effort preload; the in-memory
     LKG remains authoritative once the first successful fetch lands.
+
+    Funds rows are restricted to `exchange='EQUITY'` only (see the SQL's
+    WHERE clause below) — `_snap_fetch_funds` (`daily_snapshot.py`) writes
+    ONE row per account PER SEGMENT it holds (`equity` AND `commodity`
+    when both exist), but `_fetch_margins_local` only ever calls
+    `broker.margins(segment="equity")`, never `"commodity"` — its live
+    shape is always exactly one row per account. Including the commodity
+    row too would silently double a 2-row account into the "margins" LKG
+    frame, corrupting any downstream per-account aggregation that assumes
+    one row per account (e.g. `routes/funds.py`'s TOTAL-row sum).
+
+    KNOWN LIMITATION, confirmed live on prod (2026-11-20): `daily_book`'s
+    unique constraint is `(date, account, kind, symbol)`, and `_funds_rows`
+    writes BOTH segments under the SAME sentinel `symbol='__seg__'` — so
+    an account with both segments collapses to ONE row per day, and
+    whichever segment `_snap_fetch_funds` iterates LAST in its
+    `("equity", "commodity")` loop wins the upsert. Confirmed via direct
+    query: EVERY `kind='funds'` row in prod is `exchange='COMMODITY'` —
+    zero `EQUITY` rows exist at all, for any account, on any day
+    checked — so this EQUITY-only filter currently returns NOTHING for
+    ZG0790 (or any other account), making this fix a no-op until
+    `daily_snapshot.py`'s writer is fixed to stop colliding the two
+    segments under one symbol key. This filter is still the right choice
+    once that writer fix lands: mapping commodity figures onto an
+    equity-shaped margins frame would display WRONG numbers, which is
+    worse than showing nothing. Do not loosen this filter to "any
+    segment" as a workaround — fix the writer collision instead.
+
+    Funds rows are also exempted from the `db.ltp IS NOT NULL` /
+    stale-heuristic filter the holdings/positions branch uses below —
+    that heuristic was designed for instrument rows (ltp == avg_cost
+    suggesting a stale token); a funds row's `ltp` (opening_balance) can
+    legitimately be 0 or null for a Dhan/Groww account with no segment
+    balance, and dropping it there would silently re-create the exact gap
+    this fix closes.
     """
     from backend.api.database import async_session
     from sqlalchemy import text as _sql_text
@@ -2541,7 +2677,7 @@ async def _preload_db_lkg_cache() -> None:
         WITH latest_batch AS (
             SELECT account, kind, MAX(captured_at) AS max_at
             FROM daily_book
-            WHERE kind IN ('holdings', 'positions')
+            WHERE kind IN ('holdings', 'positions', 'funds')
             GROUP BY account, kind
         )
         SELECT db.account, db.kind, db.symbol, db.exchange,
@@ -2552,10 +2688,14 @@ async def _preload_db_lkg_cache() -> None:
           ON db.account = lb.account
          AND db.kind    = lb.kind
          AND db.captured_at = lb.max_at
-        WHERE db.ltp IS NOT NULL
-          AND NOT (db.ltp = 0
-                   AND (db.total_pnl = 0 OR db.total_pnl IS NULL)
-                   AND db.avg_cost IS NOT NULL AND db.avg_cost > 0)
+        WHERE (
+                db.kind != 'funds'
+                AND db.ltp IS NOT NULL
+                AND NOT (db.ltp = 0
+                         AND (db.total_pnl = 0 OR db.total_pnl IS NULL)
+                         AND db.avg_cost IS NOT NULL AND db.avg_cost > 0)
+              )
+           OR (db.kind = 'funds' AND db.exchange = 'EQUITY')
         ORDER BY db.account, db.kind, db.symbol
     """
     try:
@@ -2591,32 +2731,7 @@ async def _preload_db_lkg_cache() -> None:
     import pandas as pd
     grouped: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for row in rows:
-        account  = str(row.account or "")
-        kind     = str(row.kind or "")
-        if not account or not kind:
-            continue
-        if kind == "positions" and (str(row.symbol or ""), str(row.exchange or "")) in _stale_pairs:
-            continue
-        _avg  = float(row.avg_cost or 0.0)
-        _ltp  = float(row.ltp or 0.0)
-        _qty  = int(row.qty or 0)
-        grouped[(account, kind)].append({
-            "account":          account,
-            "tradingsymbol":    str(row.symbol or ""),
-            "exchange":         str(row.exchange or ""),
-            "quantity":         _qty,
-            "opening_quantity": _qty,
-            "average_price":    _avg,
-            "last_price":       _ltp,
-            "prev_close":       _ltp,
-            "day_change_val":   float(row.day_pnl or 0.0),
-            "pnl":              float(row.total_pnl or 0.0),
-            # Pre-compute derived value columns so downstream consumers
-            # (_enrich_holdings / backfill_market_data) never see NaN/zero
-            # on the DB-LKG path when the live broker is unavailable.
-            "inv_val":          _avg * _qty,
-            "cur_val":          _ltp * _qty,
-        })
+        _lkg_group_row(row, grouped, _stale_pairs)
 
     from backend.brokers.broker_apis import set_db_lkg_frame
     n_loaded = 0

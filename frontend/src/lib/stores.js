@@ -1415,6 +1415,9 @@ export const brokerHealthStore = writable(/** @type {BrokerHealthState} */ ({
   worstState: 'green',
   tickerIdle: false,
   tickerIdleReason: '',
+  // F10 (2026-11-20 incident) — see `_pollBrokerHealth()` below.
+  pollStale: false,
+  pollStaleSince: null,
 }));
 
 let _bhPollerStarted = false;
@@ -1462,9 +1465,24 @@ async function _pollBrokerHealth() {
   try {
     const { fetchBrokerHealth } = await import('$lib/api');
     const data = await fetchBrokerHealth();
-    brokerHealthStore.set(toBrokerHealthState(data));
+    // A real poll succeeded — clear any stale marker from a prior failure.
+    brokerHealthStore.set({ ...toBrokerHealthState(data), pollStale: false, pollStaleSince: null });
   } catch {
-    // Silently suppress — store keeps prior state so chip stays colored.
+    // F10 (2026-11-20 incident) — this used to silently suppress the
+    // error with zero indication, so a stale-but-last-good payload (and
+    // a stale green chip) could persist indefinitely if the poll itself
+    // started failing. Keep the prior accounts/worstState/tickerIdle
+    // (chip stays colored, no flash-to-unknown) but mark the payload
+    // stale so BrokerHealthBadge can render a small footer note.
+    // `pollStaleSince` keeps the FIRST failure's timestamp across
+    // repeated consecutive failures (?? not ||) so the note reads "stale
+    // since" the outage began, not a timestamp that creeps forward on
+    // every failed 30 s retry.
+    brokerHealthStore.update(s => ({
+      ...s,
+      pollStale: true,
+      pollStaleSince: s.pollStaleSince ?? Date.now(),
+    }));
   }
 }
 

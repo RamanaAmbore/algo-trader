@@ -1277,6 +1277,58 @@ def is_account_healthy(account: str) -> bool:
     return True
 
 
+def merge_kite_cooloff_state(snapshot: dict[str, dict]) -> dict[str, dict]:
+    """Merge each Kite account's live login-cooloff state
+    (`is_cooling_off: bool`, `blocked_until: float | None`) onto
+    `snapshot`'s per-account dicts, in place, and return it.
+
+    F1(b) (2026-11-20 incident). Shared by both `fetch_health_snapshot()`
+    branches below AND `backend/brokers/service/routes.py`'s
+    `/health/brokers` endpoint, so the merge happens exactly once, the
+    same way, regardless of whether the caller is running local
+    (RAMBOQ_USE_CONN_SERVICE unset, `Connections()` is the real
+    in-process registry here) or is conn_service itself serving that
+    endpoint (`Connections()` is also real there — it's the SAME
+    process that owns every broker session). The one case this does
+    NOT cover is the cutover HTTP round-trip in `fetch_health_snapshot()`
+    below: there, `Connections()` in THIS process holds only
+    `RemoteBroker` stubs with no real `KiteConnection`/`is_login_cooling_
+    off`, so this merge would be a no-op here regardless — the conn_service
+    ROUTE already did the real merge before the fields crossed the UDS.
+
+    Dhan/Groww connections have no `is_login_cooling_off` method, so
+    `getattr(..., None)` + `callable()` naturally scopes this to Kite
+    accounts only — both fields are left absent (not set to a default)
+    for every other account, matching the route's own documented
+    behaviour.
+    """
+    from backend.brokers.connections import Connections
+
+    for account, conn_obj in list(Connections().conn.items()):
+        cooloff_fn = getattr(conn_obj, "is_login_cooling_off", None)
+        if not callable(cooloff_fn):
+            continue
+        try:
+            # `is True`, not bare truthiness — see the matching comment
+            # in `registry.py`'s F7 check for why (MagicMock
+            # auto-vivification hazard).
+            is_cooling_off = cooloff_fn() is True
+        except Exception:
+            is_cooling_off = False
+        blocked_until: float | None = None
+        if is_cooling_off:
+            blocked_fn = getattr(conn_obj, "cooloff_blocked_until", None)
+            if callable(blocked_fn):
+                try:
+                    blocked_until = float(blocked_fn())
+                except Exception:
+                    blocked_until = None
+        entry = snapshot.setdefault(account, {})
+        entry["is_cooling_off"] = is_cooling_off
+        entry["blocked_until"] = blocked_until
+    return snapshot
+
+
 def fetch_health_snapshot() -> dict[str, dict]:
     """Read-only copy of the per-account health map.
 
@@ -1285,7 +1337,17 @@ def fetch_health_snapshot() -> dict[str, dict]:
     in this process is empty (no broker calls landed here). We
     fall back to a synchronous httpx call against the conn_service
     health endpoint and surface its map instead. The navbar badge
-    already reads through this function, so no caller migration."""
+    already reads through this function, so no caller migration.
+
+    F1(b) (2026-11-20 incident) — the local (non-cutover) branch below
+    merges each Kite account's live login-cooloff state via
+    `merge_kite_cooloff_state()`. The cutover branch does NOT call it
+    here — `Connections()` in THIS (main API) process holds only
+    `RemoteBroker` stubs under cutover, so it has nothing real to merge;
+    the conn_service ROUTE (`/internal/health/brokers`) already merged
+    the real state before the HTTP response crossed the UDS, using the
+    exact same shared helper.
+    """
     if _use_conn_service():
         try:
             from backend.brokers.client.sync import _get_client
@@ -1295,7 +1357,8 @@ def fetch_health_snapshot() -> dict[str, dict]:
         except Exception as e:
             logger.warning(f"conn_service health snapshot failed: {e}")
             return {}
-    return {k: dict(v) for k, v in _FETCH_HEALTH.items()}
+    snapshot = {k: dict(v) for k, v in _FETCH_HEALTH.items()}
+    return merge_kite_cooloff_state(snapshot)
 
 
 # ---------------------------------------------------------------------------

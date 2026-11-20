@@ -28,6 +28,7 @@
   import { updateBrokerAccount } from '$lib/api';
   import { toast } from '$lib/data/toastStore.svelte.js';
   import { longPress } from '$lib/actions/longPress.js';
+  import ConfirmModal from '$lib/ConfirmModal.svelte';
 
   /** Bindable: parent (algo layout) toggles this from the 5/5 chip. */
   let { open = $bindable(false) } = $props();
@@ -64,12 +65,30 @@
   // positive signal on this response (see brokerHealthState.js).
   let _tickerIdle = $state(false);
   let _tickerIdleReason = $state('');
+  // Poll-staleness (F10, 2026-11-20 incident) — `_pollBrokerHealth()` in
+  // stores.js used to swallow a poll error with zero indication, so a
+  // stale-but-last-good payload (and a stale green chip) could persist
+  // indefinitely. The store now carries `pollStale`/`pollStaleSince`;
+  // this popup surfaces it as a small footer note (see markup below),
+  // not a modal/toast, matching this app's footer-note convention.
+  let _pollStale = $state(false);
+  let _pollStaleSince = $state(/** @type {number|null} */ (null));
   const _unsubHealth = brokerHealthStore.subscribe(v => {
     _rawAccounts = v.accounts;
     _tickerIdle = v.tickerIdle;
     _tickerIdleReason = v.tickerIdleReason;
+    _pollStale = !!v.pollStale;
+    _pollStaleSince = v.pollStaleSince ?? null;
   });
   onDestroy(() => _unsubHealth());
+
+  // Shared confirm dialog (F6, 2026-11-20 incident fix) — replaces the
+  // native `window.confirm()` this row-click handler used to call
+  // directly, same pattern as admin/+page.svelte's `confirmRef`. Mounted
+  // outside the `{#if open}` block below so it persists across this
+  // popup's own open/close cycles — ConfirmModal manages its own
+  // internal visibility via `ask()`/`_open`.
+  let confirmRef = $state(null);
 
   // Subscribe to the canonical order map so the chip popup re-sorts
   // immediately when the operator patches display_order in /admin/brokers.
@@ -231,8 +250,19 @@
     // cached response mid rolling-deploy) defaults to "currently
     // active" per spec, rather than reading as already-disabled.
     const currentIsActive = row.is_active !== false;
-    const action = currentIsActive ? 'Disable' : 'Enable';
-    const ok = confirm(`${action} ${row.account}'s connection?`);
+    const ok = currentIsActive
+      ? await confirmRef.ask({
+          title: `Disable ${row.account}'s connection?`,
+          message: `This removes ${row.account} from login attempts, the multi-account data fetch, and ticker failover. Other accounts are unaffected.`,
+          danger: true,
+          confirmLabel: 'Disable',
+        })
+      : await confirmRef.ask({
+          title: `Enable ${row.account}'s connection?`,
+          message: `Restores ${row.account} to login attempts, the multi-account data fetch, and ticker failover.`,
+          danger: false,
+          confirmLabel: 'Enable',
+        });
     if (!ok) return;
     try {
       await updateBrokerAccount(row.account, { is_active: !currentIsActive });
@@ -333,9 +363,24 @@
     </div>
     <div class="bh-modal-footer">
       <span class="bh-footer-note">Polls every 30 s · Auth state from broker API calls</span>
+      {#if _pollStale}
+        <!-- F10 (2026-11-20 incident) — the poll itself failed; the rows
+             above are the last-good payload, not confirmed current. Small,
+             non-blocking footer note only — no modal/toast, per house
+             convention for this kind of status text. -->
+        <span class="bh-footer-stale">⚠ health data stale since {_fmtIso(_pollStaleSince)}</span>
+      {/if}
     </div>
   </div>
 {/if}
+
+<!-- Shared confirm dialog (F6, 2026-11-20 incident fix) — mounted outside
+     the `{#if open}` block above so it persists across this popup's own
+     open/close cycles; same pattern as admin/+page.svelte's confirmRef.
+     zIndex is pinned above --z-drawer (this popup's own stacking tier,
+     20001) via --z-confirm-over-drawer (app.css), or the dialog would
+     render behind an already-open broker popup. -->
+<ConfirmModal bind:this={confirmRef} zIndex="var(--z-confirm-over-drawer)" />
 
 <style>
   /* ── Modal overlay ── */
@@ -550,11 +595,24 @@
   .bh-modal-footer {
     border-top: 1px solid rgba(255, 255, 255, 0.08);
     padding: 0.45rem 0.8rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
   }
   .bh-footer-note {
     /* Was #475569 (WCAG 1.89:1 — fails). --text-lo passes. */
     font-size: var(--fs-xs);
     color: var(--text-lo);
+    font-family: var(--font-numeric);
+  }
+  /* F10 (2026-11-20 incident) — small, non-blocking note when the store's
+     own poll is failing (see `_pollStale`/`_pollStaleSince` above); amber
+     distinguishes a data-quality warning from the plain --text-lo cadence
+     note above it, and from the idle banner's sky tone (a different,
+     expected-not-a-problem concept). */
+  .bh-footer-stale {
+    font-size: var(--fs-xs);
+    color: var(--c-action);
     font-family: var(--font-numeric);
   }
 

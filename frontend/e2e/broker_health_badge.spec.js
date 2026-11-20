@@ -634,12 +634,12 @@ test.describe('broker-chip color + popup broker names', () => {
       const modal = P.locator('.bh-modal').first();
       await modal.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT });
 
-      P.once('dialog', (dialog) => {
-        expect(dialog.message()).toContain(`Disable ZG0790's connection?`);
-        dialog.accept();
-      });
-
       await modal.locator('.bh-row-account', { hasText: 'ZG0790' }).first().click();
+      // F6 (2026-11-20): the row click opens the themed ConfirmModal, not a
+      // native window.confirm() — confirm it, then the PATCH goes out.
+      const confirm = P.locator('.cm-modal');
+      await expect(confirm.locator('.cm-title')).toHaveText(`Disable ZG0790's connection?`);
+      await confirm.locator('.cm-confirm').click();
 
       await expect.poll(() => patches.length, { timeout: WAIT_TIMEOUT }).toBeGreaterThan(0);
       expect(patches[0].url()).toContain('/admin/brokers/ZG0790');
@@ -666,12 +666,11 @@ test.describe('broker-chip color + popup broker names', () => {
       const modal = P.locator('.bh-modal').first();
       await modal.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT });
 
-      P.once('dialog', (dialog) => {
-        expect(dialog.message()).toContain(`Enable DH6847's connection?`);
-        dialog.accept();
-      });
-
       await modal.locator('.bh-row-account', { hasText: 'DH6847' }).first().click();
+      // F6 (2026-11-20): themed ConfirmModal replaces window.confirm().
+      const confirm = P.locator('.cm-modal');
+      await expect(confirm.locator('.cm-title')).toHaveText(`Enable DH6847's connection?`);
+      await confirm.locator('.cm-confirm').click();
 
       await expect.poll(() => patches.length, { timeout: WAIT_TIMEOUT }).toBeGreaterThan(0);
       expect(patches[0].url()).toContain('/admin/brokers/DH6847');
@@ -716,6 +715,159 @@ test.describe('broker-chip color + popup broker names', () => {
       // Close the activity modal so later tests in this file start clean.
       await P.keyboard.press('Escape').catch(() => {});
       await P.locator('.alm-panel').waitFor({ state: 'hidden', timeout: 3000 }).catch(() => {});
+    });
+
+    // ── F6 (2026-11-20) — themed confirm dialog, z-index, cancel path ──
+    test.describe('F6 — themed confirm dialog replaces native confirm()', () => {
+      test.beforeEach(async () => {
+        await P.route('**/api/admin/broker-health', route => route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(_mockHealthWithActiveFlags()),
+        }));
+        await P.route('**/api/admin/brokers', route => route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify([
+            { account: 'ZG0790', loaded: true, broker_id: 'zerodha_kite', is_active: true },
+            { account: 'DH6847', loaded: true, broker_id: 'dhan', is_active: false },
+          ]),
+        }));
+      });
+
+      /** Records every broker-account PATCH and fulfils it — no real toggle. */
+      async function captureBrokerPatches() {
+        const patches = [];
+        await P.route('**/api/admin/brokers/*', route => {
+          if (route.request().method() !== 'PATCH') return route.fallback();
+          patches.push(route.request());
+          return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+        });
+        return patches;
+      }
+
+      test('row click opens the themed ConfirmModal with disable title/message, never a native dialog', async () => {
+        const nativeDialogs = [];
+        const onDialog = (d) => { nativeDialogs.push(d.message()); d.dismiss(); };
+        P.on('dialog', onDialog);
+        try {
+          const chip = await openPage(P);
+          test.skip(!chip, 'No broker chip rendered');
+          await chip.click();
+          const modal = P.locator('.bh-modal').first();
+          await modal.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT });
+          await modal.locator('.bh-row-account', { hasText: 'ZG0790' }).first().click();
+
+          const confirm = P.locator('.cm-modal');
+          await expect(confirm, 'themed confirm modal must render').toBeVisible({ timeout: WAIT_TIMEOUT });
+          await expect(confirm.locator('.cm-title')).toHaveText(`Disable ZG0790's connection?`);
+          await expect(confirm.locator('.cm-message')).toContainText('ZG0790');
+          await expect(confirm.locator('.cm-confirm')).toHaveClass(/cm-confirm-danger/);
+          expect(nativeDialogs, 'no native browser dialog may fire').toEqual([]);
+
+          await confirm.locator('.cm-cancel').click();
+          await expect(confirm).toHaveCount(0);
+        } finally {
+          P.off('dialog', onDialog);
+        }
+      });
+
+      test('enable path (inactive row) shows the Enable title, non-danger styling', async () => {
+        const chip = await openPage(P);
+        test.skip(!chip, 'No broker chip rendered');
+        await chip.click();
+        const modal = P.locator('.bh-modal').first();
+        await modal.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT });
+        await modal.locator('.bh-row-account', { hasText: 'DH6847' }).first().click();
+
+        const confirm = P.locator('.cm-modal');
+        await expect(confirm.locator('.cm-title')).toHaveText(`Enable DH6847's connection?`);
+        await expect(confirm.locator('.cm-message')).toContainText('DH6847');
+        await expect(confirm.locator('.cm-confirm')).not.toHaveClass(/cm-confirm-danger/);
+        await confirm.locator('.cm-cancel').click();
+        await expect(confirm).toHaveCount(0);
+      });
+
+      test('themed confirm z-index (--z-confirm-over-drawer) sits above the broker popup (--z-drawer)', async () => {
+        const chip = await openPage(P);
+        test.skip(!chip, 'No broker chip rendered');
+        await chip.click();
+        const modal = P.locator('.bh-modal').first();
+        await modal.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT });
+        await modal.locator('.bh-row-account', { hasText: 'ZG0790' }).first().click();
+        await expect(P.locator('.cm-modal')).toBeVisible({ timeout: WAIT_TIMEOUT });
+
+        const z = await P.evaluate(() => {
+          const bh = document.querySelector('.bh-modal');
+          const overlay = document.querySelector('.cm-modal')?.closest('.ms-overlay');
+          return {
+            popup: bh ? getComputedStyle(bh).zIndex : null,
+            confirm: overlay ? getComputedStyle(overlay).zIndex : null,
+            tokenDrawer: getComputedStyle(document.documentElement).getPropertyValue('--z-drawer').trim(),
+            tokenConfirm: getComputedStyle(document.documentElement).getPropertyValue('--z-confirm-over-drawer').trim(),
+          };
+        });
+        expect(z.popup, 'broker popup computes to --z-drawer (20001)').toBe('20001');
+        expect(z.confirm, 'confirm overlay computes to --z-confirm-over-drawer (20050)').toBe('20050');
+        expect(Number(z.confirm), 'confirm must stack above the broker popup').toBeGreaterThan(Number(z.popup));
+        expect(z.tokenDrawer).toBe('20001');
+        expect(z.tokenConfirm).toBe('20050');
+
+        await P.locator('.cm-modal .cm-cancel').click();
+        await expect(P.locator('.cm-modal')).toHaveCount(0);
+      });
+
+      test('Cancel closes the confirm with NO PATCH fired and the account state unchanged', async () => {
+        const patches = await captureBrokerPatches();
+        const chip = await openPage(P);
+        test.skip(!chip, 'No broker chip rendered');
+        await chip.click();
+        const modal = P.locator('.bh-modal').first();
+        await modal.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT });
+        await modal.locator('.bh-row-account', { hasText: 'ZG0790' }).first().click();
+        await expect(P.locator('.cm-modal')).toBeVisible({ timeout: WAIT_TIMEOUT });
+
+        await P.locator('.cm-modal .cm-cancel').click();
+        await expect(P.locator('.cm-modal')).toHaveCount(0);
+        // Cancel resolves the promise to false synchronously; no network
+        // work is queued, so an immediate assertion is deterministic.
+        expect(patches.length, 'Cancel must never PATCH the account').toBe(0);
+        await P.locator('.bh-close').first().click();
+        await P.locator('.bh-modal').waitFor({ state: 'hidden', timeout: 3000 }).catch(() => {});
+      });
+    });
+
+    // ── F10 (2026-11-20) — stale poll indicator in the popup footer ────
+    test.describe('F10 — stale poll indicator', () => {
+      test('failed health poll shows "stale since" footer note; next successful poll clears it', async () => {
+        test.setTimeout(120_000);
+        let healthOk = false;
+        // Brokers mock keeps the chip rendering; broker-health is driven by
+        // `healthOk` — registered AFTER mockHealthEndpoint so it takes precedence.
+        await mockHealthEndpoint(P, 'green');
+        await P.route('**/api/admin/broker-health', route => healthOk
+          ? route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(_mockHealth('green')) })
+          : route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ detail: 'upstream unavailable' }) }));
+
+        // Page load runs the first poll, which now fails.
+        const chip = await openPage(P);
+        test.skip(!chip, 'No broker chip rendered');
+        await chip.click();
+        const modal = P.locator('.bh-modal').first();
+        await modal.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT });
+
+        const note = modal.locator('.bh-footer-stale');
+        await expect(note, 'stale note must render after a failed poll').toBeVisible({ timeout: WAIT_TIMEOUT });
+        await expect(note).toContainText('stale since');
+
+        // The store re-polls on its 30 s cadence. Let the next poll succeed
+        // and wait for the note to clear — no forced reload.
+        healthOk = true;
+        await expect(note, 'stale note must clear after a successful poll').toHaveCount(0, { timeout: 60_000 });
+
+        await P.locator('.bh-close').first().click();
+        await P.locator('.bh-modal').waitFor({ state: 'hidden', timeout: 3000 }).catch(() => {});
+      });
     });
   });
 });

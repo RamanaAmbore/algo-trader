@@ -14,6 +14,12 @@ _AUTH_ERROR_HINTS_LOWER: tuple[str, ...] = (
     "unauthorised",
     "auth failed",
     "invalid api key",
+    # F8 (2026-11-20 incident audit) — Kite's own literal message
+    # "Invalid `api_key` or `access_token`." was previously classified as
+    # fetch_fail (no hint above matches the backtick/underscore form),
+    # not auth_fail, mislabeling a real auth failure in
+    # `broker_connection_events`. Lowercased exact phrase per the fix.
+    "invalid `api_key` or `access_token`",
     "403",
     "401",
     "dh-901",

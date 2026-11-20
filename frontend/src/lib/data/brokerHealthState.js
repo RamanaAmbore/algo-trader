@@ -22,7 +22,12 @@
  */
 
 /**
- * @typedef {{ accounts: BrokerAccountHealth[], worstState: 'green'|'amber'|'red', tickerIdle: boolean, tickerIdleReason: string }} BrokerHealthState
+ * `pollStale`/`pollStaleSince` (F10, 2026-11-20 incident) are set by
+ * `stores.js`'s `_pollBrokerHealth()`, NOT by `toBrokerHealthState()`
+ * below — a poll failure keeps the prior `accounts`/`worstState`/
+ * `tickerIdle` (last-good payload) but must surface that the data is no
+ * longer confirmed current, rather than silently trusting it forever.
+ * @typedef {{ accounts: BrokerAccountHealth[], worstState: 'green'|'amber'|'red', tickerIdle: boolean, tickerIdleReason: string, pollStale?: boolean, pollStaleSince?: number|null }} BrokerHealthState
  */
 
 /**

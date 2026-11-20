@@ -46,6 +46,14 @@ from litestar import Litestar
 # fires afresh on the next expiry cycle.
 _heartbeat_warned: set[str] = set()
 
+# Same dedup pattern as `_heartbeat_warned` above, but for the independent
+# Kite login-cooloff gate (F1, 2026-11-20 incident) — kept as its own set
+# rather than reusing `_heartbeat_warned` because the two conditions
+# (`_is_token_expired()` vs `is_login_cooling_off()`) are orthogonal and can
+# flip independently; sharing one dedup set would let one condition's
+# recovery incorrectly silence the other's next-cycle warning.
+_heartbeat_cooloff_warned: set[str] = set()
+
 from backend.brokers.service.routes import (
     BrokerDispatchController,
     HealthController,
@@ -369,6 +377,26 @@ async def _health_heartbeat() -> None:
     DhanConnection._is_token_expired takes a `now` positional arg
     (unlike the no-arg GrowwConnection version). Handled by catching
     TypeError and retrying with the current timestamp.
+
+    Login-cooloff gate (F1, 2026-11-20 incident — account ZG0790, Kite
+    login blocked by a Zerodha CAPTCHA challenge for ~8.5h): the
+    `_is_token_expired()` check above is implemented ONLY by
+    DhanConnection/GrowwConnection — `KiteConnection` never defines it
+    (`hasattr(conn_obj, '_is_token_expired')` is False for Kite), so
+    every Kite account fell straight through to the unconditional
+    `record_session_ok(account)` below regardless of real auth state.
+    During the incident this produced a false-green health chip for
+    hours while the account had 1,503 real auth failures. Fixed by
+    checking `conn_obj.is_login_cooling_off()` (public on
+    `KiteConnection` only) BEFORE the `_is_token_expired` branch and
+    skipping the stamp outright when cooling off — same "skip the
+    green stamp, let the timestamp age out" shape as the
+    `_is_token_expired` gate, just keyed on a different signal. A
+    FUTURE broker type that also lacks `_is_token_expired()` would
+    silently reproduce this exact gap unless it either implements
+    `_is_token_expired()` or exposes an equivalent cooloff/liveness
+    check this function is taught to read — do not assume "no
+    `_is_token_expired()`" means "always healthy".
     """
     import asyncio as _asyncio
     from backend.brokers.connections import Connections
@@ -379,6 +407,35 @@ async def _health_heartbeat() -> None:
     while True:
         try:
             for account, conn_obj in list(Connections().conn.items()):
+                cooloff_fn = getattr(conn_obj, 'is_login_cooling_off', None)
+                if callable(cooloff_fn):
+                    try:
+                        # `is True` (never bare truthiness/`bool(...)`) —
+                        # a real `KiteConnection.is_login_cooling_off()`
+                        # always returns a genuine Python bool, but a
+                        # MagicMock test double with no explicit
+                        # `return_value` set would otherwise read as
+                        # truthy-but-not-boolean and falsely trip this
+                        # gate (same hazard as `registry.py`'s F7 check).
+                        cooling_off = cooloff_fn() is True
+                    except Exception:
+                        cooling_off = False
+                    if cooling_off:
+                        if account not in _heartbeat_cooloff_warned:
+                            _heartbeat_cooloff_warned.add(account)
+                            logger.warning(
+                                "[HEARTBEAT] %s login cooling off — skipping green "
+                                "stamp; chip will reflect real (red) auth state",
+                                account,
+                            )
+                        continue
+                    if account in _heartbeat_cooloff_warned:
+                        _heartbeat_cooloff_warned.discard(account)
+                        logger.info(
+                            "[HEARTBEAT] %s: login cooloff cleared — resuming "
+                            "green stamps",
+                            account,
+                        )
                 if hasattr(conn_obj, '_is_token_expired'):
                     try:
                         expired = conn_obj._is_token_expired()

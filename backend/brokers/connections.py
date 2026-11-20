@@ -58,7 +58,8 @@ def _ramboq_allowed_gai_family():
     return socket.AF_INET
 urllib3.util.connection.allowed_gai_family = _ramboq_allowed_gai_family
 
-from backend.brokers.errors import BrokerNetworkError
+from backend.brokers.errors import BrokerNetworkError, KiteLoginCoolingOff
+from backend.shared.helpers.backoff import exponential_backoff_seconds
 from backend.shared.helpers.date_time_utils import timestamp_indian
 from backend.shared.helpers.decorators import retry_kite_conn
 from backend.shared.helpers.ramboq_logger import get_logger
@@ -327,6 +328,54 @@ CONN_RESET_HOURS = int(config['conn_reset_hours'])
 
 logger = get_logger(__name__)
 
+# Dispatch-triggering logger — same fixed name + `extra`-shaped-record
+# convention `event_agents.py`'s `_EVENTS_LOGGER` / `alert_utils.py`'s
+# `_DISPATCH_LOGGER` already use (see the "Alert message format" /
+# "Alert pipeline, third round" CLAUDE.md entries). `backend.api.algo.events`
+# is deliberately NOT in `log_store.py`'s `_SKIP_PREFIXES`, unlike this
+# module's own `__name__`-based `logger` above — a record that must reach
+# `log_events`/event-agent dispatch (F3, broker-login-blocked escalation)
+# has to log through THIS logger, not `logger`.
+_DISPATCH_LOGGER = get_logger("backend.api.algo.events")
+
+
+def _extract_http_error_message(e: Exception) -> str:
+    """Pull the real actionable error text out of an HTTP/SDK exception.
+
+    `response.raise_for_status()` raises `requests.exceptions.HTTPError`,
+    whose default `str()` is just e.g. "400 Client Error: Bad Request for
+    url: ...". Zerodha's actual response body carries the useful detail —
+    e.g. `{"status":"error","message":"Invalid CAPTCHA values.",
+    "data":{"captcha":true},"error_type":"InputException"}` — but nothing
+    in this file read it before this fix (F2, 2026-11-20 incident:
+    account ZG0790 was blocked by a Zerodha CAPTCHA challenge for ~8.5h
+    and every log line/event just said "400 Bad Request", with no
+    indication of WHY).
+
+    Resolution order:
+      1. `e.response.json()["message"]` — the real Zerodha error body.
+      2. `e.response.text[:200]` — raw body when it isn't JSON or has no
+         "message" key (still more useful than a bare status line).
+      3. `str(e)[:200]` — the exception's own string when there's no
+         `.response` at all (e.g. a network-level error, or an exception
+         raised directly by the Kite SDK with no HTTP response object).
+    """
+    response = getattr(e, "response", None)
+    if response is not None:
+        try:
+            body = response.json()
+            if isinstance(body, dict) and body.get("message"):
+                return str(body["message"])[:200]
+        except Exception:
+            pass
+        try:
+            text = response.text
+            if text:
+                return text[:200]
+        except Exception:
+            pass
+    return str(e)[:200]
+
 
 # File-system lock around the shared token cache file. The
 # per-account login locks (`_cross_process_login_lock`) only serialise
@@ -480,6 +529,15 @@ class KiteConnection:
         self._login_blocked_until: float = 0.0
         self._login_fail_streak: int = 0
 
+        # F3 (2026-11-20 incident) — tracks whether the one-shot
+        # "cooloff escalated to its worst tier" alert has already fired
+        # for the CURRENT escalation episode, so a multi-hour outage
+        # fires exactly one ntfy/email/Telegram alert instead of
+        # re-alerting on every retry. Reset to False on the next
+        # successful login (see the `else:` branch of
+        # `_attempt_login_with_cooloff`).
+        self._blocked_alert_sent: bool = False
+
         self.kite = self._new_kite()
 
         # Login session uses plain requests (no source_ip binding).
@@ -612,6 +670,35 @@ class KiteConnection:
             _save_cached_token(self.account, '')
             return False
 
+    def _mark_conn_fresh(self, now) -> None:
+        """Stamp `_conn_created_at = now` — called ONLY once a usable
+        connection has actually been confirmed (a still-valid cached
+        token, or a freshly succeeded login), never before that
+        confirmation.
+
+        2026-11-20 fix (F7 follow-up — the real mechanism behind the
+        436 failed quote/historical calls during the ZG0790 incident).
+        `get_kite_conn()` used to stamp this timestamp BEFORE attempting
+        re-auth, inside the `if self._is_kite_conn_expired(now):` branch
+        — so a single FAILED login attempt still advanced the timer.
+        The very next call (even `test_conn=False`, e.g. every
+        `KiteBroker.kite` property access) then took the fast path
+        (`if not (self._is_kite_conn_expired(now) or test_conn): return
+        self.kite`) and returned `self.kite` — a `KiteConnect` instance
+        `init_kite_conn()` had already replaced with a fresh, TOKENLESS
+        client before the login call failed — completely bypassing the
+        login-cooloff gate below for the rest of `CONN_RESET_HOURS`.
+        Every caller of that stale handle then made a real network call
+        with no/invalid token, which Kite answers with exactly the
+        "Invalid `api_key` or `access_token`" message (see F8's
+        classifier fix) — this is almost certainly the actual mechanism
+        behind the 436 failed calls logged during the incident, not a
+        gap in the cooloff gate itself.
+        """
+        self._conn_created_at = now
+        logger.info(f"Kite connection refreshed at "
+                    f"{now.strftime('%a, %b %d, %Y, %I:%M %p')}")
+
     @retry_kite_conn(_retry_count)
     def get_kite_conn(self, test_conn=False):
         """Return kite connection, refreshing if older than CONN_RESET_HOURS.
@@ -632,6 +719,20 @@ class KiteConnection:
         `_validate_or_clear_kite_token()` — a still-valid cached token
         is always returned normally, cool-off or not. Only a genuinely
         NEW login attempt is ever blocked.
+
+        `_conn_created_at` (the fast-path's own "is this connection
+        still fresh" timestamp) is stamped via `_mark_conn_fresh()` —
+        see that method's docstring — ONLY after a usable connection is
+        actually confirmed: a still-valid cached token, or a freshly
+        succeeded `_attempt_login_with_cooloff()`. On a FAILED login
+        attempt, `_attempt_login_with_cooloff()` raises and the
+        following `_mark_conn_fresh()` call is skipped entirely (plain
+        sequential control flow — no try/except needed, since a raised
+        exception already prevents the next statement from running);
+        `_conn_created_at` therefore stays at its old (already-expired)
+        value, so the NEXT call — even one made with `test_conn=False`
+        — still takes the slow path and re-checks the cooloff gate,
+        instead of falling through to a stale/tokenless `self.kite`.
         """
         now = timestamp_indian()
         with self._login_lock:
@@ -641,19 +742,22 @@ class KiteConnection:
                 now = timestamp_indian()
                 if not (self._is_kite_conn_expired(now) or test_conn):
                     return self.kite
-                if self._is_kite_conn_expired(now):
-                    self._conn_created_at = now
-                    logger.info(f"Kite connection refreshed at "
-                                f"{now.strftime('%a, %b %d, %Y, %I:%M %p')}")
                 if self._validate_or_clear_kite_token():
+                    self._mark_conn_fresh(now)
                     return self.kite
                 if _time_mod.time() < self._login_blocked_until:
                     wait_s = int(self._login_blocked_until - _time_mod.time())
-                    raise RuntimeError(
+                    # 2026-11-20 fix — dedicated type (KiteLoginCoolingOff,
+                    # still a RuntimeError subclass — see its own
+                    # docstring) so `retry_kite_conn` can fail fast and
+                    # log at DEBUG for this one known-deterministic case,
+                    # instead of its generic 3x-retry-then-ERROR path.
+                    raise KiteLoginCoolingOff(
                         f"Kite login cooling off for {self.account!r} — "
                         f"wait {wait_s}s before retrying (non-transient login failure)"
                     )
                 self._attempt_login_with_cooloff()
+                self._mark_conn_fresh(now)
                 return self.kite
 
     def _attempt_login_with_cooloff(self) -> None:
@@ -683,16 +787,26 @@ class KiteConnection:
             self.init_kite_conn(test_conn=True)
         except Exception as e:
             self._login_fail_streak += 1
-            cooloff_s = min(120 * (2 ** (self._login_fail_streak - 1)), 1800)
+            # Part 3 (2026-11-20) — shared exponential-backoff formula.
+            # `exponential_backoff_seconds(n, base=120.0, cap=1800.0)`
+            # computes `min(120.0 * 2**n, 1800.0)`, byte-identical to this
+            # site's own pre-existing inline formula (120, 240, 480, 960,
+            # 1800, 1800, ...) — see `test_backoff.py`'s table-driven
+            # parity test. Passive gate only — never sleeps here; it just
+            # computes the future `_login_blocked_until` deadline below.
+            cooloff_s = exponential_backoff_seconds(
+                self._login_fail_streak - 1, base=120.0, cap=1800.0,
+            )
             self._login_blocked_until = _time_mod.time() + cooloff_s
             _next_retry = datetime.fromtimestamp(
                 self._login_blocked_until
             ).strftime('%H:%M:%S')
+            _err_msg = _extract_http_error_message(e)
             logger.error(
                 "[KITE-LOGIN-COOLOFF] %r: login failed (streak=%d) — cooloff "
                 "active for %ds (persisted to disk). Next retry at %s. Cause: %s",
                 self.account, self._login_fail_streak, cooloff_s, _next_retry,
-                str(e)[:200],
+                _err_msg,
             )
             # Persist so a process restart during the cool-off window
             # doesn't reset the clock and allow immediate re-hammering of
@@ -717,10 +831,64 @@ class KiteConnection:
             # NOTE: login(), totp_authenticate(), and setup_access_token()
             # each already call _emit_conn_event(..., "auth_fail", ...) on
             # their own failure — don't add a second event here.
+            #
+            # F3 (2026-11-20 incident) — once the cooloff has escalated to
+            # its own worst tier (the 1800s/30-min cap), fire ONE
+            # additional tagged log record so this persistent failure can
+            # escalate past the Telegram-only `error-alert` catch-all to
+            # ntfy + email (a new seeded `generic_notice` agent keyed on
+            # `alert_event="broker_login_blocked"` consumes this — see
+            # `event_agents.py`/`alert_routing.py`). Gated by
+            # `_blocked_alert_sent` so a multi-hour outage fires this
+            # exactly once, not on every retry at the capped tier; reset
+            # to False in the `else:` branch below on the next successful
+            # login.
+            if cooloff_s >= 1800 and not self._blocked_alert_sent:
+                self._blocked_alert_sent = True
+                try:
+                    from backend.shared.helpers.utils import mask_account
+                    # The message's own `%s` account arg is masked for
+                    # free at enqueue time by `log_store.py`'s
+                    # `_AccountMaskFilter` (it masks the final rendered
+                    # message text). `extra` values are NOT touched by
+                    # that filter — mask `account` here at the producer,
+                    # same convention as `template_attach.py`'s
+                    # `_fire_guard_alert` fix (see the "Positions loss
+                    # guard" CLAUDE.md entry's `extra`-masking bullet).
+                    # `self_alerted: True` prevents ERROR_AGENT's blanket
+                    # catch-all from ALSO matching this ERROR-level
+                    # record and double-delivering to Telegram (same
+                    # convention as chase's max-attempts-exhaustion path
+                    # — see the "Alert routing hygiene" CLAUDE.md entry).
+                    _DISPATCH_LOGGER.error(
+                        "Kite login for %s has been blocked for %ds "
+                        "(max cooloff reached, streak=%d) — Zerodha error: %s",
+                        self.account, cooloff_s, self._login_fail_streak,
+                        _err_msg,
+                        extra={
+                            "tags": ["brokers", "alert"],
+                            "alert_event": "broker_login_blocked",
+                            "action_required": True,
+                            "self_alerted": True,
+                            "source_type": "process",
+                            "source_name": "Broker login",
+                            "account": mask_account(self.account),
+                            "cooloff_seconds": cooloff_s,
+                            "fail_streak": self._login_fail_streak,
+                            "error": _err_msg,
+                        },
+                    )
+                except Exception:
+                    logger.warning(
+                        "[KITE-LOGIN-COOLOFF] %r: failed to log "
+                        "broker_login_blocked escalation alert",
+                        self.account,
+                    )
             raise
         else:
             self._login_fail_streak = 0
             self._login_blocked_until = 0.0
+            self._blocked_alert_sent = False
             # Clear persisted cool-off so the next process restart doesn't
             # restore a now-stale block.
             try:
@@ -742,6 +910,17 @@ class KiteConnection:
         after `_resolve_kite_creds()` raises/returns empty."""
         return _time_mod.time() < self._login_blocked_until
 
+    def cooloff_blocked_until(self) -> float:
+        """Public read of the raw `_login_blocked_until` epoch timestamp.
+
+        Companion to `is_login_cooling_off()` — added for the F1(b)
+        health-payload extension (`backend/brokers/service/routes.py`'s
+        `/health/brokers` endpoint), which needs the actual deadline (not
+        just the boolean) so the main API's health route can display
+        "cooling off until HH:MM" rather than only a red/green flag.
+        """
+        return self._login_blocked_until
+
     @retry_kite_conn(_retry_count)
     def login(self):
         try:
@@ -750,10 +929,15 @@ class KiteConnection:
             request_id = response.json()["data"]["request_id"]
             logger.info(f"Login successful, Request ID: {request_id}")
         except Exception as e:
-            logger.error(f"Login failed: {e}")
+            # F2 (2026-11-20 incident) — surface Zerodha's real response
+            # body (e.g. "Invalid CAPTCHA values.") instead of the bare
+            # HTTPError string ("400 Client Error: Bad Request for url:
+            # ..."). See `_extract_http_error_message`'s docstring.
+            _err_msg = _extract_http_error_message(e)
+            logger.error(f"Login failed: {_err_msg}")
             _emit_conn_event(
                 self.account, "zerodha_kite", "auth_fail",
-                {"error": str(e)[:200], "stage": "login"},
+                {"error": _err_msg, "stage": "login"},
             )
             raise
         return request_id
@@ -767,10 +951,13 @@ class KiteConnection:
             response.raise_for_status()
             logger.info("2FA authentication successful")
         except Exception as e:
-            logger.error(f"2FA authentication failed: {e}")
+            # F2 — see login()'s comment above; same real-error-body
+            # extraction applied here.
+            _err_msg = _extract_http_error_message(e)
+            logger.error(f"2FA authentication failed: {_err_msg}")
             _emit_conn_event(
                 self.account, "zerodha_kite", "auth_fail",
-                {"error": str(e)[:200], "stage": "totp_authenticate"},
+                {"error": _err_msg, "stage": "totp_authenticate"},
             )
             raise
 
@@ -786,10 +973,20 @@ class KiteConnection:
             _emit_conn_event(self.account, "zerodha_kite", "token_ok")
             _record_session_ok(self.account)
         except Exception as e:
-            logger.error(f"Failed to generate access token for account {self.account}: {e}")
+            # F2 — `generate_session()`'s exception comes from the Kite
+            # SDK itself, not a raw `requests` HTTP error, so it normally
+            # carries no `.response` object to extract a JSON body from.
+            # `_extract_http_error_message` falls back to `str(e)[:200]`
+            # in that case (today's behaviour, just consistently
+            # truncated) while still picking up a real body if the SDK
+            # ever raises an exception that DOES carry one.
+            _err_msg = _extract_http_error_message(e)
+            logger.error(
+                f"Failed to generate access token for account {self.account}: {_err_msg}"
+            )
             _emit_conn_event(
                 self.account, "zerodha_kite", "auth_fail",
-                {"error": str(e)[:200], "stage": "setup_access_token"},
+                {"error": _err_msg, "stage": "setup_access_token"},
             )
             raise
 

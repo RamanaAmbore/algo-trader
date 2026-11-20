@@ -265,6 +265,22 @@ _PER_SLUG_OVERRIDES: dict[str, list[dict]] = {
     "draft-sweep-alert": [
         {"channel": "telegram_info", "enabled": True, "gate": False},
     ],
+    # 2026-11-20 fix (live incident — ZG0790's Kite login was blocked by
+    # a Zerodha account-level CAPTCHA challenge for ~8.5 hours; the ONLY
+    # existing path, `error-alert`'s blanket catch-all, is Telegram-only
+    # by deliberate design (see that slug's own comment above), so a
+    # multi-hour real connection outage never escalated past Telegram).
+    # `event_agents.BROKER_LOGIN_BLOCKED_AGENT` fires rarely — once per
+    # account per worst-tier cooloff escalation, never per retry — and
+    # is serious by construction, so it genuinely needs all three
+    # channels. `gate: False` on every entry, same convention as
+    # `order-failure-alert` above: this must reach the operator
+    # regardless of capability-enabled toggles.
+    "broker-login-blocked-alert": [
+        {"channel": "telegram", "enabled": True, "gate": False},
+        {"channel": "ntfy", "enabled": True, "gate": False, "priority": "urgent"},
+        {"channel": "email", "enabled": True, "gate": False},
+    ],
     # 2026-10 operator-reported gap — new-user self-registration alerts
     # were never reaching Telegram/ntfy (see `event_agents.py:
     # USER_REGISTERED_AGENT`'s own comment for the root cause). High,

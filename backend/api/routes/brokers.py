@@ -267,6 +267,108 @@ async def _reload_connections() -> None:
         logger.warning(f"Connections reload after broker mutation failed: {e}")
 
 
+async def _force_refresh_one_account_after_reenable(account: str) -> None:
+    """2026-11-20 fix (F12 — operator explicit new requirement, same
+    live incident as F11). Re-enabling a disabled account's connection
+    left its positions/holdings/margins/funds at whatever was last
+    cached (possibly hours stale, or an LKG substitute) until the next
+    routine poll cycle — itself additionally gated by closed-hours logic
+    (`closed_hours_or_broker()`) that has no reason to treat "operator
+    just explicitly re-enabled this account" as a reason to bypass
+    itself.
+
+    Called directly from `update_account`'s False→True transition
+    branch, NOT through the normal closed-hours-gated route handler —
+    intentionally. This is a one-shot operator action correcting a
+    known-stale account, not a routine poll, so it must run
+    unconditionally regardless of market hours. Do NOT "correct" this
+    back into a gated call — a disabled account can be re-enabled at
+    any hour, and the operator's whole point in re-enabling it right
+    now is to see its real current state immediately, not after the
+    next scheduled poll (or not at all, if every segment happens to be
+    closed).
+
+    Reuses the exact force-refresh plumbing documented in CLAUDE.md's
+    "Post-fill position freshness" entry (`orders.py:
+    _positions_refresh_after_fill` / `_rco_invalidate_terminal_caches`) —
+    with one deliberate correction vs. an earlier draft of this function.
+
+    An earlier version of this function called each `fetch_*` function
+    with `account=account` — the SINGLE-ACCOUNT branch of
+    `fetch_positions`/`fetch_holdings`/`fetch_margins`. That branch
+    bypasses the all-accounts SSOT cache ENTIRELY (per `fetch_positions`'s
+    own docstring: "Explicit account=/broker= kwargs fall through to the
+    local path") — so its result was fetched, then simply discarded; the
+    SHARED cache that `/api/positions`/`/api/holdings`/`/api/funds`
+    actually read from was never repopulated. The very next operator
+    poll would either see stale cached data (if arriving before the next
+    natural cache-expiry fetch) or trigger its own full re-fetch
+    independently of this one — in neither case did this function's own
+    broker round-trip do any useful work.
+
+    Fixed: call the ZERO-ARG forms instead — `fetch_positions(
+    force_refresh=True)` / `fetch_margins(force_refresh=True)` — the
+    exact path that threads `force_refresh` into `_upstream_force` (for
+    positions; see that function's own docstring) and repopulates the
+    SAME all-accounts SSOT cache every route reads from. `fetch_holdings`
+    has no `force_refresh` parameter at all (confirmed via its
+    signature), so `_raw_cache_invalidate("holdings")` is called first —
+    that pops/invalidates the SSOT cache entry directly (via `ssot_
+    fetch`'s own generation-counter mechanism), so the immediately-
+    following zero-arg `fetch_holdings()` call is a genuine cache MISS,
+    not a TTL-gated maybe-stale read. This refreshes EVERY account, not
+    only the one just re-enabled — a deliberately broader, bounded,
+    one-shot cost (this is not a hot path) rather than a narrower
+    refresh that would leave the shared cache stale for every OTHER
+    consumer until its own next natural expiry.
+
+    Fire-and-forget (background task), same convention as
+    `_positions_refresh_after_fill` — the operator's PATCH response
+    returns as soon as `_reload_connections()` is done; the broker
+    round-trips happen shortly after. No debounce/rate-limit — rapid
+    repeated re-toggling hits ordinary authenticated data-fetch
+    endpoints, not the login flow that actually trips a broker's own
+    anomaly detection (the F1/F2 login-cooloff fixes elsewhere in this
+    incident cover that flow separately).
+
+    Known residual, not fixed here: a closed-hours read still goes
+    through `closed_hours_or_broker()`'s snapshot-gate path and will
+    continue to show the frozen `daily_book` snapshot regardless of how
+    fresh this function makes the live broker-layer cache — that route
+    gate is a deliberate, separate design decision (see CLAUDE.md's
+    "Closed-hours route gate" entry) and is out of scope for this fix.
+    """
+    try:
+        from backend.api.cache import invalidate
+        from backend.brokers.broker_apis import (
+            _raw_cache_invalidate, fetch_positions, fetch_holdings, fetch_margins,
+        )
+        for _key in ("positions", "holdings", "funds"):
+            try:
+                invalidate(_key)
+            except Exception:
+                pass
+        for _key in ("positions", "holdings", "margins"):
+            try:
+                _raw_cache_invalidate(_key)
+            except Exception:
+                pass
+
+        import asyncio as _asyncio
+        # Zero-arg forms — the SSOT-cache-populating path every route
+        # reads from (not the single-account branch, which bypasses that
+        # cache entirely). See this function's own docstring.
+        await _asyncio.to_thread(fetch_positions, force_refresh=True)
+        await _asyncio.to_thread(fetch_holdings)
+        await _asyncio.to_thread(fetch_margins, force_refresh=True)
+        logger.warning(
+            f"broker_accounts: {account!r} re-enabled — forced an unconditional "
+            f"positions/holdings/margins/funds refresh"
+        )
+    except Exception as e:
+        logger.warning(f"forced refresh after re-enabling {account!r} failed: {e}")
+
+
 def _loaded_accounts() -> set[str]:
     """Account codes considered HEALTHY: connection object exists in
     the Connections singleton AND the most recent broker fetch for
@@ -439,6 +541,13 @@ class BrokersController(Controller):
                 raise HTTPException(status_code=404,
                     detail=f"Broker account {account!r} not found")
 
+            # F12 (2026-11-20) — capture the OLD is_active value BEFORE
+            # _apply_nonsecret_fields mutates row.is_active in place, so
+            # the False→True transition can be detected below. Same
+            # before-vs-after convention _apply_nonsecret_fields itself
+            # already uses for poll_priority.
+            was_active = bool(row.is_active)
+
             _apply_nonsecret_fields(row, data)   # may raise HTTPException(400)
             _apply_secret_fields(row, data)
             row.updated_at = datetime.now(timezone.utc)
@@ -448,6 +557,18 @@ class BrokersController(Controller):
         await _flush_priority_caches(account, row, data)
         await _flush_display_order_cache(data)
         await _reload_connections()
+
+        # F12 — re-enabling a disabled connection forces an immediate,
+        # unconditional (non-market-hours-gated) books refresh for just
+        # this one account. Scoped to the real False→True transition
+        # only: a True→False (disable), or any other field change on an
+        # already-active/already-inactive account, must not trigger
+        # this. See _force_refresh_one_account_after_reenable's own
+        # docstring for why this bypasses the normal closed-hours gate.
+        if data.is_active is True and not was_active and bool(row.is_active):
+            import asyncio as _asyncio
+            _asyncio.create_task(_force_refresh_one_account_after_reenable(account))
+
         logger.warning(f"broker_accounts: updated {account!r} via /admin/brokers")
         return _to_info(row, loaded=(account in _loaded_accounts()))
 

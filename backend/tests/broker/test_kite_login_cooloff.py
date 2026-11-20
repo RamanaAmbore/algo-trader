@@ -84,6 +84,7 @@ def _kite_conn_bare(account: str = "ZG_COOLOFF_BARE") -> KiteConnection:
     obj._conn_created_at  = None
     obj._login_blocked_until = 0.0
     obj._login_fail_streak   = 0
+    obj._blocked_alert_sent  = False
     obj.session           = MagicMock()
     obj.kite              = MagicMock()
     return obj
@@ -225,6 +226,107 @@ class TestCooloffGateBlocksLoginDuringWindow:
                 conn.get_kite_conn(test_conn=True)
 
         conn.init_kite_conn.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# C2 (2026-11-20 follow-up — the real mechanism behind the 436 failed
+# quote/historical calls during the ZG0790 incident): a FAILED login must
+# never advance `_conn_created_at`. Before this fix, `get_kite_conn()`
+# stamped `_conn_created_at = now` BEFORE attempting re-auth, so a single
+# failed login made the very next call (even test_conn=False) take the
+# fast path at the top of the function and return a stale, tokenless
+# `self.kite` with NO exception raised at all — silently bypassing the
+# cool-off gate for the rest of CONN_RESET_HOURS.
+# ---------------------------------------------------------------------------
+
+class TestFailedLoginNeverAdvancesConnCreatedAt:
+    def test_second_call_after_one_failure_still_hits_the_cooloff_gate(
+        self, monkeypatch,
+    ):
+        """After ONE failed login, a second call to get_kite_conn() —
+        even a default test_conn=False call, exactly what
+        KiteBroker.kite's property makes — must still take the slow
+        path and raise the cool-off RuntimeError, instead of silently
+        returning a stale self.kite with no exception and no further
+        protection."""
+        # Force exactly one internal attempt per external get_kite_conn()
+        # call, so "first call fails" / "second call" map 1:1 onto two
+        # real external calls, matching the bug report's own framing.
+        monkeypatch.setattr(
+            "backend.shared.helpers.settings.get_int", lambda *a, **k: 1
+        )
+
+        conn = _kite_conn_bare("ZG_CONN_FRESH_1")
+        conn._access_token = None            # no cached token to validate
+        conn._conn_created_at = None         # connection starts expired
+        conn.init_kite_conn = MagicMock(
+            side_effect=RuntimeError("Invalid CAPTCHA values.")
+        )
+
+        # First call: a genuinely new login attempt that fails.
+        with pytest.raises(RuntimeError, match="Invalid CAPTCHA"):
+            conn.get_kite_conn(test_conn=True)
+
+        assert conn._conn_created_at is None, (
+            "a FAILED login must never advance _conn_created_at — got "
+            f"{conn._conn_created_at!r}"
+        )
+        assert conn._login_blocked_until > time.time(), (
+            "the failed attempt must have engaged the cool-off window"
+        )
+
+        # Second call — the real-world case: a default test_conn=False
+        # call (what KiteBroker.kite's property makes). Must NOT take
+        # the fast path and return a stale self.kite with no exception —
+        # must still reach, and raise, the cool-off gate.
+        conn.init_kite_conn.reset_mock()
+        with pytest.raises(RuntimeError, match="cooling off"):
+            conn.get_kite_conn(test_conn=False)
+
+        conn.init_kite_conn.assert_not_called(), (
+            "the cool-off gate must short-circuit before any further "
+            "network call — init_kite_conn must not run a second time"
+        )
+
+    def test_successful_login_does_advance_conn_created_at(self, monkeypatch):
+        """The inverse — a genuinely successful login MUST stamp
+        _conn_created_at, so routine calls take the cheap fast path
+        instead of re-validating every single time."""
+        monkeypatch.setattr(
+            "backend.shared.helpers.settings.get_int", lambda *a, **k: 1
+        )
+
+        conn = _kite_conn_bare("ZG_CONN_FRESH_2")
+        conn._access_token = None
+        conn._conn_created_at = None
+        conn.init_kite_conn = MagicMock(return_value=None)  # succeeds
+
+        result = conn.get_kite_conn(test_conn=True)
+
+        assert result is conn.kite
+        assert conn._conn_created_at is not None, (
+            "a successful login must stamp _conn_created_at"
+        )
+
+    def test_valid_cached_token_also_advances_conn_created_at(self):
+        """A still-valid cached token path (no login attempted at all)
+        must also stamp _conn_created_at, so the next call takes the
+        fast path instead of re-probing the token every time."""
+        conn = _kite_conn_bare("ZG_CONN_FRESH_3")
+        conn._access_token = "a-real-looking-token"
+        conn._conn_created_at = None
+        conn.kite.profile = MagicMock(return_value={"user_id": "ZG_CONN_FRESH_3"})
+        conn.init_kite_conn = MagicMock(
+            side_effect=AssertionError("must not attempt a fresh login")
+        )
+
+        result = conn.get_kite_conn(test_conn=True)
+
+        assert result is conn.kite
+        conn.init_kite_conn.assert_not_called()
+        assert conn._conn_created_at is not None, (
+            "a confirmed-valid cached token must also stamp _conn_created_at"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -400,3 +502,155 @@ class TestCooloffPersistence:
         assert account not in data_after, (
             f"expected persisted entry cleared after success, got {data_after!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# F3 (2026-11-20 incident) — one escalation-tier alert, not per-retry spam.
+# Once the cooloff escalates to its own worst tier (the 1800s cap), exactly
+# ONE tagged `_DISPATCH_LOGGER` record must fire per "reached max cooloff"
+# episode — not on every retry while still capped, and it must re-arm after
+# a successful login.
+# ---------------------------------------------------------------------------
+
+class TestEscalationTierAlert:
+    def test_alert_fires_once_when_cooloff_reaches_the_cap(self, monkeypatch):
+        from backend.brokers import connections as _conn_mod
+
+        conn = _kite_conn_bare("ZG_COOLOFF_G1")
+        conn.init_kite_conn = MagicMock(
+            side_effect=RuntimeError("Invalid CAPTCHA values.")
+        )
+        conn._login_fail_streak = 10  # already at/above the cap
+
+        dispatch_mock = MagicMock()
+        monkeypatch.setattr(_conn_mod._DISPATCH_LOGGER, "error", dispatch_mock)
+
+        with pytest.raises(RuntimeError):
+            conn._attempt_login_with_cooloff()
+
+        dispatch_mock.assert_called_once()
+        kwargs = dispatch_mock.call_args.kwargs
+        extra = kwargs["extra"]
+        assert extra["alert_event"] == "broker_login_blocked", (
+            f"expected alert_event='broker_login_blocked', got {extra!r}"
+        )
+        assert extra["action_required"] is True, (
+            f"expected action_required=True to force the ntfy/email gates, "
+            f"got {extra!r}"
+        )
+        assert extra["source_type"] == "process"
+        assert extra["source_name"] == "Broker login"
+        assert "alert" in extra["tags"]
+        assert "Invalid CAPTCHA values." in extra["error"], (
+            f"expected the F2-captured real error text in the alert body, "
+            f"got {extra!r}"
+        )
+        assert conn._blocked_alert_sent is True
+
+        # Must not double-alert through ERROR_AGENT's blanket catch-all
+        # (this is itself an ERROR-level, alert-shaped record).
+        assert extra["self_alerted"] is True, (
+            f"expected self_alerted=True so ERROR_AGENT doesn't also fire "
+            f"on this record, got {extra!r}"
+        )
+
+        # The account code in `extra` must be masked — `_AccountMaskFilter`
+        # only masks the rendered message text, never `extra` values.
+        from backend.shared.helpers.utils import mask_account
+        assert extra["account"] == mask_account("ZG_COOLOFF_G1"), (
+            f"expected extra['account'] to be masked via mask_account(), "
+            f"got {extra['account']!r}"
+        )
+        assert extra["account"] != "ZG_COOLOFF_G1", (
+            "the raw unmasked account code must never reach extra['account']"
+        )
+
+    def test_alert_does_not_spam_on_every_retry_while_still_capped(self, monkeypatch):
+        """A multi-hour outage, repeatedly retried while still at the
+        capped tier, must fire this alert exactly once — not once per
+        retry."""
+        from backend.brokers import connections as _conn_mod
+
+        conn = _kite_conn_bare("ZG_COOLOFF_G2")
+        conn.init_kite_conn = MagicMock(side_effect=RuntimeError("boom"))
+        conn._login_fail_streak = 10
+
+        dispatch_mock = MagicMock()
+        monkeypatch.setattr(_conn_mod._DISPATCH_LOGGER, "error", dispatch_mock)
+
+        for _ in range(4):
+            with pytest.raises(RuntimeError):
+                conn._attempt_login_with_cooloff()
+
+        dispatch_mock.assert_called_once()
+
+    def test_alert_not_fired_below_the_cap(self, monkeypatch):
+        """A fresh (streak=1, ~120s) failure must NOT fire the escalation
+        alert — only the worst tier (1800s cap) does."""
+        from backend.brokers import connections as _conn_mod
+
+        conn = _kite_conn_bare("ZG_COOLOFF_G3")
+        conn.init_kite_conn = MagicMock(side_effect=RuntimeError("boom"))
+
+        dispatch_mock = MagicMock()
+        monkeypatch.setattr(_conn_mod._DISPATCH_LOGGER, "error", dispatch_mock)
+
+        with pytest.raises(RuntimeError):
+            conn._attempt_login_with_cooloff()
+
+        dispatch_mock.assert_not_called()
+        assert conn._blocked_alert_sent is False
+
+    def test_alert_rearms_after_a_successful_login(self, monkeypatch):
+        """Once the streak resets to 0 on a successful login, the next
+        time the cooloff escalates back to the cap must fire a fresh
+        alert — `_blocked_alert_sent` must not stay stuck True forever."""
+        from backend.brokers import connections as _conn_mod
+
+        conn = _kite_conn_bare("ZG_COOLOFF_G4")
+        conn.init_kite_conn = MagicMock(side_effect=RuntimeError("boom"))
+        conn._login_fail_streak = 10
+
+        dispatch_mock = MagicMock()
+        monkeypatch.setattr(_conn_mod._DISPATCH_LOGGER, "error", dispatch_mock)
+
+        with pytest.raises(RuntimeError):
+            conn._attempt_login_with_cooloff()
+        dispatch_mock.assert_called_once()
+        assert conn._blocked_alert_sent is True
+
+        # A successful login clears both the streak and the alert flag.
+        conn.init_kite_conn = MagicMock(return_value=None)
+        conn._attempt_login_with_cooloff()
+        assert conn._blocked_alert_sent is False, (
+            "a successful login must reset _blocked_alert_sent so the "
+            "alert can re-fire for a future outage"
+        )
+
+        # A fresh outage that escalates back to the cap fires again.
+        conn.init_kite_conn = MagicMock(side_effect=RuntimeError("boom again"))
+        conn._login_fail_streak = 10
+        with pytest.raises(RuntimeError):
+            conn._attempt_login_with_cooloff()
+        assert dispatch_mock.call_count == 2, (
+            f"expected the alert to re-fire for a fresh outage after a "
+            f"successful login in between, got {dispatch_mock.call_count} calls"
+        )
+
+    def test_alert_failure_is_swallowed_never_masks_the_real_exception(self, monkeypatch):
+        """If logging the escalation alert itself raises, the original
+        login failure must still propagate — never swallowed by an alert
+        plumbing error."""
+        from backend.brokers import connections as _conn_mod
+
+        conn = _kite_conn_bare("ZG_COOLOFF_G5")
+        conn.init_kite_conn = MagicMock(side_effect=RuntimeError("boom"))
+        conn._login_fail_streak = 10
+
+        monkeypatch.setattr(
+            _conn_mod._DISPATCH_LOGGER, "error",
+            MagicMock(side_effect=RuntimeError("logging backend down")),
+        )
+
+        with pytest.raises(RuntimeError, match="boom"):
+            conn._attempt_login_with_cooloff()

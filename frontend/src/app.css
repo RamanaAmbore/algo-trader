@@ -317,6 +317,13 @@
      tier-3+ modal/command/cheatsheet/agent-alert/toast layer listed
      above — an InfoHint popover is a lightweight, dismissable hint,
      not something that should ever outrank a modal or a toast.
+
+     --z-confirm-over-drawer = 20050 (2026-11-20, F6 broker-incident
+     fix) — a ConfirmModal that must render over an already-open
+     drawer-tier popup (--z-drawer = 20001); currently only
+     BrokerHealthBadge's enable/disable confirm needs this. Sits just
+     above --z-tooltip (20002) and well below --z-cheatsheet (20200),
+     so it never fights the cheatsheet/agent-alert/toast tiers above.
      ────────────────────────────────────────────────────────────────── */
   --z-nav:      50;
   --z-dropdown: 20000;
@@ -332,6 +339,7 @@
   --z-modal-critical:   11200;
   --z-cheatsheet:       20200;
   --z-agent-alert:      20500;
+  --z-confirm-over-drawer: 20050;
 
   /* Vertical-bar separator — shared by CardHeader (.ch-sep),
      MarketPulse (.mp-head-sep), and PositionStrip (.ps-agg-sep).

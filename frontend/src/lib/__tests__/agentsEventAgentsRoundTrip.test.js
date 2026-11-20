@@ -80,7 +80,12 @@ describe('Wave 2 — byte-identical compile gate: all 14 real SEEDED_AGENTS shap
   // delete `_RETIRED_SLUGS` convention as `action-notify-alert` above.
   // `draft-sweep-alert` stays dedicated (its `telegram_info`-only
   // channel can't route through the 3 generic channel agents).
-  expect(seededAgents.length).toBe(14);
+  // 2026-11-20 fix (live ZG0790 CAPTCHA incident): 14 -> 15 —
+  // `broker-login-blocked-alert`, a brand-new standalone dedicated
+  // critical-tier agent with its own renderer
+  // (`event_agents.py:_render_broker_login_blocked`), same
+  // "brand-new dedicated agent" shape as every other addition above.
+  expect(seededAgents.length).toBe(15);
 
   for (const agent of seededAgents) {
     it(`${agent.slug}: decompile -> recompile reproduces the EXACT stored conditions/events/actions`, () => {

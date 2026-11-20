@@ -871,7 +871,47 @@ def _hlth_resolve_state(
     cb_until_iso: Optional[str],
     cb_until,
 ) -> tuple[str, str, str, int, Optional[str]]:
-    """Resolve the health (state, reason) given pre-computed circuit-breaker fields."""
+    """Resolve the health (state, reason) given pre-computed circuit-breaker fields.
+
+    Login-cooloff override (2026-11-20 fix, F1(c) — live ZG0790 CAPTCHA
+    incident). Root cause: `_health_heartbeat`
+    (`backend/brokers/service/app.py`) gates its token-validity recheck
+    on `hasattr(conn_obj, '_is_token_expired')`. `KiteConnection` never
+    implements that method (only Dhan/Groww do), so every Kite account
+    got `record_session_ok()` stamped every 90s UNCONDITIONALLY,
+    regardless of real auth state — the 90s heartbeat kept winning the
+    green/amber race against real (less frequent) `auth_fail`/
+    `fetch_fail` events for hours while the account was completely
+    blocked by Zerodha's own login cooloff.
+
+    `is_cooling_off`/`blocked_until` are new fields conn_service's
+    `/internal/health/brokers` payload now carries per Kite account
+    (`KiteConnection.is_login_cooling_off()`'s live state, surfaced via
+    `backend/brokers/service/routes.py` and passed through verbatim by
+    `fetch_health_snapshot()` — see that function's own docstring for
+    the cutover-vs-local distinction). This is the one authoritative
+    "is this account blocked RIGHT NOW" signal, so it is checked FIRST,
+    before circuit-breaker state and before the last_ok/last_fail race
+    — a cooling-off account cannot be healthy no matter what either of
+    those say, and this check must win regardless of how recently a
+    heartbeat (real or spurious) stamped `last_ok_at`.
+
+    IMPORTANT for future maintainers: if a new broker adapter type is
+    added that also lacks `_is_token_expired` (or any other method a
+    heartbeat recheck gates on), it must wire an equivalent "actively
+    blocked right now" signal into this same `is_cooling_off`/
+    `blocked_until` shape — do NOT reintroduce the false-green gap by
+    assuming a periodic heartbeat alone is a safe proxy for "healthy".
+    """
+    if entry.get("is_cooling_off"):
+        blocked_until = entry.get("blocked_until")
+        label = _ts_to_ist_label(blocked_until) if blocked_until else ""
+        reason = (
+            f"login blocked — cooling off, retry at {label}" if label
+            else "login blocked — cooling off"
+        )
+        return "red", reason, cb_state, cb_count, cb_until_iso
+
     last_ok   = entry.get("last_ok_at")   or 0.0
     last_fail = entry.get("last_fail_at") or 0.0
     last_msg  = entry.get("last_fail_msg") or ""
@@ -901,6 +941,10 @@ def _derive_account_health(entry: dict, now: float) -> tuple[str, str, str, int,
     for one _FETCH_HEALTH entry.
 
     State rules:
+      red    — `is_cooling_off` is true (an active Kite login cooloff —
+               see `_hlth_resolve_state`'s own docstring for the
+               2026-11-20 fix this closes; checked first, overrides
+               everything below)
       green  — last_ok_at is present AND within the last 5 min
                (circuit must be CLOSED)
       amber  — last_ok_at present but > 5 min ago (stale), OR never tried

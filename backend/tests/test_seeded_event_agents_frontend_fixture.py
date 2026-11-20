@@ -85,10 +85,15 @@ def test_fixture_has_all_13_agents_and_covers_both_log_and_any_shapes():
     # standalone `SEEDED_AGENTS` entries (their channels still resolve
     # identically via the 3 generic channel agents + `ALERT_EVENT_
     # DISPATCH` — see `test_alert_channel_collapse.py`'s own parity
-    # tests for both).
+    # tests for both). 2026-11-20 fix (SEED_VERSION 11 -> 12): 14 -> 15 —
+    # `broker-login-blocked-alert`, a brand-new standalone dedicated
+    # critical-tier agent closing the "persistent broker-login failure
+    # never escalates past Telegram" gap exposed by the ZG0790 CAPTCHA
+    # incident (see `event_agents.BROKER_LOGIN_BLOCKED_AGENT`'s own
+    # comment).
     with open(_FIXTURE_PATH, "r", encoding="utf-8") as f:
         fixture = json.load(f)
-    assert len(fixture) == 14
+    assert len(fixture) == 15
     has_plain_log = any("log" in a["conditions"] for a in fixture)
     has_any_of_logs = any("any" in a["conditions"] for a in fixture)
     has_nonempty_events = any(a["events"] for a in fixture)

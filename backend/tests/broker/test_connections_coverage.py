@@ -83,6 +83,7 @@ def _kite_conn_bare(account: str = "ZG_TEST") -> "KiteConnection":
     obj._conn_created_at  = None
     obj._login_blocked_until = 0.0
     obj._login_fail_streak   = 0
+    obj._blocked_alert_sent  = False
     obj.session           = MagicMock()
     obj.kite              = MagicMock()
     return obj

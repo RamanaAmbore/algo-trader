@@ -456,7 +456,26 @@ class InternalBrokerController(Controller):
     @get("/health/brokers")
     async def broker_health(self) -> dict[str, Any]:
         """Per-account fetch-health snapshot. Used by the navbar
-        'N of M brokers connected' badge in main API."""
+        'N of M brokers connected' badge in main API.
+
+        F1(b) (2026-11-20 incident) — each Kite account's live
+        login-cooloff state (`is_cooling_off: bool`,
+        `blocked_until: float | None`) is merged into its entry by
+        `fetch_health_snapshot()` itself via the shared
+        `broker_apis.merge_kite_cooloff_state()` helper — NOT duplicated
+        here. conn_service leaves `RAMBOQ_USE_CONN_SERVICE` unset in its
+        own process (see `broker_apis._use_conn_service()`'s own
+        comment), so `fetch_health_snapshot()`'s LOCAL branch runs here,
+        and that branch already calls the shared merge. `_FETCH_HEALTH`
+        itself has no concept of login cooloff — that state lives on the
+        in-process `KiteConnection` instance — so without this merge the
+        main API's health route has no way to know an account is
+        actively blocked and must infer it only from the
+        heartbeat/fetch-failure timing race (see F1(a) in
+        `_health_heartbeat` for why that race alone is unreliable). The
+        main API's own health route reads these two fields to force a
+        red state regardless of what that race would otherwise compute.
+        """
         from backend.brokers.broker_apis import fetch_health_snapshot
 
         return {"health": fetch_health_snapshot()}

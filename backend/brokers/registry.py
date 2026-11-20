@@ -391,6 +391,47 @@ class PriceBroker(Broker):
                     f"{broker_key} rate-limited (cool-off active)"
                 )
                 continue
+            # F7 (2026-11-20 incident, efficiency-only) — the exception
+            # fallthrough below already correctly falls over to the next
+            # broker when `get_kite_conn()` raises its login-cooloff
+            # `RuntimeError` (confirmed live: market-data correctly fell
+            # over throughout the incident). This is a pure efficiency
+            # cleanup so a cooling-off Kite account is skipped BEFORE even
+            # a short-circuited call into `get_kite_conn()`, matching the
+            # `_is_rate_limited()` proactive-skip pattern above, instead
+            # of discovering it reactively via the exception. `_conn` is
+            # the underlying `KiteConnection` a `KiteBroker` adapter wraps
+            # (`backend/brokers/adapters/kite.py`); other adapters (Dhan,
+            # Groww, or a `RemoteBroker` stub under conn-service cutover)
+            # have no `_conn.is_login_cooling_off`, so this is a no-op for
+            # them — `getattr(..., None)` + `callable()` guards that.
+            # Checked via `is True` (never bare truthiness) — a plain
+            # `MagicMock()` broker double used throughout this module's
+            # own test suite auto-vivifies `_conn.is_login_cooling_off`
+            # as a callable whose unconfigured return value is itself a
+            # truthy (but non-bool) MagicMock; `bool(...)` doesn't help,
+            # since `bool(MagicMock())` is also True. A real
+            # `KiteConnection.is_login_cooling_off()` always returns a
+            # genuine Python bool, so `is True` is the correct, narrow
+            # check (same convention used elsewhere in this codebase for
+            # the identical MagicMock auto-vivification hazard).
+            _conn = getattr(broker, "_conn", None)
+            _cooloff_fn = getattr(_conn, "is_login_cooling_off", None)
+            if callable(_cooloff_fn):
+                try:
+                    _cooling_off = _cooloff_fn() is True
+                except Exception:
+                    _cooling_off = False
+                if _cooling_off:
+                    last_exc = RuntimeError(
+                        f"{broker_key} Kite login cooling off — skipped "
+                        f"with no network call"
+                    )
+                    logger.debug(
+                        f"PriceBroker: {broker_key} skipped for {method_name} "
+                        f"— login cooling off"
+                    )
+                    continue
             try:
                 result = getattr(broker, method_name)(*args, **kwargs)
                 if _result_ok is not None and not _result_ok(result):

@@ -1084,6 +1084,17 @@ def test_generic_notice_agents_are_every_spec_in_the_shared_table():
     # `only_channel` filter cannot route to — so it remains the one
     # genuinely standalone `generic_notice` user besides `visitor-
     # report-alert`.
+    #
+    # 2026-11-20 (live ZG0790 CAPTCHA incident) — `broker-login-
+    # blocked-alert` deliberately does NOT join this set. It has its
+    # own dedicated renderer (`_render_broker_login_blocked`), not
+    # `generic_notice` — the real producer
+    # (`connections.py:_attempt_login_with_cooloff()`) never sets
+    # `extra["body"]`, which `generic_notice` requires; it carries the
+    # real Zerodha error text baked into the log MESSAGE itself.
+    # Reusing `generic_notice` here was tried and confirmed wrong
+    # (empty body, generic "Deploy out of sync" title) before this
+    # dedicated renderer was written.
     standalone_generic_notice_slugs = {
         spec["slug"] for spec in ea.SEEDED_AGENTS
         if any(isinstance(a, dict) and a.get("render") == "generic_notice" for a in spec.get("actions") or [])

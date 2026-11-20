@@ -40,6 +40,24 @@ def stub_ticker():
     return ticker
 
 
+@pytest.fixture(autouse=True)
+def _no_inactive_db_accounts():
+    """2026-11-20 (F9 hermeticity fix, advisor-driven correction) — this
+    file's `compute_firm_nav()` calls don't mock `_resolve_inactive_db_
+    accounts()`, so without this fixture they'd depend on whatever real
+    (or unreachable) database `shared_async_session` happens to resolve
+    to in the environment the suite runs in — today that DB read fails
+    and degrades to `[]`, but relying on "the DB happens to be
+    unreachable" is not a deterministic test. Forces the documented,
+    intentional default: no accounts are disabled, so these tests only
+    exercise what they actually mock."""
+    with patch(
+        "backend.api.algo.nav._resolve_inactive_db_accounts",
+        new=AsyncMock(return_value=[]),
+    ):
+        yield
+
+
 # ---------------------------------------------------------------------------
 # _accumulate_by_account — pure helper
 # ---------------------------------------------------------------------------

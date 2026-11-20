@@ -94,9 +94,11 @@ class TestIsBuiltinSeededEventAgent:
         # silent-drop gap. 2026-11-19 fold (SEED_VERSION 10 -> 11):
         # 16 -> 14 — `gtt-orphan-cancelled-alert`/`app-message-alert`
         # both fold into `_COLLAPSED_DETECTOR_SPECS` and are no longer
-        # standalone `SEEDED_AGENTS` entries.
-        assert len(_SEEDED_SLUGS) == 14
-        assert len(set(_SEEDED_SLUGS)) == 14  # no duplicate slugs
+        # standalone `SEEDED_AGENTS` entries. 2026-11-20 fix (SEED_VERSION
+        # 11 -> 12): 14 -> 15 — `broker-login-blocked-alert`, a brand-new
+        # standalone critical-tier agent (live ZG0790 CAPTCHA incident).
+        assert len(_SEEDED_SLUGS) == 15
+        assert len(set(_SEEDED_SLUGS)) == 15  # no duplicate slugs
 
     @pytest.mark.parametrize("slug", _SEEDED_SLUGS)
     def test_true_for_every_seeded_event_agent_slug(self, slug):

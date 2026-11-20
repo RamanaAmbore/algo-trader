@@ -726,6 +726,49 @@ def _render_agent_close_hold(rec: dict) -> tuple:
     return title, body, body
 
 
+def _render_broker_login_blocked(rec: dict) -> tuple:
+    """A broker login cooloff escalated to its own worst tier (F3,
+    2026-11-20 incident — ZG0790's Kite login was blocked by a Zerodha
+    CAPTCHA challenge for ~8.5 hours). Producer: `backend/brokers/
+    connections.py:KiteConnection._attempt_login_with_cooloff()`.
+
+    Dedicated renderer, NOT the generic `generic_notice`
+    (`_render_deploy_sync`) — that renderer reads its body from
+    `extra["body"]`, which this producer does not set (it is owned by
+    the broker layer, a separate parallel change, and carries the real
+    Zerodha error text baked into the LOG MESSAGE itself, not a
+    separate `body` extra key). Using `generic_notice` here would have
+    rendered an empty body with a generic "Deploy out of sync" title —
+    confirmed by running the real producer shape through it before this
+    fix. `rec["message"]` (the real formatted `%s`-substituted log
+    line, via `row_for()`/`tags_for()`) already carries the account,
+    the cooloff duration, and the Zerodha error text — it is NOT
+    re-masked here, because the central `_AccountMaskFilter`
+    (`log_store.py`, wired into `get_logger()`) already masked the
+    account code at enqueue time, and `mask_account()` is not
+    idempotent (re-masking an already-masked `Z#####` would corrupt it
+    further — see CLAUDE.md's "Double-mask guard").
+
+    No `agent_id`/`agent_name` in `extra` (a background connection-layer
+    process, not an agent action) — `trigger_known=_order_scope_
+    trigger_known(x)` resolves to False here, so the header reads
+    `Source: Broker login` with no fabricated "triggered..." phrase,
+    same convention as `_render_market_status`/`_render_deploy_sync`
+    for a genuinely agent-less system/process event.
+    """
+    from backend.shared.helpers.alert_utils import format_notification_header
+    x = rec.get("extra") or {}
+    header = format_notification_header(
+        x.get("agent_name"), x.get("agent_id"),
+        source_type=x.get("source_type") or "process",
+        source_name=x.get("source_name") or "Broker login",
+        trigger_known=_order_scope_trigger_known(x),
+    )
+    msg = clean_message(rec.get("message") or "")
+    body = f"{header}\n{msg}"
+    return "Broker login blocked", body, body
+
+
 def _render_order_cancelled(rec: dict) -> tuple:
     """A postback CANCELLED alert (2026-11-03 log+agent conversion of
     `orders.py:_opp_send_cancel_alert` — Wave 3, final wave, of the
@@ -888,6 +931,7 @@ register_renderer("breach")(_render_breach)
 register_renderer("market_status")(_render_market_status)
 register_renderer("agent_close_hold")(_render_agent_close_hold)
 register_renderer("order_cancelled")(_render_order_cancelled)
+register_renderer("broker_login_blocked")(_render_broker_login_blocked)
 register_renderer("gtt_not_accepted")(_render_gtt_not_accepted)
 register_renderer("order_correction")(_render_order_correction)
 
@@ -2194,6 +2238,38 @@ def _error_agent_self_alerted(agent, rec: dict, all_agents: "list | None" = None
     if getattr(agent, "slug", None) != ERROR_AGENT["slug"]:
         return False
     extra = rec.get("extra") or {}
+    # 2026-11-20 (F3 — live ZG0790 CAPTCHA incident). The producer
+    # (`backend/brokers/connections.py:_attempt_login_with_cooloff()`)
+    # logs at ERROR level with `"error"` among its tags (so `tags_for()`'s
+    # own stamp makes ERROR_AGENT's blanket catch-all structurally
+    # match this record too), and sets `extra["self_alerted"] = True`
+    # explicitly. The matching precedent is `app_message.py:
+    # _route_sinks()` — NOT chase's max-attempts exhaustion or
+    # `actions_live.py`'s close-position failure path (both of THOSE
+    # pair `self_alerted` with a SEPARATE, direct `send_order_failure_
+    # alert()` call outside the dispatch pipeline; the flag there only
+    # stops a second, redundant alert on top of one that already went
+    # out through a different channel). `app_message.py` has no such
+    # second path — a single logged record, consumed only by its own
+    # dedicated agent, exactly this producer's shape — so that is the
+    # one this follows.
+    #
+    # Operator-visible consequence of this convention, same as it
+    # already is for `app_message.py`: deactivating `BROKER_LOGIN_
+    # BLOCKED_AGENT` via the Automation page silences this alert
+    # entirely (an unconditional `self_alerted=True` is "trust the
+    # caller", not "verify a consumer exists") — a pre-existing,
+    # accepted risk class for this whole convention, not a new gap this
+    # fix introduces.
+    #
+    # An earlier draft of this fix added a dedicated, slug-specific
+    # `extra.get("alert_event") == "broker_login_blocked"` branch here,
+    # reasoning (incorrectly, at the time) that the producer could not
+    # set `self_alerted` itself because it lives in a different layer
+    # (`backend/brokers/`) from this file. That reasoning no longer
+    # applies — the producer sets the flag directly — so that branch
+    # was removed as dead code once confirmed unreachable (the bare
+    # `self_alerted` check below always short-circuits first).
     if bool(extra.get("self_alerted")):
         return True
     if rec.get("level") == "CRITICAL" and extra.get("alert_event"):
@@ -2788,8 +2864,72 @@ DRAFT_SWEEP_AGENT = {
     "actions": [{"type": "render", "render": "generic_notice"}],
 }
 
+BROKER_LOGIN_BLOCKED_AGENT = {
+    "slug": "broker-login-blocked-alert",
+    "name": "Broker login blocked",
+    "description": "A broker account's login cooloff escalated to its "
+                    "worst tier — reached max cooloff without a "
+                    "successful login. Fires once per account per "
+                    "escalation episode, not per retry.",
+    # 2026-11-20 fix (live incident — ZG0790's Kite login was blocked by
+    # a Zerodha account-level CAPTCHA challenge for ~8.5 hours; the only
+    # existing path, `ERROR_AGENT`'s blanket catch-all, is Telegram-only
+    # by deliberate design (`alert_routing._PER_SLUG_OVERRIDES["error-
+    # alert"]`), so a multi-hour real outage never escalated past
+    # Telegram). Producer: `backend/brokers/connections.py:
+    # _attempt_login_with_cooloff()` — logs through `_DISPATCH_LOGGER`
+    # (NOT the module's own skip-listed `logger`, see CLAUDE.md's "Alert
+    # message format" entry for why that distinction matters) with
+    # `source_type="process"`, `source_name="Broker login"`,
+    # `alert_event="broker_login_blocked"`, `action_required=True`, and
+    # the real captured Zerodha error text (F2) baked into the log
+    # MESSAGE itself (not a separate `extra["body"]` key) — process
+    # scoped, no `agent_id`. Rendered via the DEDICATED
+    # `_render_broker_login_blocked` (NOT the generic `generic_notice`
+    # — that renderer reads `extra["body"]`, which this producer never
+    # sets, so it would have rendered an empty body under a generic
+    # "Deploy out of sync" title; confirmed by exercising the real
+    # producer shape before this fix). The producer logs at ERROR level
+    # (owned by the broker layer, a separate parallel change) — `tags_
+    # for()`'s own level-based "error" stamp means `ERROR_AGENT`'s
+    # blanket catch-all (`tag="error", min_level="ERROR"`) ALSO
+    # structurally matches this record. The producer sets `extra[
+    # "self_alerted"] = True` explicitly (same convention as
+    # `app_message.py:_route_sinks()` — a single logged record with no
+    # separate direct-send path, NOT chase's/`actions_live.py`'s own
+    # usage of the same flag, which pairs it with a SEPARATE direct
+    # `send_order_failure_alert()` call outside this dispatch pipeline
+    # entirely — see `_error_agent_self_alerted()`'s own comment for the
+    # distinction), so `_error_agent_self_alerted()`'s existing, generic
+    # check already prevents the double-fire — no dedicated-agent-
+    # specific branch was needed there. Consequence: deactivating this
+    # agent via the Automation page silences the alert entirely, the
+    # same pre-existing, accepted tradeoff `app_message.py` already has.
+    "conditions": {"log": {"tag": "alert", "min_level": "WARNING",
+                           "where": {"alert_event": "broker_login_blocked"}}},
+    "priority": "critical",
+    # `events` deliberately omitted — channel list comes from
+    # `alert_routing._PER_SLUG_OVERRIDES["broker-login-blocked-alert"]`
+    # (telegram + ntfy + email, all `gate: False` — same convention as
+    # `order-failure-alert`: this fires rarely, once per account per
+    # worst-tier cooloff escalation, and is serious by construction, so
+    # it must reach every channel regardless of capability-enabled
+    # toggles). `action_required=True` on the producer's log record ALSO
+    # forces the binary ntfy/email gates (`_apply_action_required_ntfy_
+    # gate`/`_apply_action_required_email_gate`) as belt-and-suspenders
+    # on top of the explicit channel list above — harmless overlap, not
+    # a conflict: both paths converge on the same three channels.
+    "actions": [{"type": "render", "render": "broker_login_blocked"}],
+}
 
-SEED_VERSION = 11
+
+SEED_VERSION = 12
+# 2026-11-20 (SEED_VERSION 11 -> 12) — inserts the new
+# `BROKER_LOGIN_BLOCKED_AGENT` (slug `broker-login-blocked-alert`), a
+# dedicated critical-tier agent for a broker login cooloff escalating to
+# its worst tier. See the agent's own comment above for the live
+# incident this fixes. New slug, so `seed_action()` returns "insert"
+# unconditionally — no migration needed for this bump alone.
 # 2026-11-19 (SEED_VERSION 10 -> 11) — folds `GTT_ORPHAN_CANCELLED_AGENT`
 # and `APP_MESSAGE_AGENT` into `_COLLAPSED_DETECTOR_SPECS`, removing both
 # from `SEEDED_AGENTS`. This changes the 3 generic channel agents'
@@ -3129,7 +3269,7 @@ SEEDED_AGENTS = (
     ERROR_AGENT, DEPLOY_SYNC_AGENT, RICH_ALERT_AGENT, SUMMARY_AGENT, BREACH_AGENT,
     VISITOR_REPORT_AGENT, UNROUTED_ALERT_AGENT, MARKET_STATUS_ALERT_AGENT,
     ORDER_CANCELLED_AGENT, AGENT_CLOSE_HOLD_ALERT_AGENT,
-    DRAFT_SWEEP_AGENT,
+    DRAFT_SWEEP_AGENT, BROKER_LOGIN_BLOCKED_AGENT,
     TELEGRAM_CHANNEL_AGENT, NTFY_CHANNEL_AGENT, EMAIL_CHANNEL_AGENT,
 )
 # `GTT_ORPHAN_CANCELLED_AGENT`/`APP_MESSAGE_AGENT` are deliberately absent

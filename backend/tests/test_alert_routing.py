@@ -221,9 +221,26 @@ def test_frozen_oracle_covers_every_migrated_agent_exactly():
             event_agents.GTT_ORPHAN_CANCELLED_AGENT["slug"],
             event_agents.DRAFT_SWEEP_AGENT["slug"],
             event_agents.APP_MESSAGE_AGENT["slug"],
+            event_agents.BROKER_LOGIN_BLOCKED_AGENT["slug"],
         )
     }
     assert migrated_slugs == set(_FROZEN_ORACLE)
+
+
+def test_broker_login_blocked_agent_resolves_to_telegram_ntfy_email_gate_false():
+    """2026-11-20 fix (live ZG0790 CAPTCHA incident) — confirms the new
+    agent's per-slug override resolves to all three channels, each with
+    `gate: False` (must reach the operator regardless of
+    capability-enabled toggles — same convention as `order-failure-alert`),
+    and ntfy carries `priority: "urgent"` (rare, serious by construction)."""
+    spec = event_agents.BROKER_LOGIN_BLOCKED_AGENT
+    resolved = alert_routing.resolve_channels(
+        name=spec["slug"], priority=spec.get("priority"), agent_events=spec.get("events", []))
+    assert resolved == [
+        {"channel": "telegram", "enabled": True, "gate": False},
+        {"channel": "ntfy", "enabled": True, "gate": False, "priority": "urgent"},
+        {"channel": "email", "enabled": True, "gate": False},
+    ]
 
 
 def test_user_registered_agent_resolves_to_telegram_and_ntfy_high():

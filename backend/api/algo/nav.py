@@ -545,7 +545,33 @@ def _accumulate_by_account(df, out: dict[str, float], from_df_fn, *extra_args) -
 
 
 async def _resolve_conn_keys() -> list[str]:
-    """Return known broker account keys, falling back to conn_service when local is empty."""
+    """Return known broker account keys, falling back to conn_service when local is empty.
+
+    2026-11-20 fix (F9 — live incident: ZG0790 was `is_active=False` for
+    most of a day, and NAV silently omitted it entirely — not flagged
+    understated, just absent, because this function only ever read
+    conn_service's/`Connections()`'s CURRENTLY-ACTIVE registry, which
+    excludes a disabled account by construction). This function's
+    result (`expected_accounts`) feeds `_recover_missing_margins_
+    accounts()` (via `_fetch_funds_phase`), the ONE phase with a fully
+    reliable "expected but never seen" detector (see that function's
+    own docstring for why margins specifically is boundary-agnostic
+    here, unlike positions/holdings). A disabled account never even
+    being IN `expected_accounts` meant that detector could never flag
+    it — "missing-vs-zero" only works when the account is expected in
+    the first place.
+
+    Fix: union the live registry with EVERY row in the `broker_accounts`
+    DB table, active or not — mirroring the existing missing-vs-zero
+    convention this file already applies to individual fields (see
+    `_UNDERSTATED_TAG`'s own docstring): a known account that
+    contributes no data is a genuine gap, not a confirmed-empty leg,
+    regardless of whether it happens to be disabled right now. The DB
+    read is best-effort — any failure (DB down, import error) degrades
+    to the pre-fix registry-only behavior rather than raising, since a
+    best-effort "catch more gaps" check must never itself become a new
+    way for NAV computation to fail.
+    """
     from backend.brokers.connections import Connections
     keys = list(Connections().conn.keys())
     if not keys:
@@ -553,7 +579,73 @@ async def _resolve_conn_keys() -> list[str]:
         if is_cutover_on():
             from backend.brokers.client.remote_broker import list_remote_accounts
             keys = [r["account"] for r in list_remote_accounts() if r.get("account")]
-    return keys
+    try:
+        from backend.api.database import shared_async_session
+        from backend.api.models import BrokerAccount
+        from sqlalchemy import select as _select
+        async with shared_async_session() as _sess:
+            rows = (await _sess.execute(_select(BrokerAccount.account))).scalars().all()
+        db_keys = [str(a) for a in rows if a]
+        merged = list(keys)
+        for k in db_keys:
+            if k not in merged:
+                merged.append(k)
+        return merged
+    except Exception as exc:
+        logger.warning(f"nav: _resolve_conn_keys DB cross-reference failed ({exc}) — "
+                        f"falling back to live-registry-only accounts")
+        return keys
+
+
+async def _resolve_inactive_db_accounts() -> list[str]:
+    """Return every `broker_accounts.account` with `is_active = False`.
+
+    2026-11-20 fix (F9, second half — advisor-driven correction; live
+    incident: ZG0790 was `is_active=False` for most of a day). The
+    `_resolve_conn_keys()` fix above closes the gap for MARGINS only
+    (the one leg with an unambiguous "expected but never seen"
+    detector — see `_recover_missing_margins_accounts`'s own
+    docstring). Once that margins leg has a real LKG for a disabled
+    account (the realistic post-F4 steady state — `_preload_db_lkg_
+    cache` now covers `kind='funds'` too), the account is correctly
+    merged into `accounts_in`, so a bare "is this account present at
+    all" check can no longer tell positions/holdings are silently
+    missing for it.
+
+    This function closes THAT gap directly, keyed on `is_active`
+    rather than on any registry-vs-DB diff: a disabled account is
+    categorically never attempted by `fetch_positions()`/
+    `fetch_holdings()` (conn_service's registry does not even contain
+    it), so its positions/holdings legs are UNKNOWN, not a confirmed
+    zero — this is the same distinction `_recover_missing_margins_
+    accounts`'s own docstring draws for margins, applied here to the
+    two legs that have no per-account presence signal of their own.
+
+    Deliberately keyed on the DB's own `is_active` column, NOT on a
+    diff against `Connections().conn`/`list_remote_accounts()`: the
+    live registry can legitimately be transiently empty (e.g. a UDS
+    blip during a conn_service restart — see
+    `_loaded_accounts()`'s own `_last_known_remote_accounts` fallback
+    comment), and a registry-diff-based check would then flag EVERY
+    account as understated, not just the genuinely disabled one.
+    `is_active` is a stable DB fact, not a live-registry snapshot.
+
+    Best-effort — any failure (DB down, import error) degrades to an
+    empty list, same fail-safe convention as `_resolve_conn_keys()`.
+    """
+    try:
+        from backend.api.database import shared_async_session
+        from backend.api.models import BrokerAccount
+        from sqlalchemy import select as _select
+        async with shared_async_session() as _sess:
+            rows = (await _sess.execute(
+                _select(BrokerAccount.account).where(BrokerAccount.is_active.is_(False))
+            )).scalars().all()
+        return [str(a) for a in rows if a]
+    except Exception as exc:
+        logger.warning(f"nav: _resolve_inactive_db_accounts failed ({exc}) — "
+                        f"skipping the disabled-account understated check this cycle")
+        return []
 
 
 def _recover_missing_margins_accounts(
@@ -1011,6 +1103,11 @@ async def compute_firm_nav() -> dict:
     # specifically needs this boundary-agnostic expected-vs-actual
     # check rather than relying on attrs alone).
     expected_accounts = await _resolve_conn_keys()
+    # F9, second half — see `_resolve_inactive_db_accounts()`'s own
+    # docstring. Resolved once, up front, alongside `expected_accounts`
+    # (both are cheap DB reads, not broker round-trips) so it's
+    # available below regardless of which phase(s) actually ran.
+    _inactive_db_accounts = await _resolve_inactive_db_accounts()
     # Fire all three broker phases concurrently instead of sequentially —
     # each phase does its own broker round-trip (funds/positions/holdings),
     # and running them one-after-another made compute_firm_nav() pay the
@@ -1031,6 +1128,86 @@ async def compute_firm_nav() -> dict:
     )
 
     nav = cash_total + positions_mtm + holdings_mtm
+
+    # 2026-11-20 fix (F9, final safety net — live incident: ZG0790 was
+    # `is_active=False` for most of a day, and NAV silently omitted it
+    # entirely with no understated flag at all).
+    #
+    # `expected_accounts` now includes every DB-known `broker_accounts`
+    # row, active or not (see `_resolve_conn_keys()`'s own docstring).
+    # The margins/funds phase already reacts to that expansion via
+    # `_recover_missing_margins_accounts()` — margins is the ONE leg
+    # where "expected but absent" is unambiguous (every account always
+    # produces exactly one row on a healthy fetch; see that function's
+    # own docstring), so a disabled account with a real funds LKG lands
+    # as an informational "degraded — served last-known-good" entry,
+    # correctly NOT understated, and is merged into `accounts_in`.
+    #
+    # This check is the layer ABOVE that: a DB-known account that
+    # contributed NOTHING AT ALL — not even a margins LKG substitute
+    # (a cold account, or one that was never fetched before being
+    # disabled) — would otherwise vanish from `accounts_in` entirely,
+    # exactly reproducing the live incident with zero signal. Checking
+    # `accounts_in` (not `pos_by_acct`/`hold_by_acct` individually) is
+    # deliberate: positions and holdings CAN legitimately be flat/empty
+    # for a healthy, active account (same reasoning
+    # `_recover_missing_margins_accounts`'s own docstring gives for why
+    # ITS check is scoped to margins only), so a per-leg "not in
+    # pos_by_acct" test would false-positive on every genuinely flat
+    # account. `accounts_in` has no such ambiguity: an account is added
+    # to it only when SOME phase actually produced a row for it
+    # (healthy fetch OR a real LKG substitute) — an account absent from
+    # it contributed literally nothing.
+    #
+    # This check alone is NOT sufficient once margins has a real LKG for
+    # a disabled account (the realistic post-F4 steady state): margins'
+    # own recovery merges that account into `accounts_in`, so it no
+    # longer reads as "truly absent" here even though its positions/
+    # holdings legs are still silently zero. See the dedicated,
+    # `is_active`-keyed check immediately below, which closes that case
+    # directly instead of relying on `accounts_in` membership.
+    if expected_accounts:
+        _truly_absent = sorted(set(expected_accounts) - set(accounts_in) - {"TOTAL"})
+        _already_flagged = {
+            e for e in errors if e.startswith(_UNDERSTATED_TAG)
+        }
+        for _acct in _truly_absent:
+            # Skip when the margins-specific path already produced an
+            # UNDERSTATED entry naming this exact account (e.g. margins
+            # itself had no LKG either) — both checks would otherwise
+            # report the identical fact twice in `note`. A dedicated
+            # per-phase entry (margins, positions, etc. naming this
+            # account) always wins; this generic entry is the fallback
+            # for when NOTHING else already said so.
+            if any(_acct in e for e in _already_flagged):
+                continue
+            errors.append(
+                f"{_UNDERSTATED_TAG}account: {_acct} contributed no data "
+                f"(cash/positions/holdings) to this NAV computation"
+            )
+
+    # F9, second half (advisor-driven correction) — a disabled account's
+    # positions/holdings are UNKNOWN, not a confirmed zero, regardless
+    # of whether margins happened to find a real LKG for it (which would
+    # otherwise mask the gap above by merging the account into
+    # `accounts_in`). Keyed directly on the DB's own `is_active` column
+    # via `_resolve_inactive_db_accounts()` — see that function's own
+    # docstring for why a registry-diff-based check would false-positive
+    # during a transient UDS blip, and why margins/positions/holdings
+    # genuinely need separate treatment here (margins has an unambiguous
+    # per-account presence signal; positions/holdings do not). Fires
+    # EVERY cycle an account stays disabled — operator-visible
+    # consequence: `write_nav_snapshot()` skips for up to the retry-grace
+    # window, then force-writes labeled UNDERSTATED, for as long as that
+    # account remains inactive. This is the plan's own explicit ask
+    # ("mark the NAV write understated=True when any known account —
+    # active or not — has no data contributing to the total"), not an
+    # accidental side effect.
+    for _acct in sorted(a for a in _inactive_db_accounts if a and a != "TOTAL"):
+        errors.append(
+            f"{_UNDERSTATED_TAG}account: {_acct} disabled — "
+            f"positions/holdings not fetched"
+        )
 
     by_account: dict[str, dict[str, float]] = {}
     for acct in accounts_in:

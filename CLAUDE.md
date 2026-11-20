@@ -467,6 +467,142 @@ it affects.
   account. It must never vanish silently or crash the batch. The conn_service wire must carry the same
   failure signal an in-process call would.
 
+**A blocked Kite login must show red, say why, escalate once and recover on re-enable — follow-up to
+the six broker-resilience fixes above (2026-11-20; uncommitted this session)** — Live incident:
+ZG0790's Kite login was blocked by a Zerodha account-level CAPTCHA challenge for ~8.5 hours. The login
+cooloff from `78ee0b1e` was in place, but the surfaces around it were wrong. The health chip stayed
+green, the only error text was a bare "400 Bad Request", no alert escalated past Telegram, and the
+Alerts tab flooded. Each fix below closes one of those gaps.
+- **The health chip stays red during a cooloff.** `_health_heartbeat()`
+  ([app.py:364](backend/brokers/service/app.py#L364)) stamped `record_session_ok()` every 90s for every
+  Kite account. `KiteConnection` has no `_is_token_expired()`, so the existing token gate never ran. The
+  heartbeat now checks `is_login_cooling_off() is True` first and skips the stamp
+  ([app.py:410-431](backend/brokers/service/app.py#L410)). The conn_service health payload carries
+  `is_cooling_off` and `blocked_until` per Kite account. `merge_kite_cooloff_state()`
+  ([broker_apis.py:1280](backend/brokers/broker_apis.py#L1280)) adds them, and `fetch_health_snapshot()`
+  calls it ([broker_apis.py:1332](backend/brokers/broker_apis.py#L1332)).
+  `_hlth_resolve_state()` ([health.py:866](backend/api/routes/health.py#L866)) returns `red` on
+  `is_cooling_off` before the circuit-breaker check and before the last-ok/last-fail race. A cooling-off
+  account cannot be green, whatever a recent heartbeat says.
+- **A failed login no longer advances the connection timestamp.** `get_kite_conn()`
+  ([connections.py:703](backend/brokers/connections.py#L703)) used to stamp `_conn_created_at` before
+  the login attempt. One failed login therefore made every later call take the fast path. That path
+  returned the stale, tokenless `self.kite` and skipped the cooloff gate for the rest of
+  `CONN_RESET_HOURS`. Per the method's own docstring, this is the likely source of the 436 failed
+  quote and historical calls in the incident. The new `_mark_conn_fresh()`
+  ([connections.py:673](backend/brokers/connections.py#L673)) runs only on confirmed success, at
+  [connections.py:746](backend/brokers/connections.py#L746) (cached token still valid) and
+  [connections.py:760](backend/brokers/connections.py#L760) (fresh login succeeded).
+- **Zerodha's real error text is captured.** `_extract_http_error_message()`
+  ([connections.py:342](backend/brokers/connections.py#L342)) resolves in order: the JSON `message` in
+  `e.response`, then the first 200 characters of the raw body, then `str(e)`. It feeds the
+  `[KITE-LOGIN-COOLOFF]` line and the blocked-alert record. The `retry_kite_conn` exhaustion line now
+  includes the last exception's text ([decorators.py:89-93](backend/shared/helpers/decorators.py#L89)),
+  so the captured message reaches the operator and is not hidden by a generic wrapper phrase.
+- **One escalation alert per blocked episode, not per retry.** When the cooloff reaches its 1800s cap
+  ([connections.py:846](backend/brokers/connections.py#L846)), `_attempt_login_with_cooloff()` logs one
+  ERROR through `_DISPATCH_LOGGER`. It carries `alert_event="broker_login_blocked"`,
+  `self_alerted=True`, `action_required=True`, `source_name="Broker login"` and the account already
+  masked in `extra`. The one-shot flag `_blocked_alert_sent`
+  ([connections.py:539](backend/brokers/connections.py#L539)) is set there and cleared on the next
+  successful login ([connections.py:891](backend/brokers/connections.py#L891)).
+  - The seeded `BROKER_LOGIN_BLOCKED_AGENT` (slug `broker-login-blocked-alert`, critical tier,
+    [event_agents.py:2867](backend/api/algo/event_agents.py#L2867)) renders through the dedicated
+    `_render_broker_login_blocked` ([event_agents.py:729](backend/api/algo/event_agents.py#L729)). It is
+    not the generic `generic_notice` renderer, because that one reads `extra["body"]`, which this
+    producer does not set. `SEED_VERSION` goes 11 to 12
+    ([event_agents.py:2926](backend/api/algo/event_agents.py#L2926)).
+  - Channels come from `_PER_SLUG_OVERRIDES` ([alert_routing.py:279](backend/api/algo/alert_routing.py#L279)):
+    Telegram, ntfy at urgent priority, and email, all `gate: False`. Routing through `error-alert` was
+    rejected because that catch-all is Telegram-only by design, so an 8.5-hour outage never escalated.
+  - Deactivating the agent silences this alert. That is the same accepted tradeoff `app_message.py` has.
+- **A dedicated exception type, and retries stop for a known cooloff.** `KiteLoginCoolingOff`
+  ([errors.py:47](backend/brokers/errors.py#L47)) is a `RuntimeError` subclass. The cooloff gate in
+  `get_kite_conn()` raises it ([connections.py:755](backend/brokers/connections.py#L755)) instead of a
+  bare `RuntimeError`. `retry_kite_conn` catches it first. It makes one attempt, sleeps for nothing, and
+  logs at DEBUG ([decorators.py:52-69](backend/shared/helpers/decorators.py#L52)). Before this, every
+  exhausted data fetch during a cooloff logged ERROR, which flooded the Alerts tab. Every other
+  exception still gets 3 attempts and an ERROR on exhaustion, unchanged.
+- **One shared backoff formula, with a base-value trap pinned by tests.**
+  `exponential_backoff_seconds()` ([backoff.py:30](backend/shared/helpers/backoff.py#L30)) computes
+  `min(base * 2**attempt, cap)`. A negative attempt is treated as 0. The login cooloff calls it with
+  `base=120.0, cap=1800.0` ([connections.py:797](backend/brokers/connections.py#L797)). `retry_kite_conn`
+  calls it with `base=1.0, cap=30.0` ([decorators.py:108](backend/shared/helpers/decorators.py#L108)).
+  The base is 1.0, not 2.0. The old `min(2 ** attempt, 30)` is base 1. Base 2.0 would double every value
+  and is not the same curve. The table-driven parity tests are in
+  [test_backoff.py](backend/tests/broker/test_backoff.py).
+- **The registry skips a cooling-off Kite broker before calling it.** `PriceBroker._try()`
+  ([registry.py:418-422](backend/brokers/registry.py#L418)) checks `_conn.is_login_cooling_off() is True`
+  and moves to the next broker. It uses `is True`, not truthiness, for the same `MagicMock` reason as
+  the heartbeat. Non-Kite brokers have no `_conn`, so the check is a no-op for them.
+  - *Known limitation.* Under conn_service cutover (prod and dev), the registry holds `RemoteBroker`
+    stubs with no `_conn` attribute, so this skip is inert. It is correct for direct-mode brokers only.
+- **Funds and margins survive a restart in the DB LKG tier, but the path is inert today.**
+  `_preload_db_lkg_cache()` ([background.py:2602](backend/api/background.py#L2602)) now also loads
+  `kind='funds'` rows, filtered to `exchange='EQUITY'`
+  ([background.py:2698](backend/api/background.py#L2698)). The EQUITY-only filter is deliberate. Mapping
+  commodity figures onto an equity-shaped margins frame would show wrong numbers.
+  - *Known limitation, open follow-up, not fixed.* `daily_snapshot.py` writes both segments under the
+    same sentinel `symbol='__seg__'`, so the `daily_book` unique key collapses them. Every `kind='funds'`
+    row in prod is `COMMODITY`, and zero EQUITY rows exist. The preload therefore returns nothing until
+    the writer collision is fixed. Fix the writer, do not loosen the filter.
+- **The audit log no longer decodes gzipped response bodies as text.** `AuditMiddleware` sits outside
+  Litestar's `CompressionMiddleware`, so its send wrapper saw gzipped bytes.
+  `_audit_make_send_wrapper()` now captures `content-encoding`
+  ([audit.py:277](backend/api/audit.py#L277)). `_audit_decode_body()`
+  ([audit.py:291](backend/api/audit.py#L291)) gunzips before parsing. A truncated stream returns empty
+  bytes, so the summary is omitted, never stored as corrupt text. This matches the root cause in
+  `_audit_make_send_wrapper`'s own docstring. About 414 `CharacterNotInRepertoireError` failures hit
+  `audit_log` on the incident day.
+- **NAV marks itself understated for a disabled account.** `_resolve_conn_keys()`
+  ([nav.py:547](backend/api/algo/nav.py#L547)) now cross-references the full `broker_accounts` table. It
+  no longer reads only conn_service's live registry, which omits disabled accounts. A new check,
+  `_resolve_inactive_db_accounts()` ([nav.py:600](backend/api/algo/nav.py#L600)), keys on
+  `BrokerAccount.is_active.is_(False)`. It flags understated when margins has an LKG for a disabled
+  account but positions and holdings were never fetched. Margins alone finding data would otherwise
+  mask the gap.
+- **Re-enabling an account forces an unconditional books refresh.** `update_account()`
+  ([brokers.py:549](backend/api/routes/brokers.py#L549)) captures `was_active` before the write. On a
+  real False-to-True transition ([brokers.py:568](backend/api/routes/brokers.py#L568)) it spawns
+  `_force_refresh_one_account_after_reenable()`
+  ([brokers.py:270](backend/api/routes/brokers.py#L270)). The task calls the zero-arg forms:
+  `fetch_positions(force_refresh=True)`, `fetch_holdings()` after `_raw_cache_invalidate("holdings")`,
+  and `fetch_margins(force_refresh=True)`. The single-account branch is not used, because it bypasses
+  the shared cache that every route reads. The refresh covers all accounts, not only the re-enabled
+  one, and it bypasses the closed-hours gate on purpose. This is a one-shot operator action, not
+  routine polling.
+- **The enable/disable confirm matches the app's dialogs.** `BrokerHealthBadge.svelte`
+  ([:383](frontend/src/lib/BrokerHealthBadge.svelte#L383)) uses `ConfirmModal` in place of native
+  `confirm()`. It is pinned to `--z-confirm-over-drawer` = 20050, a new tier in the documented ladder
+  in [app.css](frontend/src/app.css#L321). The tier sits above the drawer tier (20001) and below the
+  cheatsheet (20200).
+- **A failed health poll shows a stale note.** `_pollBrokerHealth()`
+  ([stores.js:1463](frontend/src/lib/stores.js#L1463)) keeps the last good accounts on failure and sets
+  `pollStale`. `pollStaleSince` is kept with `??`, so it records the first failure, not a timestamp that
+  creeps forward on each retry. The popup footer shows `.bh-footer-stale`
+  ([BrokerHealthBadge.svelte:366-371](frontend/src/lib/BrokerHealthBadge.svelte#L366)).
+- **"Invalid `api_key` or `access_token`" is an auth failure.** The phrase is in the lowercased
+  classifier list in [auth_error.py:22](backend/shared/helpers/auth_error.py#L22). The event is recorded
+  as `auth_fail`, not `fetch_fail`. The classifier lives in `auth_error.py`, not `broker_apis.py`.
+- **ZG0790 re-enabled on prod.** Verified through the live health route, not only the DB flag:
+  `state: green`, a fresh `last_good_at`, and `consecutive_fail_count: 0`.
+- *Deploy coupling.* `connections.py`, `registry.py`, `errors.py`, `broker_apis.py` and the conn_service
+  files take effect only after a PROD deploy that sets `CONN_TOUCHED`. Dev does not pick them up. See
+  Things to Avoid.
+- *Not covered by a located test.* No test file was found by name for the `ConfirmModal` swap, the
+  `--z-confirm-over-drawer` tier, the stale-poll footer, the registry cooloff skip in `_try()`, or the
+  `retry_kite_conn` fail-fast branch. The frontend items need a Playwright spec under the project's
+  coverage rule. This is open work.
+- Tests (located): `broker/test_backoff.py`; `broker/test_kite_login_cooloff.py` (modified);
+  `broker/test_kite_login_error_message.py`; `broker/test_broker_login_cooloff_surface.py`;
+  `broker/test_funds_lkg_preload.py`; `test_broker_login_blocked_alert.py`;
+  `test_health_login_cooloff_override.py`; `test_audit_gzip_encoding_fix.py`;
+  `test_nav_resolve_conn_keys_db_crossref.py`; `test_broker_update_account_force_refresh.py`.
+- Invariant: a blocked login is never shown as healthy, and its real cause reaches the operator. It
+  escalates once per episode through a dedicated, routed alert. Retries never hammer a known cooloff.
+  A re-enabled account is refreshed on the spot. A funds or margins gap is always reported, never
+  silently passed as current.
+
 **Execution mode resets to LIVE on admin/designated prod login (2026-11-02; commit `c7e66df7`)** — A
 forgotten Paper or Shadow toggle from a prior session no longer carries into a new one. On a successful
 prod `login` for role `admin` or `designated` ([`auth.py:855`](backend/api/routes/auth.py#L855)), the

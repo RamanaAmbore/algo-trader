@@ -78,6 +78,35 @@ class TestIsAuthErrorStr:
         assert broker_fn("dh-906")
         assert not broker_fn("timeout")
 
+    def test_kite_invalid_api_key_or_access_token_is_auth_fail(self):
+        """F8 (2026-11-20 incident audit) — Kite's literal message
+        "Invalid `api_key` or `access_token`." was previously classified
+        as fetch_fail (no existing hint matched the backtick/underscore
+        form), mislabeling a real auth failure in
+        `broker_connection_events`. Must now classify as auth_fail."""
+        from backend.shared.helpers.auth_error import is_auth_error_str
+
+        assert is_auth_error_str("Invalid `api_key` or `access_token`."), (
+            "Kite's exact 'Invalid `api_key` or `access_token`.' message "
+            "must classify as an auth error"
+        )
+        # Case-insensitive, and matches even embedded in a longer message.
+        assert is_auth_error_str(
+            "TokenException: invalid `api_key` or `access_token`. please login again"
+        )
+
+    def test_broker_apis_etype_classification_for_invalid_api_key_message(self):
+        """End-to-end: `_record_fetch`'s `_etype` selection (the actual
+        consumer of `is_auth_error_str`) must select 'auth_fail', not
+        'fetch_fail', for this exact message."""
+        from backend.shared.helpers.auth_error import is_auth_error_str
+
+        error = "Invalid `api_key` or `access_token`."
+        etype = "auth_fail" if is_auth_error_str(error) else "fetch_fail"
+        assert etype == "auth_fail", (
+            f"expected 'auth_fail' classification for {error!r}, got {etype!r}"
+        )
+
 
 class TestDecoratorRetryOnAuthError:
     """Test @for_all_accounts decorator retry logic on auth errors."""

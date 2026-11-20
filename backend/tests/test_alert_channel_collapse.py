@@ -106,15 +106,19 @@ def test_seeded_agents_count_is_13_not_23():
     # `alert_utils._send_telegram_info()` directly); count is now 15.
     # 2026-11-19 — `gtt-orphan-cancelled-alert`/`app-message-alert` fold
     # into `_COLLAPSED_DETECTOR_SPECS` (count was briefly 16 after
-    # `app-message-alert`'s own addition); count is back to 14.
-    assert len(ea.SEEDED_AGENTS) == 14
+    # `app-message-alert`'s own addition); count is back to 14. 2026-11-20
+    # fix — `broker-login-blocked-alert` is a brand-new standalone
+    # critical-tier agent (live ZG0790 CAPTCHA incident, see
+    # `event_agents.BROKER_LOGIN_BLOCKED_AGENT`'s own comment); count is
+    # now 15.
+    assert len(ea.SEEDED_AGENTS) == 15
     slugs = {s["slug"] for s in ea.SEEDED_AGENTS}
     assert slugs == {
         "error-alert", "deploy-sync-alert", "agent-alert-rich", "market-summary",
         "cycle-breach-alert", "visitor-report-alert", "unrouted-alert-catch-all",
         "alert-channel-telegram", "alert-channel-ntfy", "alert-channel-email",
         "market-status-alert", "agent-close-hold-alert", "order-cancelled-alert",
-        "draft-sweep-alert",
+        "draft-sweep-alert", "broker-login-blocked-alert",
     }
 
 

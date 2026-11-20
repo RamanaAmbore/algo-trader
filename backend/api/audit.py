@@ -241,13 +241,42 @@ def _audit_ensure_request_id(scope: Scope) -> str:
 
 
 def _audit_make_send_wrapper(send: Send, request_id: str, captured: dict):
-    """Return an ASGI send wrapper that records status + buffers body chunks."""
+    """Return an ASGI send wrapper that records status + buffers body chunks.
+
+    2026-11-20 fix (F5 — `audit_log` writes failing with
+    `CharacterNotInRepertoireError`, 414 times in one day, across every
+    mutating admin action). Root cause: `AuditMiddleware` is registered
+    in `app.py`'s `middleware=[...]` list, which Litestar's own
+    `build_route_middleware_stack()` applies OUTSIDE (further from the
+    route handler than) the app-wide `compression_config`
+    (`CompressionMiddleware`, gzip, `app.py`'s own comment on that
+    config). That means this `send` wrapper — being outer — intercepts
+    `http.response.body` messages AFTER `CompressionMiddleware` has
+    already gzip-compressed them (for any response >= `minimum_size`,
+    default 500 bytes, when the client sent `Accept-Encoding: gzip` —
+    true for essentially every real browser request), with
+    `Content-Encoding: gzip` already set on the `http.response.start`
+    headers. `_audit_parse_summary()` used to decode those raw
+    compressed bytes as UTF-8 text unconditionally — garbage/invalid
+    text for the `summary` TEXT column, which Postgres rejects with
+    `character_not_in_repertoire` (SQLSTATE 22021).
+
+    Fix: capture the response's own `Content-Encoding` header value
+    here (alongside status/body, the same message this wrapper already
+    reads), so the caller (`AuditMiddleware.handle()`) can gunzip the
+    buffered bytes before `_audit_parse_summary()` ever sees them — see
+    `_audit_decode_body()` below.
+    """
     async def _send_wrapper(message):
         if message.get("type") == "http.response.start":
             captured["status"] = int(message.get("status") or 0)
             # Inject the X-Request-ID header so the client can
             # correlate the request to a specific audit row.
             headers = list(message.get("headers") or [])
+            for k, v in headers:
+                if k.lower() == b"content-encoding":
+                    captured["content_encoding"] = v.decode("latin-1", errors="replace").lower()
+                    break
             headers.append((b"x-request-id", request_id.encode("ascii")))
             message["headers"] = headers
         elif message.get("type") == "http.response.body":
@@ -257,6 +286,31 @@ def _audit_make_send_wrapper(send: Send, request_id: str, captured: dict):
                 captured["body_len"] += len(body)
         await send(message)
     return _send_wrapper
+
+
+def _audit_decode_body(body_bytes: bytes, content_encoding: Optional[str]) -> bytes:
+    """Gunzip `body_bytes` when the response was actually gzip-encoded.
+
+    This is the fix for F5 — see `_audit_make_send_wrapper`'s own
+    docstring for the full root cause. Deliberately decodes at the
+    capture site rather than widening `AuditLog.summary`'s column type
+    or wrapping the DB write in an encoding-tolerant try/except — either
+    of those would hide the bug (store garbage silently) instead of
+    fixing it (store the real decoded text).
+
+    A truncated gzip stream (this middleware caps buffered body bytes
+    at `_BODY_CAP` for memory reasons, so a very large compressed
+    response could be cut mid-stream) degrades to `b""` rather than
+    raising — a missing summary is an acceptable, honest degradation;
+    reintroducing corrupt text is not."""
+    if not body_bytes or content_encoding != "gzip":
+        return body_bytes
+    try:
+        import gzip
+        return gzip.decompress(body_bytes)
+    except Exception:
+        logger.debug("audit: gunzip of response body failed (truncated stream?) — summary omitted")
+        return b""
 
 
 def _audit_should_write(status: int) -> bool:
@@ -387,7 +441,7 @@ class AuditMiddleware(ASGIMiddleware):
         # Wrap `send` so we can capture the response status code.
         # Buffer the response body for the summary (truncated to 2 KB
         # so we don't double the response memory cost).
-        captured: dict = {"status": 0, "body_chunks": [], "body_len": 0}
+        captured: dict = {"status": 0, "body_chunks": [], "body_len": 0, "content_encoding": None}
         await next_app(scope, receive, _audit_make_send_wrapper(send, request_id, captured))
 
         status = captured["status"]
@@ -397,6 +451,12 @@ class AuditMiddleware(ASGIMiddleware):
         actor_user_id, actor_username, actor_role = _audit_extract_actor(scope)
         client_ip, user_agent = _audit_extract_client(scope)
         body_bytes = b"".join(captured["body_chunks"])[:2048]
+        # F5 fix (2026-11-20) — gunzip before parsing when the response
+        # was gzip-compressed by CompressionMiddleware, which sits
+        # INSIDE (closer to the handler than) this middleware in
+        # Litestar's own stack order. See `_audit_make_send_wrapper`'s
+        # docstring for the full root cause.
+        body_bytes = _audit_decode_body(body_bytes, captured.get("content_encoding"))
         summary = _audit_parse_summary(body_bytes)
         category = _derive_category_from_path(method, path)
 

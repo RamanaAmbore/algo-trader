@@ -3,6 +3,7 @@ import time
 from functools import wraps
 
 from backend.shared.helpers.auth_error import is_auth_error_str
+from backend.shared.helpers.backoff import exponential_backoff_seconds
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
@@ -28,6 +29,17 @@ def retry_kite_conn(max_attempts):
 
         @wraps(func)
         def wrapper(*args, **kwargs):
+            # Lazy import — avoids the decorators <-> connections circular
+            # import (same convention `_try_renew` below already uses for
+            # the identical reason): `backend.brokers.errors` is a plain,
+            # import-free leaf module, but importing ANY submodule of the
+            # `backend.brokers` package runs that package's own
+            # `__init__.py` first, which eagerly imports `registry.py` ->
+            # `connections.py` -> `from backend.shared.helpers.decorators
+            # import retry_kite_conn` — a module-level import here would
+            # try to import this very module while it's still mid-load.
+            from backend.brokers.errors import KiteLoginCoolingOff
+
             n = max_attempts() if callable(max_attempts) else max_attempts
             for attempt in range(n):
                 try:
@@ -37,18 +49,65 @@ def retry_kite_conn(max_attempts):
 
                     return func(*args, **kwargs)
 
+                except KiteLoginCoolingOff as e:
+                    # 2026-11-20 fix — a deterministic, already-known
+                    # block (see KiteLoginCoolingOff's own docstring).
+                    # Fail fast: retrying 3x against the same cooloff
+                    # gate gains nothing, and logging at ERROR here was
+                    # flooding the Alerts tab with one entry PER EXHAUSTED
+                    # data-fetch attempt (positions/margins/holdings/quote,
+                    # every poll cycle) for the entire cooloff duration —
+                    # redundant with `[KITE-LOGIN-COOLOFF]`'s own
+                    # one-per-failure log line and the dedicated F3
+                    # escalation alert (fires once per worst-tier reach).
+                    # Every OTHER exception type below keeps today's exact
+                    # 3-attempt-then-ERROR behaviour, unchanged.
+                    logger.debug(
+                        f"{func.__name__}: Kite login cooling off — "
+                        f"failing fast, no retry. {e}"
+                    )
+                    raise
+
                 except Exception as e:
                     logger.debug(
                         f"{func.__name__}: Attempt {attempt + 1} of {n} failed: {e}..."
                     )
                     if attempt == n - 1:
+                        # 2026-11-20 fix — include the last exception's
+                        # own text. Without this, F2's work (capturing
+                        # Zerodha's real response body, e.g. "Invalid
+                        # CAPTCHA values.", in login()/totp_authenticate()/
+                        # setup_access_token()) never reached an operator
+                        # reading this generic exhaustion line — it got
+                        # captured correctly at the exception level, then
+                        # silently dropped by this wrapper's own
+                        # detail-free text. Deliberately generic (just
+                        # `{e}`, no attempt to extract account/context
+                        # beyond the exception's own string) — this
+                        # decorator wraps many different kinds of
+                        # functions, not just Kite login.
                         logger.error(
-                            f"{func.__name__}: Operation failed after {n} attempts."
+                            f"{func.__name__}: Operation failed after {n} "
+                            f"attempts. Last error: {e}"
                         )
                         raise
-                    # Exponential backoff between retries
+                    # Exponential backoff between retries. The flat-30s
+                    # rate-limit branch is a real provider signal (left
+                    # untouched, per the Part 3 backoff-utility plan) —
+                    # only the generic curve below is shared.
+                    #
+                    # NOTE on base=1.0 (not 2.0): the shared formula is
+                    # `min(base * 2**attempt, cap)`. This site's
+                    # PRE-EXISTING formula was `min(2 ** attempt, 30)`,
+                    # i.e. base=1 (1, 2, 4, 8, 16, 30, 30, ...) — base=1.0
+                    # is what reproduces that sequence byte-for-byte;
+                    # base=2.0 would double every value (2, 4, 8, 16, 30,
+                    # 30, ...), which is NOT the same curve. See
+                    # `test_backoff.py`'s table-driven parity test.
                     is_rate_limit = "too many" in str(e).lower() or "429" in str(e)
-                    delay = 30 if is_rate_limit else min(2 ** attempt, 30)
+                    delay = 30 if is_rate_limit else exponential_backoff_seconds(
+                        attempt, base=1.0, cap=30.0,
+                    )
                     logger.debug(f"{func.__name__}: waiting {delay}s before retry {attempt + 2}")
                     time.sleep(delay)
 
