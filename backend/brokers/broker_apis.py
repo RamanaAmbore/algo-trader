@@ -1594,6 +1594,67 @@ def fetch_holdings(*args, **kwargs):
     return _fetch_holdings_local(*args, **kwargs)
 
 
+def _breaker_guard_frame(kind: str, account):
+    """Circuit-breaker guard shared by `_fetch_holdings_local`/`_fetch_positions_local`.
+
+    Returns the stale-substitute LKG frame when the breaker is OPEN for
+    `account`, else `None` (caller should proceed with a live fetch).
+    Extracted 2026-11-20 to pull this branch's complexity out of the two
+    already-dense fetch functions (CC gate regression fix, see the
+    equivalent extraction note on `_lkg_or_fallback` below).
+    """
+    if account and _is_circuit_open(account):
+        logger.warning(
+            f"[BREAKER] account={account} short-circuit {kind} "
+            f"(open until {_ts_label(_FETCH_HEALTH.get(account, {}).get('circuit_open_until', 0) or 0)})"
+        )
+        return _stale_substitute_frame(kind, account)
+    return None
+
+
+def _interval_gate_frame(kind: str, account, broker, empty_fallback: pd.DataFrame):
+    """Dhan-only poll-interval gate shared by the holdings/positions fetchers.
+
+    Returns a result frame when this account's poll is skipped (either
+    the stale LKG, tagged `interval_skipped`, or `empty_fallback` when no
+    LKG exists yet), else `None` when the caller should proceed with a
+    live fetch. Kite/Groww pass straight through (`_is_dhan_interval_due`
+    is always True for non-Dhan brokers).
+    """
+    if not (account and not _is_dhan_interval_due(account, broker)):
+        return None
+    lkg = _stale_substitute_frame(kind, account, mark_stale=False)
+    if not lkg.empty:
+        lkg.attrs["interval_skipped"] = True
+        lkg.attrs.pop("circuit_open", None)  # interval-skip, not a breaker event
+        logger.debug(
+            f"[INTERVAL] account={account} {kind} poll skipped — serving stale LKG "
+            f"(next_due={_ts_label(_dhan_next_poll.get(account, 0))})"
+        )
+        return lkg
+    # No LKG yet — return empty (first-poll-after-restart behaviour preserved)
+    empty_fallback.attrs["interval_skipped"] = True
+    logger.debug(
+        f"[INTERVAL] account={account} {kind} poll skipped "
+        f"(next_due={_ts_label(_dhan_next_poll.get(account, 0))})"
+    )
+    return empty_fallback
+
+
+def _lkg_or_fallback(kind: str, account, fallback: pd.DataFrame) -> pd.DataFrame:
+    """The repeated `_stale_substitute_frame(...) if account else <empty>`
+    ternary, shared by every failure branch in the holdings/positions
+    fetchers. Extracting this (and the two guards above) out of the
+    ternary/branch count of the calling function is what brought
+    `_fetch_holdings_local`/`_fetch_positions_local` back under the CC
+    gate's D-grade threshold after the 2026-11-20 LKG-substitution and
+    per-account-isolation fixes pushed both into D — same behaviour,
+    just counted against this small helper instead of the large fetch
+    function.
+    """
+    return _stale_substitute_frame(kind, account) if account else fallback
+
+
 @for_all_accounts
 def _fetch_holdings_local(connections=Connections, account=None, kite=None, broker=None, raw_only: bool = False):
     """Multi-broker holdings fetch. Uses the Broker ABC abstraction
@@ -1606,37 +1667,18 @@ def _fetch_holdings_local(connections=Connections, account=None, kite=None, brok
     df_holdings = pd.DataFrame()
     # Circuit-breaker guard: skip SDK call when the breaker is OPEN.
     # Half-open state admits one probe attempt (breaker closes or
-    # re-opens based on that attempt's outcome).
-    if account and _is_circuit_open(account):
-        logger.warning(
-            f"[BREAKER] account={account} short-circuit holdings "
-            f"(open until {_ts_label(_FETCH_HEALTH.get(account, {}).get('circuit_open_until', 0) or 0)})"
-        )
-        # Stale-substitute path (Jul 2026): return the LKG frame with
-        # stale=True attrs instead of an empty frame so DH6847 rows do
-        # not vanish from the payload on every breaker-open cycle.
-        return _stale_substitute_frame("holdings", account)
+    # re-opens based on that attempt's outcome). Stale-substitute path
+    # (Jul 2026): the LKG frame carries stale=True attrs instead of an
+    # empty frame so DH6847 rows do not vanish on every breaker-open cycle.
+    _guard = _breaker_guard_frame("holdings", account)
+    if _guard is not None:
+        return _guard
     # Interval gate (Dhan-only): skip if not yet due for next poll.
-    # Kite + Groww pass through unconditionally (_is_dhan_interval_due
-    # returns True for non-Dhan brokers). Manual ?fresh=1 calls bypass
-    # by calling fetch_holdings() directly which skips @for_all_accounts.
-    if account and not _is_dhan_interval_due(account, broker):
-        lkg = _stale_substitute_frame("holdings", account, mark_stale=False)
-        if not lkg.empty:
-            lkg.attrs["interval_skipped"] = True
-            lkg.attrs.pop("circuit_open", None)  # interval-skip, not a breaker event
-            logger.debug(
-                f"[INTERVAL] account={account} holdings poll skipped — serving stale LKG "
-                f"(next_due={_ts_label(_dhan_next_poll.get(account, 0))})"
-            )
-            return lkg
-        # No LKG yet — return empty (first-poll-after-restart behaviour preserved)
-        df_holdings.attrs["interval_skipped"] = True
-        logger.debug(
-            f"[INTERVAL] account={account} holdings poll skipped "
-            f"(next_due={_ts_label(_dhan_next_poll.get(account, 0))})"
-        )
-        return df_holdings
+    # Kite + Groww pass through unconditionally. Manual ?fresh=1 calls
+    # bypass by calling fetch_holdings() directly which skips @for_all_accounts.
+    _gated = _interval_gate_frame("holdings", account, broker, df_holdings)
+    if _gated is not None:
+        return _gated
     # Advance next-poll timestamp BEFORE the fetch so even a crash/exception
     # doesn't cause a tight retry loop.
     if account:
@@ -1648,9 +1690,12 @@ def _fetch_holdings_local(connections=Connections, account=None, kite=None, brok
         elif kite is not None:
             rows = kite.holdings()
         if rows is None:
-            df_holdings.attrs['fetch_failed'] = True
             _record_fetch(account, ok=False, error="broker.holdings() returned None")
-            return df_holdings
+            # R1 substitution (same rationale as _fetch_positions_local's
+            # matching `net_rows is None` branch): freeze to last-known-good
+            # instead of returning a bare empty frame, so a transient
+            # None-response doesn't blank holdings for a cycle.
+            return _lkg_or_fallback("holdings", account, df_holdings)
         df_holdings = pd.DataFrame(rows)
         df_holdings.rename(columns={'close_price': 'prev_close'}, inplace=True)
 
@@ -1662,8 +1707,12 @@ def _fetch_holdings_local(connections=Connections, account=None, kite=None, brok
         from backend.shared.helpers.recovery import already_logged
         if not already_logged(e):
             logger.error(f"[{account}] Failed to fetch holdings: {e}")
-        df_holdings.attrs['fetch_failed'] = True
         _record_fetch(account, ok=False, error=str(e))
+        # R1 substitution — see rationale in _fetch_positions_local's
+        # matching except block. Positions/margins already freeze to
+        # last-known-good here; holdings previously fell through to a
+        # bare empty frame on this path.
+        return _lkg_or_fallback("holdings", account, df_holdings)
 
     # Calculated columns — guard against an empty / fetch-failed frame
     # (broker 502 / 503 outages leave df_holdings empty and skipping the
@@ -1679,7 +1728,19 @@ def _fetch_holdings_local(connections=Connections, account=None, kite=None, brok
         cols = [c for c in ["account", "tradingsymbol", "prev_close"] if c in df_holdings.columns]
         return df_holdings[cols]
 
-    df_holdings = _enrich_holdings(df_holdings)
+    try:
+        df_holdings = _enrich_holdings(df_holdings)
+    except Exception as e:
+        # Per-account isolation: a malformed row shape for ONE account
+        # must not raise past this per-account function — that would
+        # propagate through @for_all_accounts' ThreadPoolExecutor.map
+        # and break every other account's result in the same batch.
+        # Mirrors the fetch-level failure degrade above.
+        from backend.shared.helpers.recovery import already_logged
+        if not already_logged(e):
+            logger.error(f"[{account}] Failed to enrich holdings: {e}")
+        _record_fetch(account, ok=False, error=str(e))
+        return _lkg_or_fallback("holdings", account, pd.DataFrame())
     # Stash a shallow copy for the stale-substitute path when this
     # account's breaker opens on a future cycle. Empty frames are also
     # stored so a "no holdings" state overwrites a prior LKG and prevents
@@ -2324,33 +2385,15 @@ def _fetch_positions_local(connections=Connections, account=None, kite=None, bro
     pattern as fetch_holdings; non-Kite adapters return Kite-shape
     rows via their respective normalisers."""
     df_positions = pd.DataFrame()
-    # Circuit-breaker guard.
-    if account and _is_circuit_open(account):
-        logger.warning(
-            f"[BREAKER] account={account} short-circuit positions "
-            f"(open until {_ts_label(_FETCH_HEALTH.get(account, {}).get('circuit_open_until', 0) or 0)})"
-        )
-        # Stale-substitute path (Jul 2026) — see holdings variant for
-        # rationale. DH6847 rows persist across breaker-open cycles.
-        return _stale_substitute_frame("positions", account)
+    # Circuit-breaker guard — see holdings variant for rationale. DH6847
+    # rows persist across breaker-open cycles via the LKG substitute.
+    _guard = _breaker_guard_frame("positions", account)
+    if _guard is not None:
+        return _guard
     # Interval gate (Dhan-only) — same pattern as holdings.
-    if account and not _is_dhan_interval_due(account, broker):
-        lkg = _stale_substitute_frame("positions", account, mark_stale=False)
-        if not lkg.empty:
-            lkg.attrs["interval_skipped"] = True
-            lkg.attrs.pop("circuit_open", None)  # interval-skip, not a breaker event
-            logger.debug(
-                f"[INTERVAL] account={account} positions poll skipped — serving stale LKG "
-                f"(next_due={_ts_label(_dhan_next_poll.get(account, 0))})"
-            )
-            return lkg
-        # No LKG yet — return empty (first-poll-after-restart behaviour preserved)
-        df_positions.attrs["interval_skipped"] = True
-        logger.debug(
-            f"[INTERVAL] account={account} positions poll skipped "
-            f"(next_due={_ts_label(_dhan_next_poll.get(account, 0))})"
-        )
-        return df_positions
+    _gated = _interval_gate_frame("positions", account, broker, df_positions)
+    if _gated is not None:
+        return _gated
     if account:
         _update_dhan_next_poll(account, broker)
     try:
@@ -2366,7 +2409,7 @@ def _fetch_positions_local(connections=Connections, account=None, kite=None, bro
             # account's rows silently vanished from an otherwise-'live'
             # response. Falls back to `_stale_substitute_frame`'s own
             # empty `fetch_failed=True` frame when no LKG exists yet.
-            return _stale_substitute_frame("positions", account) if account else df_positions
+            return _lkg_or_fallback("positions", account, df_positions)
         df_positions = pd.DataFrame(net_rows)
         df_positions.rename(columns={'close_price': 'prev_close'}, inplace=True)
         _record_fetch(account, ok=True)
@@ -2385,14 +2428,26 @@ def _fetch_positions_local(connections=Connections, account=None, kite=None, bro
         _record_fetch(account, ok=False, error=str(e))
         # R1 substitution — see rationale in the `net_rows is None` branch
         # above.
-        return _stale_substitute_frame("positions", account) if account else df_positions
+        return _lkg_or_fallback("positions", account, df_positions)
 
     if raw_only:
         cols = [c for c in ["account", "tradingsymbol", "prev_close"] if c in df_positions.columns]
         return df_positions[cols]
 
     if not df_positions.empty:
-        df_positions = _enrich_positions(df_positions, broker_kind=_broker_kind(broker))
+        try:
+            df_positions = _enrich_positions(df_positions, broker_kind=_broker_kind(broker))
+        except Exception as e:
+            # Per-account isolation: a malformed row shape for ONE account
+            # must not raise past this per-account function — that would
+            # propagate through @for_all_accounts' ThreadPoolExecutor.map
+            # and break every other account's result in the same batch.
+            # Mirrors the fetch-level failure degrade above.
+            from backend.shared.helpers.recovery import already_logged
+            if not already_logged(e):
+                logger.error(f"[{account}] Failed to enrich positions: {e}")
+            _record_fetch(account, ok=False, error=str(e))
+            return _lkg_or_fallback("positions", account, pd.DataFrame())
     # Stash a shallow copy for the stale-substitute path when this
     # account's breaker opens on a future cycle, OR when a later poll's
     # fetch fails outright (R1). Empty frames are ALSO stored (moved

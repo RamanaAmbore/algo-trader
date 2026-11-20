@@ -79,11 +79,31 @@ class InternalAccountEnvelope(msgspec.Struct):
     ``rows`` is a list of plain dicts — the row data is heterogeneous
     (broker-native column names, mixed types) so we keep dict for the
     inner payload and only Struct the outer envelope.
+
+    ``stale`` / ``stale_since`` / ``fetch_failed`` (2026-11 wire-format
+    fix) mirror the exact `.attrs` keys `broker_apis._stale_substitute_
+    frame()` sets on an in-process DataFrame: `stale` = this account's
+    data is a last-known-good substitute (not a confirmed-fresh fetch),
+    `stale_since` = unix epoch (float) of the last real success,
+    `fetch_failed` = this account's fetch genuinely failed with no LKG
+    to substitute (zero rows, real outage). `ok` stays tied ONLY to
+    `fetch_failed` (`ok = not fetch_failed`) — a stale-but-substituted
+    account is still a SUCCESS (old data), never routed through the
+    "all failed → 503" outage gate; see `_stale_substitute_frame`'s own
+    docstring. All three default to the pre-fix shape (False/False/None)
+    so an older, not-yet-redeployed conn_service — this struct is
+    decoded from a live HTTP response, not re-imported, same hazard the
+    `InternalAccountRow.client_id` comment above describes — simply
+    omits them and the client falls back to the pre-existing `not
+    entry.ok` check.
     """
 
     account: str | None
     ok: bool
     rows: list[dict]
+    stale: bool = False
+    stale_since: float | None = None
+    fetch_failed: bool = False
 
 
 class InternalPerAccountResp(msgspec.Struct):

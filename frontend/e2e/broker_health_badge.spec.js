@@ -347,7 +347,7 @@ test.describe('broker-chip color + popup broker names', () => {
     const modal = P.locator('.bh-modal').first();
     await modal.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT });
 
-    const redDot = modal.locator('.bh-row-dot-red').first();
+    const redDot = modal.locator('.bh-dot-red').first();
     await expect(redDot, 'popup must have at least one red dot when chip is red').toBeVisible();
 
     await P.locator('.bh-close').first().click();
@@ -567,5 +567,155 @@ test.describe('broker-chip color + popup broker names', () => {
 
     await P.locator('.bh-close').first().click();
     await P.locator('.bh-modal').waitFor({ state: 'hidden', timeout: 3000 }).catch(() => {});
+  });
+
+  // ── 9. Row click toggles that account's connection; right-click/
+  //         long-press opens the connection-events log scoped to that
+  //         row instead — operator consolidation. ──────────────────────
+  //
+  //    Mock carries explicit `is_active` on both accounts (one true,
+  //    one false) so both toggle directions are exercised.
+
+  /** @returns {object} */
+  function _mockHealthWithActiveFlags() {
+    const now = new Date().toISOString();
+    return {
+      accounts: [
+        {
+          account: 'ZG0790', broker: 'kite', state: 'green',
+          reason: 'healthy', last_good_at: now, last_check_at: now,
+          is_active_ticker: true, circuit_state: 'closed',
+          consecutive_fail_count: 0, circuit_open_until: null,
+          circuit_breaker_enabled: false, is_active: true,
+        },
+        {
+          account: 'DH6847', broker: 'dhan', state: 'amber',
+          reason: 'stale — 8 min ago', last_good_at: now, last_check_at: now,
+          is_active_ticker: false, circuit_state: 'closed',
+          consecutive_fail_count: 0, circuit_open_until: null,
+          circuit_breaker_enabled: false, is_active: false,
+        },
+      ],
+      groww_entitlement_denied: {},
+      primary_market_data_account: 'ZG0790',
+      ticker_idle: false,
+      ticker_idle_reason: '',
+    };
+  }
+
+  test.describe('row click toggles; right-click/long-press opens scoped activity log', () => {
+    test.beforeEach(async () => {
+      await P.route('**/api/admin/broker-health', route => route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(_mockHealthWithActiveFlags()),
+      }));
+      await P.route('**/api/admin/brokers', route => route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([
+          { account: 'ZG0790', loaded: true, broker_id: 'zerodha_kite', is_active: true },
+          { account: 'DH6847', loaded: true, broker_id: 'dhan', is_active: false },
+        ]),
+      }));
+    });
+
+    test('click an active row → confirm("Disable…") → PATCH is_active:false, correct account, success toast', async () => {
+      const patches = [];
+      await P.route('**/api/admin/brokers/ZG0790', route => {
+        if (route.request().method() !== 'PATCH') return route.fallback();
+        patches.push(route.request());
+        return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+      });
+
+      const chip = await openPage(P);
+      if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
+      await chip.click();
+      const modal = P.locator('.bh-modal').first();
+      await modal.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT });
+
+      P.once('dialog', (dialog) => {
+        expect(dialog.message()).toContain(`Disable ZG0790's connection?`);
+        dialog.accept();
+      });
+
+      await modal.locator('.bh-row-account', { hasText: 'ZG0790' }).first().click();
+
+      await expect.poll(() => patches.length, { timeout: WAIT_TIMEOUT }).toBeGreaterThan(0);
+      expect(patches[0].url()).toContain('/admin/brokers/ZG0790');
+      expect(patches[0].postDataJSON()).toEqual({ is_active: false });
+
+      await expect(P.locator('.rbq-toast-msg', { hasText: /ZG0790 disabled/i }))
+        .toBeVisible({ timeout: 5_000 });
+
+      await P.locator('.bh-close').first().click();
+      await P.locator('.bh-modal').waitFor({ state: 'hidden', timeout: 3000 }).catch(() => {});
+    });
+
+    test('click a disabled row → confirm("Enable…") → PATCH is_active:true, correct account, success toast', async () => {
+      const patches = [];
+      await P.route('**/api/admin/brokers/DH6847', route => {
+        if (route.request().method() !== 'PATCH') return route.fallback();
+        patches.push(route.request());
+        return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+      });
+
+      const chip = await openPage(P);
+      if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
+      await chip.click();
+      const modal = P.locator('.bh-modal').first();
+      await modal.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT });
+
+      P.once('dialog', (dialog) => {
+        expect(dialog.message()).toContain(`Enable DH6847's connection?`);
+        dialog.accept();
+      });
+
+      await modal.locator('.bh-row-account', { hasText: 'DH6847' }).first().click();
+
+      await expect.poll(() => patches.length, { timeout: WAIT_TIMEOUT }).toBeGreaterThan(0);
+      expect(patches[0].url()).toContain('/admin/brokers/DH6847');
+      expect(patches[0].postDataJSON()).toEqual({ is_active: true });
+
+      await expect(P.locator('.rbq-toast-msg', { hasText: /DH6847 enabled/i }))
+        .toBeVisible({ timeout: 5_000 });
+
+      await P.locator('.bh-close').first().click();
+      await P.locator('.bh-modal').waitFor({ state: 'hidden', timeout: 3000 }).catch(() => {});
+    });
+
+    test('right-click a row opens the activity log scoped to that account, never fires the toggle', async () => {
+      let dialogFired = false;
+      P.once('dialog', (dialog) => { dialogFired = true; dialog.dismiss(); });
+
+      const patches = [];
+      await P.route('**/api/admin/brokers/ZG0790', route => {
+        if (route.request().method() === 'PATCH') patches.push(route.request());
+        return route.fallback();
+      });
+
+      const chip = await openPage(P);
+      if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
+      await chip.click();
+      const modal = P.locator('.bh-modal').first();
+      await modal.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT });
+
+      await modal.locator('.bh-row-account', { hasText: 'ZG0790' }).first()
+        .click({ button: 'right' });
+
+      // Right-click opens the activity log modal (replaces the old
+      // behavior, now scoped to the clicked account) — and closes the
+      // broker-health modal, same as the prior generic-log click did.
+      await expect(P.locator('.alm-panel'), 'right-click must open the activity log modal')
+        .toBeVisible({ timeout: WAIT_TIMEOUT });
+      await expect(P.locator('.bh-modal')).toHaveCount(0);
+
+      expect(dialogFired, 'right-click must never trigger the toggle confirm() dialog').toBe(false);
+      expect(patches.length, 'right-click must never PATCH the account').toBe(0);
+
+      // Close the activity modal so later tests in this file start clean.
+      await P.keyboard.press('Escape').catch(() => {});
+      await P.locator('.alm-panel').waitFor({ state: 'hidden', timeout: 3000 }).catch(() => {});
+    });
   });
 });

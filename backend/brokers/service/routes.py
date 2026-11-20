@@ -45,9 +45,14 @@ layer because the socket itself is the auth boundary (file mode
 user that runs ramboq_api.service / ramboq_dev_api.service).
 
 Wire format for fetch endpoints — `{accounts: [...]}` instead of a
-flat row list. Each entry preserves the per-account boundary plus
-the `fetch_failed` flag so callers can keep their outage-detection
-logic (`if all(df.attrs['fetch_failed'])`) drop-in compatible.
+flat row list. Each entry preserves the per-account boundary plus the
+`fetch_failed` flag so callers can keep their outage-detection logic
+(`if all(df.attrs['fetch_failed'])`) drop-in compatible. Each entry
+also carries `stale`/`stale_since` (2026-11) — the same last-known-good
+substitution signal `broker_apis._stale_substitute_frame()` sets on an
+in-process DataFrame's `.attrs`, so an account whose fetch failed or
+was LKG-substituted survives the UDS hop even when it contributed zero
+rows (see `_df_list_to_per_account`'s docstring for the shape detail).
 """
 
 from __future__ import annotations
@@ -119,27 +124,150 @@ def _to_jsonable(value: Any) -> Any:
     return value
 
 
+def _as_epoch(value) -> float | None:
+    """Tolerant epoch-float coercion for `stale_since`. A bad value here
+    must never raise inside the fetch handlers' try/except — that would
+    turn `errors=[...]` into a whole-batch degraded response (every
+    account reads as an outage client-side) over what is at most a
+    cosmetic staleness-timestamp defect. Returns None on anything that
+    isn't cleanly float-coercible (wrong type, NaN, etc.)."""
+    if value is None:
+        return None
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    if f != f:  # NaN check without importing math for one call
+        return None
+    return f
+
+
+def _account_attr_or_first_row(df) -> str | None:
+    """Resolve an account code for `df`: prefer `.attrs['account']` (set
+    by `_stale_substitute_frame`/`_capture_per_account_signal` on EVERY
+    return path, including a zero-row failure), falling back to the
+    first row's own `account` column only when the frame has rows.
+
+    A zero-row failed/stale-with-no-LKG frame has nothing in `columns`
+    to fall back to, so reading `.attrs` first (not only as a fallback)
+    is the fix — the pre-2026-11 version of this logic checked columns
+    first and always resolved `None` for exactly this frame shape.
+    """
+    attrs = getattr(df, "attrs", {}) or {}
+    acct = attrs.get("account")
+    if not acct and not df.empty and "account" in df.columns:
+        acct = df["account"].iloc[0]
+    return str(acct) if acct else None
+
+
+def _envelope_from_signal_entry(sig: dict, rows: list[dict]) -> InternalAccountEnvelope:
+    """Build one envelope from a `_capture_per_account_signal` entry
+    (`{account, stale, fetch_failed, stale_since, empty}`) plus whatever
+    rows belong to that account (possibly `[]`)."""
+    fetch_failed = bool(sig.get("fetch_failed", False))
+    return InternalAccountEnvelope(
+        account=str(sig["account"]) if sig.get("account") else None,
+        ok=not fetch_failed,
+        rows=rows,
+        stale=bool(sig.get("stale", False)),
+        stale_since=_as_epoch(sig.get("stale_since")),
+        fetch_failed=fetch_failed,
+    )
+
+
 def _df_list_to_per_account(dfs: list) -> list[InternalAccountEnvelope]:
     """Convert a list of per-account DataFrames into msgspec Struct envelopes.
 
-    Output: one InternalAccountEnvelope per DataFrame returned by
-    @for_all_accounts. Account is taken from the first row; falls back
-    to None on empty frames. Litestar auto-encodes Struct lists as JSON,
-    ~3× faster than dict-to-json for the same payload shape.
+    `dfs` (the return of `broker_apis.fetch_holdings/positions/margins()`
+    run INSIDE conn_service) arrives in one of two shapes:
+
+      1. A single already-concatenated `combined` frame (holdings and
+         positions, the common multi-account-success case) carrying
+         `combined.attrs['_per_account_signal']` — the per-account
+         `{account, stale, fetch_failed, stale_since, empty}` snapshot
+         `_apply_backfill_to_list` (broker_apis.py) captured from every
+         INPUT frame before `pd.concat` cleared their individual attrs.
+         An account whose fetch failed with zero rows (no LKG to
+         substitute) contributed NOTHING to `combined`'s rows, so
+         without reading this signal it would be entirely absent from
+         the response — looking confirmed-healthy to the main API even
+         though that account's data is simply missing.
+
+      2. The raw, un-concatenated per-account list (margins always;
+         holdings/positions when EVERY account's frame was empty, the
+         `_apply_backfill_to_list` early-return path) — each frame
+         still carries its OWN `.attrs` directly, no nested signal.
+
+    Fix (2026-11): when shape 1 is detected, emit ONE envelope PER
+    SIGNAL ENTRY (in signal order — the same `@for_all_accounts`
+    fan-out order the signal was captured in; see CLAUDE.md's
+    `@for_all_accounts` iteration-order invariant), slicing `combined`'s
+    rows by the signal's own `account` string. This means a zero-row
+    failed/stale account now gets its own envelope (empty rows, correct
+    `stale`/`fetch_failed`/`stale_since`) instead of being silently
+    dropped, AND a stale-but-has-rows account's rows are no longer
+    merged into one coarse all-accounts envelope mislabelled with just
+    the first row's account.
+
+    Any row whose `account` string is not named in the signal (should
+    not normally happen — every input frame to `_apply_backfill_to_list`
+    is captured — but kept as a safety net so a row can never be
+    silently dropped) is emitted as one trailing "unresolved" envelope.
+
+    Shape 2 falls back to one envelope per frame, resolving `account`
+    via `_account_attr_or_first_row` (attrs-first, so a zero-row frame's
+    `.attrs['account']` is no longer ignored).
     """
     out: list[InternalAccountEnvelope] = []
-    for df in dfs or []:
-        if df is None:
-            continue
-        fetch_failed = bool(getattr(df, "attrs", {}).get("fetch_failed", False))
-        acct = None
-        if not df.empty and "account" in df.columns:
-            acct = df["account"].iloc[0]
+    frames = [df for df in (dfs or []) if df is not None]
+
+    # Shape 1: `_apply_backfill_to_list` only ever stashes
+    # `_per_account_signal` on a single combined frame — mirrors
+    # positions.py:_extract_per_account_signal's own `len(per_acct) == 1`
+    # check, which is the exact other side of this wire boundary.
+    combined_signal = None
+    if len(frames) == 1:
+        combined_signal = (getattr(frames[0], "attrs", {}) or {}).get(
+            "_per_account_signal"
+        )
+
+    if combined_signal is not None:
+        df = frames[0]
+        has_account_col = (not df.empty) and "account" in df.columns
+        emitted: set[str] = set()
+        for sig in combined_signal:
+            acct = sig.get("account")
+            rows: list[dict] = []
+            if acct and has_account_col:
+                mask = df["account"].astype(str) == str(acct)
+                if mask.any():
+                    rows = df.loc[mask].to_dict(orient="records")
+            out.append(_envelope_from_signal_entry(sig, rows))
+            if acct:
+                emitted.add(str(acct))
+        if has_account_col:
+            leftover_mask = ~df["account"].astype(str).isin(emitted)
+            if leftover_mask.any():
+                leftover = df.loc[leftover_mask]
+                out.append(InternalAccountEnvelope(
+                    account=_account_attr_or_first_row(leftover),
+                    ok=True,
+                    rows=leftover.to_dict(orient="records"),
+                ))
+        return out
+
+    # Shape 2 — raw per-account list, no nested signal on any frame.
+    for df in frames:
+        attrs = getattr(df, "attrs", {}) or {}
+        fetch_failed = bool(attrs.get("fetch_failed", False))
         rows = [] if df.empty else df.to_dict(orient="records")
         out.append(InternalAccountEnvelope(
-            account=str(acct) if acct is not None else None,
+            account=_account_attr_or_first_row(df),
             ok=not fetch_failed,
             rows=rows,
+            stale=bool(attrs.get("stale", False)),
+            stale_since=_as_epoch(attrs.get("stale_since")),
+            fetch_failed=fetch_failed,
         ))
     return out
 

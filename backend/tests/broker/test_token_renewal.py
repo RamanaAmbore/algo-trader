@@ -381,6 +381,109 @@ class TestDecoratorRetryOnAuthError:
             assert "day_change_val" in df.columns, "Expected enriched column 'day_change_val'"
 
 
+class TestDecoratorGetBrokerResolutionFailureIsolation:
+    """Resilience audit fix: `get_broker(acc)` resolution for one
+    misconfigured/unregistered account used to run BEFORE `_per_account`'s
+    own try/except, so a `KeyError`/`ValueError` from it propagated
+    straight through `list(pool.map(_per_account, accs))` and aborted
+    EVERY other account's result in the same batch. It now resolves
+    inside the try, with a dedicated except that degrades that one
+    account to an empty, `fetch_failed`-tagged sentinel frame instead."""
+
+    def test_get_broker_keyerror_for_one_account_does_not_break_others(self):
+        from backend.brokers.broker_apis import _fetch_positions_local
+        from backend.brokers.connections import KiteConnection
+
+        def mock_extract_net_rows(broker, kite):
+            return [
+                {
+                    "tradingsymbol": "INFY-EQ",
+                    "quantity": 10,
+                    "average_price": 1500.0,
+                    "last_price": 1550.0,
+                    "close_price": 1550.0,
+                    "overnight_quantity": 10,
+                    "day_buy_quantity": 0,
+                    "day_sell_quantity": 0,
+                    "day_buy_value": 0.0,
+                    "day_sell_value": 0.0,
+                    "pnl": 500.0,
+                }
+            ]
+
+        mock_kite_conn1 = MagicMock(spec=KiteConnection)
+        mock_kite_conn1.get_kite_conn = MagicMock(return_value=MagicMock())
+        mock_kite_conn2 = MagicMock(spec=KiteConnection)
+        mock_kite_conn2.get_kite_conn = MagicMock(return_value=MagicMock())
+
+        mock_connections_inst = MagicMock()
+        mock_connections_inst.conn = {
+            "ACC_BAD": mock_kite_conn1,
+            "ACC_GOOD": mock_kite_conn2,
+        }
+        mock_connections_callable = MagicMock(return_value=mock_connections_inst)
+
+        def mock_get_broker(acc):
+            if acc == "ACC_BAD":
+                raise KeyError(acc)
+            return MagicMock()
+
+        with patch("backend.brokers.broker_apis._extract_net_rows", side_effect=mock_extract_net_rows), \
+             patch("backend.brokers.broker_apis._record_fetch"), \
+             patch("backend.brokers.broker_apis._enrich_positions", side_effect=lambda df, **kwargs: df), \
+             patch("backend.brokers.get_broker", side_effect=mock_get_broker):
+            result = _fetch_positions_local(connections=mock_connections_callable)
+
+        assert isinstance(result, list), "Expected list result from @for_all_accounts"
+        assert len(result) == 2, "Both accounts' slots must be present — no exception escaped the batch"
+
+        empty_frames = [df for df in result if isinstance(df, pd.DataFrame) and df.empty]
+        non_empty_frames = [df for df in result if isinstance(df, pd.DataFrame) and not df.empty]
+
+        assert len(empty_frames) == 1, "ACC_BAD's slot must be a sentinel empty frame, not an exception"
+        assert empty_frames[0].attrs.get("fetch_failed") is True
+        assert empty_frames[0].attrs.get("account") == "ACC_BAD"
+
+        assert len(non_empty_frames) == 1, "ACC_GOOD must still return its real data"
+        assert non_empty_frames[0]["tradingsymbol"].iloc[0] == "INFY-EQ"
+
+    def test_get_broker_valueerror_for_one_account_does_not_break_others(self):
+        """Same as above but for ValueError — the other error class the
+        fix explicitly guards against (distinct from a login/auth
+        failure, which is handled by the existing renewal path)."""
+        from backend.brokers.broker_apis import _fetch_positions_local
+        from backend.brokers.connections import KiteConnection
+
+        def mock_extract_net_rows(broker, kite):
+            return []
+
+        mock_kite_conn1 = MagicMock(spec=KiteConnection)
+        mock_kite_conn1.get_kite_conn = MagicMock(return_value=MagicMock())
+        mock_kite_conn2 = MagicMock(spec=KiteConnection)
+        mock_kite_conn2.get_kite_conn = MagicMock(return_value=MagicMock())
+
+        mock_connections_inst = MagicMock()
+        mock_connections_inst.conn = {
+            "ACC_BAD": mock_kite_conn1,
+            "ACC_GOOD": mock_kite_conn2,
+        }
+        mock_connections_callable = MagicMock(return_value=mock_connections_inst)
+
+        def mock_get_broker(acc):
+            if acc == "ACC_BAD":
+                raise ValueError(f"no registry entry for {acc}")
+            return MagicMock()
+
+        with patch("backend.brokers.broker_apis._extract_net_rows", side_effect=mock_extract_net_rows), \
+             patch("backend.brokers.broker_apis._record_fetch"), \
+             patch("backend.brokers.broker_apis._enrich_positions", side_effect=lambda df, **kwargs: df), \
+             patch("backend.brokers.get_broker", side_effect=mock_get_broker):
+            result = _fetch_positions_local(connections=mock_connections_callable)
+
+        assert isinstance(result, list)
+        assert len(result) == 2, "Both accounts' slots must be present — no exception escaped the batch"
+
+
 class TestLoadedAccountsCacheFallback:
     """Test _loaded_accounts() cache behavior."""
 

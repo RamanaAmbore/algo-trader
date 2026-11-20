@@ -1000,7 +1000,8 @@ export const activityModal = writable(
   ({ open: false })
 );
 
-/** Open the activity modal, optionally deep-linking to a specific tab.
+/** Open the activity modal, optionally deep-linking to a specific tab
+ *  and/or narrowing to one account.
  *
  *  When `tab` is provided (e.g. 'conn' from BrokerHealthBadge, or
  *  PageHeaderActions' `logTabHint` prop — 'order' on /orders, 'agent'
@@ -1010,14 +1011,24 @@ export const activityModal = writable(
  *  current tab is preserved — this is the whole point of lifting state
  *  to activityStore.
  *
- *  @param {ActivityTab} [tab] */
-export function openActivityModal(tab) {
+ *  `account`, when provided (e.g. a right-click/long-press on one row
+ *  of BrokerHealthBadge's grid), writes to activityStore.accountFilter
+ *  so the opened LogPanel tab (conn, in that case) is scoped to just
+ *  that account instead of showing every account's events. Omitted —
+ *  same persistence rule as `tab`: the store's current filter survives.
+ *
+ *  @param {ActivityTab} [tab]
+ *  @param {string} [account] */
+export function openActivityModal(tab, account) {
   // Only override when a specific deep-link tab was requested.
   // Generic open (no arg) must NOT reset to 'order' or the persistence
   // goal is defeated: user switches to 'agent', closes modal, presses
   // Log again → should re-open on 'agent'.
   if (tab !== undefined) {
     _activityStore.activeTab = tab;
+  }
+  if (account !== undefined) {
+    _activityStore.accountFilter = [account];
   }
   activityModal.set({ open: true });
 }
@@ -1443,22 +1454,37 @@ export async function loadLtpFlashPct() {
   }
 }
 
+/** The poller's own fetch — hoisted to module scope so `refreshBrokerHealth()`
+ *  below can reuse it verbatim instead of duplicating the fetch-and-set
+ *  logic. */
+async function _pollBrokerHealth() {
+  if (!authStore.getToken()) return;   // anonymous — skip (admin-guarded endpoint)
+  try {
+    const { fetchBrokerHealth } = await import('$lib/api');
+    const data = await fetchBrokerHealth();
+    brokerHealthStore.set(toBrokerHealthState(data));
+  } catch {
+    // Silently suppress — store keeps prior state so chip stays colored.
+  }
+}
+
 export function startBrokerHealthPoller() {
   if (!browser || _bhPollerStarted) return;
   _bhPollerStarted = true;
-  const poll = async () => {
-    if (!authStore.getToken()) return;   // anonymous — skip (admin-guarded endpoint)
-    try {
-      const { fetchBrokerHealth } = await import('$lib/api');
-      const data = await fetchBrokerHealth();
-      brokerHealthStore.set(toBrokerHealthState(data));
-    } catch {
-      // Silently suppress — store keeps prior state so chip stays colored.
-    }
-  };
-  poll();
+  _pollBrokerHealth();
   // 30 s cadence; throttle to 60 s on hidden so we keep monitoring
   // auth breaks in the background without burning unnecessary quota.
-  _bhPollerTeardown = visibleInterval(poll, 30_000, 'throttle:60000');
+  _bhPollerTeardown = visibleInterval(_pollBrokerHealth, 30_000, 'throttle:60000');
+}
+
+/** Force an immediate broker-health refresh, bypassing the 30 s poll
+ *  cadence — e.g. right after BrokerHealthBadge's own enable/disable
+ *  PATCH succeeds, so the grid reflects the new state without waiting
+ *  up to 30 s for the next scheduled poll. Reuses the exact fetch the
+ *  poller itself uses (`_pollBrokerHealth`), never a duplicate copy.
+ *  Safe to call even before the poller has started (e.g. in a test) —
+ *  it just performs one fetch-and-set. */
+export async function refreshBrokerHealth() {
+  await _pollBrokerHealth();
 }
 

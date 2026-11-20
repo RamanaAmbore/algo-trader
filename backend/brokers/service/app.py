@@ -105,7 +105,10 @@ def create_app() -> Litestar:
             BrokerDispatchController,
         ],
         before_request=_origin_hook,
-        on_startup=[_start_log_store, _start_conn_event_queue, _init_connections_on_startup, _start_kite_ticker],
+        on_startup=[
+            _start_log_store, _start_conn_event_queue, _init_connections_on_startup,
+            _preload_db_lkg_on_startup, _start_kite_ticker,
+        ],
         on_shutdown=[_stop_conn_event_queue, _stop_log_store],
         debug=False,
     )
@@ -138,7 +141,10 @@ def _kite_failover_list(exclude: set[str] | None = None) -> list[str]:
     ]
     if exclude:
         kite_accts = [a for a in kite_accts if a not in exclude]
-    # Sort by priority ASC (lower number first); insertion-order tie-break.
+    # Sort by priority ASC (lower number first); ties broken alphabetically
+    # by account code (NOT insertion order — the sort key below is
+    # (priority, account_code), so two accounts sharing a priority always
+    # resolve to the same order regardless of dict/iteration order).
     kite_accts.sort(key=lambda a: (int(priority_map.get(a, 100) or 100), a))
     return kite_accts
 
@@ -165,6 +171,58 @@ def _resolve_kite_creds(account: str) -> tuple[str | None, str | None]:
         )
         return None, None
     return (ak, tok) if tok else (None, None)
+
+
+def _is_login_cooling_off(account: str) -> bool:
+    """True when `account`'s connection object reports an active Kite
+    login cool-off (see `KiteConnection.is_login_cooling_off` /
+    `_login_blocked_until` in `backend/brokers/connections.py`).
+
+    Lets failover candidate selection skip an account proactively
+    instead of discovering the cool-off only after `_resolve_kite_creds()`
+    raises or returns an empty token — same effect, but avoids the
+    get_access_token() call (and its own warning log) entirely.
+
+    Checked with `is True`, not truthiness: a bare mock/stub connection
+    object that doesn't implement the accessor at all must never be
+    treated as cooling off just because calling an auto-vivified
+    attribute happens to return a truthy value.
+    """
+    from backend.brokers.connections import Connections
+
+    try:
+        conn = Connections().conn.get(account)
+        if conn is None:
+            return False
+        return getattr(conn, "is_login_cooling_off", lambda: False)() is True
+    except Exception:
+        return False
+
+
+def _first_live_failover_candidate(
+    eligible: list[str],
+) -> tuple[str, str, str] | None:
+    """Try each candidate in `eligible`, IN ORDER, until one resolves a
+    live Kite token. Returns (account, api_key, access_token) for the
+    first success, or None once the whole list is exhausted.
+
+    Pulled out of `_attempt_failover_swap()` so that function's own
+    cyclomatic complexity stays under the radon D-grade push gate (see
+    "Complexity gate" in CLAUDE.md).
+
+    Pre-fix: the caller only ever tried `eligible[0]` and gave up for
+    the whole cycle the instant that one candidate had no live token —
+    even when a healthier lower-priority account existed in the same
+    `eligible` list. That candidate was then re-picked identically on
+    every subsequent 30s watchdog cycle forever.
+    """
+    for acct in eligible:
+        if _is_login_cooling_off(acct):
+            continue
+        api_key, access_token = _resolve_kite_creds(acct)
+        if api_key and access_token:
+            return acct, api_key, access_token
+    return None
 
 
 def _pick_kite_account() -> tuple[str | None, str | None, str]:
@@ -402,8 +460,7 @@ def _attempt_failover_swap(ticker, log, cooldown_s: float, slowed_s: float) -> b
         if not ticker.is_account_in_failover_cooloff(a, cooldown_s)
     ]
 
-    next_account = eligible[0] if eligible else None
-    if next_account is None:
+    if not eligible:
         # Defensive belt+braces: the top-of-loop is_reactor_dead() check
         # already handles reactor death. This branch is only reachable when
         # the reactor was alive at the top of the loop but died mid-iteration
@@ -420,14 +477,25 @@ def _attempt_failover_swap(ticker, log, cooldown_s: float, slowed_s: float) -> b
             return False  # watchdog exits cleanly; SIGTERM triggers uvicorn graceful shutdown
         return False  # all accounts exhausted
 
-    api_key, access_token = _resolve_kite_creds(next_account)
-    if not (api_key and access_token):
+    # Try every eligible candidate in priority order — not just
+    # eligible[0] — until one resolves a live token. Pre-fix, a dead
+    # top-priority candidate with a healthier lower-priority candidate
+    # sitting right behind it in the same list would be re-picked
+    # identically, and silently stuck on, every single 30s cycle forever.
+    picked = _first_live_failover_candidate(eligible)
+    if picked is None:
+        # Logged once per cycle here (not per-candidate inside the loop
+        # above) — _resolve_kite_creds() already warns on its own on an
+        # actual get_access_token() exception, so this is purely the
+        # "tried everything, nothing live" summary.
         log.warning(
-            "ticker_watchdog: %s picked as next failover but has no "
-            "live token — skipping this cycle",
-            next_account,
+            "ticker_watchdog: no eligible Kite account has a live token "
+            "this cycle (tried %s) — skipping this cycle",
+            eligible,
         )
         return True  # skip this cycle; not conclusively all-down
+
+    next_account, api_key, access_token = picked
 
     ok = ticker.restart_with_account(api_key, access_token, next_account)
     _write_ticker_swap_audit(current, next_account, ok)
@@ -1089,6 +1157,36 @@ async def _init_connections_on_startup(app: Litestar) -> None:
         # will retry through the existing Connections-level retry
         # logic. Log loudly so the operator sees the boot state.
         log.exception("conn_service: rebuild_from_db failed: %s", e)
+
+
+async def _preload_db_lkg_on_startup(app: Litestar) -> None:
+    """Preload the DB-backed last-known-good (LKG) cache on conn_service
+    boot — the exact same `background.py:_preload_db_lkg_cache()` the main
+    API process already runs once at the start of `_task_performance`.
+
+    Why conn_service needs this too: `_stale_substitute_frame`
+    (broker_apis.py) short-circuits a breaker-OPEN / unhealthy-account
+    fetch to the in-memory LKG first, then this DB-backed tier as a
+    cold-restart fallback. Every account's in-memory LKG starts empty
+    after ANY process restart — including conn_service's own, which
+    owns every broker session and is the process this preload matters
+    most for. Without it, a routine conn_service restart (deploy) makes
+    every account look "never fetched before" until its first live
+    fetch succeeds, maximizing exposure to the worst-case empty-response
+    path a concurrent staleness-signal fix elsewhere addresses.
+
+    Reuses the main API's own function rather than re-querying
+    `daily_book` here — one query shape, one place to fix it. Wrapped
+    in try/except, same as `_task_performance`'s own call site: this is
+    a best-effort preload and must never block conn_service startup.
+    """
+    from backend.api.background import _preload_db_lkg_cache
+
+    log = logger
+    try:
+        await _preload_db_lkg_cache()
+    except Exception as e:
+        log.warning("conn_service: DB-LKG preload failed (non-fatal): %s", e)
 
 
 # Module-level `app` is the uvicorn entrypoint.

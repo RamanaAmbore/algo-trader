@@ -324,7 +324,7 @@ Any new broker proxy layer must do the same — failing to do so sends raw contr
 (e.g. 100 contracts) as 100 lots to the Kite adapter, hitting the 50-lot ceiling.
 
 **Kite REST login hammered `kite.zerodha.com/api/login` for 6+ hours with no cooloff — no
-cross-call memory after a login failure (2026-11-20 NSE-open incident; uncommitted this session)** —
+cross-call memory after a login failure (2026-11-20 NSE-open incident; commit `78ee0b1e`)** —
 Account ZG0790's REST login returned `400 Bad Request` from `https://kite.zerodha.com/api/login`
 continuously from the night of 2026-11-19 into NSE open on 2026-11-20. That is 800+ failures over
 6+ hours with zero successes. The operator's manual browser+TOTP login for the same account
@@ -375,6 +375,97 @@ rejects further automated requests from it. A manual login from a different IP s
   call. A login failure needs the same cross-call cooldown memory `DhanConnection` already has,
   escalating on repeated failures. The system must not itself become the reason a provider-side
   anomaly or rate-limit block persists.
+
+**Per-account failures degrade one account, never the batch — six broker-resilience fixes (2026-11-20;
+uncommitted this session)** — Live incident: ZG0790's Kite login got stuck, and a three-part audit
+found the same defect class in five more places. A single account's failure could vanish silently,
+abort the whole multi-account batch, or stop ticker failover. Each fix below degrades only the account
+it affects.
+- **Ticker failover advances past a dead candidate.** `_attempt_failover_swap()`
+  ([app.py:434](backend/brokers/service/app.py#L434)) used to try only `eligible[0]` per 30s watchdog
+  cycle. A top-priority account with no live token ended the cycle, and that same dead account was
+  re-picked every cycle. `_first_live_failover_candidate()`
+  ([app.py:202](backend/brokers/service/app.py#L202)) now walks the full list. It skips any account
+  for which `_is_login_cooling_off()` ([app.py:176](backend/brokers/service/app.py#L176)) is true, and
+  resolves credentials on the rest in order. It logs once per cycle, after the list is exhausted. The
+  cooloff read goes through `KiteConnection.is_login_cooling_off()`
+  ([connections.py:736](backend/brokers/connections.py#L736)), which wraps the existing
+  `_login_blocked_until` field. The stale "insertion-order tie-break" comment now matches the real
+  sort key, `(priority, account_code)` ([app.py:144-147](backend/brokers/service/app.py#L144)).
+- **The per-account signal survives the conn_service boundary.** Prod and dev both run with
+  `RAMBOQ_USE_CONN_SERVICE=1`, so broker calls execute in a separate process. `InternalAccountEnvelope`
+  ([schemas.py:76](backend/brokers/service/schemas.py#L76)) gained `account`, `stale`, `stale_since`
+  and `fetch_failed`. Before this, an account that failed with no in-memory LKG vanished from the
+  response, and the response looked fully healthy. That is the normal state right after every
+  conn_service restart. `_df_list_to_per_account()`
+  ([routes.py:178](backend/brokers/service/routes.py#L178)) now emits one envelope per
+  `_per_account_signal` entry, including zero-row failed accounts. It no longer emits one coarse
+  envelope keyed on the first row's account. `_fetch_per_account()`
+  ([sync.py:51](backend/brokers/client/sync.py#L51)) rebuilds the same `.attrs` keys that
+  `_stale_substitute_frame()` sets in-process ([sync.py:88-105](backend/brokers/client/sync.py#L88)).
+  Downstream readers in `positions.py` therefore see one shape in both modes. Two fixes that were inert
+  under cutover are now live: the 2026-09-27 `stale_since` no-restamp rule and the margins STALE badge.
+  The async sibling `backend/brokers/client/api.py` has the same gap. It was left untouched.
+- **conn_service preloads the DB last-known-good tier on boot.** Only the main API process ran
+  `_preload_db_lkg_cache()` ([background.py:2521](backend/api/background.py#L2521)). Every conn_service
+  restart, which means every deploy, therefore started each account's LKG cold. The new
+  `_preload_db_lkg_on_startup()` ([app.py:1162](backend/brokers/service/app.py#L1162)) calls that same
+  function, not a copy. It is registered in `create_app()`'s startup hooks
+  ([app.py:110](backend/brokers/service/app.py#L110)).
+- **Holdings freezes to LKG on a plain exception.** `_fetch_holdings_local()`'s except block
+  ([broker_apis.py:1706-1715](backend/brokers/broker_apis.py#L1706)) used to return a bare empty
+  frame. It now calls `_lkg_or_fallback("holdings", ...)`, as positions and margins already did. The
+  pre-existing test in `test_account_stale_semantics.py` had encoded the bug as expected behaviour. It
+  was rewritten, not weakened.
+- **One account's construction or enrichment error no longer breaks the batch.**
+  `for_all_accounts`'s inner `_per_account()` ([decorators.py:202](backend/shared/helpers/decorators.py#L202))
+  called `get_broker(acc)` outside its own try. A `KeyError` or `ValueError` from one misconfigured
+  account propagated through `ThreadPoolExecutor.map` and aborted every account in the batch. That
+  call now sits in its own try ([decorators.py:208-234](backend/shared/helpers/decorators.py#L208)). It
+  returns a `fetch_failed` sentinel for that one account. It deliberately does not reuse the outer
+  `raise`, which exists for auth-retry exhaustion. `_enrich_holdings` and `_enrich_positions` are each
+  wrapped the same way ([broker_apis.py:1731-1743](backend/brokers/broker_apis.py#L1731),
+  [:2437-2450](backend/brokers/broker_apis.py#L2437)) and degrade to `_lkg_or_fallback`.
+- **Disabling the last active account no longer raises `IntegrityError`.**
+  `_load_active_broker_rows()` ([connections.py:2028](backend/brokers/connections.py#L2028)) re-runs
+  `_seed_db_from_yaml()` ([connections.py:2368](backend/brokers/connections.py#L2368)) whenever the
+  active set is empty. That is exactly the moment the last active account is disabled. The seed step
+  re-INSERTed every `secrets.yaml` account, and `BrokerAccount.account` is unique. It now loads every
+  existing code, active or not, and inserts only genuinely new ones
+  ([connections.py:2397-2403](backend/brokers/connections.py#L2397)).
+- **Enable/disable moved into the navbar health popup.** Only `/admin/brokers` could previously toggle
+  `broker_accounts.is_active`. `BrokerHealthBadge.svelte` now toggles it directly
+  ([:230-238](frontend/src/lib/BrokerHealthBadge.svelte#L230)), with a confirm, a toast and an
+  immediate store refresh. The left-click connection-events log moved to right-click or long-press. It
+  is scoped to that row's account through `openActivityModal(tab, account)`
+  ([stores.js:1022](frontend/src/lib/stores.js#L1022)). `BrokerAccountHealth.is_active`
+  ([health.py:779](backend/api/routes/health.py#L779)) is new.
+  - **Never infer enabled state from `state`.** `state` (green, amber, red, inactive) is driven only by
+    fetch success and failure history. A disabled account can show any colour. `is_active` must be
+    read directly ([BrokerHealthBadge.svelte:89-104](frontend/src/lib/BrokerHealthBadge.svelte#L89)).
+- *Complexity cleanup, no behaviour change.* Fixes 4 and 5 pushed `_fetch_holdings_local` to D(24) and
+  `_fetch_positions_local` to D(22). Three helpers now carry the shared guard logic:
+  `_breaker_guard_frame()` ([broker_apis.py:1597](backend/brokers/broker_apis.py#L1597)),
+  `_interval_gate_frame()` ([:1615](backend/brokers/broker_apis.py#L1615)) and `_lkg_or_fallback()`
+  ([:1644](backend/brokers/broker_apis.py#L1644)). Both functions are back to C(17) and C(15).
+- Tests: `broker/test_watchdog_states.py`; `broker/test_conn_client_degraded_response.py` (12 to 20
+  tests); `broker/test_conn_service_lkg_preload_startup.py` (new); `broker/test_holdings_r1_substitution.py`
+  (new); `broker/test_token_renewal.py::TestDecoratorGetBrokerResolutionFailureIsolation`;
+  `broker/test_positions_r1_substitution.py::TestEnrichmentFailureFreezesToLKG`;
+  `broker/test_seed_db_from_yaml.py` (new, against a real SQLite unique constraint).
+- **Not fixed — deferred to its own broker-layer task.** If the sole healthy Kite account's WebSocket
+  exhausts its ~25-minute Twisted reconnect budget, nothing recovers it intraday. `_started` never
+  resets to False. The one admin "recycle" escape hatch forces the reactor dead and triggers a full
+  conn_service restart, not a clean reconnect.
+- **Not fixed — flagged.** The `?fresh=1` and `skip_ltp` request paths bypass the closed-hours and
+  stale-live snapshot fallback during a genuine full outage. No second "ticker-duty-only" flag exists
+  separate from `is_active`. The stated need is covered by the all-or-nothing disable.
+- **Not fixed — pre-existing, orthogonal.** `holdings.py:_is_full_outage`,
+  `order_release.py:_positions_data_unreliable` and `nav.py:_substitute_degraded_frames` still read only
+  top-level `.attrs`, never the per-account signal. A mixed batch still hits that gap.
+- Invariant: a per-account failure (login, fetch, enrichment or construction) degrades only that
+  account. It must never vanish silently or crash the batch. The conn_service wire must carry the same
+  failure signal an in-process call would.
 
 **Execution mode resets to LIVE on admin/designated prod login (2026-11-02; commit `c7e66df7`)** — A
 forgotten Paper or Shadow toggle from a prior session no longer carries into a new one. On a successful

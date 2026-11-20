@@ -203,9 +203,35 @@ def for_all_accounts(func):
             new_kwargs = kwargs.copy()
             new_kwargs["account"] = acc
             new_kwargs["kite"] = _kite_or_none(acc)
-            if accepts_broker:
-                new_kwargs["broker"] = get_broker(acc)
             try:
+                if accepts_broker:
+                    try:
+                        new_kwargs["broker"] = get_broker(acc)
+                    except (KeyError, ValueError) as be:
+                        # Broker resolution failed for a misconfigured /
+                        # unregistered account — a config/registry bug,
+                        # distinct from a broker login failure. Degrade
+                        # gracefully for this ONE account instead of
+                        # propagating uncaught through
+                        # `list(pool.map(_per_account, accs))`, which would
+                        # abort every other account's result in the same
+                        # batch. The only current callers of
+                        # @for_all_accounts are the pd.DataFrame-returning
+                        # fetch_holdings/positions/margins wrappers, which
+                        # already treat an empty, fetch_failed-flagged
+                        # frame as their "no data for this account"
+                        # sentinel (see broker_apis.py's own except
+                        # blocks) — mirror that shape here rather than
+                        # inventing a new one.
+                        logger.error(
+                            "[for_all_accounts] account=%s broker resolution failed: %s",
+                            acc, be,
+                        )
+                        import pandas as pd
+                        empty = pd.DataFrame()
+                        empty.attrs["fetch_failed"] = True
+                        empty.attrs["account"] = acc
+                        return empty
                 return func(*args, **new_kwargs)
             except Exception as exc:
                 if is_auth_error_str(str(exc)):

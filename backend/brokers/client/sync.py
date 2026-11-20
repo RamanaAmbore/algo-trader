@@ -85,7 +85,23 @@ def _fetch_per_account(path: str) -> list[pd.DataFrame]:
     for entry in payload.accounts or []:
         rows = entry.rows or []
         df = pd.DataFrame(rows)
-        if not entry.ok:
+        # Reconstitute the exact `.attrs` shape `broker_apis.
+        # _stale_substitute_frame()` sets on an in-process DataFrame, so
+        # a frame rebuilt from the wire looks identical to one that
+        # never crossed the UDS boundary — every downstream reader
+        # (positions.py:_extract_per_account_signal and friends) keys
+        # off these exact attrs, never the envelope struct itself.
+        if entry.account:
+            df.attrs["account"] = entry.account
+        if entry.stale:
+            df.attrs["stale"] = True
+        if entry.stale_since is not None:
+            df.attrs["stale_since"] = entry.stale_since
+        # `entry.fetch_failed` is the authoritative 2026-11 field;
+        # `not entry.ok` is kept as a fallback for an older,
+        # not-yet-redeployed conn_service that only ever sent `ok`
+        # (see InternalAccountEnvelope's own docstring on this hazard).
+        if entry.fetch_failed or not entry.ok:
             df.attrs["fetch_failed"] = True
         out.append(df)
     return out

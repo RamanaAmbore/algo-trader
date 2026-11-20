@@ -214,3 +214,65 @@ class TestFlatThenFailsDoesNotResurrect:
             "The flat successful fetch must have overwritten the prior "
             "non-empty LKG entry"
         )
+
+
+# ---------------------------------------------------------------------------
+# Enrichment-stage failure — a malformed row shape for ONE account must
+# also freeze to LKG rather than raising past the per-account function
+# (which @for_all_accounts' ThreadPoolExecutor.map relies on to isolate
+# one account's failure from the rest of the batch).
+# ---------------------------------------------------------------------------
+
+class TestEnrichmentFailureFreezesToLKG:
+    def _call_with_broken_enrichment(self, broker_positions_return):
+        from backend.brokers.broker_apis import _fetch_positions_local
+        from unittest.mock import MagicMock, patch
+
+        mock_broker = MagicMock()
+        mock_broker.positions.return_value = broker_positions_return
+
+        undecorated = _fetch_positions_local.__wrapped__
+        with patch(
+            "backend.brokers.broker_apis._enrich_positions",
+            side_effect=RuntimeError("malformed row shape"),
+        ):
+            return undecorated(account=ACCOUNT, broker=mock_broker, kite=None)
+
+    def test_enrich_positions_exception_with_lkg_substitutes(self):
+        from backend.brokers.broker_apis import _record_lkg_frame
+
+        seed = pd.DataFrame([
+            {"tradingsymbol": "TCS", "quantity": 10, "average_price": 3400.0,
+             "last_price": 3500.0, "prev_close": 3480.0, "account": ACCOUNT,
+             "exchange": "NSE", "product": "CNC", "pnl": 1000.0,
+             "multiplier": 1},
+        ])
+        _record_lkg_frame("positions", ACCOUNT, seed)
+
+        df = self._call_with_broken_enrichment(
+            {"net": [{"tradingsymbol": "TCS", "quantity": 10}]}
+        )
+
+        assert not df.empty, (
+            "An enrichment failure for ONE account must freeze to LKG, not "
+            "propagate past the per-account boundary"
+        )
+        assert df.attrs.get("fetch_failed") is not True
+        assert df.attrs.get("stale") is True
+        assert set(df["tradingsymbol"]) == {"TCS"}
+
+    def test_enrich_positions_exception_without_lkg_falls_back_to_fetch_failed(self):
+        df = self._call_with_broken_enrichment(
+            {"net": [{"tradingsymbol": "TCS", "quantity": 10}]}
+        )
+        assert df.empty
+        assert df.attrs.get("fetch_failed") is True
+        assert df.attrs.get("account") == ACCOUNT
+
+    def test_enrich_positions_exception_does_not_raise(self):
+        """The enrichment exception must never propagate out of
+        `_fetch_positions_local` itself."""
+        df = self._call_with_broken_enrichment(
+            {"net": [{"tradingsymbol": "TCS", "quantity": 10}]}
+        )
+        assert isinstance(df, pd.DataFrame)

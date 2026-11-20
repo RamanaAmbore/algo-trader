@@ -733,6 +733,15 @@ class KiteConnection:
             except Exception:
                 pass
 
+    def is_login_cooling_off(self) -> bool:
+        """Public read of the login cool-off state set by
+        `_attempt_login_with_cooloff()` (see `_login_blocked_until`
+        above). Lets a caller (e.g. the ticker-failover watchdog in
+        `backend/brokers/service/app.py`) proactively skip an account
+        that's known to be cooling off, instead of discovering it only
+        after `_resolve_kite_creds()` raises/returns empty."""
+        return _time_mod.time() < self._login_blocked_until
+
     @retry_kite_conn(_retry_count)
     def login(self):
         try:
@@ -2362,6 +2371,17 @@ class Connections(SingletonBase):
         `broker_accounts` table, encrypting the three secret columns.
         Returns the number of rows inserted. No-op when YAML is empty
         or the table already has rows (caller checks emptiness first).
+
+        `_load_active_broker_rows()` calls this whenever its `is_active`
+        filter returns zero rows — which also happens when every
+        previously-seeded account has since been disabled (e.g. an
+        operator disables the last remaining active account). Without
+        a guard here, re-running this unconditionally re-INSERTs every
+        `secrets.yaml` account, including ones that already exist as a
+        (now disabled) row — `BrokerAccount.account` is `unique=True`,
+        so that raises an uncaught IntegrityError. Guard: look up every
+        account code already present (active or not) and skip those —
+        only genuinely new codes get inserted.
         """
         accts = secrets.get("kite_accounts") or {}
         if not accts:
@@ -2370,10 +2390,17 @@ class Connections(SingletonBase):
         from backend.api.database import shared_async_session
         from backend.api.models    import BrokerAccount
         from backend.shared.helpers.broker_creds import encrypt
+        from sqlalchemy            import select
 
         n = 0
         async with shared_async_session() as s:
+            existing = set(
+                (await s.execute(select(BrokerAccount.account))).scalars().all()
+            )
+            skipped = [code for code in accts if code in existing]
             for code, blob in accts.items():
+                if code in existing:
+                    continue
                 row = BrokerAccount(
                     account=code,
                     broker_id=str(blob.get("broker") or "kite"),
@@ -2387,12 +2414,19 @@ class Connections(SingletonBase):
                 )
                 s.add(row)
                 n += 1
-            await s.commit()
-        logger.warning(
-            f"broker_accounts: seeded {n} account(s) from secrets.yaml. "
-            f"Subsequent edits should go through /admin/brokers; "
-            f"the YAML rows remain as a recovery backup."
-        )
+            if n:
+                await s.commit()
+        if skipped:
+            logger.info(
+                f"broker_accounts: skipped re-seeding {len(skipped)} "
+                f"account(s) already present in the table: {sorted(skipped)}"
+            )
+        if n:
+            logger.warning(
+                f"broker_accounts: seeded {n} account(s) from secrets.yaml. "
+                f"Subsequent edits should go through /admin/brokers; "
+                f"the YAML rows remain as a recovery backup."
+            )
         return n
 
 

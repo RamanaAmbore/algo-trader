@@ -40,24 +40,43 @@ import pytest
 # ─────────────────────────────────────────────────────────────────────────────
 
 class MockConnection:
-    """Mock Kite connection with controllable token state."""
+    """Mock Kite connection with controllable token state.
 
-    def __init__(self, api_key: str, token: str | None = "token_xyz"):
+    `cooling_off`, when True, makes `is_login_cooling_off()` report an
+    active login cool-off — same accessor as the real
+    `KiteConnection.is_login_cooling_off()` in connections.py. Default
+    False mirrors a real connection with no active cool-off, and a
+    connection-like object that doesn't implement the accessor at all
+    (e.g. a bare MagicMock in other tests) must behave identically —
+    see `_is_login_cooling_off()`'s `is True` check in app.py.
+    """
+
+    def __init__(self, api_key: str, token: str | None = "token_xyz", cooling_off: bool = False):
         self.api_key = api_key
         self.token = token
+        self._cooling_off = cooling_off
 
     def get_access_token(self) -> str | None:
         return self.token
 
+    def is_login_cooling_off(self) -> bool:
+        return self._cooling_off
 
-def _make_mock_connections(kite_accounts: dict[str, str | None]) -> MagicMock:
+
+def _make_mock_connections(
+    kite_accounts: dict[str, str | None],
+    cooling_off: set[str] | None = None,
+) -> MagicMock:
     """Create a mock Connections singleton with specified Kite accounts.
 
     kite_accounts: {account_id: token_value_or_None}
+    cooling_off: account codes whose MockConnection reports an active
+    login cool-off via is_login_cooling_off().
     """
+    cooling_off = cooling_off or set()
     mock_conn = MagicMock()
     mock_conn.conn = {
-        acct: MockConnection(f"api_{acct}", token=token)
+        acct: MockConnection(f"api_{acct}", token=token, cooling_off=acct in cooling_off)
         for acct, token in kite_accounts.items()
     }
     mock_conn._priority_map = {
@@ -469,3 +488,316 @@ class TestWatchdogSpawnInvariant:
 
             _mock_start.assert_called_once()
             _mock_watchdog.assert_called_once()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestIsLoginCoolingOff — the proactive-skip accessor in app.py
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestIsLoginCoolingOff:
+    """_is_login_cooling_off(account) in app.py — the proactive skip used by
+    _first_live_failover_candidate()."""
+
+    def test_true_when_connection_reports_cooling_off(self):
+        from backend.brokers.service.app import _is_login_cooling_off
+
+        mock_conns = _make_mock_connections(
+            {"ZG0790": "token1"}, cooling_off={"ZG0790"}
+        )
+        with patch("backend.brokers.connections.Connections", return_value=mock_conns):
+            assert _is_login_cooling_off("ZG0790") is True
+
+    def test_false_when_connection_not_cooling_off(self):
+        from backend.brokers.service.app import _is_login_cooling_off
+
+        mock_conns = _make_mock_connections({"ZG0790": "token1"})
+        with patch("backend.brokers.connections.Connections", return_value=mock_conns):
+            assert _is_login_cooling_off("ZG0790") is False
+
+    def test_false_when_account_missing(self):
+        from backend.brokers.service.app import _is_login_cooling_off
+
+        mock_conns = _make_mock_connections({"ZG0790": "token1"})
+        with patch("backend.brokers.connections.Connections", return_value=mock_conns):
+            assert _is_login_cooling_off("NONEXISTENT") is False
+
+    def test_false_for_bare_mock_without_accessor(self):
+        """A connection-like object that doesn't implement
+        is_login_cooling_off() at all (e.g. a bare MagicMock, as other
+        tests in this module and test_conn_service_routes.py use) must
+        never be treated as cooling off just because calling an
+        auto-vivified attribute happens to return a truthy MagicMock —
+        this is the `is True` check's whole reason for existing."""
+        from backend.brokers.service.app import _is_login_cooling_off
+
+        mock_conns = MagicMock()
+        mock_conns.conn = {"ZG0790": MagicMock(spec=["api_key", "get_access_token"])}
+        with patch("backend.brokers.connections.Connections", return_value=mock_conns):
+            assert _is_login_cooling_off("ZG0790") is False
+
+    def test_false_on_lookup_exception(self):
+        from backend.brokers.service.app import _is_login_cooling_off
+
+        with patch("backend.brokers.connections.Connections", side_effect=RuntimeError("boom")):
+            assert _is_login_cooling_off("ZG0790") is False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestFirstLiveFailoverCandidate — the extracted candidate-loop helper
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestFirstLiveFailoverCandidate:
+    """_first_live_failover_candidate(eligible) — tries each candidate, in
+    order, until one resolves a live token."""
+
+    def test_skips_dead_candidate_returns_second(self):
+        from backend.brokers.service.app import _first_live_failover_candidate
+
+        mock_conns = _make_mock_connections({
+            "ZG0790": None,      # dead — no token
+            "ZJ6294": "token2",  # live
+            "ZH1111": "token3",  # live, never reached
+        })
+        with patch("backend.brokers.connections.Connections", return_value=mock_conns):
+            result = _first_live_failover_candidate(["ZG0790", "ZJ6294", "ZH1111"])
+            assert result == ("ZJ6294", "api_ZJ6294", "token2")
+
+    def test_skips_cooling_off_candidate_without_resolving_creds(self):
+        """A candidate reported as cooling off must be skipped WITHOUT
+        ever calling get_access_token() on it."""
+        from backend.brokers.service.app import _first_live_failover_candidate
+
+        mock_conns = _make_mock_connections(
+            {"ZG0790": "token1", "ZJ6294": "token2"},
+            cooling_off={"ZG0790"},
+        )
+        cooling_conn = mock_conns.conn["ZG0790"]
+        cooling_conn.get_access_token = MagicMock(
+            side_effect=AssertionError("must not be called while cooling off")
+        )
+        with patch("backend.brokers.connections.Connections", return_value=mock_conns):
+            result = _first_live_failover_candidate(["ZG0790", "ZJ6294"])
+            assert result == ("ZJ6294", "api_ZJ6294", "token2")
+            cooling_conn.get_access_token.assert_not_called()
+
+    def test_returns_none_when_all_dead(self):
+        from backend.brokers.service.app import _first_live_failover_candidate
+
+        mock_conns = _make_mock_connections({"ZG0790": None, "ZJ6294": None})
+        with patch("backend.brokers.connections.Connections", return_value=mock_conns):
+            result = _first_live_failover_candidate(["ZG0790", "ZJ6294"])
+            assert result is None
+
+    def test_returns_none_for_empty_list(self):
+        from backend.brokers.service.app import _first_live_failover_candidate
+
+        assert _first_live_failover_candidate([]) is None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestAttemptFailoverSwapMultiCandidate — the key regression test. With
+# only 2 real Kite accounts configured today, this exact scenario (a dead
+# top-priority candidate with a healthy THIRD candidate behind a second
+# dead one) can't be exercised against live config — hence 3+ mocks.
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestAttemptFailoverSwapMultiCandidate:
+    """_attempt_failover_swap() must try every eligible candidate, in
+    priority order, not just eligible[0] — regression test for the bug
+    where a dead top-priority candidate was re-picked identically (and
+    given up on) every single watchdog cycle forever, even with a
+    healthier lower-priority candidate sitting right behind it."""
+
+    def _ticker(self, current_account: str = "ZCURR"):
+        ticker = MagicMock()
+        ticker.swaps_since.return_value = 0
+        ticker.current_account.return_value = current_account
+        ticker.is_account_in_failover_cooloff.return_value = False
+        ticker.is_reactor_dead.return_value = False
+        ticker.restart_with_account.return_value = True
+        return ticker
+
+    def test_top_candidate_dead_swaps_to_second(self):
+        """3 candidates; #1 has no live token → swap goes to #2, and #3's
+        credentials are never even resolved."""
+        from backend.brokers.service.app import _attempt_failover_swap
+        import logging
+
+        mock_conns = _make_mock_connections({
+            "ZCURR": "token_current",  # excluded (current account)
+            "ZA0001": None,            # dead — top priority among eligible
+            "ZB0002": "token_b",       # live — should be picked
+            "ZC0003": "token_c",       # live, never reached
+        })
+        third_conn = mock_conns.conn["ZC0003"]
+        third_conn.get_access_token = MagicMock(
+            side_effect=AssertionError("ZC0003 must not be resolved once ZB0002 succeeds")
+        )
+
+        ticker = self._ticker()
+        log = logging.getLogger(__name__)
+
+        with patch("backend.brokers.connections.Connections", return_value=mock_conns), \
+             patch("backend.brokers.registry._broker_id_for", return_value="zerodha_kite"), \
+             patch("backend.brokers.service.app._write_ticker_swap_audit"):
+            result = _attempt_failover_swap(ticker, log, cooldown_s=300, slowed_s=60)
+
+        assert result is True
+        ticker.restart_with_account.assert_called_once_with("api_ZB0002", "token_b", "ZB0002")
+        third_conn.get_access_token.assert_not_called()
+
+    def test_top_two_candidates_dead_swaps_to_third(self):
+        """3 candidates; #1 and #2 have no live token → swap goes to #3."""
+        from backend.brokers.service.app import _attempt_failover_swap
+        import logging
+
+        mock_conns = _make_mock_connections({
+            "ZCURR": "token_current",
+            "ZA0001": None,
+            "ZB0002": None,
+            "ZC0003": "token_c",
+        })
+
+        ticker = self._ticker()
+        log = logging.getLogger(__name__)
+
+        with patch("backend.brokers.connections.Connections", return_value=mock_conns), \
+             patch("backend.brokers.registry._broker_id_for", return_value="zerodha_kite"), \
+             patch("backend.brokers.service.app._write_ticker_swap_audit"):
+            result = _attempt_failover_swap(ticker, log, cooldown_s=300, slowed_s=60)
+
+        assert result is True
+        ticker.restart_with_account.assert_called_once_with("api_ZC0003", "token_c", "ZC0003")
+
+    def test_cooling_off_candidate_skipped_in_favour_of_next(self):
+        """#2 is in an active login cool-off (is_login_cooling_off() → True)
+        → it's skipped entirely (its get_access_token is never called),
+        and the swap proceeds to #3."""
+        from backend.brokers.service.app import _attempt_failover_swap
+        import logging
+
+        mock_conns = _make_mock_connections(
+            {
+                "ZCURR": "token_current",
+                "ZA0001": "token_a",
+                "ZB0002": "token_b",
+                "ZC0003": "token_c",
+            },
+            cooling_off={"ZB0002"},
+        )
+        # Make ZA0001 the "dead" one so the swap has to pass over both a
+        # dead candidate AND a cooling-off candidate to reach ZC0003.
+        mock_conns.conn["ZA0001"].token = None
+        cooling_conn = mock_conns.conn["ZB0002"]
+        cooling_conn.get_access_token = MagicMock(
+            side_effect=AssertionError("ZB0002 must not be resolved while cooling off")
+        )
+
+        ticker = self._ticker()
+        log = logging.getLogger(__name__)
+
+        with patch("backend.brokers.connections.Connections", return_value=mock_conns), \
+             patch("backend.brokers.registry._broker_id_for", return_value="zerodha_kite"), \
+             patch("backend.brokers.service.app._write_ticker_swap_audit"):
+            result = _attempt_failover_swap(ticker, log, cooldown_s=300, slowed_s=60)
+
+        assert result is True
+        ticker.restart_with_account.assert_called_once_with("api_ZC0003", "token_c", "ZC0003")
+        cooling_conn.get_access_token.assert_not_called()
+
+    def test_all_candidates_dead_logs_warning_once_and_does_not_swap(self):
+        """Every eligible candidate lacks a live token → no restart is
+        attempted, and the "no live token" warning is logged exactly
+        once for the whole cycle (not once per candidate)."""
+        from backend.brokers.service.app import _attempt_failover_swap
+        import logging
+
+        mock_conns = _make_mock_connections({
+            "ZCURR": "token_current",
+            "ZA0001": None,
+            "ZB0002": None,
+            "ZC0003": None,
+        })
+
+        ticker = self._ticker()
+        log = logging.getLogger("test_all_candidates_dead")
+
+        with patch("backend.brokers.connections.Connections", return_value=mock_conns), \
+             patch("backend.brokers.registry._broker_id_for", return_value="zerodha_kite"), \
+             patch("backend.brokers.service.app._write_ticker_swap_audit"), \
+             patch.object(log, "warning") as mock_warning:
+            result = _attempt_failover_swap(ticker, log, cooldown_s=300, slowed_s=60)
+
+        ticker.restart_with_account.assert_not_called()
+        # Exactly one summary warning for the whole cycle, not 3 (one per
+        # dead candidate).
+        mock_warning.assert_called_once()
+        assert "live token" in mock_warning.call_args[0][0].lower()
+        # Chosen semantics (documented in _attempt_failover_swap's own
+        # docstring): exhausting the list without finding a live token is
+        # "skip this cycle", the same return value the pre-fix code used
+        # for its single-candidate case — it is NOT escalated to the
+        # reactor-dead / unavailable_mode=True branch.
+        assert result is True
+
+    def test_three_dead_candidates_never_resolves_fourth_twice(self):
+        """Sanity check that the loop terminates and tries each dead
+        candidate's credentials exactly once, not in some retry loop."""
+        from backend.brokers.service.app import _attempt_failover_swap
+        import logging
+
+        mock_conns = _make_mock_connections({
+            "ZCURR": "token_current",
+            "ZA0001": None,
+            "ZB0002": None,
+            "ZC0003": None,
+        })
+        for acct in ("ZA0001", "ZB0002", "ZC0003"):
+            mock_conns.conn[acct].get_access_token = MagicMock(return_value=None)
+
+        ticker = self._ticker()
+        log = logging.getLogger(__name__)
+
+        with patch("backend.brokers.connections.Connections", return_value=mock_conns), \
+             patch("backend.brokers.registry._broker_id_for", return_value="zerodha_kite"), \
+             patch("backend.brokers.service.app._write_ticker_swap_audit"):
+            _attempt_failover_swap(ticker, log, cooldown_s=300, slowed_s=60)
+
+        for acct in ("ZA0001", "ZB0002", "ZC0003"):
+            mock_conns.conn[acct].get_access_token.assert_called_once()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestKiteConnectionIsLoginCoolingOff — the real accessor on KiteConnection
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestKiteConnectionIsLoginCoolingOff:
+    """KiteConnection.is_login_cooling_off() — the public read of
+    _login_blocked_until used by app.py's failover candidate loop.
+
+    Uses __new__ to bypass __init__ (which does real credential setup,
+    network calls, and disk reads) — only _login_blocked_until matters
+    for this accessor."""
+
+    def test_false_when_never_blocked(self):
+        from backend.brokers.connections import KiteConnection
+
+        conn = KiteConnection.__new__(KiteConnection)
+        conn._login_blocked_until = 0.0
+        assert conn.is_login_cooling_off() is False
+
+    def test_true_when_blocked_until_is_in_the_future(self):
+        from backend.brokers.connections import KiteConnection
+        import time
+
+        conn = KiteConnection.__new__(KiteConnection)
+        conn._login_blocked_until = time.time() + 120.0
+        assert conn.is_login_cooling_off() is True
+
+    def test_false_once_blocked_until_is_in_the_past(self):
+        from backend.brokers.connections import KiteConnection
+        import time
+
+        conn = KiteConnection.__new__(KiteConnection)
+        conn._login_blocked_until = time.time() - 5.0
+        assert conn.is_login_cooling_off() is False

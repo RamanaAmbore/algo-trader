@@ -19,12 +19,15 @@
   import { onDestroy } from 'svelte';
   import { createGrid, ModuleRegistry, AllCommunityModule } from 'ag-grid-community';
   import { mkBaseGridOpts, syncGridRowHeightVar } from '$lib/data/algoGridUtils.js';
-  import { brokerHealthStore, openActivityModal } from '$lib/stores';
+  import { brokerHealthStore, openActivityModal, refreshBrokerHealth } from '$lib/stores';
   ModuleRegistry.registerModules([AllCommunityModule]);
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
   import { brokerAccountDisplayState } from '$lib/data/brokerHealthState.js';
   import { acctStyleVars } from '$lib/account';
   import { pushLayer, popLayer } from '$lib/utils/layerStack.js';
+  import { updateBrokerAccount } from '$lib/api';
+  import { toast } from '$lib/data/toastStore.svelte.js';
+  import { longPress } from '$lib/actions/longPress.js';
 
   /** Bindable: parent (algo layout) toggles this from the 5/5 chip. */
   let { open = $bindable(false) } = $props();
@@ -52,7 +55,7 @@
   // Consume the shared broker-health store (populated by startBrokerHealthPoller
   // in the layout). No local fetch needed — the store already polls at 30 s
   // continuously so the popup shows current data immediately on open.
-  let _rawAccounts = $state(/** @type {Array<{account:string,broker:string,state:string,reason:string,last_good_at:string|null,last_check_at:string|null,is_active_ticker?:boolean,circuit_state?:string,consecutive_fail_count?:number,circuit_open_until?:string|null,circuit_breaker_enabled?:boolean,poll_priority?:string,auto_downgrade_enabled?:boolean,auto_downgraded_at?:string|null,auto_downgrade_reason?:string|null}>} */ ([]));
+  let _rawAccounts = $state(/** @type {Array<{account:string,broker:string,state:string,reason:string,last_good_at:string|null,last_check_at:string|null,is_active_ticker?:boolean,circuit_state?:string,consecutive_fail_count?:number,circuit_open_until?:string|null,circuit_breaker_enabled?:boolean,poll_priority?:string,auto_downgrade_enabled?:boolean,auto_downgraded_at?:string|null,auto_downgrade_reason?:string|null,is_active?:boolean}>} */ ([]));
   // Ticker idle (2026-10-24) — calendar-gated ticker-connect status,
   // distinct from every per-account `state` above (REST-fetch auth
   // health). `idle=true` only means "never attempted today, by design
@@ -83,11 +86,25 @@
   // flip with unchanged account rows would otherwise never redraw the
   // dot/Status/account-name colors. See `brokerAccountDisplayState()`'s
   // docstring for the red/inactive-never-overridden precedence.
+  // `is_active === false` (the operator enable/disable flag, added Nov
+  // 2026 — see BrokerAccountHealth's docstring on the backend) takes
+  // priority over the green/amber/red/idle mapping regardless of what
+  // `state` says — a deliberately-disabled account must never read as
+  // a stale/problem account. This check is INDEPENDENT of `state`: a
+  // disabled account's own `state` can genuinely be 'inactive' (no
+  // fetch attempt recorded — a pre-existing, unrelated meaning), green,
+  // amber, or red depending on its fetch history before it was
+  // disabled — `is_active` alone decides this override, never `state`.
   const accounts = $derived(
     sortAccountsBy(_rawAccounts.map(a => a.account), _orderMap)
       .map(id => _rawAccounts.find(a => a.account === id))
       .filter(Boolean)
-      .map(a => ({ ...a, display_state: brokerAccountDisplayState(a.state, _tickerIdle) }))
+      .map(a => ({
+        ...a,
+        display_state: a.is_active === false
+          ? 'inactive'
+          : brokerAccountDisplayState(a.state, _tickerIdle),
+      }))
   );
 
   function _fmtIso(iso) {
@@ -143,8 +160,15 @@
                      : acct.is_active_ticker ? 'bh-acct-active'
                      : 'bh-acct-spare';
         const cbOptIn = !!acct.circuit_breaker_enabled;
+        // `is_active === false` check is independent of `state` — see
+        // the `accounts` $derived's own comment above for why. Placed
+        // after the circuit-open check (that's a more urgent, separate
+        // operational fact) but before every state-derived string, so
+        // a disabled account never falls through to a red/amber/idle
+        // "problem" title.
         const title = cbOptIn && acct.circuit_state === 'open'
           ? `${acct.account} — circuit open until ${_fmtIso(acct.circuit_open_until)}`
+          : acct.is_active === false ? `${acct.account} — disabled (click to re-enable)`
           : state === 'red' ? `${acct.account} — connection problem (${acct.reason})`
           : state === 'idle' ? `${acct.account} — idle (ticker not connected today; market closed)`
           : state === 'amber' ? `${acct.account} — stale (${acct.reason})`
@@ -195,25 +219,89 @@
     },
   ];
 
+  // ── Row click — toggle that account's enable/disable flag ────────────
+  // Replaces the old behavior (close popup, open the generic unscoped
+  // connection-events log). The generic log is still reachable — via
+  // right-click/long-press below — but now scoped to the clicked row's
+  // own account, which is strictly more useful.
+  async function _onRowClicked(event) {
+    const row = event?.data;
+    if (!row || !row.account) return;
+    // `!== false` so a missing/undefined `is_active` (e.g. an older
+    // cached response mid rolling-deploy) defaults to "currently
+    // active" per spec, rather than reading as already-disabled.
+    const currentIsActive = row.is_active !== false;
+    const action = currentIsActive ? 'Disable' : 'Enable';
+    const ok = confirm(`${action} ${row.account}'s connection?`);
+    if (!ok) return;
+    try {
+      await updateBrokerAccount(row.account, { is_active: !currentIsActive });
+      toast.success(`${row.account} ${currentIsActive ? 'disabled' : 'enabled'}`);
+      // Force an immediate refresh instead of waiting up to 30 s for
+      // the next scheduled poll, so the grid reflects the new state
+      // right away.
+      refreshBrokerHealth();
+    } catch (e) {
+      toast.error(`Failed: ${e?.message || 'could not update account'}`);
+    }
+  }
+
+  // ── Right-click / long-press — open the connection-events activity
+  // log, scoped to the clicked row's account ────────────────────────
+  // This grid is ag-Grid-rendered DOM, not a template element we
+  // control directly, so `longPress.js`'s action is attached to the
+  // GRID CONTAINER once (below, in the same effect that creates the
+  // grid) rather than via a per-row `use:longPress` directive. The
+  // gesture's (clientX, clientY) — real cursor position for a
+  // right-click, the captured touch-start point for a long-press — is
+  // resolved back to the underlying ag-Grid row via
+  // `document.elementFromPoint()` + the row's own `row-index`
+  // attribute + `getDisplayedRowAtIndex()`. `longPress.js`'s own
+  // `contextmenu` listener already calls `e.preventDefault()`, so the
+  // browser's native context menu is suppressed for free — no
+  // separate handler needed for that.
+  function _rowDataAtPoint(x, y) {
+    const el = document.elementFromPoint(x, y);
+    const rowEl = /** @type {HTMLElement|null} */ (el?.closest?.('.ag-row'));
+    if (!rowEl) return null;
+    const idx = rowEl.getAttribute('row-index');
+    if (idx == null) return null;
+    const node = _gridApi?.getDisplayedRowAtIndex(Number(idx));
+    return node?.data ?? null;
+  }
+  function _onRowContextOrLongPress(e) {
+    const row = _rowDataAtPoint(e.clientX, e.clientY);
+    if (!row?.account) return;
+    open = false;
+    openActivityModal('conn', row.account);
+  }
+
+  /** @type {{ destroy: () => void } | null} */
+  let _longPressTeardown = null;
+
   $effect(() => {
     if (!_gridEl) return;
     _gridApi?.destroy();
+    _longPressTeardown?.destroy();
     _gridApi = createGrid(_gridEl, {
       ...mkBaseGridOpts(),
       columnDefs: _colDefs,
       rowData: accounts,
       domLayout: 'autoHeight',
       suppressCellFocus: true,
-      onRowClicked: () => { open = false; openActivityModal('conn'); },
+      onRowClicked: _onRowClicked,
     });
     syncGridRowHeightVar(_gridEl);
+    // Direct function call (not `use:longPress`) — this is plain DOM,
+    // not a template element Svelte controls; see the comment above.
+    _longPressTeardown = longPress(_gridEl, _onRowContextOrLongPress);
   });
 
   $effect(() => {
     _gridApi?.setGridOption('rowData', accounts);
   });
 
-  onDestroy(() => { _gridApi?.destroy(); _gridApi = null; });
+  onDestroy(() => { _gridApi?.destroy(); _gridApi = null; _longPressTeardown?.destroy(); });
 </script>
 
 <!-- Escape is handled by the layerStack coordinator (pushLayer in <script>

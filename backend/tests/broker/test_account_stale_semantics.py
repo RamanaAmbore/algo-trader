@@ -187,12 +187,14 @@ class TestFetchHoldingsLocalAccountStale:
         assert not df.empty
         assert bool(df["account_stale"].iloc[0]) is True
 
-    def test_fetch_exception_does_not_regress_existing_behaviour(self):
-        """`_fetch_holdings_local`'s exception branch does NOT call
-        `_stale_substitute_frame` at all (unlike margins/positions) —
-        this is a pre-existing gap out of scope for this fix. Confirm
-        this fix did not change that: exception still returns an empty,
-        fetch_failed frame."""
+    def test_fetch_exception_still_marks_account_stale(self):
+        """Regression (resilience audit, 2026-11): `_fetch_holdings_local`'s
+        exception branch used to NOT call `_stale_substitute_frame` at
+        all (unlike margins/positions), returning a bare empty
+        fetch_failed frame instead of freezing to last-known-good. Fixed
+        so holdings now matches margins/positions on this path: a genuine
+        fetch exception substitution must carry account_stale=True when
+        an LKG exists."""
         self._seed_holdings_lkg()
 
         broker = MagicMock()
@@ -202,8 +204,8 @@ class TestFetchHoldingsLocalAccountStale:
         undecorated = _fetch_holdings_local.__wrapped__
         df = undecorated(account=ACCOUNT, broker=broker, kite=None)
 
-        assert df.empty
-        assert df.attrs.get("fetch_failed") is True
+        assert not df.empty
+        assert bool(df["account_stale"].iloc[0]) is True
 
 
 # ---------------------------------------------------------------------------

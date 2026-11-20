@@ -745,10 +745,18 @@ class BrokerAccountHealth(msgspec.Struct):
       consecutive_fail_count — number of consecutive failed fetches
       circuit_open_until    — ISO-8601 UTC when the breaker reopens,
                               or None when closed/half-open
+
+    `is_active` (added Nov 2026) mirrors the `broker_accounts.is_active`
+    DB column verbatim — it is a plain operator enable/disable flag,
+    independent of the fetch-derived `state` field above. Defaults to
+    True for back-compat with any in-flight response during a rolling
+    deploy. Do NOT conflate with `state == 'inactive'`, which means
+    "no fetch attempt recorded yet" regardless of whether the account
+    is enabled or disabled.
     """
     account: str
     broker: str                   # 'kite' | 'dhan' | 'groww' | 'unknown'
-    state: str                    # 'green' | 'amber' | 'red'
+    state: str                    # 'green' | 'amber' | 'red' | 'inactive'
     reason: str                   # human-readable, IST-stamped
     last_good_at: Optional[str]   # ISO-8601 UTC, or None
     last_check_at: Optional[str]  # ISO-8601 UTC, or None
@@ -766,6 +774,9 @@ class BrokerAccountHealth(msgspec.Struct):
     # True when the OPEN/HALF-OPEN state machine is active for this account.
     # False (default) for all accounts except DH6847 (startup migration).
     circuit_breaker_enabled: bool = False
+    # Operator enable/disable flag — mirrors `broker_accounts.is_active`.
+    # Default True for back-compat; see class docstring for the full note.
+    is_active: bool = True
 
 
 class BrokerHealthResponse(msgspec.Struct):
@@ -904,14 +915,19 @@ def _derive_account_health(entry: dict, now: float) -> tuple[str, str, str, int,
     return _hlth_resolve_state(entry, now, cb_state, cb_count, cb_until_iso, cb_until)
 
 
-async def _load_broker_label_and_priority_maps() -> tuple[dict[str, str], dict[str, dict]]:
-    """Query DB for broker label + poll-priority metadata for every account.
+async def _load_broker_label_and_priority_maps() -> tuple[dict[str, str], dict[str, dict], dict[str, bool]]:
+    """Query DB for broker label + poll-priority + is_active metadata for every account.
 
-    Returns (broker_label_map, poll_priority_map). Both are empty dicts on
-    DB failure (caller logs a warning and falls back to sensible defaults).
+    Returns (broker_label_map, poll_priority_map, active_map). All three are
+    empty dicts on DB failure (caller logs a warning and falls back to
+    sensible defaults). `active_map` mirrors `BrokerAccount.is_active` —
+    this is purely additive plumbing for the navbar badge's `is_active`
+    field on `BrokerAccountHealth`; it does NOT feed `_derive_account_health`
+    or the existing green/amber/red `state` logic.
     """
     broker_label_map: dict[str, str] = {}
     poll_priority_map: dict[str, dict] = {}
+    active_map: dict[str, bool] = {}
     async with shared_async_session() as _sess:
         rows = (await _sess.execute(
             select(BrokerAccount).order_by(BrokerAccount.account)
@@ -926,7 +942,8 @@ async def _load_broker_label_and_priority_maps() -> tuple[dict[str, str], dict[s
                 "auto_downgrade_reason": getattr(row, "auto_downgrade_reason", None),
                 "circuit_breaker_enabled": bool(getattr(row, "circuit_breaker_enabled", False)),
             }
-    return broker_label_map, poll_priority_map
+            active_map[row.account] = bool(getattr(row, "is_active", True))
+    return broker_label_map, poll_priority_map, active_map
 
 
 def _resolve_active_ticker_account() -> str:
@@ -945,6 +962,7 @@ def _build_account_health_entry(
     broker_label_map: dict[str, str],
     poll_priority_map: dict[str, dict],
     active_ticker_acct: str,
+    active_map: dict[str, bool],
 ) -> BrokerAccountHealth:
     """Construct a single BrokerAccountHealth struct from raw health-map entry."""
     state, reason, cb_state, cb_count, cb_until_iso = _derive_account_health(entry, now)
@@ -968,6 +986,7 @@ def _build_account_health_entry(
         auto_downgraded_at=_pp.get("auto_downgraded_at"),
         auto_downgrade_reason=_pp.get("auto_downgrade_reason"),
         circuit_breaker_enabled=bool(_pp.get("circuit_breaker_enabled", False)),
+        is_active=active_map.get(acct, True),
     )
 
 
@@ -1027,8 +1046,9 @@ class BrokerHealthController(Controller):
 
         broker_label_map: dict[str, str] = {}
         poll_priority_map: dict[str, dict] = {}
+        active_map: dict[str, bool] = {}
         try:
-            broker_label_map, poll_priority_map = await _load_broker_label_and_priority_maps()
+            broker_label_map, poll_priority_map, active_map = await _load_broker_label_and_priority_maps()
         except Exception as _label_exc:
             logger.warning(
                 "broker-health: broker_label_map DB query failed — "
@@ -1046,14 +1066,16 @@ class BrokerHealthController(Controller):
             accounts: list[BrokerAccountHealth] = [
                 _build_account_health_entry(
                     acct, health_map.get(acct, {}), now,
-                    broker_label_map, poll_priority_map, active_ticker_acct
+                    broker_label_map, poll_priority_map, active_ticker_acct,
+                    active_map,
                 )
                 for acct in broker_label_map
             ]
         else:
             accounts = [
                 _build_account_health_entry(
-                    acct, entry, now, broker_label_map, poll_priority_map, active_ticker_acct
+                    acct, entry, now, broker_label_map, poll_priority_map, active_ticker_acct,
+                    active_map,
                 )
                 for acct, entry in health_map.items()
             ]
