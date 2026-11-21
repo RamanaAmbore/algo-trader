@@ -429,6 +429,109 @@ def test_snapshot_confirmed_empty_marker_still_writes_when_market_open_is_false(
     )
 
 
+def test_confirmed_empty_marker_uses_the_same_floor_walked_target_date_as_sibling_rows():
+    """F12 follow-up audit item (2026-11-20/21, closed-hours re-enable path):
+    `brokers.py:_snapshot_books_if_closed` floor-walks `now_ist` back to the
+    last REAL trading session via `_last_completed_trading_session_date`
+    (e.g. a Saturday re-enable floor-walks to the prior Friday) and passes
+    that explicit `target_date` into `snapshot_daily_book()`. The audit
+    flagged — as UNCONFIRMED, not a confirmed bug — the risk that the
+    confirmed-empty marker write (`_write_confirmed_empty_marker`, reached
+    via `_prune_and_mark_positions` when the broker confirms zero open
+    positions) might independently derive its own date (e.g. bare
+    `now_ist.date()`) instead of using the passed-through `target_date`,
+    which would corrupt `background.py:_pcf_eod_already_fired_today`'s
+    account-unscoped `date = :today` existence check for every OTHER
+    account on a wrongly-dated day (the exact prior incident this module's
+    own docstrings document for the sibling positions/holdings rows).
+
+    This drives the REAL (unmocked) `_holdings_rows` / `_write_confirmed_
+    empty_marker` code paths — only `_upsert_rows` is replaced, to capture
+    every row dict that would have been written instead of touching a real
+    DB — and asserts every row produced by this one call, INCLUDING the
+    `positions_empty` marker, carries the IDENTICAL `date` value: the
+    explicitly-passed floor-walked `target_date` (a Friday), never
+    `now_ist.date()` (the Saturday the re-enable actually happened on).
+
+    Outcome: CONFIRMED NOT REPRODUCIBLE. `_prune_and_mark_positions` and
+    `_write_confirmed_empty_marker` both take `target_date` as a plain
+    parameter and use it as-is — there is no independent date derivation
+    anywhere on this path. This test locks that in.
+    """
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo
+    from backend.api.algo.daily_snapshot import snapshot_daily_book
+    import backend.api.algo.daily_snapshot as ds
+
+    # Saturday 2026-11-21, 10:30 IST — the re-enable happens here.
+    now_ist = _dt(2026, 11, 21, 10, 30, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+    # The caller (_snapshot_books_if_closed) has already floor-walked past
+    # the weekend to Friday 2026-11-20 — the last real trading session —
+    # and passes THAT in explicitly, never letting snapshot_daily_book
+    # fall back to session_date_of(now_ist) at all.
+    floor_walked_target_date = date(2026, 11, 20)
+    assert now_ist.date() != floor_walked_target_date, (
+        "scenario sanity check — now_ist.date() must differ from the "
+        "floor-walked target_date, or this test can't distinguish the two"
+    )
+
+    raw_data = {
+        "holdings": [],
+        "positions": [],  # broker confirms zero open positions → triggers marker write
+        "trades": [], "funds": [],
+        "positions_confirmed": True,
+    }
+
+    fake_broker = MagicMock()
+    fake_broker.account = ACCOUNT
+    mock_connections = MagicMock()
+    mock_connections.conn = {ACCOUNT: MagicMock()}
+    mock_loop = _make_loop_mock(raw_data)
+
+    captured_rows: list[dict] = []
+
+    async def fake_upsert(rows):
+        captured_rows.extend(rows)
+        return len(rows)
+
+    with (
+        patch("backend.api.algo.daily_snapshot._get_connections",
+              return_value=mock_connections),
+        patch("backend.brokers.registry.all_brokers",
+              return_value=[fake_broker]),
+        patch.object(ds, "timestamp_indian", return_value=now_ist),
+        patch.object(ds, "_upsert_rows", side_effect=fake_upsert),
+        patch("asyncio.get_running_loop", return_value=mock_loop),
+    ):
+        result = asyncio.run(snapshot_daily_book(
+            target_date=floor_walked_target_date, market_open=False,
+        ))
+
+    assert result["errors"] == [], f"snapshot_daily_book reported errors: {result['errors']}"
+
+    marker_rows = [r for r in captured_rows if r["kind"] == "positions_empty"]
+    assert len(marker_rows) == 1, (
+        f"expected exactly one positions_empty marker row, got {marker_rows!r}"
+    )
+    assert marker_rows[0]["date"] == floor_walked_target_date, (
+        "the confirmed-empty marker must carry the same explicitly-passed "
+        f"target_date as every sibling row — got {marker_rows[0]['date']!r}, "
+        f"expected {floor_walked_target_date!r}"
+    )
+    assert marker_rows[0]["date"] != now_ist.date(), (
+        "the confirmed-empty marker must NEVER fall back to now_ist.date() "
+        f"(the real-world Saturday) — got {marker_rows[0]['date']!r}"
+    )
+    # Every other row this call produced (none here, since holdings/
+    # positions are both empty — but assert the invariant generally so a
+    # future broker-data addition to this fixture is caught too) agrees
+    # with the marker on `date`.
+    distinct_dates = {r["date"] for r in captured_rows}
+    assert distinct_dates == {floor_walked_target_date}, (
+        f"every row this call produced must share one date — got {distinct_dates!r}"
+    )
+
+
 def test_snapshot_skips_prune_on_broker_positions_failure():
     """When broker.positions() raises, raw['positions'] stays None.
     _delete_orphan_positions must NOT be called — guards against wiping
