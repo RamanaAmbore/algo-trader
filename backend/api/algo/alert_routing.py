@@ -56,13 +56,9 @@ _PER_SLUG_OVERRIDES: dict[str, list[dict]] = {
     "fill-alert": [
         {"channel": "telegram", "enabled": True},
     ],
-    # 2026-11-04 channel-routing audit (operator: "ntfy for more high
-    # priority alerts... not overwhelmed") — this is the blanket catch-all
-    # for ANY uncaught ERROR+ log line anywhere in the backend, not a
-    # curated high-priority signal. Pushing every one of those to ntfy
-    # was the single most likely source of ntfy noise. Telegram-only now;
-    # a genuinely high/urgent condition already has its own dedicated
-    # agent with its own ntfy row in this table.
+    # Blanket catch-all for ANY uncaught ERROR+ log line, not a curated
+    # high-priority signal — Telegram-only to avoid ntfy noise; a
+    # genuinely urgent condition has its own dedicated row below.
     "error-alert": [
         {"channel": "telegram", "enabled": True},
     ],
@@ -70,9 +66,6 @@ _PER_SLUG_OVERRIDES: dict[str, list[dict]] = {
         {"channel": "telegram", "enabled": True},
         {"channel": "ntfy", "enabled": True, "priority": "urgent"},
     ],
-    # 2026-10 channel-routing fix — "every alert goes to Telegram, with
-    # no exceptions" (operator requirement #3): this agent used to be
-    # ntfy-only. Telegram added; ntfy kept as-is.
     "partial-gtt-alert": [
         {"channel": "telegram", "enabled": True},
         {"channel": "ntfy", "enabled": True, "priority": "urgent"},
@@ -81,11 +74,8 @@ _PER_SLUG_OVERRIDES: dict[str, list[dict]] = {
         {"channel": "telegram", "enabled": True},
         {"channel": "ntfy", "enabled": True, "priority": "urgent"},
     ],
-    # 2026-10-28 noise tightening (operator: "ntfy and email should be
-    # for important updates and for operator to take action") — a
-    # wing_skip/wing_offset_skip is an FYI notice ("this leg was
-    # skipped"), not something the operator needs to act on right now.
-    # Dropped ntfy (was priority="high"); telegram still carries it.
+    # A wing_skip/wing_offset_skip is FYI, not action-required — telegram
+    # only, no ntfy.
     "template-attach-high": [
         {"channel": "telegram", "enabled": True},
     ],
@@ -107,44 +97,28 @@ _PER_SLUG_OVERRIDES: dict[str, list[dict]] = {
     "mcp-ping-alert": [
         {"channel": "telegram", "enabled": True, "gate": False},
     ],
-    # 2026-10-28 noise tightening — a routine, self-resolving
-    # reconciliation correction (telemetry about something that ALREADY
-    # happened automatically), not an action the operator needs to take
-    # right now. Dropped ntfy (was priority="urgent"); telegram kept.
+    # A routine, self-resolving reconciliation correction — FYI, not
+    # action-required — telegram only.
     "order-correction-alert": [
         {"channel": "telegram", "enabled": True, "gate": False},
     ],
-    # 2026-10 channel-routing fix — operator correction: deploy-sync
-    # alerts reach "the telegram code deployment alerts channel alone"
-    # — a DEDICATED Telegram bot/chat (`telegram_bot_token_deploy`/
-    # `telegram_chat_id_deploy`, falling back to the general ops
-    # bot/chat when absent — same fallback pair the standalone
-    # `webhook/notify_deploy.py` script already uses for its own,
-    # separate deploy-OK/FAIL pings), via the `telegram_deploy` channel
-    # (`event_agents.py:_send_telegram_deploy_html`). Explicitly NOT the
-    # generic `telegram` channel, NOT ntfy, NOT email — a deploy-sync
-    # notice is a dev/ops concern, not a phone page, and must not share
-    # the operator's main ops Telegram feed either.
+    # Dedicated `telegram_deploy` channel (its own bot/chat, see
+    # `event_agents.py:_send_telegram_deploy_html`) — a dev/ops concern,
+    # deliberately kept off the main ops Telegram feed and off ntfy/email.
     "deploy-sync-alert": [
         {"channel": "telegram_deploy", "enabled": True, "gate": False},
     ],
     # CRITICAL — do not delete this row. `BREACH_AGENT`'s real channels
     # are 100% dynamic (`out[4]` from `_render_breach`, read directly by
-    # `_dispatch_agent` BEFORE this table is ever consulted for that
-    # record — see event_agents.py). But `_dispatch_agent` resolves
-    # `agent_channels` for EVERY active loaded agent up front, once per
-    # dispatch call, regardless of whether any record matches that
-    # agent's conditions — so without this row, `cycle-breach-alert`
-    # (empty `events`, no `priority`) would fall through to the
-    # catch-all on EVERY SINGLE `dispatch_rows()` flush, logging a fresh
-    # WARNING each time via this module's own logger — which is NOT
-    # skip-listed in `log_store.py`'s `_SKIP_PREFIXES`, so that WARNING
-    # gets captured and re-enters the next flush, which resolves BREACH
-    # again, logs again, forever. Confirmed via code trace, and via a
-    # mutation test (temporarily removing this row and watching the
-    # dedicated regression test fail) before this fix shipped. An
-    # explicit `[]` here matches BREACH's real static shape exactly and
-    # short-circuits at step 2 of `resolve_channels()`
+    # `_dispatch_agent` before this table is ever consulted). But
+    # `_dispatch_agent` resolves `agent_channels` for EVERY active agent
+    # up front regardless of whether it matches — so without this row,
+    # `cycle-breach-alert` (empty `events`, no `priority`) would fall
+    # through to the catch-all on every dispatch flush, logging a fresh
+    # WARNING each time via a logger NOT in `log_store.py`'s
+    # `_SKIP_PREFIXES` — which re-enters the next flush and resolves
+    # BREACH again, forever. An explicit `[]` here matches BREACH's real
+    # static shape and short-circuits at step 2 of `resolve_channels()`
     # before ever reaching the catch-all/logging branch.
     "cycle-breach-alert": [],
     "agent-alert-rich": [
@@ -172,30 +146,25 @@ _PER_SLUG_OVERRIDES: dict[str, list[dict]] = {
     # The 5 `generic_notice` agents (council item 2's shared table) —
     # channel sets verbatim from `event_agents._GENERIC_NOTICE_SPECS`
     # before this migration moved them here.
-    # 2026-10-28 noise tightening — one leg of a GTT pair is protected,
-    # the other isn't: a real exposure gap, action-required. Email added
-    # to sync with ntfy.
+    # One leg of a GTT pair is protected, the other isn't — a real
+    # exposure gap, action-required.
     "gtt-asymmetric-alert": [
         {"channel": "telegram", "enabled": True, "gate": False},
         {"channel": "ntfy", "enabled": True, "gate": False, "priority": "high"},
         {"channel": "email", "enabled": True, "gate": False},
     ],
-    # 2026-10-28 noise tightening — a duplicate-order anomaly needs
-    # investigation (potential double exposure), action-required. Email
-    # added to sync with ntfy.
+    # A duplicate-order anomaly needs investigation (potential double
+    # exposure), action-required.
     "oco-double-fire-alert": [
         {"channel": "telegram", "enabled": True, "gate": False},
         {"channel": "ntfy", "enabled": True, "gate": False, "priority": "urgent"},
         {"channel": "email", "enabled": True, "gate": False},
     ],
-    # 2026-10-28 noise tightening — good news (the ticker came back),
-    # nothing to act on. Dropped ntfy (was priority="high"); telegram
-    # kept so the recovery is still visible in the ops feed.
+    # Good news (the ticker came back), nothing to act on — telegram only.
     "ticker-recovered-alert": [
         {"channel": "telegram", "enabled": True, "gate": False},
     ],
-    # 2026-10-28 noise tightening — connectivity impaired right now is
-    # genuinely action-required. Email added to sync with ntfy.
+    # Connectivity impaired right now is genuinely action-required.
     "ticker-degraded-alert": [
         {"channel": "telegram", "enabled": True, "gate": False},
         {"channel": "ntfy", "enabled": True, "gate": False, "priority": "urgent"},
@@ -204,55 +173,29 @@ _PER_SLUG_OVERRIDES: dict[str, list[dict]] = {
     "visitor-report-alert": [
         {"channel": "telegram_info", "enabled": True, "gate": False},
     ],
-    # 2026-11-04 fix (operator: "when a position is closed [by any
-    # means], the gtt order on that position [should be] closed
-    # automatically... also, this should generate an alert in telegram,
-    # as there is nothing to act on for ntfy") — the system already
-    # cancelled the orphaned GTT by the time this fires; telegram-only,
-    # same "good news, nothing to act on" shape as ticker-recovered-alert
-    # above.
+    # The system already auto-cancelled the orphaned GTT by the time
+    # this fires — good news, nothing to act on, telegram only.
     "gtt-orphan-cancelled-alert": [
         {"channel": "telegram", "enabled": True, "gate": False},
     ],
-    # 2026-11-19 (added BEFORE `app-message-alert` folds into
-    # `event_agents._COLLAPSED_DETECTOR_SPECS`) — this agent had NO
-    # per-slug override before this; it resolved via
-    # `_TIER_DEFAULTS["high"]` (telegram + ntfy[priority="high"]). This
-    # row freezes that exact resolution verbatim. Without it, folding the
-    # spec into the collapsed table would make
-    # `_build_alert_event_dispatch_table()` default its channel list to
-    # `[]` (a missing override), silently dropping every CRITICAL
-    # AppMessage again — the exact 2026-11-08 bug this agent exists to
-    # fix. See `test_app_message_critical_delivery.py`'s parity test.
+    # Freezes this agent's pre-fold `_TIER_DEFAULTS["high"]` resolution
+    # verbatim — without an explicit row here, folding it into the
+    # collapsed table would default its channels to `[]`, silently
+    # dropping every CRITICAL AppMessage (the 2026-11-08 bug this agent
+    # exists to fix). See `test_app_message_critical_delivery.py`.
     "app-message-alert": [
         {"channel": "telegram", "enabled": True},
         {"channel": "ntfy", "enabled": True, "priority": "high"},
     ],
-    # 2026-11 channel-authoring retirement — two of the handful of alert
-    # paths that still embedded their own hardcoded channel LITERAL
-    # directly in the producer's log-record `extra` (not a `notify=[...]`
-    # action param, not an operator `alert(...)` DSL clause — a plain
-    # Python list baked into the call site). Both are converted to the
-    # ordinary per-slug-override shape every other migrated agent above
-    # already uses; the verbatim channel lists below are unchanged from
-    # what the producer used to embed.
-    #
-    # `order-cancelled-alert` — `orders.py:_opp_send_cancel_alert` used
-    # to carry this same list in `extra['channels']`, read via a dynamic
-    # `out[4]` override in `_render_order_cancelled`. That renderer now
-    # returns a plain passthrough tuple (same shape as
-    # `_render_market_status`), so this row is the real channel source.
+    # `order-cancelled-alert` is the real channel source for
+    # `_render_order_cancelled` (a plain passthrough renderer, no
+    # dynamic `out[4]` override).
     "order-cancelled-alert": [
         {"channel": "telegram", "enabled": True},
         {"channel": "ntfy", "enabled": True},
     ],
-    # `agent-close-hold-alert` — `actions_live.py:_al_send_agent_close_
-    # hold_alert` used to carry this same list in `extra['channels']`,
-    # dispatched through the (now-retired) generic `ACTION_NOTIFY_AGENT`
-    # via its own `_render_action_notify`'s `out[4]` override. This is a
-    # brand-new dedicated seeded agent
-    # (`event_agents.AGENT_CLOSE_HOLD_ALERT_AGENT`), not a retrofit of
-    # the retired one.
+    # `agent-close-hold-alert` — dedicated seeded agent
+    # (`event_agents.AGENT_CLOSE_HOLD_ALERT_AGENT`).
     "agent-close-hold-alert": [
         {"channel": "telegram", "enabled": True},
         {"channel": "ntfy", "enabled": True},
@@ -265,29 +208,18 @@ _PER_SLUG_OVERRIDES: dict[str, list[dict]] = {
     "draft-sweep-alert": [
         {"channel": "telegram_info", "enabled": True, "gate": False},
     ],
-    # 2026-11-20 fix (live incident — ZG0790's Kite login was blocked by
-    # a Zerodha account-level CAPTCHA challenge for ~8.5 hours; the ONLY
-    # existing path, `error-alert`'s blanket catch-all, is Telegram-only
-    # by deliberate design (see that slug's own comment above), so a
-    # multi-hour real connection outage never escalated past Telegram).
-    # `event_agents.BROKER_LOGIN_BLOCKED_AGENT` fires rarely — once per
-    # account per worst-tier cooloff escalation, never per retry — and
-    # is serious by construction, so it genuinely needs all three
-    # channels. `gate: False` on every entry, same convention as
-    # `order-failure-alert` above: this must reach the operator
-    # regardless of capability-enabled toggles.
+    # Fires rarely (once per account per worst-tier cooloff escalation,
+    # never per retry) and is serious by construction, so it needs all
+    # three channels — `gate: False` so it reaches the operator
+    # regardless of capability-enabled toggles, same as
+    # `order-failure-alert` above.
     "broker-login-blocked-alert": [
         {"channel": "telegram", "enabled": True, "gate": False},
         {"channel": "ntfy", "enabled": True, "gate": False, "priority": "urgent"},
         {"channel": "email", "enabled": True, "gate": False},
     ],
-    # 2026-10 operator-reported gap — new-user self-registration alerts
-    # were never reaching Telegram/ntfy (see `event_agents.py:
-    # USER_REGISTERED_AGENT`'s own comment for the root cause). High,
-    # not urgent: needs a look, not a 3x-repeat push.
-    # 2026-10-28 noise tightening: kept on ntfy specifically because the
-    # operator must approve/reject the new account — a real action, not
-    # pure FYI. Email added to sync with ntfy.
+    # High, not urgent: a new-account registration needs a look (the
+    # operator must approve/reject it), not a 3x-repeat push.
     "user-registered-alert": [
         {"channel": "telegram", "enabled": True, "gate": False},
         {"channel": "ntfy", "enabled": True, "gate": False, "priority": "high"},

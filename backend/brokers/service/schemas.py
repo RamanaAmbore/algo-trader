@@ -51,11 +51,12 @@ class InternalAccountRow(msgspec.Struct):
     not-yet-redeployed conn_service (this struct is decoded from a live
     HTTP response, not re-imported) simply omits the field — the main
     API's alias-registration treats that exactly like "no client_id",
-    the same no-op it is today. See CLAUDE.md's `validate_gtt_exchange`
-    deploy-coupling note for the general hazard this mirrors. Never
-    logged or returned whole anywhere downstream — every consumer of
-    this list pulls ``account``/``broker_id`` by key, never dumps the
-    row.
+    the same no-op it is today — see CLAUDE.md's deploy-coupling notes
+    for the general hazard this mirrors (a conn_service-only method is
+    unusable until a PROD deploy picks it up, since dev shares the same
+    conn_service process). Never logged or returned whole anywhere
+    downstream — every consumer of this list pulls ``account``/
+    ``broker_id`` by key, never dumps the row.
     """
 
     account: str

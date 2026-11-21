@@ -339,22 +339,13 @@ class Broker(ABC):
     # reads BrokerCapabilities BEFORE dispatching, so this method only
     # fires when capabilities say it should.
 
-    def validate_gtt_exchange(self, exchange: str) -> None:
-        """Raise ValueError if this broker does not support GTT on `exchange`.
-        Default: all exchanges supported. Adapters override where gaps exist.
-
-        Called at the top of apply_plan_live — before lot-size resolution,
-        plan resolution, and any broker call — so the operator sees a
-        clear error without paying for any upstream work."""
-        # Subclasses raise ValueError for unsupported exchanges; default = all allowed.
-        pass
-
-    # `place_gtt`/`modify_gtt` removed (Bracket/Template-GTT removal, T3.1,
-    # 2026-11) — confirmed zero callers outside the deleted
-    # `backend/api/algo/template_attach.py`. `get_gtts`/`cancel_gtt` are
-    # KEPT below — `backend/api/routes/orders_gtt.py` is a standalone
-    # "view/cancel any broker GTT regardless of how it got there" feature,
-    # confirmed independent of Bracket.
+    # `place_gtt`/`modify_gtt`/`validate_gtt_exchange` removed
+    # (Bracket/Template-GTT removal, T3.1, 2026-11) — confirmed zero
+    # callers outside the deleted `backend/api/algo/template_attach.py`.
+    # `get_gtts`/`cancel_gtt` are KEPT below — `backend/api/routes/
+    # orders_gtt.py` is a standalone "view/cancel any broker GTT
+    # regardless of how it got there" feature, confirmed independent of
+    # Bracket.
 
     def cancel_gtt(self, gtt_id: str, *, exchange: str | None = None) -> str:
         """Cancel a GTT. Returns the cancelled GTT id.

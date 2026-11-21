@@ -1,20 +1,18 @@
 """One-shot startup check: secrets.yaml vs broker_accounts DB credential drift.
 
-Background (2026-11-20 live incident, account ZJ6294): conn_service builds
-every `KiteConnection`/`DhanConnection`/`GrowwConnection` from the
-`broker_accounts` DB table (see `Connections.rebuild_from_db` /
-`_build_kite_conn` / `_build_dhan_conn` / `_build_groww_conn` in
-`connections.py`), never directly from `secrets.yaml`. `secrets.yaml`'s
-`kite_accounts` / `dhan_accounts` / `groww_accounts` sections are read only
-ONCE, to seed a brand-new account into the DB the first time it appears
-(`Connections._seed_db_from_yaml()` — kite only today; Dhan/Groww rows are
-created via the admin UI, but the same "DB row already exists → YAML is
-inert" rule applies to them once a row exists). Any later `secrets.yaml`
-edit to an account that already has a DB row is silently a no-op. On the
-incident day, several `secrets.yaml` edits to ZJ6294's `api_secret` were
-each followed by a `ramboq_conn` restart; none of them took effect, because
-the DB row's stale secret was never touched. The real fix was the admin
-`PATCH /api/admin/brokers/ZJ6294` endpoint.
+conn_service builds every `KiteConnection`/`DhanConnection`/
+`GrowwConnection` from the `broker_accounts` DB table (see
+`Connections.rebuild_from_db` / `_build_kite_conn` / `_build_dhan_conn` /
+`_build_groww_conn` in `connections.py`), never directly from
+`secrets.yaml`. `secrets.yaml`'s `kite_accounts` / `dhan_accounts` /
+`groww_accounts` sections are read only ONCE, to seed a brand-new account
+into the DB the first time it appears (`Connections._seed_db_from_yaml()`
+— kite only today; Dhan/Groww rows are created via the admin UI, but the
+same "DB row already exists → YAML is inert" rule applies to them once a
+row exists). Any later `secrets.yaml` edit to an account that already has
+a DB row is silently a no-op — the only way to rotate a credential for an
+existing account is the admin `PATCH /api/admin/brokers/{account}`
+endpoint.
 
 This module is a startup-only, detection-only check for exactly that class
 of mistake: for every account present in BOTH secrets.yaml and the DB,

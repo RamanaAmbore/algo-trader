@@ -1110,9 +1110,9 @@ class AlgoOrderInfo(msgspec.Struct, kw_only=True):
     # row has superseded via cancel-and-replace, oldest-first. Populated
     # from AlgoOrder.superseded_broker_order_ids_json (parsed JSON list,
     # `[]` default on null/empty/parse failure). Authoritative fix for
-    # the frontend's duplicate-open-order-card race — OrderBook.svelte
-    # already feature-detects this exact field name/shape
-    # (`_backendSupersededShipped`).
+    # the frontend's duplicate-open-order-card race — `marketDataStores.
+    # svelte.js` already feature-detects this exact field name/shape
+    # (`_ordersBackendSupersededShipped`).
     superseded_broker_order_ids: list[str] = []
     # 2026-10-31 — the "Origin" chip fix the comment above was waiting on.
     # "manual" when the order has no real originating agent (bare ticket/

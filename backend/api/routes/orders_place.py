@@ -262,9 +262,8 @@ async def _fetch_net_position_row(
     optional because `_fetch_net_position_qty`/`_is_offsetting_position`
     don't know the product ahead of time (they ARE the product-agnostic
     "does ANY row net offset" check); only a caller that already knows
-    which specific product row it means should pass it — e.g. the
-    orphan-GTT safety net (`background.py:_oco_cancel_closed_position_gtts`),
-    which reads the row's own `AlgoOrder.product`.
+    which specific product row it means (e.g. from its own `AlgoOrder.
+    product`) should pass it. No current caller does.
 
     `force_refresh` (defect 2): threads straight to `fetch_positions()`'s
     own TTL-bypass. Without it, a caller can be served a cached frame up

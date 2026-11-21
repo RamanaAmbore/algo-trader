@@ -3354,11 +3354,6 @@ def fetch_special_sessions(exchange: str = "NSE") -> list[dict]:
         all the way up, so each awaits ``fetch_special_sessions_async``
         (via ``agent_engine.py``'s ``_prewarm_special_sessions_for_exchange``)
         BEFORE calling the sync ``_build_now_ctx()``.
-      - ``template_attach.py``'s ``_check_offhours_wing_gate`` is plain
-        ``def`` (cannot ``await``), but its one caller
-        (``_apply_template_to_order_impl``) IS ``async def`` and now
-        awaits the same prewarm helper immediately before calling it
-        (2026-10-20, item 2) — closed via the caller, not the gate itself.
       - ``market_lifecycle.poll()`` (2026-10-20, item 1) awaits
         ``fetch_special_sessions_async(segment["exchange"])`` directly
         (NOT via ``_prewarm_special_sessions_for_exchange`` — that helper
@@ -3366,10 +3361,10 @@ def fetch_special_sessions(exchange: str = "NSE") -> list[dict]:
         raw per-exchange key this function's own ``exch`` lookup uses for
         the synthesized ``cds`` segment) for every exchange, before its
         per-exchange ``_exchange_is_open()`` loop.
-      - ``apply_plan_live`` (``template_attach.py``) was never actually
-        exposed to this gap — confirmed it runs via ``asyncio.to_thread``
-        (``write_queue.py``'s guard condition), not inline on the main
-        loop, so it never hits the cold-cache-on-main-loop case at all.
+
+      (The former ``template_attach.py`` offhours-wing-gate and
+      ``apply_plan_live`` call sites no longer exist — that module was
+      removed with the Bracket/Template/GTT removal, T3.1-T3.4, 2026-11.)
     """
     from backend.shared.helpers.date_time_utils import timestamp_indian
 
@@ -3566,14 +3561,11 @@ async def fetch_special_sessions_async(exchange: str = "NSE") -> list[dict]:
     Callers:
 
       - The genuinely-async call sites that reach ``_ae_segment_flags``
-        (ticket placement, basket, chase, and — since 2026-10-20, item 2
-        — ``template_attach.py``'s ``_apply_template_to_order_impl``,
-        immediately before its ``_check_offhours_wing_gate`` call) all
-        await this (ticket/basket/chase via ``agent_engine.py``'s
-        ``_prewarm_special_sessions_for_exchange``; template_attach
-        directly) BEFORE calling the existing sync ``_build_now_ctx()``,
-        which then finds a warm cache and never needs the guard-prone
-        sync path at all for that call.
+        (ticket placement, basket, chase) await this via ``agent_engine.
+        py``'s ``_prewarm_special_sessions_for_exchange`` BEFORE calling
+        the existing sync ``_build_now_ctx()``, which then finds a warm
+        cache and never needs the guard-prone sync path at all for that
+        call.
       - ``market_lifecycle.poll()`` (2026-10-20, item 1) also awaits
         this directly, once per exchange in ``_enumerate_exchanges()``,
         passing the raw ``segment["exchange"]`` value rather than going

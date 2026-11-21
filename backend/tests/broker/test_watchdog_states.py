@@ -640,7 +640,7 @@ class TestAttemptFailoverSwapMultiCandidate:
         with patch("backend.brokers.connections.Connections", return_value=mock_conns), \
              patch("backend.brokers.registry._broker_id_for", return_value="zerodha_kite"), \
              patch("backend.brokers.service.app._write_ticker_swap_audit"):
-            result = _attempt_failover_swap(ticker, log, cooldown_s=300, slowed_s=60)
+            result = _attempt_failover_swap(ticker, log, cooldown_s=300)
 
         assert result is True
         ticker.restart_with_account.assert_called_once_with("api_ZB0002", "token_b", "ZB0002")
@@ -664,7 +664,7 @@ class TestAttemptFailoverSwapMultiCandidate:
         with patch("backend.brokers.connections.Connections", return_value=mock_conns), \
              patch("backend.brokers.registry._broker_id_for", return_value="zerodha_kite"), \
              patch("backend.brokers.service.app._write_ticker_swap_audit"):
-            result = _attempt_failover_swap(ticker, log, cooldown_s=300, slowed_s=60)
+            result = _attempt_failover_swap(ticker, log, cooldown_s=300)
 
         assert result is True
         ticker.restart_with_account.assert_called_once_with("api_ZC0003", "token_c", "ZC0003")
@@ -699,7 +699,7 @@ class TestAttemptFailoverSwapMultiCandidate:
         with patch("backend.brokers.connections.Connections", return_value=mock_conns), \
              patch("backend.brokers.registry._broker_id_for", return_value="zerodha_kite"), \
              patch("backend.brokers.service.app._write_ticker_swap_audit"):
-            result = _attempt_failover_swap(ticker, log, cooldown_s=300, slowed_s=60)
+            result = _attempt_failover_swap(ticker, log, cooldown_s=300)
 
         assert result is True
         ticker.restart_with_account.assert_called_once_with("api_ZC0003", "token_c", "ZC0003")
@@ -726,7 +726,7 @@ class TestAttemptFailoverSwapMultiCandidate:
              patch("backend.brokers.registry._broker_id_for", return_value="zerodha_kite"), \
              patch("backend.brokers.service.app._write_ticker_swap_audit"), \
              patch.object(log, "warning") as mock_warning:
-            result = _attempt_failover_swap(ticker, log, cooldown_s=300, slowed_s=60)
+            result = _attempt_failover_swap(ticker, log, cooldown_s=300)
 
         ticker.restart_with_account.assert_not_called()
         # Exactly one summary warning for the whole cycle, not 3 (one per
@@ -761,7 +761,7 @@ class TestAttemptFailoverSwapMultiCandidate:
         with patch("backend.brokers.connections.Connections", return_value=mock_conns), \
              patch("backend.brokers.registry._broker_id_for", return_value="zerodha_kite"), \
              patch("backend.brokers.service.app._write_ticker_swap_audit"):
-            _attempt_failover_swap(ticker, log, cooldown_s=300, slowed_s=60)
+            _attempt_failover_swap(ticker, log, cooldown_s=300)
 
         for acct in ("ZA0001", "ZB0002", "ZC0003"):
             mock_conns.conn[acct].get_access_token.assert_called_once()

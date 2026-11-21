@@ -673,27 +673,11 @@ class KiteConnection:
     def _mark_conn_fresh(self, now) -> None:
         """Stamp `_conn_created_at = now` — called ONLY once a usable
         connection has actually been confirmed (a still-valid cached
-        token, or a freshly succeeded login), never before that
-        confirmation.
-
-        2026-11-20 fix (F7 follow-up — the real mechanism behind the
-        436 failed quote/historical calls during the ZG0790 incident).
-        `get_kite_conn()` used to stamp this timestamp BEFORE attempting
-        re-auth, inside the `if self._is_kite_conn_expired(now):` branch
-        — so a single FAILED login attempt still advanced the timer.
-        The very next call (even `test_conn=False`, e.g. every
-        `KiteBroker.kite` property access) then took the fast path
-        (`if not (self._is_kite_conn_expired(now) or test_conn): return
-        self.kite`) and returned `self.kite` — a `KiteConnect` instance
-        `init_kite_conn()` had already replaced with a fresh, TOKENLESS
-        client before the login call failed — completely bypassing the
-        login-cooloff gate below for the rest of `CONN_RESET_HOURS`.
-        Every caller of that stale handle then made a real network call
-        with no/invalid token, which Kite answers with exactly the
-        "Invalid `api_key` or `access_token`" message (see F8's
-        classifier fix) — this is almost certainly the actual mechanism
-        behind the 436 failed calls logged during the incident, not a
-        gap in the cooloff gate itself.
+        token, or a freshly succeeded login), never before that.
+        Stamping it earlier (e.g. before a login attempt that then
+        fails) would let the next call's fast-path return a stale,
+        tokenless `self.kite`, bypassing the login-cooloff gate below
+        for the rest of `CONN_RESET_HOURS`.
         """
         self._conn_created_at = now
         logger.info(f"Kite connection refreshed at "
@@ -720,19 +704,9 @@ class KiteConnection:
         is always returned normally, cool-off or not. Only a genuinely
         NEW login attempt is ever blocked.
 
-        `_conn_created_at` (the fast-path's own "is this connection
-        still fresh" timestamp) is stamped via `_mark_conn_fresh()` —
-        see that method's docstring — ONLY after a usable connection is
-        actually confirmed: a still-valid cached token, or a freshly
-        succeeded `_attempt_login_with_cooloff()`. On a FAILED login
-        attempt, `_attempt_login_with_cooloff()` raises and the
-        following `_mark_conn_fresh()` call is skipped entirely (plain
-        sequential control flow — no try/except needed, since a raised
-        exception already prevents the next statement from running);
-        `_conn_created_at` therefore stays at its old (already-expired)
-        value, so the NEXT call — even one made with `test_conn=False`
-        — still takes the slow path and re-checks the cooloff gate,
-        instead of falling through to a stale/tokenless `self.kite`.
+        `_conn_created_at` is stamped via `_mark_conn_fresh()` only
+        after a usable connection is confirmed — see that method's
+        docstring for why a failed login must never advance it.
         """
         now = timestamp_indian()
         with self._login_lock:
@@ -772,16 +746,13 @@ class KiteConnection:
         with one deliberate difference: Dhan's `generate_token` endpoint
         has a documented fixed 2-minute rate limit, so a flat 120s window
         is correct there. Zerodha's login endpoint has no documented
-        fixed limit — repeated automated-login failures from one server
-        IP can trip Kite's own anomaly detection and block further
-        automated attempts from that IP (confirmed live, 2026-11-19,
-        account ZG0790: 800+ consecutive 400s on
-        kite.zerodha.com/api/login) while a manual browser login from a
-        different IP still succeeds. A flat short window would just keep
-        re-tripping that block, so consecutive failures escalate the
-        cool-off instead: 120s, 240s, 480s, 960s, capped at 1800s (30 min)
-        — same backoff shape `retry_kite_conn` itself already uses
-        (`min(2 ** attempt, 30)`), applied at the cross-call level.
+        fixed limit (see `_KITE_LOGIN_COOLOFF_PATH`'s module-level
+        comment for why that matters), so a flat window would just keep
+        re-tripping the same block — consecutive failures escalate the
+        cool-off instead: 120s, 240s, 480s, 960s, capped at 1800s (30 min),
+        computed via the same shared `exponential_backoff_seconds()`
+        helper (`backend/shared/helpers/backoff.py`) `retry_kite_conn`
+        itself calls, applied here at the cross-call level.
         """
         try:
             self.init_kite_conn(test_conn=True)
@@ -836,13 +807,13 @@ class KiteConnection:
             # its own worst tier (the 1800s/30-min cap), fire ONE
             # additional tagged log record so this persistent failure can
             # escalate past the Telegram-only `error-alert` catch-all to
-            # ntfy + email (a new seeded `generic_notice` agent keyed on
+            # ntfy + email (the dedicated `BROKER_LOGIN_BLOCKED_AGENT` /
+            # `_render_broker_login_blocked` renderer keyed on
             # `alert_event="broker_login_blocked"` consumes this — see
-            # `event_agents.py`/`alert_routing.py`). Gated by
-            # `_blocked_alert_sent` so a multi-hour outage fires this
-            # exactly once, not on every retry at the capped tier; reset
-            # to False in the `else:` branch below on the next successful
-            # login.
+            # `event_agents.py`). Gated by `_blocked_alert_sent` so a
+            # multi-hour outage fires this exactly once, not on every
+            # retry at the capped tier; reset to False in the `else:`
+            # branch below on the next successful login.
             if cooloff_s >= 1800 and not self._blocked_alert_sent:
                 self._blocked_alert_sent = True
                 try:
@@ -851,15 +822,15 @@ class KiteConnection:
                     # free at enqueue time by `log_store.py`'s
                     # `_AccountMaskFilter` (it masks the final rendered
                     # message text). `extra` values are NOT touched by
-                    # that filter — mask `account` here at the producer,
-                    # same convention as `template_attach.py`'s
-                    # `_fire_guard_alert` fix (see the "Positions loss
-                    # guard" CLAUDE.md entry's `extra`-masking bullet).
+                    # that filter — mask `account` here at the producer.
                     # `self_alerted: True` prevents ERROR_AGENT's blanket
                     # catch-all from ALSO matching this ERROR-level
-                    # record and double-delivering to Telegram (same
-                    # convention as chase's max-attempts-exhaustion path
-                    # — see the "Alert routing hygiene" CLAUDE.md entry).
+                    # record and double-delivering to Telegram — same
+                    # convention as `app_message.py:_route_sinks()`, the
+                    # matching precedent per
+                    # `event_agents.py:_error_agent_self_alerted()`'s own
+                    # docstring (a single logged record with no second,
+                    # direct alert call of its own).
                     _DISPATCH_LOGGER.error(
                         "Kite login for %s has been blocked for %ds "
                         "(max cooloff reached, streak=%d) — Zerodha error: %s",

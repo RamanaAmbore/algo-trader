@@ -280,90 +280,30 @@ _books_refresh_tasks: set = set()
 
 
 async def _force_refresh_one_account_after_reenable(account: str) -> None:
-    """2026-11-20 fix (F12 — operator explicit new requirement, same
-    live incident as F11). Re-enabling a disabled account's connection
-    left its positions/holdings/margins/funds at whatever was last
-    cached (possibly hours stale, or an LKG substitute) until the next
-    routine poll cycle — itself additionally gated by closed-hours logic
-    (`closed_hours_or_broker()`) that has no reason to treat "operator
-    just explicitly re-enabled this account" as a reason to bypass
-    itself.
+    """Re-enabling a disabled account left its positions/holdings/
+    margins/funds at whatever was last cached until the next routine
+    poll, which is itself gated by closed-hours logic. Called directly
+    from `update_account`'s False→True transition, bypassing that gate
+    on purpose — this is a one-shot operator action, not a routine poll.
 
-    Called directly from `update_account`'s False→True transition
-    branch, NOT through the normal closed-hours-gated route handler —
-    intentionally. This is a one-shot operator action correcting a
-    known-stale account, not a routine poll, so it must run
-    unconditionally regardless of market hours. Do NOT "correct" this
-    back into a gated call — a disabled account can be re-enabled at
-    any hour, and the operator's whole point in re-enabling it right
-    now is to see its real current state immediately, not after the
-    next scheduled poll (or not at all, if every segment happens to be
-    closed).
+    Calls the ZERO-ARG `fetch_positions(force_refresh=True)` /
+    `fetch_margins(force_refresh=True)` forms, not the single-account
+    branch (which bypasses the shared SSOT cache every route actually
+    reads from). `fetch_holdings` has no `force_refresh` kwarg, so
+    `_raw_cache_invalidate("holdings")` is called first to force a
+    genuine cache miss. This refreshes every account, not only the
+    re-enabled one — bounded, one-shot cost, not a hot path.
 
-    Reuses the exact force-refresh plumbing documented in CLAUDE.md's
-    "Post-fill position freshness" entry (`orders.py:
-    _positions_refresh_after_fill` / `_rco_invalidate_terminal_caches`) —
-    with one deliberate correction vs. an earlier draft of this function.
+    A `daily_book` snapshot for just this account is also written when
+    the market is closed, via `_snapshot_books_if_closed()` — see its
+    own docstring for why (the live cache refresh above is otherwise
+    invisible to the closed-hours route gate).
 
-    An earlier version of this function called each `fetch_*` function
-    with `account=account` — the SINGLE-ACCOUNT branch of
-    `fetch_positions`/`fetch_holdings`/`fetch_margins`. That branch
-    bypasses the all-accounts SSOT cache ENTIRELY (per `fetch_positions`'s
-    own docstring: "Explicit account=/broker= kwargs fall through to the
-    local path") — so its result was fetched, then simply discarded; the
-    SHARED cache that `/api/positions`/`/api/holdings`/`/api/funds`
-    actually read from was never repopulated. The very next operator
-    poll would either see stale cached data (if arriving before the next
-    natural cache-expiry fetch) or trigger its own full re-fetch
-    independently of this one — in neither case did this function's own
-    broker round-trip do any useful work.
-
-    Fixed: call the ZERO-ARG forms instead — `fetch_positions(
-    force_refresh=True)` / `fetch_margins(force_refresh=True)` — the
-    exact path that threads `force_refresh` into `_upstream_force` (for
-    positions; see that function's own docstring) and repopulates the
-    SAME all-accounts SSOT cache every route reads from. `fetch_holdings`
-    has no `force_refresh` parameter at all (confirmed via its
-    signature), so `_raw_cache_invalidate("holdings")` is called first —
-    that pops/invalidates the SSOT cache entry directly (via `ssot_
-    fetch`'s own generation-counter mechanism), so the immediately-
-    following zero-arg `fetch_holdings()` call is a genuine cache MISS,
-    not a TTL-gated maybe-stale read. This refreshes EVERY account, not
-    only the one just re-enabled — a deliberately broader, bounded,
-    one-shot cost (this is not a hot path) rather than a narrower
-    refresh that would leave the shared cache stale for every OTHER
-    consumer until its own next natural expiry.
-
-    Fire-and-forget (background task), same convention as
-    `_positions_refresh_after_fill` — the operator's PATCH response
-    returns as soon as `_reload_connections()` is done; the broker
-    round-trips happen shortly after. No debounce/rate-limit — rapid
-    repeated re-toggling hits ordinary authenticated data-fetch
-    endpoints, not the login flow that actually trips a broker's own
-    anomaly detection (the F1/F2 login-cooloff fixes elsewhere in this
-    incident cover that flow separately).
-
-    Known residual, not fixed here: a closed-hours read still goes
-    through `closed_hours_or_broker()`'s snapshot-gate path and will
-    continue to show the frozen `daily_book` snapshot regardless of how
-    fresh this function makes the live broker-layer cache — that route
-    gate is a deliberate, separate design decision (see CLAUDE.md's
-    "Closed-hours route gate" entry) and is out of scope for this fix.
-
-    2026-11-20 follow-up (operator request, via the coordinator): a
-    one-shot background refresh with no log trace at all was invisible
-    to anyone diagnosing a "still stale after re-enable" report (exactly
-    what happened with ZG0790 — that specific re-enable ran before this
-    function existed, but the gap applied either way). Added explicit
-    `[BOOKS-REFRESH]` INFO lines on start and completion, and each of
-    the three broker calls now has its OWN try/except — one surface
-    failing (e.g. positions) no longer skips the other two (holdings,
-    margins/funds), logged at WARNING per failed surface, never silent.
-    `mask_account()` is applied to the account in every log line here,
-    matching the codebase-wide masking convention (see CLAUDE.md's
-    account-masking campaign entry) — this function's own `account`
-    parameter is unmasked (callers/tests pass the real code), so masking
-    happens at the log call site, not at the parameter boundary.
+    Fire-and-forget: tracked in the module-level `_books_refresh_tasks`
+    set (see its own comment) so it can't be garbage-collected mid-run.
+    Each of the three broker calls has its own try/except so one
+    surface failing doesn't skip the others; `mask_account()` is
+    applied at each log call site, not at the parameter boundary.
     """
     from backend.shared.helpers.utils import mask_account
     masked = mask_account(account)
@@ -439,26 +379,19 @@ async def _last_completed_trading_session_date(now_ist) -> date:
     """Return the `date` of the most recent trading session that has
     actually completed, as of *now_ist*.
 
-    Mirrors `positions.py`'s own floor-walk exactly (see that file's
-    `_SESSION_ANCHOR_CUTOFF_TS_SQL` neighbourhood, "A single session_
-    date_of(now) substitution only covers the first 8 hours after
-    midnight" comment) — NOT a coincidence, the same bug class applies
-    here. `session_date_of(now)` (the `[08:00 IST, next 08:00 IST)`
-    session window) advances to a NEW session date at every 08:00 IST
-    boundary REGARDLESS of whether that new date is a real trading day.
-    A re-enable tested well after 08:00 on a non-trading day (confirmed
-    live: the coordinator tested this past midnight IST, with the
-    weekend ahead) would otherwise resolve to e.g. Saturday — a date
-    with no real session. Writing a `daily_book` row dated Saturday
-    would make that row `latest_batch` for `_positions_snapshot()`'s
-    per-account baseline-diff query, with the SAME LTP as the real prior
-    session's row — collapsing Day P&L to zero, the EXACT regression
-    `_task_closed_hours_refresh`'s own docstring documents (it stopped
-    calling `snapshot_daily_book()` entirely for this reason). Walking
-    back to the last REAL trading day avoids landing on that date at
-    all. Bounded to 10 iterations, mirroring `expiry_freeze.next_
-    market_open_ist`'s own bound. `is_trading_day()` is called WITHOUT
-    `exchange=`/`now=` so this never triggers a live broker probe.
+    `session_date_of(now)` alone is unsafe: it advances to a new
+    session date at every 08:00 IST boundary regardless of whether that
+    date is a real trading day. A `daily_book` row dated a non-trading
+    day (e.g. Saturday) would become `latest_batch` for `_positions_
+    snapshot()`'s per-account baseline-diff query with the same LTP as
+    the real prior session's row — collapsing Day P&L to zero, the same
+    regression class `_task_closed_hours_refresh`'s own docstring
+    documents. Floor-walking to the last real trading day avoids that.
+    Mirrors `positions.py`'s own floor-walk (`_SESSION_ANCHOR_CUTOFF_
+    TS_SQL` neighbourhood). Bounded to 10 iterations, mirroring
+    `expiry_freeze.next_market_open_ist`'s own bound. `is_trading_day()`
+    is called WITHOUT `exchange=`/`now=` so this never triggers a live
+    broker probe.
     """
     from datetime import timedelta
     from backend.brokers.broker_apis import fetch_holidays as _fetch_holidays

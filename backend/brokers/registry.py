@@ -203,11 +203,10 @@ def get_broker(account: str) -> Broker:
         from backend.brokers.client.remote_broker import RemoteBroker
         return RemoteBroker(account, broker_id=_broker_id_for(account))
 
-    # 2026-10 notification-masking audit: both messages below are caught
-    # upstream (e.g. `template_attach.py`'s `apply_plan`) and can reach an
-    # alert renderer via `result.errors` — mask the account at the point
-    # of raising, not only where it's caught, so no future caller can
-    # forget to scrub it.
+    # 2026-10 notification-masking audit: both messages below can be
+    # caught upstream and surfaced via an alert renderer — mask the
+    # account at the point of raising, not only where it's caught, so
+    # no future caller can forget to scrub it.
     from backend.shared.helpers.utils import mask_account
     masked_account = mask_account(account) if account else account
     conn = Connections().conn.get(account)
@@ -391,30 +390,16 @@ class PriceBroker(Broker):
                     f"{broker_key} rate-limited (cool-off active)"
                 )
                 continue
-            # F7 (2026-11-20 incident, efficiency-only) — the exception
-            # fallthrough below already correctly falls over to the next
-            # broker when `get_kite_conn()` raises its login-cooloff
-            # `RuntimeError` (confirmed live: market-data correctly fell
-            # over throughout the incident). This is a pure efficiency
-            # cleanup so a cooling-off Kite account is skipped BEFORE even
-            # a short-circuited call into `get_kite_conn()`, matching the
-            # `_is_rate_limited()` proactive-skip pattern above, instead
-            # of discovering it reactively via the exception. `_conn` is
-            # the underlying `KiteConnection` a `KiteBroker` adapter wraps
-            # (`backend/brokers/adapters/kite.py`); other adapters (Dhan,
-            # Groww, or a `RemoteBroker` stub under conn-service cutover)
-            # have no `_conn.is_login_cooling_off`, so this is a no-op for
-            # them — `getattr(..., None)` + `callable()` guards that.
-            # Checked via `is True` (never bare truthiness) — a plain
-            # `MagicMock()` broker double used throughout this module's
-            # own test suite auto-vivifies `_conn.is_login_cooling_off`
-            # as a callable whose unconfigured return value is itself a
-            # truthy (but non-bool) MagicMock; `bool(...)` doesn't help,
-            # since `bool(MagicMock())` is also True. A real
-            # `KiteConnection.is_login_cooling_off()` always returns a
-            # genuine Python bool, so `is True` is the correct, narrow
-            # check (same convention used elsewhere in this codebase for
-            # the identical MagicMock auto-vivification hazard).
+            # Efficiency-only: skips a cooling-off Kite account BEFORE a
+            # short-circuited call into `get_kite_conn()`, matching the
+            # `_is_rate_limited()` proactive-skip pattern above (the
+            # exception fallthrough below already handles this reactively
+            # either way). `_conn` is the underlying `KiteConnection` a
+            # `KiteBroker` adapter wraps; other adapters (Dhan, Groww,
+            # `RemoteBroker`) have no `_conn.is_login_cooling_off`, so
+            # this is a no-op for them. `is True`, not bare truthiness —
+            # this project's standard convention for guarding against an
+            # unconfigured `MagicMock` test double.
             _conn = getattr(broker, "_conn", None)
             _cooloff_fn = getattr(_conn, "is_login_cooling_off", None)
             if callable(_cooloff_fn):

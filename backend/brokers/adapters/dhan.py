@@ -1371,20 +1371,12 @@ class DhanBroker(Broker):
     #
     # Dhan docs: https://dhanhq.co/docs/api-reference/v2/forever-orders/
 
-    _DHAN_GTT_UNSUPPORTED: frozenset[str] = frozenset({"MCX", "NCO"})
-
-    def validate_gtt_exchange(self, exchange: str) -> None:
-        if exchange in self._DHAN_GTT_UNSUPPORTED:
-            raise ValueError(
-                f"Dhan Forever Order does not support GTT on {exchange} — "
-                "use a Kite-mirrored account for MCX/NCO templates"
-            )
-
-    # `place_gtt`/`modify_gtt` removed (Bracket/Template-GTT removal, T3.1,
-    # 2026-11) — confirmed zero callers outside the deleted
-    # `backend/api/algo/template_attach.py`. `cancel_gtt`/`get_gtts` below
-    # are KEPT — `orders_gtt.py` is a standalone, Bracket-independent
-    # "view/cancel any broker GTT" feature.
+    # `place_gtt`/`modify_gtt`/`validate_gtt_exchange` removed
+    # (Bracket/Template-GTT removal, T3.1, 2026-11) — confirmed zero
+    # callers outside the deleted `backend/api/algo/template_attach.py`.
+    # `cancel_gtt`/`get_gtts` below are KEPT — `orders_gtt.py` is a
+    # standalone, Bracket-independent "view/cancel any broker GTT"
+    # feature.
 
     def cancel_gtt(self, gtt_id: str, *, exchange: str | None = None) -> str:
         """Cancel a Dhan Forever Order. Returns the cancelled order_id.

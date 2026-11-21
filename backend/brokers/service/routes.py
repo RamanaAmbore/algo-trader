@@ -107,7 +107,7 @@ _ALLOWED_BROKER_METHODS = frozenset({
     # feature.
     "cancel_gtt",
     # meta
-    "translate_qty", "normalise_qty", "validate_gtt_exchange",
+    "translate_qty", "normalise_qty",
 })
 
 

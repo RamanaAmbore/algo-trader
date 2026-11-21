@@ -1417,22 +1417,14 @@ class GrowwBroker(Broker):
     #   trading_symbol, quantity, product_type, exchange, duration,
     #   trigger_price, trigger_direction, order, ...)`.
 
-    _GROWW_GTT_UNSUPPORTED: frozenset[str] = frozenset({"MCX", "NCO"})
-
-    def validate_gtt_exchange(self, exchange: str) -> None:
-        if exchange in self._GROWW_GTT_UNSUPPORTED:
-            raise ValueError(
-                f"Groww Smart Order GTT is not supported on {exchange}"
-            )
-
-    # `place_gtt`/`modify_gtt` removed (Bracket/Template-GTT removal,
-    # T3.1, 2026-11) — confirmed zero callers outside the deleted
-    # `backend/api/algo/template_attach.py`. `_parse_oco_id`/`cancel_gtt`/
-    # `get_gtts` below are KEPT — `cancel_gtt` still needs to parse a
-    # compound `"oco:{a}+{b}"` id for any emulated-OCO GTT that was
-    # already resting on the broker before this removal, and
-    # `orders_gtt.py` is a standalone, Bracket-independent "view/cancel
-    # any broker GTT" feature.
+    # `place_gtt`/`modify_gtt`/`validate_gtt_exchange` removed
+    # (Bracket/Template-GTT removal, T3.1, 2026-11) — confirmed zero
+    # callers outside the deleted `backend/api/algo/template_attach.py`.
+    # `_parse_oco_id`/`cancel_gtt`/`get_gtts` below are KEPT —
+    # `cancel_gtt` still needs to parse a compound `"oco:{a}+{b}"` id
+    # for any emulated-OCO GTT that was already resting on the broker
+    # before this removal, and `orders_gtt.py` is a standalone,
+    # Bracket-independent "view/cancel any broker GTT" feature.
 
     @staticmethod
     def _parse_oco_id(gtt_id: str) -> tuple[str, str] | None:

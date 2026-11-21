@@ -2262,14 +2262,6 @@ def _error_agent_self_alerted(agent, rec: dict, all_agents: "list | None" = None
     # accepted risk class for this whole convention, not a new gap this
     # fix introduces.
     #
-    # An earlier draft of this fix added a dedicated, slug-specific
-    # `extra.get("alert_event") == "broker_login_blocked"` branch here,
-    # reasoning (incorrectly, at the time) that the producer could not
-    # set `self_alerted` itself because it lives in a different layer
-    # (`backend/brokers/`) from this file. That reasoning no longer
-    # applies — the producer sets the flag directly — so that branch
-    # was removed as dead code once confirmed unreachable (the bare
-    # `self_alerted` check below always short-circuits first).
     if bool(extra.get("self_alerted")):
         return True
     if rec.get("level") == "CRITICAL" and extra.get("alert_event"):
@@ -2824,11 +2816,8 @@ GTT_ORPHAN_CANCELLED_AGENT = {
     "description": "Notifies that an outstanding TP/SL GTT was "
                     "auto-cancelled because its position was already "
                     "closed through another order.",
-    # 2026-11-04 fix (operator: "when a position is closed [by any
-    # means], the gtt order on that position [should be] closed
-    # automatically... also, this should generate an alert in telegram,
-    # as there is nothing to act on for ntfy") — `background.py`'s
-    # `_oco_cancel_closed_position_gtts()` is the producer.
+    # Notifies on an auto-cancelled orphan GTT; telegram-only by design
+    # ("nothing to act on for ntfy").
     #
     # 2026-11-19 — folded into `_COLLAPSED_DETECTOR_SPECS` below (no
     # longer a standalone seeded row in `SEEDED_AGENTS`). Its real
@@ -2871,40 +2860,14 @@ BROKER_LOGIN_BLOCKED_AGENT = {
                     "worst tier — reached max cooloff without a "
                     "successful login. Fires once per account per "
                     "escalation episode, not per retry.",
-    # 2026-11-20 fix (live incident — ZG0790's Kite login was blocked by
-    # a Zerodha account-level CAPTCHA challenge for ~8.5 hours; the only
-    # existing path, `ERROR_AGENT`'s blanket catch-all, is Telegram-only
-    # by deliberate design (`alert_routing._PER_SLUG_OVERRIDES["error-
-    # alert"]`), so a multi-hour real outage never escalated past
-    # Telegram). Producer: `backend/brokers/connections.py:
-    # _attempt_login_with_cooloff()` — logs through `_DISPATCH_LOGGER`
-    # (NOT the module's own skip-listed `logger`, see CLAUDE.md's "Alert
-    # message format" entry for why that distinction matters) with
-    # `source_type="process"`, `source_name="Broker login"`,
-    # `alert_event="broker_login_blocked"`, `action_required=True`, and
-    # the real captured Zerodha error text (F2) baked into the log
-    # MESSAGE itself (not a separate `extra["body"]` key) — process
-    # scoped, no `agent_id`. Rendered via the DEDICATED
-    # `_render_broker_login_blocked` (NOT the generic `generic_notice`
-    # — that renderer reads `extra["body"]`, which this producer never
-    # sets, so it would have rendered an empty body under a generic
-    # "Deploy out of sync" title; confirmed by exercising the real
-    # producer shape before this fix). The producer logs at ERROR level
-    # (owned by the broker layer, a separate parallel change) — `tags_
-    # for()`'s own level-based "error" stamp means `ERROR_AGENT`'s
-    # blanket catch-all (`tag="error", min_level="ERROR"`) ALSO
-    # structurally matches this record. The producer sets `extra[
-    # "self_alerted"] = True` explicitly (same convention as
-    # `app_message.py:_route_sinks()` — a single logged record with no
-    # separate direct-send path, NOT chase's/`actions_live.py`'s own
-    # usage of the same flag, which pairs it with a SEPARATE direct
-    # `send_order_failure_alert()` call outside this dispatch pipeline
-    # entirely — see `_error_agent_self_alerted()`'s own comment for the
-    # distinction), so `_error_agent_self_alerted()`'s existing, generic
-    # check already prevents the double-fire — no dedicated-agent-
-    # specific branch was needed there. Consequence: deactivating this
-    # agent via the Automation page silences the alert entirely, the
-    # same pre-existing, accepted tradeoff `app_message.py` already has.
+    # Producer: `backend/brokers/connections.py:
+    # _attempt_login_with_cooloff()`, which sets `self_alerted=True` —
+    # see `_error_agent_self_alerted()`'s own docstring for why that
+    # prevents a double-fire through `ERROR_AGENT`'s catch-all, and
+    # `_render_broker_login_blocked`'s own docstring for why this uses a
+    # dedicated renderer rather than `generic_notice`. Deactivating this
+    # agent silences the alert entirely — same accepted tradeoff
+    # `app_message.py` already has.
     "conditions": {"log": {"tag": "alert", "min_level": "WARNING",
                            "where": {"alert_event": "broker_login_blocked"}}},
     "priority": "critical",
@@ -2924,102 +2887,14 @@ BROKER_LOGIN_BLOCKED_AGENT = {
 
 
 SEED_VERSION = 12
-# 2026-11-20 (SEED_VERSION 11 -> 12) — inserts the new
-# `BROKER_LOGIN_BLOCKED_AGENT` (slug `broker-login-blocked-alert`), a
-# dedicated critical-tier agent for a broker login cooloff escalating to
-# its worst tier. See the agent's own comment above for the live
-# incident this fixes. New slug, so `seed_action()` returns "insert"
-# unconditionally — no migration needed for this bump alone.
-# 2026-11-19 (SEED_VERSION 10 -> 11) — folds `GTT_ORPHAN_CANCELLED_AGENT`
-# and `APP_MESSAGE_AGENT` into `_COLLAPSED_DETECTOR_SPECS`, removing both
-# from `SEEDED_AGENTS`. This changes the 3 generic channel agents'
-# `_CHANNEL_AGENT_CONDITION` (it gains 2 more `any[]` leaves, one per
-# folded spec's own `alert_event`), so `TELEGRAM_CHANNEL_AGENT`/
-# `NTFY_CHANNEL_AGENT`/`EMAIL_CHANNEL_AGENT`'s own `conditions` hash
-# changes and the bump is required to re-sync those 3 already-seeded
-# rows. The 2 folded slugs' own already-seeded rows are deactivated (not
-# deleted) by `_retire_collapsed_event_agents()`, same mechanism as the
-# 2026-10-25 collapse. `alert_routing._PER_SLUG_OVERRIDES["app-message-
-# alert"]` was added FIRST (same commit) so this fold cannot silently
-# drop its channels to `[]`.
-#
-# 2026-11 (SEED_VERSION 9 -> 10) — alert-agent audit fix: inserts the
-# new DRAFT_SWEEP_AGENT row. Standalone dedicated agent (own per-slug
-# `telegram_info`-only channel override in alert_routing.py), not a
-# collapsed-table entry — same reasoning as the GTT_ORPHAN_CANCELLED_
-# AGENT bump immediately below. `seed_action()` returns 'insert'
-# unconditionally for this brand-new slug, so the bump isn't strictly
-# required, but is kept for the same auditable-history reason every
-# other standalone addition in this file bumps it.
-#
-# 2026-11 (SEED_VERSION 8 -> 9) — channel-authoring retirement. (a)
-# `AGENT_CLOSE_HOLD_ALERT_AGENT` is a brand-new slug — `seed_action()`
-# returns 'insert' for a missing slug unconditionally, so this bump is
-# not strictly required for it, but is included for the same
-# auditable-history reason the GTT_ORPHAN_CANCELLED_AGENT insert below
-# bumped the version too. (b) `ACTION_NOTIFY_AGENT` ("action-notify-
-# alert") is removed from `SEEDED_AGENTS` and deactivated via
-# `_RETIRED_SLUGS` — `_retire_collapsed_event_agents()` runs
-# unconditionally every `seed_event_agents()` call regardless of
-# version, so this part of the bump is also not strictly required, same
-# reasoning. (c) `ORDER_CANCELLED_AGENT`'s `conditions`/`actions` are
-# UNCHANGED (still `{"type": "render", "render": "order_cancelled"}`) —
-# only its own dict comment and its renderer's return shape changed
-# (dynamic `out[4]` override -> plain passthrough, channel list moved
-# to `alert_routing._PER_SLUG_OVERRIDES`), so no hash mismatch and no
-# re-sync needed for that row either.
-#
-# 2026-11-05 (SEED_VERSION 7 -> 8) — MARKET_STATUS_ALERT_AGENT gains a
-# static `events` list (log, telegram, email), replacing the per-record
-# dynamic `out[4]` channel override its renderer used to return. An
-# existing-row shape change (not a new slug), so this bump is required
-# to re-sync the already-seeded prod/dev row. Pre-flight: the row was
-# seeded at SEED_VERSION 7 with `events: []` and never operator-edited,
-# so `seed_action()`'s hash check sees it as unmodified and takes the
-# 'update' branch, not 'modified_skip'.
-#
-# 2026-11-04 (SEED_VERSION 6 -> 7) — inserts the new GTT_ORPHAN_CANCELLED_
-# AGENT row. Standalone dedicated agent (own per-slug channel override in
-# alert_routing.py, telegram-only — "nothing to act on"), not a collapsed-
-# table entry; see the agent dict's own comment for why.
-#
-# 2026-10-30 (SEED_VERSION 5 -> 6) — every live `SEEDED_AGENTS` entry gets
-# a `description` field (operator: "alert agents don't have description").
-# The Automation page's collapsed-row detail line (`automation/+page.
-# svelte`, `{#if row.description || row.group}`) was silently omitted for
-# every alert-kind row — `event_agents.py`'s seed specs never set this
-# field at all, unlike `agent_engine.py`'s cycle-agent seeds, which always
-# have. Written the same way `priority` is (direct kwarg on insert, direct
-# attribute on update) — NOT added to `event_agent_row_fields()`, which is
-# shared with operator-authored agents and whose docstring already states
-# `name`/`slug`/`status`/`seed_version` are caller-owned; `description`
-# belongs in that same caller-owned category. Deliberately left untouched
-# on a `modified_skip` row, same protection as `priority`.
-#
-# 2026-10-25 — tag-unification: every `kind='event'` seeded agent except
-# ERROR_AGENT/RICH_ALERT_AGENT/BREACH_AGENT (explicitly excluded — see
-# each one's own dict comment, or the module-level rationale in each
-# migrated agent's own comment above) now matches on the single additive
-# "alert" tag instead of its own category tag ("orders"/"gtt"/"chase"/
-# "mcp"/"deploy"/"summary"/"broker"/"visitor"/"auth"/"agent") — the
-# `where.alert_event` clause already uniquely discriminated every one of
-# these agents, so the category tag in the condition was redundant. This
-# bump rewrites every already-seeded, operator-unmodified row's
-# `conditions` to the new shape (see `seed_action()`'s own docstring for
-# the hash-based `modified_skip` protection an operator-edited row keeps).
-#
-# 2026-10-25 — alert-channel collapse (SEED_VERSION 4 -> 5): 16 of the
-# previous 23 `SEEDED_AGENTS` entries are retired in favor of 3 generic
-# channel agents + `ALERT_EVENT_DISPATCH` — see the block comment
-# immediately above `_COLLAPSED_DETECTOR_SPECS`. This bump both (a)
-# inserts the 3 new channel-agent rows and (b) drives
-# `_retire_collapsed_event_agents()`'s deactivation pass for the 16
-# retired slugs — see `seed_event_agents()`'s own call site. Pre-flight
-# (`scripts/alert_seed_audit.py`, run 2026-10-25 against prod AND dev):
-# all 23 pre-collapse `kind='event'` rows were hash-clean on both
-# (zero `modified_skip` risk), so no row's `conditions`/`events`/
-# `actions` had ever diverged from what seeding last wrote — the
-# deactivation pass below cannot silently discard an operator edit.
+# Bump this whenever an EXISTING seeded row's `conditions`/`events`/
+# `actions` shape changes (so already-seeded prod/dev rows get
+# re-synced) — a brand-new slug doesn't strictly need a bump, since
+# `seed_action()` returns 'insert' unconditionally for a missing row,
+# but every addition here bumps it anyway for auditable history. See
+# `seed_action()`'s own docstring for the hash-based `modified_skip`
+# protection that keeps an operator-edited row from being silently
+# overwritten on a bump. Per-version detail lives in git log, not here.
 
 
 def validate_seed_spec(spec: dict) -> list[str]:

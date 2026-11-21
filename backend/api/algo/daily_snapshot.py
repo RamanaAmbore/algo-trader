@@ -1392,43 +1392,28 @@ async def _prune_and_mark_positions(
 ) -> None:
     """Prune stale position rows and write the confirmed-empty marker —
     the per-account post-upsert cleanup step of `snapshot_daily_book`.
-
-    Extracted out of `snapshot_daily_book` (pure extract-function
-    refactor, 2026-11-20 F12 follow-up) — identical runtime behaviour,
-    split into its own function purely to bring that function's
-    cyclomatic complexity back under the project's D-grade CC gate after
-    the `accounts` scoping parameter pushed it over (same rationale as
-    `background.py`'s `_compute_lkg_stale_pairs`/`_lkg_group_row`
-    extractions out of `_preload_db_lkg_cache` earlier the same day).
+    Split out of that function as a pure extract-refactor to keep its
+    cyclomatic complexity under the project's D-grade CC gate.
 
     Prune positions rows no longer in the broker response (e.g. post-
     settlement cleanup). Only fires when the broker positions call
     succeeded (`raw["positions"]` is a list, not None). An empty list
     means all positions are closed — wipes all today's rows.
 
-    2026-11-05 live-incident fix — pruning is gated on `market_open=True`.
-    The broker's own "day positions" bucket resets/clears an already-
-    closed (qty=0) position some time after settlement, so a snapshot
-    fetch firing HOURS late (a missed-window catch-up, a restart's
-    startup snapshot, a SessionGuard recovery — all of which pass
-    `market_open=False`) can come back "successfully" with a symbol
-    set that is genuinely narrower than reality, not because the
-    position is actually gone. Treating that late response as
-    authoritative silently and PERMANENTLY deleted a real closed
-    position's settlement row — confirmed live: the regular 23:4x IST
-    MCX settlement correctly wrote `positions=7`/`positions=5` for two
-    accounts; a startup-snapshot catch-up ~2h later (itself caused by
-    the `_preload_snapshot_sentinels()` holdings-signal gap fixed
-    earlier the same day) came back with only 6/5 symbols and this
-    prune step deleted the missing symbol's row outright, with no way
-    to recover it afterward. A genuine live-hours fetch (`market_open
-    =True`) is always fired promptly and is trusted as before — only
-    the off-hours/late-catch-up case defers cleanup to the next real
-    live-hours confirmation instead of deleting on a fetch that might
-    be stale. Matches CLAUDE.md's "Staleness indicator freeze rule":
-    a position that lingers one extra day before being correctly
-    pruned is a strictly safer failure mode than one silently and
-    irreversibly deleted on an untrustworthy snapshot.
+    Pruning is gated on `market_open=True`. The broker's own "day
+    positions" bucket resets/clears an already-closed (qty=0) position
+    some time after settlement, so a snapshot fetch firing hours late
+    (a missed-window catch-up, a restart's startup snapshot, a
+    SessionGuard recovery — all pass `market_open=False`) can come back
+    "successfully" with a symbol set narrower than reality, not because
+    the position is actually gone — live-confirmed to have silently and
+    permanently deleted a real closed position's settlement row. A
+    genuine live-hours fetch is always trusted as before; only the
+    off-hours/late-catch-up case defers cleanup to the next real
+    live-hours confirmation. Matches CLAUDE.md's "Staleness indicator
+    freeze rule": a position lingering one extra day before being
+    correctly pruned is safer than one irreversibly deleted on an
+    untrustworthy snapshot.
     """
     if raw["positions"] is None:
         return
@@ -1521,13 +1506,9 @@ async def snapshot_daily_book(target_date: Optional[date] = None,
         from backend.api.algo.expiry_freeze import session_date_of
         target_date = session_date_of(now_ist)
 
-    # NOTE: this local was previously also named `accounts`, which would
-    # have silently SHADOWED the new `accounts` kwarg above (overwriting
-    # the caller's requested subset before it was ever used for
-    # filtering) — renamed to `_loaded_accounts_list` to avoid that
-    # collision. It answers a different question ("is anything loaded
-    # at all") from the new parameter ("which subset to actually
-    # capture"), so the two must stay distinct.
+    # `_loaded_accounts_list` ("is anything loaded at all") is deliberately
+    # a distinct name from the `accounts` kwarg ("which subset to actually
+    # capture") — reusing `accounts` here would shadow that kwarg.
     connections = _get_connections()
     _loaded_accounts_list = list(connections.conn.keys())
     if not _loaded_accounts_list:

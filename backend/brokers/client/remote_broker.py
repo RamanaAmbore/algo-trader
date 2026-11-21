@@ -253,61 +253,12 @@ class RemoteBroker(Broker):
 
     # ── GTT ───────────────────────────────────────────────────────────
 
-    def validate_gtt_exchange(self, exchange: str) -> None:
-        # Forward to conn_service so the real adapter's GTT-exchange
-        # refusal applies in conn-service mode too — e.g. Groww's
-        # place_gtt has no internal MCX/NCO refusal of its own, so
-        # this gate (called from template_attach.apply_plan_live
-        # before any broker call) is the ONLY thing stopping an
-        # unsupported GTT placement for that broker. Without this
-        # override the base-class no-op silently allows every
-        # exchange through.
-        #
-        # apply_plan_live catches `except ValueError` specifically
-        # and collects it into `result.errors` without raising —
-        # it never reaches this far for an in-process Broker, since
-        # adapters raise ValueError directly. But a remote refusal
-        # comes back through `_call`'s _ERROR_TYPE_MAP, and
-        # "ValueError" isn't a key there, so it arrives here as a
-        # generic BrokerError, not ValueError. Re-raise as ValueError
-        # (preserving the message) so the caller's except clause
-        # still catches it instead of an unhandled BrokerError
-        # propagating out of apply_plan_live.
-        #
-        # DEPLOY-COUPLING GUARD (2026-10-20): "validate_gtt_exchange"
-        # is only usable once conn_service's own _ALLOWED_BROKER_METHODS
-        # whitelist includes it — and conn_service only picks up new
-        # code on a PROD deploy (dev shares the same conn_service
-        # process/socket, per CLAUDE.md's "Conn service | both |
-        # /opt/ramboq (shared)"). Until that deploy happens, every call
-        # here 403s at the whitelist check and collapses to
-        # BrokerNetworkError below, which previously was re-raised as
-        # ValueError and treated by apply_plan_live as a genuine
-        # exchange refusal — silently skipping the GTT attach for
-        # EVERY exchange, not just MCX/NCO (confirmed live on dev,
-        # 2026-10-20). Fail OPEN specifically on BrokerNetworkError —
-        # this covers both "method not deployed yet" and a genuine
-        # transport blip — restoring the base-class no-op behavior
-        # (today's actual production behavior) until conn_service is
-        # upgraded. A genuine exchange-unsupported verdict from an
-        # upgraded conn_service comes back as a different error_type
-        # (e.g. BrokerInputError) and still fails closed below.
-        try:
-            self._call("validate_gtt_exchange", exchange)
-        except BrokerNetworkError as e:
-            logger.warning(
-                f"validate_gtt_exchange({exchange}) unreachable/unsupported "
-                f"on conn_service, failing open (no-op) — see deploy-coupling "
-                f"guard comment: {e}"
-            )
-        except BrokerError as e:
-            raise ValueError(str(e)) from e
-
-    # `place_gtt`/`modify_gtt` forwarders removed (Bracket/Template-GTT
-    # removal, T3.1, 2026-11) — confirmed zero callers outside the deleted
-    # `backend/api/algo/template_attach.py`. `cancel_gtt`/`get_gtts` below
-    # are KEPT — `orders_gtt.py` is a standalone, Bracket-independent
-    # "view/cancel any broker GTT" feature.
+    # `place_gtt`/`modify_gtt`/`validate_gtt_exchange` forwarders removed
+    # (Bracket/Template-GTT removal, T3.1, 2026-11) — confirmed zero
+    # callers outside the deleted `backend/api/algo/template_attach.py`.
+    # `cancel_gtt`/`get_gtts` below are KEPT — `orders_gtt.py` is a
+    # standalone, Bracket-independent "view/cancel any broker GTT"
+    # feature.
 
     def cancel_gtt(self, gtt_id: str, *, exchange: str | None = None) -> str:
         return self._call("cancel_gtt", gtt_id, exchange=exchange)

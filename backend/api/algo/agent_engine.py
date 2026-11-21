@@ -955,15 +955,10 @@ async def _prewarm_special_sessions_for_exchange(exchange: str) -> None:
     `fetch_special_sessions_async`'s docstring in broker_apis.py).
 
     Callers (all `async def`, all able to `await` this): `orders_place.py`'s
-    ticket market-hours gate, `orders_basket.py`'s per-leg gate,
-    `chase.py`'s chase-start gate, and (added 2026-10-20, item 2)
-    `template_attach.py`'s `_apply_template_to_order_impl`, immediately
-    before its `_check_offhours_wing_gate(...)` call —
-    `_check_offhours_wing_gate` itself stays plain `def` (cannot `await`);
-    its caller does the awaiting instead. `apply_plan_live`
-    (`template_attach.py`) was never actually exposed to this gap at all —
-    it runs via `asyncio.to_thread` (confirmed via `write_queue.py`'s guard
-    condition), not inline on the main loop.
+    ticket market-hours gate, `orders_basket.py`'s per-leg gate, and
+    `chase.py`'s chase-start gate. (The former `template_attach.py` caller
+    no longer exists — that module was removed with the Bracket/
+    Template/GTT removal, T3.1-T3.4, 2026-11.)
 
     `market_lifecycle.poll()` (item 1, 2026-10-20) does NOT call this
     helper, deliberately — it resolves `holiday_exchange` via

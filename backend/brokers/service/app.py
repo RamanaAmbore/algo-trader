@@ -489,7 +489,7 @@ def _watchdog_slowed_interval_s() -> float:
     return float(max(30, get_int("kite_ticker.all_down_watchdog_seconds", 60)))
 
 
-def _attempt_failover_swap(ticker, log, cooldown_s: float, slowed_s: float) -> bool:
+def _attempt_failover_swap(ticker, log, cooldown_s: float) -> bool:
     """Phase 4 of the watchdog state machine: try to swap to a healthier
     Kite account.
 
@@ -753,7 +753,7 @@ async def _ticker_watchdog() -> None:
             # ── Phase 4: swap eligibility ───────────────────────────────
             _slowed_s = _watchdog_slowed_interval_s()
             swap_has_candidates = _attempt_failover_swap(
-                ticker, log, _watchdog_cooldown_s(), _slowed_s
+                ticker, log, _watchdog_cooldown_s()
             )
             if not swap_has_candidates:
                 if not unavailable_mode:
