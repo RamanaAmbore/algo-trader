@@ -3729,78 +3729,136 @@ seasonal branch at all.
   still resolves one shared close time for the whole basket — a known, accepted simplification
   (the existing architecture already shares one `_close_time` tuple across every leg in
   `_strategy_build_legs`'s loop; per-leg resolution would be a larger restructure).
-- **`exchange_schedule` DB table — the deeper, shared root cause, found but NOT fixed in the DB.**
-  `resolve_mcx_gate_bounds()` ([`calendar_gate.py`](backend/brokers/service/calendar_gate.py)) and
-  `exchange_clock._effective_gate_rows("MCX")` ([`exchange_clock.py`](backend/api/helpers/exchange_clock.py))
-  both read the SAME `exchange_schedule` row (`gate='MCX', date IS NULL, session_name='regular'`,
-  seeded `close_time='23:30'`) that `_ds_tick_mcx_stop()` (the 23:31 ticker-stop trigger,
-  `backend/api/background.py`) ALSO reads — confirmed it carries no independent hardcode of its
-  own. Writing a correct `close_time` into that one row WOULD fix the ticker quiet-window and the
-  23:45-derived MCX settlement-snapshot trigger for free, with no separate code change — but see
-  the very next bullet for why that write is NOT being made yet.
-- **Self-maintaining daily sync — IMPLEMENTED, FULLY TESTED, DELIBERATELY NOT WIRED INTO
-  PRODUCTION.** `_sync_mcx_dst_close_time_coro()` ([`broker_apis.py`](backend/brokers/broker_apis.py),
-  next to `_upsert_mcx_evening_closed_sessions_coro`) resolves today's correct close time and would
-  UPDATE the `exchange_schedule` default MCX row ONLY when it differs, scoped to
-  `gate='MCX' AND date IS NULL AND session_name='regular' AND source='system'` — the exact same
-  guard `exchange_clock.seed_and_warm()`'s own MCX migrations use, so an operator-edited row (any
-  other `source` value) or a genuine date-specific override row is never touched. It is NOT called
-  from anywhere in production code — `background.py:_task_holiday_refresh` carries only an
-  explanatory comment naming it, pinned by `test_mcx_dst_close_time_sync.py`'s two tripwire tests
-  (`test_sync_function_is_not_yet_wired_into_holiday_refresh`,
-  `test_background_flags_the_deferred_wiring_reason_in_comments`). **Why it is unwired**: writing
-  `close_time='23:55'` (the correct winter value) exposes a SEPARATE, pre-existing latent bug in
-  `exchange_clock.py` — `_effective_snapshot_time()` derives the close-snapshot trigger as
-  `close_time + 15 min` with NO date component, so 23:55+15min wraps to **00:10 the next calendar
-  day**. `_row_matches_now()`'s weekday filter (`weekdays=[0,1,2,3,4]`) then checks the REAL
-  weekday at THAT moment, not the trading session's own weekday — on a Friday MCX close, the
-  matching 00:10 instant is a Saturday, which fails the Mon–Fri filter. The MCX close-snapshot
-  (which writes `daily_book.ltp`, the prev_close SSOT — see "close_price / ltp invariant" above)
-  would then silently never fire on ANY Friday night throughout the entire winter DST window
-  (roughly 20+ Fridays a year), corrupting the following Monday's Day P&L baseline. Confirmed
-  empirically, not just reasoned about, in
-  `test_exchange_clock_mcx_winter_snapshot_gap.py::test_friday_23_55_close_derived_snapshot_never_matches_on_saturday`
-  (and its sibling test proving the OLD flat 23:30 value never had this problem, since 23:30+15min
-  never crosses midnight). **No manual SQL patch was applied to prod/dev either** — doing so today
-  would immediately start skipping every Friday-night MCX snapshot during the current winter
-  window.
-- **Required before this can ship**: fix the weekday/midnight-wrap gap in
-  `exchange_clock._effective_snapshot_time()` / `_row_matches_now()` / `sessions_with_snapshot_time_now()`
-  (e.g. an explicit, non-derived `snapshot_time` for the MCX row, or a date-aware match that
-  anchors the weekday check to the TRADING day rather than the real clock moment) — THEN flip THREE
-  tests: the two wiring tripwires in `test_mcx_dst_close_time_sync.py`
-  (`test_sync_function_is_not_yet_wired_into_holiday_refresh`,
-  `test_background_flags_the_deferred_wiring_reason_in_comments`) to assert the wiring exists, AND
-  `test_exchange_clock_mcx_winter_snapshot_gap.py::test_friday_23_55_close_derived_snapshot_never_matches_on_saturday`
-  to assert the row NOW correctly matches (it currently passes by asserting the bug's present
-  broken behavior — see that file's own docstring) — THEN wire
-  `_sync_mcx_dst_close_time_coro()` into `_task_holiday_refresh`. This is flagged as a separate
-  follow-up task, not attempted here, per "fix one issue at a time" and because `exchange_clock.py`
-  is shared, load-bearing infrastructure well beyond the scope of the options.py fix this entry
-  started from.
-- **Deploy coupling.** `3c787204` (as committed) wires the sync into `_task_holiday_refresh` AND
-  depends on the resolver from the foreign commit `4f33e998` (see the attribution note below).
-  `15f1dd48` (this un-wire fix) must ship in the SAME range — shipping `3c787204` alone would push
-  the Friday-night snapshot-skip regression live. Both are unpushed on `workshop` as of this
-  writing, so a normal `/ddev` carries the full range together; this note exists in case that
-  changes.
+- **`exchange_schedule` DB table — the deeper, shared root cause, FIXED (2026-11-21, follow-up
+  session).** `resolve_mcx_gate_bounds()` ([`calendar_gate.py`](backend/brokers/service/calendar_gate.py))
+  and `exchange_clock._effective_gate_rows("MCX")` ([`exchange_clock.py`](backend/api/helpers/exchange_clock.py))
+  both read the SAME `exchange_schedule` row (`gate='MCX', date IS NULL, session_name='regular'`)
+  that `_ds_tick_mcx_stop()` (the 23:31 ticker-stop trigger, `backend/api/background.py`) ALSO
+  reads — confirmed it carries no independent hardcode of its own. Writing a correct `close_time`
+  into that one row fixes the ticker quiet-window and the MCX settlement-snapshot trigger for free,
+  with no separate code change in either of those two readers.
+- **`exchange_clock.py` weekday/midnight-wrap root cause — FOUND AND FIXED, same session.** A
+  pre-ship review of the first attempt at wiring the DB sync below found that writing the winter
+  `close_time` (23:55) would have exposed a real, separate latent bug:
+  `_effective_snapshot_time()` derives the close-snapshot trigger as `close_time + 15 min` with NO
+  date component, so 23:55+15min wraps to **00:10 the next calendar day**. The OLD
+  `_row_matches_now()`'s weekday filter (`weekdays=[0,1,2,3,4]`) then checked the REAL weekday at
+  THAT later moment, not the trading session's own weekday — on a Friday MCX close, the matching
+  00:10 instant is a Saturday, which fails the Mon–Fri filter. The MCX close-snapshot (which writes
+  `daily_book.ltp`, the prev_close SSOT — see "close_price / ltp invariant" above) would then have
+  silently never fired on ANY Friday night throughout the entire winter DST window (roughly 20+
+  Fridays a year), corrupting the following Monday's Day P&L baseline.
+  - **The fix, in `exchange_clock.py`.** Three new primitives, all additive — every EXISTING
+    function signature and every existing caller/mock target is unchanged:
+    - `_row_matches_date(row, for_date)` — the weekday/override check, parameterised by an explicit
+      calendar date instead of implicitly reading `_now_ist().date()`. `_row_matches_now(row)` is
+      now a one-line wrapper: `_row_matches_date(row, _now_ist().date())`.
+    - `_effective_gate_rows_for_date(gate, for_date)` — the override-priority + weekday-filtered row
+      lookup, parameterised the same way. `_effective_gate_rows(gate)` (the original, still the
+      "today" entry point every other caller and every existing test mock targets) is now
+      `_effective_gate_rows_for_date(gate, _now_ist().date())`.
+    - `_effective_snapshot_day_offset(row)` — returns 1 only when `close_time + 15 min`'s OWN
+      arithmetic crosses midnight (computed against a fixed arbitrary anchor date, never by
+      comparing two unrelated bare times). An EXPLICIT `row.snapshot_time` always returns 0,
+      regardless of its numeric value relative to `close_time` — a legitimate pre-close
+      special-session snapshot (numerically earlier than its own close) must never be misread as a
+      midnight wrap.
+    - `_anchor_snapshot_datetime(session_date, row)` — the one place a cross-midnight boundary is
+      resolved: returns an ABSOLUTE `datetime`, anchored to `session_date` (or `session_date + 1
+      day` when `_effective_snapshot_day_offset` says so), never a bare `time`.
+    - `sessions_with_snapshot_time_now()` and `is_market_active_for_prev_close()` (which had the
+      identical pattern, confirmed by the operator's own "every exchange's snapshot/settlement
+      timing, not just MCX" framing) now check BOTH today's and yesterday's governing session —
+      "today" still resolves via the original, still-mockable `_effective_gate_rows(gate)`
+      (so every pre-existing test that patches it is unaffected — verified, all 191 pre-existing
+      tests across 9 files pass unchanged); "yesterday" resolves via the new
+      `_effective_gate_rows_for_date(gate, yesterday)`. Both compare absolute datetimes via
+      `_anchor_snapshot_datetime`, never a bare time-of-day.
+  - **Why `is_market_active_for_prev_close()` was fixed too, despite having zero production
+    callers today** (confirmed by grep — only referenced from its own module and one test file):
+    the operator's instruction explicitly named the broader risk ("this function is read by every
+    exchange's snapshot/settlement timing, not just MCX"), and it carries the identical latent
+    pattern inside the SAME file this fix was already touching. Leaving a second copy of the same
+    bug in place while claiming the root cause was fixed would have been incomplete.
+  - **Deliberately NOT touched, flagged instead**: `background.py`'s OWN bare-time comparisons
+    against `_effective_snapshot_time()`'s return value — `_sg_recover_mcx_snapshot()` (`SessionGuard`
+    startup recovery: `now_t >= snap_t or now_t < dtime(2,0)`, which for a wrapped 00:10 winter
+    `snap_t` is numerically true at almost ANY time of day, so a server restart during the winter
+    window could trigger a premature mid-session "EOD" `daily_book` write) and
+    `_run_nav_compute_once()` (NAV snapshot scheduling: `now.time() < target`, same class of bug).
+    These are real, same-root-cause defects, but in a DIFFERENT module with their own test fixtures
+    (several use a `SimpleNamespace`/mocked `now` that isn't a real `datetime`, which the
+    absolute-datetime fix would break), and NAV scheduling in particular carries its own strict
+    "do not change without explicit instruction" conventions elsewhere in this codebase. Not fixed
+    here — flagged as a follow-up, per Scope Discipline and "fix one issue at a time". The
+    `_ds_tick_mcx_stop()`/`_sg_recover_mcx_close()` ticker-stop triggers (`close_time + 1 min`, not
+    `+15 min`) are UNAFFECTED — +1 minute from even 23:59 cannot cross midnight starting from any
+    realistic close time, so there is no wrap case for them to hit.
+  - Tests: `test_exchange_clock_mcx_winter_snapshot_gap.py` — 19 tests, including the exact
+    Friday-23:55→Saturday-00:10 scenario (now asserting the CORRECT match, not the bug), the same
+    scenario for `is_market_active_for_prev_close()`, tolerance-window boundaries, a weekday-mismatch
+    negative control (no adjoining valid session), the pre-fix 23:30 contrast case, an explicit
+    `snapshot_time` that is numerically earlier than `close_time` (proving it is never misread as a
+    wrap), a parametrised sweep of every non-wrapping NSE/MCX × Mon/Fri combination, a two-gate
+    cross-contamination check, and direct unit tests of all three new primitives. Plus the full
+    pre-existing suite (`test_exchange_clock.py`, `test_exchange_clock_market_day.py`,
+    `test_exchange_schedule.py`, `test_holiday_snapshot_cutoff.py`, `test_session_guard.py`,
+    `test_nav_compute_trigger_time.py`, `test_background_triggers.py`, `test_background_helpers.py`,
+    `backend/tests/broker/test_prev_close_fix.py` — 191 tests, zero changes needed, zero
+    regressions) and the full backend suite (10967 passed, 0 failed).
+- **Self-maintaining daily sync — IMPLEMENTED, TESTED, AND NOW LIVE (re-wired 2026-11-21, after the
+  root-cause fix above landed).** `_sync_mcx_dst_close_time_coro()`
+  ([`broker_apis.py`](backend/brokers/broker_apis.py), next to `_upsert_mcx_evening_closed_sessions_coro`)
+  resolves today's correct close time and UPDATEs the `exchange_schedule` default MCX row ONLY when
+  it differs, scoped to `gate='MCX' AND date IS NULL AND session_name='regular' AND source='system'`
+  — the exact same guard `exchange_clock.seed_and_warm()`'s own MCX migrations use, so an
+  operator-edited row (any other `source` value) or a genuine date-specific override row is never
+  touched. Piggybacked onto the EXISTING `if exch == "MCX":` block inside `_task_holiday_refresh()`
+  (`backend/api/background.py`) — the same 05:30 IST daily wake-up (plus its restart catch-up path)
+  that already syncs the MCX evening-holiday special sessions — never its own cron. Wrapped in its
+  own try/except; a DB or cache-refresh failure logs and returns `None`, never aborting the broader
+  daily refresh. Forces an immediate `exchange_clock` in-process cache reload after a real write
+  (via `_force_refresh()` under its own lock, not the public `refresh()`, which would skip the
+  reload if the cache was warmed moments earlier by the same wake-up's own `load_today_open_time()`
+  call).
+  - **`test_mcx_dst_close_time_sync.py`'s tripwires were flipped to assert the wiring IS present and
+    correct** — `test_sync_function_is_wired_into_holiday_refresh` (same single `if exch == "MCX":`
+    block as the evening-holiday upsert, no second guard), `test_wiring_never_raises_on_sync_failure`
+    (its own try/except), `test_wiring_call_has_no_arguments` (no hardcoded/pre-computed date — the
+    coroutine resolves "today" itself via `timestamp_indian()` on every call).
+  - **Live effect once deployed**: the stored `exchange_schedule` MCX `close_time` corrects itself
+    automatically on the next 05:30 IST wake-up (or immediately via restart catch-up, if that day's
+    run hasn't already fired) — no manual SQL patch was run against prod/dev as part of this fix;
+    the self-healing mechanism is the delivery path.
 - **Known residual, not fixed.** `calendar_gate.py`'s own `_MCX_GATE_DEFAULT_CLOSE = time(23, 30)`
   fallback constant (used ONLY when the `exchange_schedule` DB read itself fails) is still a flat
   23:30 year-round. Left unchanged — it is a last-resort safety net, not the steady-state path.
-- **Known, separate, NOT fixed — found during the sweep, out of scope for this change.**
-  `GET /api/options/chain-snapshot`'s `days_to_expiry(expiry_d)` calls (both the early-return branch
-  and the main path) never pass `close_time=` at all, defaulting to the NFO/equity 15:30 close even
-  when `is_mcx_underlying(und)` is true (the SAME function already branches Greeks to
-  `greeks_76`/Black-76 for that case). This is a different, more severe, NON-seasonal defect — it is
-  wrong by 8+ hours every day of the year for an MCX chain snapshot, not just during one DST window
-  — and is a distinct bug from this entry's DST fix. Flagged for its own separate fix.
+- **`GET /api/options/chain-snapshot` close_time bug — FIXED, same session.** This endpoint's
+  `days_to_expiry(expiry_d)` calls (both the early-return branch and the full-response branch) never
+  passed `close_time=` at all, silently defaulting to the NFO/equity 15:30 close even when
+  `is_mcx_underlying(und)` is true (the SAME handler already branches Greeks to `greeks_76`/Black-76
+  for that exact case). This was a DIFFERENT, more severe, NON-seasonal defect — wrong by 8+ hours
+  every single day of the year, independent of the DST window the rest of this entry covers. Fixed
+  by hoisting `_is_mcx = is_mcx_underlying(und)` and resolving `_close_time` (via
+  `mcx_non_agri_close_time(expiry_d)` when `_is_mcx`, else the unchanged `(15, 30)`) once near the
+  top of `chain_snapshot()`, then threading it through all 3 `days_to_expiry(expiry_d, close_time=_close_time)`
+  call sites and the existing `is_mcx_underlying(und)` Greeks-dispatch call (now reads the same
+  `_is_mcx` value, not a second call). Tests:
+  `test_chain_snapshot_mcx_close_time.py` — source-grep confirming no bare
+  `days_to_expiry(expiry_d)` call survives, plus 4 behavioral tests invoking the real route handler
+  (via its `.fn` with an explicitly-constructed `self`, since direct `OptionsController()`
+  instantiation needs an `owner=` arg in the installed Litestar version) with a frozen clock at
+  23:37 IST and 15:45 IST on the real 2026-11-17 winter date, confirming `days_to_expiry > 0` where
+  the pre-fix code returned `0.0`, a non-MCX control proving the 15:30 path is unchanged, and a
+  post-real-close control proving the fix doesn't make an MCX underlying never expire. 3 of the 5
+  tests confirmed to fail against the pre-fix code.
 - **Known, separate, NOT fixed — the DST rule itself has other copies in the codebase.** This
   entry's fix is scoped to `options.py` (both of its `/analytics` and `/strategy-analytics` close-time
-  branches) plus the new, unwired `exchange_schedule` resolver. A flat `(23, 30)` (or an
-  equivalent `evening_open_on_holidays`/YAML `market_segments.commodity` end-of-session boundary)
-  still governs MCX close elsewhere, confirmed still present in: `grammar.py`, `agent_engine.py`,
-  `actions_paper.py`, `expiry.py` (the expiry auto-close engine), `order_hold_gate._CLOSE_HM`,
-  `derivatives._close_time_for_row`, `metric_days_until_expiry.py`,
+  branches, plus `/chain-snapshot`) and the `exchange_schedule` DB row (now self-maintaining). A flat
+  `(23, 30)` (or an equivalent `evening_open_on_holidays`/YAML `market_segments.commodity`
+  end-of-session boundary) still governs MCX close elsewhere, confirmed still present in:
+  `grammar.py`, `agent_engine.py`, `actions_paper.py`, `expiry.py` (the expiry auto-close engine),
+  `order_hold_gate._CLOSE_HM`, `derivatives._close_time_for_row`, `metric_days_until_expiry.py`,
   `scope_positions_expiring_today.py`, and `background.py`'s own `[08:00, 23:30)` connectivity-
   window checks. **Highest-stakes of these**: `backend_config.yaml`'s `market_segments.commodity`
   session end feeds `_segment_is_open()` → `_ae_segment_flags()` → the live order-placement gates
@@ -3809,16 +3867,18 @@ seasonal branch at all.
   those paths even though the exchange is genuinely open, which is the exact scenario the operator
   reported in the first place, just hit from the ORDER-PLACEMENT side rather than the
   analytics/Greeks side this entry fixes. None of these were touched here, per Scope Discipline —
-  each needs its own dedicated fix and is flagged, not silently propagated to.
+  each needs its own dedicated fix and is flagged, not silently propagated to. Likewise,
+  `background.py`'s own `_sg_recover_mcx_snapshot()`/`_run_nav_compute_once()` bare-time comparisons
+  (see the exchange_clock.py bullet above) remain unfixed.
 - Tests: `test_mcx_non_agri_close_time.py` (resolver — winter/DST dates, the transition boundary
   computed programmatically via the same zoneinfo approach rather than hardcoded, and the exact
   23:37 IST 2026-11-17 reported scenario), `test_options_mcx_dst_close_time_wiring.py`
   (source-grep for the removed hardcode + both call sites' wiring, plus a behavioral
   `_strategy_option_T_range`/`_strategy_build_legs` check that T_years stays positive at the
   reported instant), `test_mcx_dst_close_time_sync.py` (the DB sync coroutine's own correctness —
-  scoping, no-op/failure paths — plus the two tripwires asserting it stays unwired),
-  `test_exchange_clock_mcx_winter_snapshot_gap.py` (empirical proof of the Friday-night gap this
-  entry's own fix would otherwise have introduced).
+  scoping, no-op/failure paths — plus the wiring tripwires, now asserting the wiring IS present),
+  `test_exchange_clock_mcx_winter_snapshot_gap.py` (the exchange_clock.py root-cause fix and its
+  regression coverage), `test_chain_snapshot_mcx_close_time.py` (the chain-snapshot fix).
 - **Attribution note, for history-readers**: `mcx_non_agri_close_time()` itself landed in commit
   `4f33e998` — an UNRELATED concurrent agent's perf commit to the same file
   (`backend/api/algo/derivatives.py`) whose own message does not mention it. This happened because
@@ -3827,10 +3887,15 @@ seasonal branch at all.
   `3c787204`, which therefore depends on `4f33e998` even though neither commit message says so.
   History was not rewritten to fix this (multiple agents were committing on top concurrently) — this
   note is the record of it.
-- Invariant (SCOPED): within `options.py`'s own DTE/Greeks/payoff computations, MCX's non-agri close
-  time is resolved via `mcx_non_agri_close_time()` from the real US DST calendar — never a flat
-  hardcoded value there. This invariant does NOT yet hold codebase-wide — see the residual bullets
-  above for every site still on the old flat value, including the order-placement gates.
+- Invariant: within `options.py`'s `/analytics`, `/strategy-analytics` and `/chain-snapshot`, and
+  within the `exchange_schedule` DB row every other reader of MCX's close time ultimately consults,
+  MCX's non-agri close time is resolved from the real US DST calendar — never a flat hardcoded
+  value. A cross-midnight snapshot/settlement trigger in `exchange_clock.py` is always resolved
+  against its OWN trading session's calendar date, via an absolute datetime comparison — never a
+  bare time-of-day compared against "now"'s real-clock weekday. This invariant does NOT yet hold
+  codebase-wide outside those surfaces — see the residual bullets above for every site still on the
+  old flat value, including the live order-placement gates and `background.py`'s own two bare-time
+  comparisons.
 
 **F&O order qty convention** — API now accepts LOTS as input for instruments with 
 `lot_size > 1`. `backend/api/routes/orders_place.py:_ticket_validate_input` converts 
@@ -5064,7 +5129,8 @@ now caches + returns a `stale` flag; `/api/nav/by-account` masks `errors` for no
 | Chase Kill / CANCEL_FAILED retry | `backend/api/routes/orders.py:kill_chase` + `chase.py:mark_order_killed` |
 | Alert identity line + email subject ("Alert:" label) | `backend/shared/helpers/alert_utils.py:dispatch_payload` (merged `alert_line`) + `_email_alert_body` |
 | MCX real per-contract expiry (live freeze filter) | `expiry_freeze.py:_mcx_future_real_expiry` |
-| MCX DST-aware non-agri close time (23:30 in-DST / 23:55 winter), scoped to options.py | `backend/api/algo/derivatives.py:mcx_non_agri_close_time`. The `exchange_schedule` DB sync (`broker_apis.py:_sync_mcx_dst_close_time_coro`) exists but is NOT wired into production — see the CLAUDE.md entry's "Required before this can ship" bullet |
+| MCX DST-aware non-agri close time (23:30 in-DST / 23:55 winter) | `backend/api/algo/derivatives.py:mcx_non_agri_close_time`, used by `options.py` (`/analytics`, `/strategy-analytics`, `/chain-snapshot`). Self-maintaining `exchange_schedule` DB sync is LIVE: `broker_apis.py:_sync_mcx_dst_close_time_coro`, wired into `background.py:_task_holiday_refresh` |
+| Cross-midnight snapshot/settlement trigger resolution (exchange_clock.py) | `backend/api/helpers/exchange_clock.py:_effective_gate_rows_for_date` / `_anchor_snapshot_datetime` / `_effective_snapshot_day_offset` |
 | Options expiry-curve cache (leg-curve cache, bypassed at eval_T<=0) | `backend/api/routes/options.py:_strategy_compute_curves` |
 | generic_notice body (plain text, no origin line — see "Alert message format") | `event_agents.py:_render_deploy_sync` (pass-through) + producer `msg` in `background.py` |
 | Alert channel set for a seeded agent | `backend/api/algo/alert_routing.py` (`_PER_SLUG_OVERRIDES`, `_TIER_DEFAULTS`, `resolve_channels`) — not the agent's spec |

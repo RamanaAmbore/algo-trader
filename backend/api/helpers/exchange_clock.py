@@ -58,7 +58,7 @@ position/holding's exchange field via EXCHANGE_TO_GATE.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
@@ -92,20 +92,32 @@ def _now_ist() -> datetime:
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _row_matches_now(row: "ExchangeSchedule") -> bool:
-    """Return True if the row is in effect right now (date override or default)."""
-    now = _now_ist()
-    today = now.date()
+def _row_matches_date(row: "ExchangeSchedule", for_date: date) -> bool:
+    """Return True if *row* is in effect on *for_date* (date override or
+    default, weekday-filtered against *for_date* itself).
 
+    This is the date-parameterised core `_row_matches_now()` delegates
+    to. Resolving a trading SESSION's own weekday must always use the
+    session's own calendar date — never "now's" real-clock date, which
+    can differ from the session's date once a derived post-close
+    trigger (see `_anchor_snapshot_datetime`) crosses midnight. See
+    `_effective_gate_rows_for_date()`'s docstring for the full picture.
+    """
     # Date-specific override takes precedence.
     if row.date is not None:
-        return row.date == today
+        return row.date == for_date
 
-    # Default row — check weekday filter (Mon=0 … Sun=6).
+    # Default row — check weekday filter (Mon=0 … Sun=6) against the
+    # SESSION'S OWN date, not necessarily "today".
     if row.weekdays:
-        return now.weekday() in row.weekdays
+        return for_date.weekday() in row.weekdays
     # No weekday filter → applies every day.
     return True
+
+
+def _row_matches_now(row: "ExchangeSchedule") -> bool:
+    """Return True if the row is in effect right now (date override or default)."""
+    return _row_matches_date(row, _now_ist().date())
 
 
 def _is_within_session(row: "ExchangeSchedule") -> bool:
@@ -129,24 +141,43 @@ def _exchange_to_gate(exchange: str) -> str | None:
     return None
 
 
-def _effective_gate_rows(gate: str) -> list["ExchangeSchedule"]:
-    """Return rows for *gate* that govern today, with date overrides having absolute priority.
+def _effective_gate_rows_for_date(gate: str, for_date: date) -> list["ExchangeSchedule"]:
+    """Return rows for *gate* that govern *for_date*, with date overrides
+    having absolute priority — the date-parameterised core
+    `_effective_gate_rows()` (today-only) delegates to.
 
-    If any row exists for (gate, today) → return only those override rows,
+    If any row exists for (gate, for_date) → return only those override rows,
     suppressing all default rows entirely.  This allows a holiday row
     (open_time=None) to close a gate even during normal trading hours, and a
     Muhurat row (custom open/close) to replace the default session.
 
-    When no override exists → return default rows (date=None) filtered by the
-    current weekday via _row_matches_now.
+    When no override exists → return default rows (date=None) filtered by
+    *for_date*'s own weekday via `_row_matches_date`.
+
+    Exists so a caller that needs to resolve a PAST or FUTURE session's own
+    governing rows (e.g. "what governed MCX on yesterday's calendar date",
+    needed when a post-close trigger derived from yesterday's close_time
+    crosses midnight) can do so without corrupting the today-anchored
+    semantics every other caller of `_effective_gate_rows()` relies on.
     """
     upper = gate.upper()
-    today = _now_ist().date()
-    overrides = [r for r in _CACHE if r.gate.upper() == upper and r.date == today]
+    overrides = [r for r in _CACHE if r.gate.upper() == upper and r.date == for_date]
     if overrides:
         return overrides  # suppresses default rows entirely
     default_rows = [r for r in _CACHE if r.gate.upper() == upper and r.date is None]
-    return [r for r in default_rows if _row_matches_now(r)]
+    return [r for r in default_rows if _row_matches_date(r, for_date)]
+
+
+def _effective_gate_rows(gate: str) -> list["ExchangeSchedule"]:
+    """Return rows for *gate* that govern today, with date overrides having absolute priority.
+
+    Thin today-anchored wrapper over `_effective_gate_rows_for_date()`.
+    Kept as its own name (rather than inlining `_now_ist().date()` at
+    every call site) because it is a stable, widely-mocked test seam —
+    see `_effective_gate_rows_for_date()`'s docstring for why a SEPARATE
+    date-parameterised entry point exists alongside it.
+    """
+    return _effective_gate_rows_for_date(gate, _now_ist().date())
 
 
 def get_today_gate_sessions(gate: str) -> list["ExchangeSchedule"]:
@@ -310,21 +341,54 @@ def is_market_active_for_prev_close() -> bool:
     simpler single-query path rather than the two-CTE path.  This means the
     bug persists on a non-trading day only if the cache is empty — acceptable
     since fail-open is the existing contract for all exchange_clock functions.
+
+    2026-11-21 fix — checks BOTH today's and yesterday's session. A
+    session's post-close snapshot window can land after midnight (e.g.
+    MCX's winter non-agri close 23:55 + 15 min = 00:10 the next calendar
+    day — see `mcx_non_agri_close_time()` in `derivatives.py` and
+    CLAUDE.md's "MCX DST-aware non-agri close time"). Checking only
+    "today" would resolve the WRONG session's weekday at that post-
+    midnight moment (e.g. a Friday close checked at Saturday 00:10 would
+    wrongly test Saturday's own weekday, which fails a Mon-Fri filter).
+    Routes through `_anchor_snapshot_datetime()` (absolute datetime, not
+    a bare time-of-day, which cannot represent a window spanning
+    midnight) for both branches so the two are evaluated identically.
+    "Today" still resolves via the unchanged, widely-mocked
+    `_effective_gate_rows(gate)` — see that function's own docstring.
     """
     if not _CACHE:
         return True  # fail-open: prefer single query over empty result
     now = _now_ist()
+    today = now.date()
+    yesterday = today - timedelta(days=1)
     for gate in {r.gate for r in _CACHE}:
-        for row in _effective_gate_rows(gate):
-            if row.open_time is None or row.close_time is None:
-                continue  # holiday override — gate closed today
-            now_t = now.time().replace(second=0, microsecond=0)
-            if row.open_time <= now_t < row.close_time:
+        for row in _effective_gate_rows(gate):            # today's session
+            if _session_covers_instant(now, today, row):
                 return True
-            _snap_t = _effective_snapshot_time(row)
-            if _snap_t is not None and row.close_time <= now_t <= _snap_t:
+        for row in _effective_gate_rows_for_date(gate, yesterday):  # yesterday's wrapped trigger
+            if _session_covers_instant(now, yesterday, row):
                 return True
     return False
+
+
+def _session_covers_instant(now: datetime, session_date: date, row: "ExchangeSchedule") -> bool:
+    """True when *now* falls within *row*'s in-session window OR its
+    post-close snapshot window, both anchored to *session_date* — the
+    calendar date the session itself belongs to (not necessarily
+    *now*'s own date; see `is_market_active_for_prev_close()`).
+
+    Always compares ABSOLUTE datetimes (never a bare time-of-day), so a
+    post-close snapshot window that spans midnight is represented
+    correctly regardless of which side of midnight *now* falls on.
+    """
+    if row.open_time is None or row.close_time is None:
+        return False  # holiday override — gate closed on session_date
+    open_dt = datetime.combine(session_date, row.open_time, tzinfo=_IST)
+    close_dt = datetime.combine(session_date, row.close_time, tzinfo=_IST)
+    if open_dt <= now < close_dt:
+        return True
+    snap_dt = _anchor_snapshot_datetime(session_date, row)
+    return snap_dt is not None and close_dt <= now <= snap_dt
 
 
 def is_trading_day_today() -> bool:
@@ -376,6 +440,14 @@ def _effective_snapshot_time(row: "ExchangeSchedule") -> "time | None":
     If ``row.snapshot_time`` is set explicitly, return that value.
     Otherwise derive it as ``row.close_time + 15 minutes``.
     Returns None when both snapshot_time and close_time are absent.
+
+    Returns a BARE time-of-day only — it deliberately does not know, and
+    is not responsible for knowing, which calendar day that time belongs
+    to relative to any particular session (that is
+    `_effective_snapshot_day_offset()`'s job, immediately below). Do not
+    compare this function's return value directly against a bare
+    `now.time()` — that comparison cannot represent a window that spans
+    midnight. Use `_anchor_snapshot_datetime()` instead.
     """
     if row.snapshot_time:
         return row.snapshot_time
@@ -386,28 +458,108 @@ def _effective_snapshot_time(row: "ExchangeSchedule") -> "time | None":
     return None
 
 
+def _effective_snapshot_day_offset(row: "ExchangeSchedule") -> int:
+    """Return 0 if *row*'s effective snapshot time falls on the SAME
+    calendar day as its own close_time, or 1 if deriving it
+    (``close_time + 15 minutes``) crossed midnight — e.g. MCX's winter
+    non-agri close of 23:55 IST derives a 00:10 snapshot time the next
+    calendar day (see `mcx_non_agri_close_time()` in `derivatives.py`).
+
+    An EXPLICIT ``row.snapshot_time`` always returns 0 — it is the
+    operator's own direct claim about same-day timing and must never be
+    guessed at by comparing it against `close_time` (a snapshot_time
+    that happens to be numerically earlier than close_time, e.g. an
+    intentional pre-close special-session snapshot, is NOT a midnight
+    wrap and must not be treated as one).
+
+    This is computed purely from `close_time` arithmetic against a
+    fixed, arbitrary anchor date — never from comparing two unrelated
+    bare times — so it can never misclassify an explicit same-day value.
+    """
+    if row.snapshot_time:
+        return 0
+    if not row.close_time:
+        return 0
+    anchor = date(2000, 1, 1)
+    derived = datetime.combine(anchor, row.close_time) + timedelta(minutes=15)
+    return 1 if derived.date() != anchor else 0
+
+
+def _anchor_snapshot_datetime(session_date: date, row: "ExchangeSchedule") -> "datetime | None":
+    """Return the ABSOLUTE IST datetime of *row*'s effective snapshot
+    trigger for the session that occurred on *session_date*.
+
+    This is the one place a cross-midnight close-snapshot boundary gets
+    resolved. Every caller that needs to know "has this session's
+    settlement trigger occurred yet" must compare against THIS value —
+    never a bare `time(...)` comparison against `now.time()`, which
+    cannot represent a trigger that lands on the calendar day AFTER
+    *session_date* (see `_effective_snapshot_day_offset()`).
+
+    Returns None when the row carries no resolvable snapshot time (no
+    close_time and no explicit snapshot_time — e.g. a holiday override).
+    """
+    snap_t = _effective_snapshot_time(row)
+    if snap_t is None:
+        return None
+    offset = _effective_snapshot_day_offset(row)
+    d = session_date + timedelta(days=offset)
+    return datetime.combine(d, snap_t, tzinfo=_IST)
+
+
 def sessions_with_snapshot_time_now(tolerance_minutes: int = 1) -> list["ExchangeSchedule"]:
-    """Return rows whose ``snapshot_time`` is within ± *tolerance_minutes* of now.
+    """Return rows whose effective snapshot trigger is within
+    ± *tolerance_minutes* of now.
 
     Uses _effective_gate_rows per gate so holiday override rows (open_time=None,
     no snapshot_time) are automatically excluded — no snapshot fires on holidays.
     Poll cadence is 30 s; with ±1 min tolerance up to 4 consecutive polls may
     match the same snapshot_time.  background.py uses _snapshot_fired_today dedup
     to ensure a single broker round-trip per gate per day.
+
+    2026-11-21 fix — checks BOTH today's and yesterday's session, exactly
+    like `is_market_active_for_prev_close()` above (see that function's
+    docstring for the full rationale — a derived snapshot trigger, e.g.
+    MCX's winter non-agri close 23:55 + 15 min, can land past midnight,
+    on the calendar day AFTER the session it belongs to). Compares
+    ABSOLUTE datetimes via `_anchor_snapshot_datetime()`, never a bare
+    time-of-day — a bare-time comparison cannot represent a trigger that
+    crosses midnight, and this was the actual root cause: the OLD
+    comparison here (`datetime.combine(datetime.today(), snap_t)` vs
+    `datetime.combine(datetime.today(), now_t)`) collapsed both sides
+    onto the SAME arbitrary date regardless of which real day either one
+    belonged to, so it could never distinguish "the trigger landed on a
+    Saturday it doesn't belong to" from "the trigger genuinely occurs
+    today". Rolling the weekday check back to the session's own date (via
+    `_effective_gate_rows_for_date`) fixes that half; anchoring the
+    comparison to a real absolute datetime fixes the other half.
+
+    "Today" still resolves via the unchanged, widely-mocked
+    `_effective_gate_rows(gate)` entry point — existing callers/tests
+    that patch it continue to see only the "today" half of this
+    function's behaviour, which is byte-identical to the pre-fix
+    behaviour for every non-wrapping close_time (NSE 15:30, MCX's
+    pre-2026-11 flat 23:30, etc. — none of those ever reach the
+    "yesterday" branch's match condition; see
+    `test_exchange_clock_mcx_winter_snapshot_gap.py`).
     """
-    now_t = _now_ist().time().replace(second=0, microsecond=0)
-    delta = timedelta(minutes=tolerance_minutes)
+    now = _now_ist()
+    today = now.date()
+    yesterday = today - timedelta(days=1)
+    delta_s = timedelta(minutes=tolerance_minutes).total_seconds()
     matched: list["ExchangeSchedule"] = []
     for gate in {r.gate for r in _CACHE}:
-        for row in _effective_gate_rows(gate):
+        for row in _effective_gate_rows(gate):             # today's session
             if row.open_time is None:
                 continue
-            snap_t = _effective_snapshot_time(row)
-            if snap_t is None:
+            snap_dt = _anchor_snapshot_datetime(today, row)
+            if snap_dt is not None and abs((snap_dt - now).total_seconds()) <= delta_s:
+                matched.append(row)
+        for row in _effective_gate_rows_for_date(gate, yesterday):  # yesterday's wrapped trigger
+            if row.open_time is None:
                 continue
-            snap_dt = datetime.combine(datetime.today(), snap_t)
-            now_dt  = datetime.combine(datetime.today(), now_t)
-            if abs((snap_dt - now_dt).total_seconds()) <= delta.total_seconds():
+            snap_dt = _anchor_snapshot_datetime(yesterday, row)
+            if snap_dt is not None and abs((snap_dt - now).total_seconds()) <= delta_s:
                 matched.append(row)
     return matched
 
