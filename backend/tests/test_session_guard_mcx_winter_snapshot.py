@@ -146,6 +146,76 @@ async def test_already_fired_sentinel_short_circuits():
     mock_fire.assert_not_awaited()
 
 
+# ── Upper-bound regression — a late restart must not retroactively fire ─
+
+
+@pytest.mark.asyncio
+async def test_winter_restart_hours_later_does_not_retroactively_fire():
+    """A Tuesday 05:00 restart recovering a never-seeded Monday sentinel
+    must NOT fire — the old heuristic's implicit upper bound
+    (`now_t < dtime(2, 0)`) capped the whole catch-up window at
+    02:00 the day after the session; a bare `now >= anchor_dt` with no
+    upper bound would silently widen that to unbounded, which the old
+    code never did for ANY close_time, wrapping or not."""
+    mcx_rows = [_mcx_row(close_time=dtime(23, 55))]  # winter value
+    sess_today = date(2026, 11, 16)  # Monday's session
+    now = datetime(2026, 11, 17, 5, 0, tzinfo=_IST)  # Tuesday 05:00 — hours later
+
+    with patch("backend.api.background._snapshot_fire", new=AsyncMock()) as mock_fire:
+        await bg._sg_recover_mcx_snapshot(mcx_rows, now, sess_today)
+
+    mock_fire.assert_not_awaited(), (
+        "a restart hours after the catch-up window closed must not "
+        "retroactively fire an ancient EOD write"
+    )
+
+
+@pytest.mark.asyncio
+async def test_normal_close_restart_hours_later_does_not_retroactively_fire():
+    """Same upper-bound check for a NORMAL (non-wrapping) close — this
+    is the exact scenario the old `now_t >= snap_t or now_t < dtime(2,0)`
+    heuristic already protected against, and this fix must not regress
+    it for the common (non-winter) case, which is what runs in
+    production today."""
+    mcx_rows = [_mcx_row(close_time=dtime(23, 30))]  # pre-fix summer value
+    sess_today = date(2026, 9, 1)
+    now = datetime(2026, 9, 2, 5, 0, tzinfo=_IST)  # Tuesday 05:00
+
+    with patch("backend.api.background._snapshot_fire", new=AsyncMock()) as mock_fire:
+        await bg._sg_recover_mcx_snapshot(mcx_rows, now, sess_today)
+
+    mock_fire.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_winter_restart_just_before_the_02_00_deadline_still_fires():
+    """Just inside the upper bound (01:59) must still fire — confirms
+    the deadline is exclusive at 02:00, not an off-by-one that closes
+    the window too early."""
+    mcx_rows = [_mcx_row(close_time=dtime(23, 55))]
+    sess_today = date(2026, 11, 20)
+    now = datetime(2026, 11, 21, 1, 59, tzinfo=_IST)
+
+    with patch("backend.api.background._snapshot_fire", new=AsyncMock()) as mock_fire:
+        await bg._sg_recover_mcx_snapshot(mcx_rows, now, sess_today)
+
+    mock_fire.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_winter_restart_at_exactly_02_00_does_not_fire():
+    """At exactly 02:00 the deadline has passed (exclusive upper
+    bound)."""
+    mcx_rows = [_mcx_row(close_time=dtime(23, 55))]
+    sess_today = date(2026, 11, 20)
+    now = datetime(2026, 11, 21, 2, 0, tzinfo=_IST)
+
+    with patch("backend.api.background._snapshot_fire", new=AsyncMock()) as mock_fire:
+        await bg._sg_recover_mcx_snapshot(mcx_rows, now, sess_today)
+
+    mock_fire.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_empty_mcx_rows_is_a_noop():
     with patch("backend.api.background._snapshot_fire", new=AsyncMock()) as mock_fire:

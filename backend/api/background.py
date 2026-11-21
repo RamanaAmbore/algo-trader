@@ -3859,12 +3859,22 @@ async def _sg_recover_mcx_snapshot(mcx_rows: list, now: datetime, today: date) -
     Resolved via `_anchor_snapshot_datetime(today, mcx_rows[0])` —
     anchored to the SESSION's own date (`today`/`sess_today`), rolling
     forward one day only when the derivation itself crosses midnight —
-    compared against the real absolute `now`. This also subsumes the
-    old `< dtime(2, 0)` carve-out for a restart shortly after a NORMAL
-    (non-wrapping) close: anchoring to `sess_today` (which is already
-    YESTERDAY's calendar date for a 00:00-08:00 IST restart, per
-    `session_date_of()`) and comparing against the real `now` handles
-    that case directly, with no separate heuristic needed.
+    compared against the real absolute `now`.
+
+    An UPPER bound is also enforced:
+    `[anchor_dt, datetime.combine(today + 1 day, time(2, 0)))`. The old
+    heuristic's `now_t < dtime(2, 0)` term was not only a carve-out for
+    a normal post-midnight restart — paired with the `now_t >= snap_t`
+    term, it bounded the WHOLE catch-up window to end at 02:00 the day
+    after the session (e.g. a restart several days later must NOT
+    retroactively fire a now-ancient EOD write). A bare `now >=
+    anchor_dt` with no upper bound would silently widen that window to
+    UNBOUNDED — e.g. a Tuesday 05:00 restart recovering Monday's
+    never-fired sentinel would wrongly fire, something the old code
+    never did. The upper bound reproduces the old window exactly for a
+    non-wrapping close (`[D 23:45, D+1 02:00)`) and extends it correctly
+    for a wrapping one (`[D+1 00:10, D+1 02:00)`), since both share the
+    identical `today + 1 day, 02:00` ceiling.
     """
     if not mcx_rows:
         return
@@ -3872,7 +3882,11 @@ async def _sg_recover_mcx_snapshot(mcx_rows: list, now: datetime, today: date) -
     anchor_dt = _anchor_snapshot_datetime(today, mcx_rows[0])
     if anchor_dt is None:
         return
-    if now < anchor_dt or _snapshot_fired_today.get("MCX") == today:
+    catchup_deadline = datetime.combine(
+        today + timedelta(days=1), dtime(2, 0), tzinfo=now.tzinfo,
+    )
+    in_window = anchor_dt <= now < catchup_deadline
+    if not in_window or _snapshot_fired_today.get("MCX") == today:
         return
     logger.info("SessionGuard: running McxSnapshot (MCX EOD write)")
     await _snapshot_fire("mcx", market_open=False)
