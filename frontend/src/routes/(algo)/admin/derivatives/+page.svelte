@@ -3504,6 +3504,51 @@
     return { ...baseRisk, max_profit: maxP, max_loss: maxL, breakevens };
   });
 
+  // Guard-zero vs genuinely-computed-zero (EV/Greeks chips, operator
+  // audit): `_gbs_greeks()`/`expected_value()` (backend/api/algo/
+  // derivatives.py) return a literal 0.0 for gamma/theta/vega/rho/EV
+  // whenever T<=0 — a mathematical GUARD for "nothing left to decay",
+  // never a real computation. Delta is the one exception: it keeps a
+  // real intrinsic-direction value (+1/-1/0) at T=0, which is still
+  // meaningful. Before this, that guard-0.0 rendered identically to a
+  // genuinely-computed exact zero, which is misleading — an operator
+  // can't tell "this position is Greeks-neutral" from "the backend
+  // didn't compute real Greeks for this leg". Gated on
+  // `strategy.days_to_expiry` (already in the payload — the same
+  // strategy-level DTE value the MCX-close-time-aware freeze logic
+  // elsewhere in this app reads), not a frontend clock, and with no
+  // backend contract change: `OptionGreeks`/`StrategyRisk.ev` are
+  // plain non-nullable `float` in the schema and feed other consumers
+  // (positions.py's per-position Greeks enrichment, the option-chain
+  // snapshot IV/Greeks) that must keep getting real numbers — scoped
+  // narrowly to this one display path only.
+  //
+  // Known simplification: a multi-expiry basket's `days_to_expiry`
+  // reflects only the min/shared OPTION expiry, so a still-live
+  // later-expiry leg would also read '—' here. `expected_value()`'s
+  // own backend computation already has this same simplification (one
+  // shared `T_yrs_shared` for the whole curve), so this introduces no
+  // new imprecision beyond what EV's real number already carries.
+  const _allLegsAtExpiry = $derived(!!strategy && Number(strategy.days_to_expiry ?? NaN) <= 0);
+  /** `strategy.aggregate_greeks` with the directionless Greeks (never
+   *  delta) nulled once every leg has reached T<=0. Feeds `_mergedGreeks`
+   *  below, so every consumer (the header chip row, the Risk & EV /
+   *  Greeks cards, and the Legs-grid TOTAL row's Σ Δ/Γ/Θ/𝒱 columns —
+   *  all three read `_mergedGreeks` already) gets the fix from this one
+   *  source. */
+  const _baseGreeksDisplay = $derived.by(() => {
+    const g = strategy?.aggregate_greeks;
+    if (!g || !_allLegsAtExpiry) return g;
+    return { ...g, gamma: null, theta: null, vega: null, rho: null };
+  });
+  /** `strategy.risk.ev` / `.ev_pct` nulled once every leg has reached
+   *  T<=0 — same guard-zero distinction as `_baseGreeksDisplay` above.
+   *  Feed `_mergedEv` / `_mergedEvPct` below (both already fall back to
+   *  these bases whenever `dte<=0` short-circuits their own merged-curve
+   *  recompute, so no second check is needed there). */
+  const _baseEvDisplay = $derived(_allLegsAtExpiry ? null : (strategy?.risk?.ev ?? null));
+  const _baseEvPctDisplay = $derived(_allLegsAtExpiry ? null : (strategy?.risk?.ev_pct ?? null));
+
   // Sprint D fix (audit cross-symbol #1): re-derive EV + POP over the
   // MERGED curve when proxy/equity legs are layered. Pre-fix the chart
   // displayed `strategy.risk.pop` and `strategy.risk.ev` directly from
@@ -3520,7 +3565,7 @@
    *  strategy.risk.ev when no eq legs are present (zero overhead) or
    *  when prereqs are missing. */
   const _mergedEv = $derived.by(() => {
-    const baseEv = strategy?.risk?.ev ?? null;
+    const baseEv = _baseEvDisplay;
     if (_equityLegs.length === 0) return baseEv;
     const S     = Number(strategy?.spot || 0);
     const dte   = Number(strategy?.days_to_expiry || 0);
@@ -3548,7 +3593,7 @@
    *  with the merged EV. Returns null when prereqs are absent or the
    *  base values can't be inverted (ev=0). */
   const _mergedEvPct = $derived.by(() => {
-    const baseEvPct = strategy?.risk?.ev_pct ?? null;
+    const baseEvPct = _baseEvPctDisplay;
     if (_equityLegs.length === 0 || baseEvPct == null) return baseEvPct;
     const baseEv = Number(strategy?.risk?.ev ?? 0);
     const mergedEv = _mergedEv;
@@ -3566,7 +3611,7 @@
    *  Pass-through when no eq legs are enabled (preserves
    *  strategy.aggregate_greeks identity). */
   const _mergedGreeks = $derived.by(() => {
-    const base = strategy?.aggregate_greeks;
+    const base = _baseGreeksDisplay;
     if (!base) return null;
     const linearLegs = _equityLinearLegs;
     if (linearLegs.length === 0) return base;
@@ -5490,7 +5535,7 @@
                 aria-expanded={_evHintOpen}
                 aria-controls="greek-hint-ev"
                 onclick={() => { _evHintOpen = !_evHintOpen; }}
-                >{fmtUnbounded(_mergedEv, false)}{_mergedEvPct != null ? ` (${pctFmt(_mergedEvPct)})` : ''}</button>
+                >{fmtMoney(_mergedEv, false)}{_mergedEvPct != null ? ` (${pctFmt(_mergedEvPct)})` : ''}</button>
             <InfoHint popup hideButton id="greek-hint-ev" anchor={_evHintAnchor}
               bind:open={_evHintOpen}
               panel title="EV"
