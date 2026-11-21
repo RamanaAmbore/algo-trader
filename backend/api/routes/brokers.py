@@ -20,7 +20,7 @@ without re-leaking it.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Optional
 
 import msgspec
@@ -267,6 +267,18 @@ async def _reload_connections() -> None:
         logger.warning(f"Connections reload after broker mutation failed: {e}")
 
 
+# F12 — strong references for the fire-and-forget books-refresh task
+# (2026-11-20, advisor-driven correction). `asyncio.create_task()`'s
+# own return value is the ONLY strong reference to that task by
+# default; if nothing else holds it, the task can be garbage-collected
+# mid-run once this request handler returns and its local variables go
+# out of scope. This refresh now runs for several seconds (multiple
+# broker round-trips + a conditional daily_book snapshot write), so the
+# risk is real, not theoretical. Each task adds itself here on
+# creation and removes itself via `add_done_callback` on completion.
+_books_refresh_tasks: set = set()
+
+
 async def _force_refresh_one_account_after_reenable(account: str) -> None:
     """2026-11-20 fix (F12 — operator explicit new requirement, same
     live incident as F11). Re-enabling a disabled account's connection
@@ -337,7 +349,29 @@ async def _force_refresh_one_account_after_reenable(account: str) -> None:
     fresh this function makes the live broker-layer cache — that route
     gate is a deliberate, separate design decision (see CLAUDE.md's
     "Closed-hours route gate" entry) and is out of scope for this fix.
+
+    2026-11-20 follow-up (operator request, via the coordinator): a
+    one-shot background refresh with no log trace at all was invisible
+    to anyone diagnosing a "still stale after re-enable" report (exactly
+    what happened with ZG0790 — that specific re-enable ran before this
+    function existed, but the gap applied either way). Added explicit
+    `[BOOKS-REFRESH]` INFO lines on start and completion, and each of
+    the three broker calls now has its OWN try/except — one surface
+    failing (e.g. positions) no longer skips the other two (holdings,
+    margins/funds), logged at WARNING per failed surface, never silent.
+    `mask_account()` is applied to the account in every log line here,
+    matching the codebase-wide masking convention (see CLAUDE.md's
+    account-masking campaign entry) — this function's own `account`
+    parameter is unmasked (callers/tests pass the real code), so masking
+    happens at the log call site, not at the parameter boundary.
     """
+    from backend.shared.helpers.utils import mask_account
+    masked = mask_account(account)
+    logger.info(
+        f"[BOOKS-REFRESH] {masked}: connection re-enabled — forcing an "
+        f"unconditional refresh of positions/holdings/margins/funds "
+        f"(bypassing closed-hours gate)"
+    )
     try:
         from backend.api.cache import invalidate
         from backend.brokers.broker_apis import (
@@ -357,16 +391,208 @@ async def _force_refresh_one_account_after_reenable(account: str) -> None:
         import asyncio as _asyncio
         # Zero-arg forms — the SSOT-cache-populating path every route
         # reads from (not the single-account branch, which bypasses that
-        # cache entirely). See this function's own docstring.
-        await _asyncio.to_thread(fetch_positions, force_refresh=True)
-        await _asyncio.to_thread(fetch_holdings)
-        await _asyncio.to_thread(fetch_margins, force_refresh=True)
-        logger.warning(
-            f"broker_accounts: {account!r} re-enabled — forced an unconditional "
-            f"positions/holdings/margins/funds refresh"
+        # cache entirely). See this function's own docstring. Each call
+        # is independently guarded so one surface's failure doesn't
+        # abort the other two.
+        failed_surfaces: list[str] = []
+        try:
+            await _asyncio.to_thread(fetch_positions, force_refresh=True)
+        except Exception as e:
+            failed_surfaces.append("positions")
+            logger.warning(f"[BOOKS-REFRESH] {masked}: positions refresh failed: {e}")
+        try:
+            await _asyncio.to_thread(fetch_holdings)
+        except Exception as e:
+            failed_surfaces.append("holdings")
+            logger.warning(f"[BOOKS-REFRESH] {masked}: holdings refresh failed: {e}")
+        try:
+            await _asyncio.to_thread(fetch_margins, force_refresh=True)
+        except Exception as e:
+            failed_surfaces.append("margins/funds")
+            logger.warning(f"[BOOKS-REFRESH] {masked}: margins/funds refresh failed: {e}")
+
+        if failed_surfaces:
+            logger.warning(
+                f"[BOOKS-REFRESH] {masked}: forced refresh complete WITH FAILURES "
+                f"({', '.join(failed_surfaces)}) — see the per-surface warning(s) above"
+            )
+        else:
+            logger.info(f"[BOOKS-REFRESH] {masked}: forced refresh complete")
+
+        # F12 follow-up (2026-11-20, live-confirmed by the coordinator:
+        # the force-refreshed live cache is INVISIBLE during closed
+        # hours — `closed_hours_or_broker()`'s route gate serves the
+        # `daily_book` snapshot ONLY and never consults the live cache
+        # this function just refreshed, see CLAUDE.md's "Closed-hours
+        # route gate" entry). Writes a fresh `daily_book` row for just
+        # this one account so the closed-hours display route has
+        # something current to serve, instead of the stale pre-
+        # re-enable row.
+        await _snapshot_books_if_closed(account, masked)
+    except Exception as e:
+        # Cache invalidation itself failed (before any fetch ran), or
+        # some other error outside the three per-surface try/excepts.
+        logger.warning(f"[BOOKS-REFRESH] {masked}: forced refresh after re-enabling failed: {e}")
+
+
+async def _last_completed_trading_session_date(now_ist) -> date:
+    """Return the `date` of the most recent trading session that has
+    actually completed, as of *now_ist*.
+
+    Mirrors `positions.py`'s own floor-walk exactly (see that file's
+    `_SESSION_ANCHOR_CUTOFF_TS_SQL` neighbourhood, "A single session_
+    date_of(now) substitution only covers the first 8 hours after
+    midnight" comment) — NOT a coincidence, the same bug class applies
+    here. `session_date_of(now)` (the `[08:00 IST, next 08:00 IST)`
+    session window) advances to a NEW session date at every 08:00 IST
+    boundary REGARDLESS of whether that new date is a real trading day.
+    A re-enable tested well after 08:00 on a non-trading day (confirmed
+    live: the coordinator tested this past midnight IST, with the
+    weekend ahead) would otherwise resolve to e.g. Saturday — a date
+    with no real session. Writing a `daily_book` row dated Saturday
+    would make that row `latest_batch` for `_positions_snapshot()`'s
+    per-account baseline-diff query, with the SAME LTP as the real prior
+    session's row — collapsing Day P&L to zero, the EXACT regression
+    `_task_closed_hours_refresh`'s own docstring documents (it stopped
+    calling `snapshot_daily_book()` entirely for this reason). Walking
+    back to the last REAL trading day avoids landing on that date at
+    all. Bounded to 10 iterations, mirroring `expiry_freeze.next_
+    market_open_ist`'s own bound. `is_trading_day()` is called WITHOUT
+    `exchange=`/`now=` so this never triggers a live broker probe.
+    """
+    from datetime import timedelta
+    from backend.brokers.broker_apis import fetch_holidays as _fetch_holidays
+    from backend.shared.helpers.date_time_utils import is_trading_day as _is_trading_day
+    from backend.api.algo.expiry_freeze import session_date_of
+    import asyncio as _asyncio
+    try:
+        _nse_holidays = await _asyncio.to_thread(_fetch_holidays, "NSE")
+    except Exception:
+        _nse_holidays = set()
+    _floor_date = session_date_of(now_ist)
+    for _ in range(10):
+        if _is_trading_day(_floor_date, _nse_holidays):
+            break
+        _floor_date -= timedelta(days=1)
+    return _floor_date
+
+
+async def _daily_book_row_exists(account: str, target_date: date) -> bool:
+    """True when a `positions` or `holdings` `daily_book` row already
+    exists for *account* dated *target_date*.
+
+    Gates the snapshot write below so a repeated re-enable (or an
+    account whose own regular EOD pass already ran before it was
+    disabled) never overwrites an already-correct row with an inferior
+    one, and so a late re-enable can never masquerade as "today's real
+    EOD already happened" for every OTHER account via `background.py:
+    _pcf_eod_already_fired_today`'s own bare `date = :today` existence
+    check (that check carries no account filter — see this module's own
+    `_snapshot_books_if_closed` docstring for the full reasoning)."""
+    from sqlalchemy import text as _sql_text
+    async with shared_async_session() as session:
+        result = await session.execute(_sql_text(
+            "SELECT 1 FROM daily_book "
+            "WHERE date = :target_date AND account = :account "
+            "AND kind IN ('holdings', 'positions') LIMIT 1"
+        ), {"target_date": target_date, "account": account})
+        return result.first() is not None
+
+
+async def _snapshot_books_if_closed(account: str, masked: str) -> None:
+    """Write a fresh `daily_book` row for *account* ONLY, ONLY when the
+    market is currently closed, ONLY when no row already exists for the
+    real last-completed trading session.
+
+    When the market is OPEN, this is deliberately a no-op — the normal
+    live-fetch path (positions.py/holdings.py reading the just-
+    refreshed cache this function's caller repopulated) already serves
+    current data in that case; see the `market_open=False` reasoning
+    below for why writing a snapshot here at all is specifically a
+    CLOSED-hours-only concern.
+
+    Uses `snapshot_gate._any_segment_open()` — the exact function
+    `closed_hours_or_broker()` (the canonical route gate this whole fix
+    exists to work around) itself calls — not `date_time_utils.
+    is_any_segment_open`, so this can never disagree with the route
+    gate about whether the market is open.
+
+    `target_date` is the last REAL completed trading session (see
+    `_last_completed_trading_session_date`'s own docstring for why
+    `session_date_of(now)` alone is unsafe here), and the write is
+    skipped entirely (logged, not silent) when a row already exists for
+    that exact (account, date) — this is the second half of the same
+    protection: it stops THIS function from ever overwriting an
+    already-correct EOD row with an inferior one, AND it stops a stray
+    extra row from ever satisfying `_pcf_eod_already_fired_today`'s
+    account-unscoped `date = :today` existence check for a day whose
+    real EOD snapshot (for every OTHER account) hasn't actually run yet.
+
+    `market_open=False` is passed explicitly — matching
+    `routes/admin.py:trigger_pnl_snapshot`'s own resolved value for this
+    exact "market confirmed closed" case (that endpoint computes the
+    SAME boolean via `is_any_segment_open()` and passes it through
+    unless the caller overrides it). `market_open=False` ALSO skips the
+    orphan-position-prune step inside `snapshot_daily_book` (gated on
+    `market_open=True` — see that function's own 2026-11-05 comment),
+    which matters here: this is exactly the "fetch firing hours late /
+    a restart's startup snapshot" shape that fix was written to protect
+    against, not a genuine live-hours confirmation. `settled` is left
+    at its default (`False`) — that flag is reserved for the real
+    `close_settled` event; this is a gap-filling refresh, not an EOD
+    settlement.
+
+    `_fetch_account_data` (the function `snapshot_daily_book` uses to
+    fetch) calls `broker.holdings()`/`broker.positions()` directly —
+    the RAW per-account adapter methods, not `broker_apis.fetch_
+    holdings()`/`fetch_positions()` (the SSOT-cached, LKG-substituting
+    wrappers `_force_refresh_one_account_after_reenable`'s own three
+    calls use). Confirmed by reading both: a failure here returns `[]`
+    (`_safe_fetch`'s own default), never a last-known-good substitute —
+    so this write can never "launder" stale 2026-11-19-dated LKG data
+    into a freshly-timestamped row.
+    """
+    try:
+        from backend.api.helpers.snapshot_gate import _any_segment_open
+        import asyncio as _asyncio
+        is_open = await _asyncio.to_thread(_any_segment_open)
+        if is_open:
+            logger.info(
+                f"[BOOKS-REFRESH] {masked}: market is open — the live "
+                f"fetch path already serves current data, no daily_book "
+                f"snapshot needed"
+            )
+            return
+
+        from backend.shared.helpers.date_time_utils import timestamp_indian
+        now_ist = timestamp_indian()
+        target_date = await _last_completed_trading_session_date(now_ist)
+
+        if await _daily_book_row_exists(account, target_date):
+            logger.info(
+                f"[BOOKS-REFRESH] {masked}: daily_book already has a row "
+                f"for {target_date} — skipping snapshot write"
+            )
+            return
+
+        from backend.api.algo.daily_snapshot import snapshot_daily_book
+        result = await snapshot_daily_book(
+            target_date=target_date, accounts=[account], market_open=False,
+        )
+        if account not in (result.get("accounts") or []) or result.get("errors"):
+            logger.warning(
+                f"[BOOKS-REFRESH] {masked}: daily_book snapshot for "
+                f"{target_date} did not complete cleanly — "
+                f"accounts={result.get('accounts')!r} errors={result.get('errors')!r}"
+            )
+            return
+        logger.info(
+            f"[BOOKS-REFRESH] {masked}: daily_book snapshot written for "
+            f"{target_date} — holdings={result.get('holdings_rows')} "
+            f"positions={result.get('positions_rows')}"
         )
     except Exception as e:
-        logger.warning(f"forced refresh after re-enabling {account!r} failed: {e}")
+        logger.warning(f"[BOOKS-REFRESH] {masked}: daily_book snapshot failed: {e}")
 
 
 def _loaded_accounts() -> set[str]:
@@ -567,7 +793,9 @@ class BrokersController(Controller):
         # docstring for why this bypasses the normal closed-hours gate.
         if data.is_active is True and not was_active and bool(row.is_active):
             import asyncio as _asyncio
-            _asyncio.create_task(_force_refresh_one_account_after_reenable(account))
+            _task = _asyncio.create_task(_force_refresh_one_account_after_reenable(account))
+            _books_refresh_tasks.add(_task)
+            _task.add_done_callback(_books_refresh_tasks.discard)
 
         logger.warning(f"broker_accounts: updated {account!r} via /admin/brokers")
         return _to_info(row, loaded=(account in _loaded_accounts()))

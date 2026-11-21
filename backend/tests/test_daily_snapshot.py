@@ -1450,6 +1450,93 @@ class TestSnapshotDailyBookSessionBoundaryTargetDate:
 
 
 # ---------------------------------------------------------------------------
+# F12 follow-up (2026-11-20) — optional `accounts` kwarg scopes the capture
+# to a subset of loaded accounts. Default `None` preserves the exact
+# existing all-accounts behaviour every pre-existing caller relies on.
+# ---------------------------------------------------------------------------
+
+class TestSnapshotDailyBookAccountsScoping:
+    @staticmethod
+    def _ist(y, m, d, hh, mm, ss=0):
+        from zoneinfo import ZoneInfo
+        from datetime import datetime
+        return datetime(y, m, d, hh, mm, ss, tzinfo=ZoneInfo("Asia/Kolkata"))
+
+    async def _run(self, accounts, now_ist=None):
+        from unittest.mock import patch, MagicMock, AsyncMock
+        from contextlib import ExitStack
+        from backend.api.algo import daily_snapshot as ds
+
+        processed_accounts: list[str] = []
+
+        def _fake_holdings_rows(account, target_date, raw, now, **kw):
+            processed_accounts.append(account)
+            return []
+
+        def _fake_positions_rows(account, target_date, raw, now, **kw):
+            return []
+
+        broker_a = MagicMock()
+        broker_a.account = "A"
+        broker_b = MagicMock()
+        broker_b.account = "B"
+
+        conn_singleton = MagicMock()
+        conn_singleton.conn = {"A": MagicMock(), "B": MagicMock()}
+
+        stack = ExitStack()
+        stack.enter_context(patch.object(ds, "_get_connections", return_value=conn_singleton))
+        if now_ist is not None:
+            stack.enter_context(patch.object(ds, "timestamp_indian", return_value=now_ist))
+        stack.enter_context(patch.object(ds, "_holdings_rows", _fake_holdings_rows))
+        stack.enter_context(patch.object(ds, "_positions_rows", _fake_positions_rows))
+        stack.enter_context(patch.object(ds, "_trades_rows", lambda *a, **k: []))
+        stack.enter_context(patch.object(ds, "_funds_rows", lambda *a, **k: []))
+        stack.enter_context(patch.object(
+            ds, "_fetch_account_data",
+            return_value={"holdings": [], "positions": [], "trades": [], "funds": []},
+        ))
+        stack.enter_context(patch.object(ds, "_upsert_rows", AsyncMock(return_value=0)))
+        stack.enter_context(
+            patch("backend.brokers.registry.all_brokers", return_value=[broker_a, broker_b]),
+        )
+        with stack:
+            # market_open=False — skips the orphan-prune step (a real DB
+            # call this test doesn't otherwise mock), and matches the
+            # real F12 caller's own flag choice.
+            result = await ds.snapshot_daily_book(
+                target_date=date(2026, 11, 20), accounts=accounts, market_open=False,
+            )
+        return result, processed_accounts
+
+    @pytest.mark.asyncio
+    async def test_accounts_none_processes_every_loaded_account(self):
+        """Default (`accounts=None`) — EXACTLY today's existing behaviour,
+        every pre-existing caller (EOD/settlement cron, holiday-startup
+        catch-up, market_lifecycle_handlers) relies on this."""
+        result, processed = await self._run(accounts=None)
+        assert set(processed) == {"A", "B"}
+        assert set(result["accounts"]) == {"A", "B"}
+
+    @pytest.mark.asyncio
+    async def test_accounts_scoped_to_one_processes_only_that_account(self):
+        """F12's own use case — `accounts=["A"]` captures ONLY account A;
+        account B's snapshot must not be touched at all."""
+        result, processed = await self._run(accounts=["A"])
+        assert processed == ["A"], f"expected only A to be processed, got {processed!r}"
+        assert result["accounts"] == ["A"]
+
+    @pytest.mark.asyncio
+    async def test_accounts_scoped_to_neither_loaded_account_processes_nothing(self):
+        """A requested account that isn't currently loaded is silently a
+        no-op for that account (matches this function's existing fail-
+        soft convention), not an error."""
+        result, processed = await self._run(accounts=["ZG0790"])
+        assert processed == []
+        assert result["accounts"] == []
+
+
+# ---------------------------------------------------------------------------
 # D1a deviation-from-plan verification: a fresh EOD INSERT (no pre-existing
 # today-dated row) still gets the CORRECT previous_close (prior session's
 # close) without needing fix_daily_book_prev_close's 08:00 settlement-map

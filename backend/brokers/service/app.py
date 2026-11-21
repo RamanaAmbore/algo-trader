@@ -115,7 +115,8 @@ def create_app() -> Litestar:
         before_request=_origin_hook,
         on_startup=[
             _start_log_store, _start_conn_event_queue, _init_connections_on_startup,
-            _preload_db_lkg_on_startup, _start_kite_ticker,
+            _preload_db_lkg_on_startup, _check_credential_drift_on_startup,
+            _start_kite_ticker,
         ],
         on_shutdown=[_stop_conn_event_queue, _stop_log_store],
         debug=False,
@@ -1244,6 +1245,31 @@ async def _preload_db_lkg_on_startup(app: Litestar) -> None:
         await _preload_db_lkg_cache()
     except Exception as e:
         log.warning("conn_service: DB-LKG preload failed (non-fatal): %s", e)
+
+
+async def _check_credential_drift_on_startup(app: Litestar) -> None:
+    """One-shot startup check: warn when `secrets.yaml` and the
+    `broker_accounts` DB table disagree on a credential for an account
+    that already has a DB row. Detection only — never auto-overwrites
+    either side. See the 2026-11-20 ZJ6294 incident
+    (`backend/brokers/credential_drift_check.py`'s own module docstring
+    for the full background).
+
+    The actual comparison logic lives in `credential_drift_check.py`,
+    not here, so it's covered by the `backend/brokers/` pytest + CC
+    gates (this file's startup-hook wiring is excluded from both —
+    see CLAUDE.md "Test Coverage Rules"). This hook is just the
+    lazy-import + top-level try/except wrapper, matching
+    `_preload_db_lkg_on_startup`'s own best-effort shape: a failure
+    here must never block conn_service startup.
+    """
+    from backend.brokers.credential_drift_check import run_credential_drift_check
+
+    log = logger
+    try:
+        await run_credential_drift_check()
+    except Exception as e:
+        log.warning("conn_service: credential drift check failed (non-fatal): %s", e)
 
 
 # Module-level `app` is the uvicorn entrypoint.

@@ -1386,11 +1386,99 @@ def _snap_all_filtered(
     return False
 
 
+async def _prune_and_mark_positions(
+    account: str, target_date: date, raw: dict, p_rows: list,
+    market_open: bool, now_ist,
+) -> None:
+    """Prune stale position rows and write the confirmed-empty marker —
+    the per-account post-upsert cleanup step of `snapshot_daily_book`.
+
+    Extracted out of `snapshot_daily_book` (pure extract-function
+    refactor, 2026-11-20 F12 follow-up) — identical runtime behaviour,
+    split into its own function purely to bring that function's
+    cyclomatic complexity back under the project's D-grade CC gate after
+    the `accounts` scoping parameter pushed it over (same rationale as
+    `background.py`'s `_compute_lkg_stale_pairs`/`_lkg_group_row`
+    extractions out of `_preload_db_lkg_cache` earlier the same day).
+
+    Prune positions rows no longer in the broker response (e.g. post-
+    settlement cleanup). Only fires when the broker positions call
+    succeeded (`raw["positions"]` is a list, not None). An empty list
+    means all positions are closed — wipes all today's rows.
+
+    2026-11-05 live-incident fix — pruning is gated on `market_open=True`.
+    The broker's own "day positions" bucket resets/clears an already-
+    closed (qty=0) position some time after settlement, so a snapshot
+    fetch firing HOURS late (a missed-window catch-up, a restart's
+    startup snapshot, a SessionGuard recovery — all of which pass
+    `market_open=False`) can come back "successfully" with a symbol
+    set that is genuinely narrower than reality, not because the
+    position is actually gone. Treating that late response as
+    authoritative silently and PERMANENTLY deleted a real closed
+    position's settlement row — confirmed live: the regular 23:4x IST
+    MCX settlement correctly wrote `positions=7`/`positions=5` for two
+    accounts; a startup-snapshot catch-up ~2h later (itself caused by
+    the `_preload_snapshot_sentinels()` holdings-signal gap fixed
+    earlier the same day) came back with only 6/5 symbols and this
+    prune step deleted the missing symbol's row outright, with no way
+    to recover it afterward. A genuine live-hours fetch (`market_open
+    =True`) is always fired promptly and is trusted as before — only
+    the off-hours/late-catch-up case defers cleanup to the next real
+    live-hours confirmation instead of deleting on a fetch that might
+    be stale. Matches CLAUDE.md's "Staleness indicator freeze rule":
+    a position that lingers one extra day before being correctly
+    pruned is a strictly safer failure mode than one silently and
+    irreversibly deleted on an untrustworthy snapshot.
+    """
+    if raw["positions"] is None:
+        return
+    _p_syms = {r["symbol"] for r in p_rows}
+    if market_open:
+        _pruned = await _delete_orphan_positions(target_date, account, _p_syms)
+        if _pruned:
+            logger.info(
+                "[SNAPSHOT] pruned %d stale position row(s) for %s %s",
+                _pruned, account, target_date,
+            )
+        _prior_pruned = await _delete_prior_orphan_positions(account, _p_syms)
+        if _prior_pruned:
+            logger.info(
+                "[SNAPSHOT] pruned %d stale position row(s) from prior snapshot for %s",
+                _prior_pruned, account,
+            )
+
+    # Confirmed-empty marker — written AFTER the prune calls above (not
+    # before) so it can never be swept by `_delete_orphan_positions`'s
+    # same-day "wipe all" branch; it only needs to establish an anchor
+    # for FUTURE prune runs (see `_write_confirmed_empty_marker` docstring
+    # for the exact bug this closes). Gated on `positions_confirmed` —
+    # the broker must have returned a real, well-shaped response (not an
+    # ambiguous default) for today to count as a genuine "checked and
+    # confirmed empty" day.
+    if len(_p_syms) == 0 and raw.get("positions_confirmed"):
+        await _write_confirmed_empty_marker(account, target_date, now_ist)
+
+
 async def snapshot_daily_book(target_date: Optional[date] = None,
-                              *, settled: bool = False, market_open: bool = True) -> dict:
+                              *, settled: bool = False, market_open: bool = True,
+                              accounts: Optional[list[str]] = None) -> dict:
     """
     Capture every loaded account's holdings + positions + trades for
     target_date (defaults to today IST). Upserts into daily_book.
+
+    ``accounts`` (2026-11-20, F12 follow-up — operator-triggered
+    re-enable snapshot refresh during closed hours; see
+    `backend/api/routes/brokers.py:_force_refresh_one_account_after_
+    reenable`'s own docstring for the caller) scopes the capture to
+    only the given account codes. Default `None` preserves the EXACT
+    existing behavior (every loaded account, via `all_brokers()`) —
+    every pre-existing caller (the EOD/settlement cron paths, the
+    holiday-startup catch-up, `market_lifecycle_handlers`) passes no
+    `accounts` kwarg at all and is completely unaffected. Filtering
+    happens inside the per-broker loop below (comparing `broker.account`
+    against the given set) rather than by changing `all_brokers()`
+    itself, so this stays a pure additive narrowing with no risk to the
+    unscoped path.
 
     ``settled=True`` flags the row payload's ``snapshot_extras.settled``
     field, which downstream readers (positions.py / holdings.py) use to
@@ -1433,19 +1521,34 @@ async def snapshot_daily_book(target_date: Optional[date] = None,
         from backend.api.algo.expiry_freeze import session_date_of
         target_date = session_date_of(now_ist)
 
+    # NOTE: this local was previously also named `accounts`, which would
+    # have silently SHADOWED the new `accounts` kwarg above (overwriting
+    # the caller's requested subset before it was ever used for
+    # filtering) — renamed to `_loaded_accounts_list` to avoid that
+    # collision. It answers a different question ("is anything loaded
+    # at all") from the new parameter ("which subset to actually
+    # capture"), so the two must stay distinct.
     connections = _get_connections()
-    accounts = list(connections.conn.keys())
-    if not accounts:
+    _loaded_accounts_list = list(connections.conn.keys())
+    if not _loaded_accounts_list:
         # Cutover branch — Connections is empty when conn_service owns
         # sessions; pull the canonical account list from there.
         from backend.brokers.client import is_cutover_on
         if is_cutover_on():
             from backend.brokers.client.remote_broker import list_remote_accounts
-            accounts = [r["account"] for r in list_remote_accounts() if r.get("account")]
-    if not accounts:
+            _loaded_accounts_list = [r["account"] for r in list_remote_accounts() if r.get("account")]
+    if not _loaded_accounts_list:
         logger.warning("Snapshot: no loaded broker accounts — nothing to capture")
         return {"accounts": [], "holdings_rows": 0, "positions_rows": 0,
                 "trades_rows": 0, "errors": ["No loaded broker accounts"]}
+
+    # `accounts` (the new kwarg) narrows which of the loaded accounts are
+    # actually captured below. A requested account that isn't currently
+    # loaded at all is simply not in `all_brokers()`'s output, so it's
+    # silently a no-op for that account rather than an error — matches
+    # this function's existing fail-soft convention (see the per-broker
+    # try/except below).
+    _scope = set(accounts) if accounts is not None else None
 
     loop = asyncio.get_running_loop()
     totals = {"holdings_rows": 0, "positions_rows": 0, "trades_rows": 0,
@@ -1456,6 +1559,8 @@ async def snapshot_daily_book(target_date: Optional[date] = None,
     from backend.brokers.registry import all_brokers
     for broker in all_brokers():
         account = broker.account
+        if _scope is not None and account not in _scope:
+            continue
         try:
             raw = await loop.run_in_executor(
                 _local_executor, _fetch_account_data, broker, account, target_date
@@ -1475,60 +1580,9 @@ async def snapshot_daily_book(target_date: Optional[date] = None,
             totals["trades_rows"]    += await _upsert_rows(t_rows)
             totals["funds_rows"]     += await _upsert_rows(f_rows)
 
-            # Prune positions rows no longer in broker response (e.g. post-settlement cleanup).
-            # Only fires when the broker positions call succeeded (raw["positions"] is a list,
-            # not None). An empty list means all positions are closed — wipes all today's rows.
-            #
-            # 2026-11-05 live-incident fix — pruning is gated on `market_open=True`.
-            # The broker's own "day positions" bucket resets/clears an already-
-            # closed (qty=0) position some time after settlement, so a snapshot
-            # fetch firing HOURS late (a missed-window catch-up, a restart's
-            # startup snapshot, a SessionGuard recovery — all of which pass
-            # `market_open=False`) can come back "successfully" with a symbol
-            # set that is genuinely narrower than reality, not because the
-            # position is actually gone. Treating that late response as
-            # authoritative silently and PERMANENTLY deleted a real closed
-            # position's settlement row — confirmed live: the regular 23:4x IST
-            # MCX settlement correctly wrote `positions=7`/`positions=5` for two
-            # accounts; a startup-snapshot catch-up ~2h later (itself caused by
-            # the `_preload_snapshot_sentinels()` holdings-signal gap fixed
-            # earlier the same day) came back with only 6/5 symbols and this
-            # prune step deleted the missing symbol's row outright, with no way
-            # to recover it afterward. A genuine live-hours fetch (`market_open
-            # =True`) is always fired promptly and is trusted as before — only
-            # the off-hours/late-catch-up case defers cleanup to the next real
-            # live-hours confirmation instead of deleting on a fetch that might
-            # be stale. Matches CLAUDE.md's "Staleness indicator freeze rule":
-            # a position that lingers one extra day before being correctly
-            # pruned is a strictly safer failure mode than one silently and
-            # irreversibly deleted on an untrustworthy snapshot.
-            if raw["positions"] is not None:
-                _p_syms = {r["symbol"] for r in p_rows}
-                if market_open:
-                    _pruned = await _delete_orphan_positions(target_date, account, _p_syms)
-                    if _pruned:
-                        logger.info(
-                            "[SNAPSHOT] pruned %d stale position row(s) for %s %s",
-                            _pruned, account, target_date,
-                        )
-                    _prior_pruned = await _delete_prior_orphan_positions(account, _p_syms)
-                    if _prior_pruned:
-                        logger.info(
-                            "[SNAPSHOT] pruned %d stale position row(s) from prior snapshot for %s",
-                            _prior_pruned, account,
-                        )
-
-                # Confirmed-empty marker — written AFTER the prune calls
-                # above (not before) so it can never be swept by
-                # `_delete_orphan_positions`'s same-day "wipe all" branch;
-                # it only needs to establish an anchor for FUTURE prune
-                # runs (see `_write_confirmed_empty_marker` docstring for
-                # the exact bug this closes). Gated on `positions_confirmed`
-                # — the broker must have returned a real, well-shaped
-                # response (not an ambiguous default) for today to count
-                # as a genuine "checked and confirmed empty" day.
-                if len(_p_syms) == 0 and raw.get("positions_confirmed"):
-                    await _write_confirmed_empty_marker(account, target_date, now_ist)
+            await _prune_and_mark_positions(
+                account, target_date, raw, p_rows, market_open, now_ist,
+            )
 
             processed.append(account)
 

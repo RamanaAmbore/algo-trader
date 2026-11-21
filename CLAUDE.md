@@ -603,6 +603,128 @@ Alerts tab flooded. Each fix below closes one of those gaps.
   A re-enabled account is refreshed on the spot. A funds or margins gap is always reported, never
   silently passed as current.
 
+**`secrets.yaml` edits to an existing broker account are a silent no-op — the database is the
+live source of truth for credentials (2026-11-20; incident, ZJ6294 `Invalid checksum`)** — Account
+ZJ6294's Kite login began failing intermittently with `Invalid checksum` at `generate_session()`. Hours
+of debugging followed. The `api_secret` in `secrets.yaml` was edited and reverted several times, with a
+`ramboq_conn` restart after each change, and nothing changed. The root cause was that the running system
+never read `secrets.yaml` for that account at all.
+- **Live credentials come from the table.** `Connections.rebuild_from_db()`
+  ([connections.py:2105](backend/brokers/connections.py#L2105)) loads active `broker_accounts` rows
+  through `_load_active_broker_rows()` ([connections.py:2225](backend/brokers/connections.py#L2225)).
+  `_build_kite_conn()` ([connections.py:2428](backend/brokers/connections.py#L2428)) decrypts
+  `api_secret_enc`, `password_enc` and `totp_token_enc` from the row. It builds a `KiteConnection` from
+  that. The YAML is not consulted for an account that already has a row.
+- **YAML is read only for first-time seeding.** `_seed_db_from_yaml()`
+  ([connections.py:2565](backend/brokers/connections.py#L2565)) inserts only codes absent from the table.
+  It logs `skipped re-seeding ... already present` at INFO and never updates an existing row. So a
+  rotation written into `secrets.yaml` for a live account has no effect. Nothing warns that the file and
+  the table now disagree.
+- **Confirmed empirically.** A read-only check decrypted ZJ6294's stored `api_secret_enc` and compared
+  hashes only, never printing the value. It matched the pre-rotation secret. That showed the table still
+  held the stale credential, despite every YAML edit that day.
+- **The fix that worked.** The new secret was applied through `PATCH /api/admin/brokers/ZJ6294`
+  ([brokers.py](backend/api/routes/brokers.py)). That encrypts the value, writes the row, and calls
+  `_reload_connections()`. A follow-up decrypt-and-hash check confirmed the table held the new value, and
+  the connection recovered.
+- **What `secrets.yaml` still does.** It remains necessary for secrets that cannot live in the database.
+  Examples are `db_user`/`db_password` (you cannot store the credential needed to reach the database in
+  that database), `admin_password`, `cookie_secret`, third-party API keys, SMTP/Telegram/ntfy credentials,
+  MCP login and postback tokens. For broker accounts its only remaining role is the one-time seed for a
+  fresh environment, such as a new deploy, disaster recovery or a new dev setup.
+- **Drift check, shipped.** `run_credential_drift_check()`
+  ([`credential_drift_check.py`](backend/brokers/credential_drift_check.py)) runs once at
+  `conn_service` startup, registered via `_check_credential_drift_on_startup()`
+  ([`service/app.py`](backend/brokers/service/app.py), in `on_startup=[...]` immediately after
+  `_preload_db_lkg_on_startup`). It reads every `broker_accounts` row (active and inactive — an
+  existing row of either state already makes the matching YAML entry inert) and compares, per
+  broker: Kite and Dhan on `api_key` (plain) + `api_secret` (vs decrypted `api_secret_enc`); Groww
+  on `api_key` + `totp_token` (vs decrypted `totp_token_enc` — Groww's builder never reads
+  `api_secret_enc`, since its approval-secret flow was retired, so `api_secret` is deliberately not
+  compared for it). Low-entropy secrets (Dhan's trading PIN, Kite/Dhan `totp_token`) are deliberately
+  excluded, since a 12-hex SHA-256 prefix could meaningfully narrow a brute-force guess on a
+  short/low-entropy value; only high-entropy strings are hashed and compared. A YAML field that is
+  absent or empty is never compared. On a mismatch it logs, at WARNING, one line per account per
+  field:
+  `[CREDENTIAL-DRIFT] {masked_account}: secrets.yaml and the database disagree on {field}. The
+  database is authoritative for an existing account — this YAML value is being silently ignored. To
+  update credentials for an existing account, use PATCH /api/admin/brokers/{masked_account} (or the
+  /admin/brokers UI), not secrets.yaml. yaml={hash12} db={hash12}` — never the raw secret, only a
+  12-hex hash prefix per side. A decrypt failure on one field logs its own WARNING and the check
+  continues; a DB-read failure degrades to one WARNING and skips the whole check for that boot. It
+  never raises, never blocks `_start_kite_ticker` or any other startup hook, and never auto-corrects
+  either side. Tests: `backend/tests/broker/test_credential_drift_check.py` (14 cases).
+- **Operator rule.** For an account that already exists, rotate credentials with
+  `PATCH /api/admin/brokers/{account}` or the `/admin/brokers` UI. Never edit `secrets.yaml` for that
+  account, because the edit has no effect on the running system.
+- Invariant: for an existing broker account, the `broker_accounts` row is authoritative for credentials.
+  A `secrets.yaml` change to that account is not applied and must never be assumed to be. The
+  seed step only ever inserts codes absent from the table.
+
+**Re-enabling a connection during closed hours now also refreshes the frozen snapshot, not just the
+live cache (2026-11-20, same day, found live right after the fix above shipped)** — F12 (the
+forced-refresh-on-re-enable fix, see the entry above) correctly busts and re-fetches the live
+broker-layer SSOT cache, confirmed via a real `GET /internal/positions?force=1` firing right after a
+live re-enable PATCH. But the closed-hours display routes never read that cache at all —
+`closed_hours_or_broker()` serves the frozen `daily_book` row exclusively whenever the market is
+closed, by design (see "Closed-hours route gate" above). So a freshly-fetched live cache was
+invisible to the operator the whole time the market stayed closed, reproducing the exact stale-data
+symptom F12 was built to fix. Confirmed live: ZG0790's own `daily_book` row stayed dated 2026-11-19
+through two full re-enable cycles before this fix.
+- **The naive fix would have reproduced a worse, already-documented incident.** `session_date_of(now)`
+  advances to a new session date at every 08:00 IST boundary regardless of whether that date is a
+  real trading day. A bare `snapshot_daily_book(accounts=[account])` called past midnight into a
+  Saturday (exactly when this was tested) would write a row dated Saturday — the same mechanism
+  `background.py:_task_closed_hours_refresh`'s own docstring already documents as a real prior
+  incident: a Saturday-dated row became `latest_batch` in `_positions_snapshot()`'s per-account
+  baseline query, collapsing NavStrip's Day P&L to `(Saturday LTP − Friday LTP) = 0` system-wide.
+- **The fix.** `snapshot_daily_book()` ([`daily_snapshot.py:1389`](backend/api/algo/daily_snapshot.py#L1389))
+  gained an `accounts: Optional[list[str]] = None` parameter — default `None` is byte-identical to
+  the existing all-accounts behavior (the function's own pre-existing local variable, also named
+  `accounts`, was renamed to `_loaded_accounts_list` so it could no longer silently shadow the new
+  parameter). `_force_refresh_one_account_after_reenable()` ([`brokers.py`](backend/api/routes/brokers.py))
+  calls three new helpers after its live fetch completes:
+  - `_last_completed_trading_session_date(now_ist)` — the floor-walk guard against the Saturday-row
+    risk above. Mirrors `positions.py`'s own existing floor-walk pattern (`fetch_holidays("NSE")` +
+    `is_trading_day()`, 10-iteration bound) rather than reusing bare `session_date_of()`.
+  - `_daily_book_row_exists(account, target_date)` — skip-write guard. Two reasons: never overwrite an
+    already-correct EOD row, and never let a stray extra row satisfy
+    `background.py:_pcf_eod_already_fired_today`'s existence check, which carries no account filter
+    and would otherwise make the system believe the real EOD already ran for every other account too.
+  - `_snapshot_books_if_closed(account, masked)` — orchestrates: gates on
+    `snapshot_gate._any_segment_open()` (the exact function `closed_hours_or_broker()` itself calls,
+    so this can never disagree with the route gate about market state), skips entirely if open,
+    floor-walks the date, skips if a row already exists, otherwise calls
+    `snapshot_daily_book(target_date=<floor-walked date>, accounts=[account], market_open=False)` —
+    no `settled` kwarg (that flag is for the real EOD `close_settled` event only). `market_open=False`
+    matches `routes/admin.py:trigger_pnl_snapshot`'s own resolved value for a confirmed-closed call,
+    and correctly skips the orphan-position-prune step, which is unsafe for a late/off-hours fetch
+    (see the 2026-11-05 incident this file documents elsewhere).
+  - `_fetch_account_data` (the function `snapshot_daily_book` uses) calls `broker.holdings()`/
+    `broker.positions()` directly — the raw per-account adapter methods, not the LKG-substituting
+    `broker_apis.fetch_*` wrappers — so this write can never launder stale data back in under a fresh
+    timestamp; a failure there returns `[]`, never a last-known-good substitute.
+  - The fire-and-forget refresh task is now held in a module-level set (discarded via
+    `add_done_callback`) instead of a bare `create_task()` — it runs for several real seconds (three
+    broker round-trips plus a conditional DB write), so the bare form risked garbage collection mid-run
+    once the request handler returned.
+- **Known residual, flagged not fixed.** The holdings display route's closed-hours gate checks NSE
+  specifically. An account re-enabled in the 15:30–23:30 IST window on a weekday (NSE closed, MCX
+  still open) reads `_any_segment_open() == True`, so this snapshot write is skipped on the assumption
+  the live path covers it — but holdings specifically may still show stale data in that exact window
+  if its own live route also gates on NSE-only closed-hours logic. This interaction has not been
+  traced fully.
+- This fix lives entirely in the main API process (`backend/api/routes/brokers.py` +
+  `backend/api/algo/daily_snapshot.py`) — unlike the broker-layer fixes above, it does not need
+  `CONN_TOUCHED`/a conn_service restart; a normal API-only deploy picks it up.
+- Tests: `test_broker_update_account_force_refresh.py` (`TestLastCompletedTradingSessionDate`,
+  `TestDailyBookRowExists`, `TestSnapshotBooksIfClosed`), `test_daily_snapshot.py`
+  (`TestSnapshotDailyBookAccountsScoping`, confirms `accounts=None` still processes every account and
+  `accounts=["X"]` processes only X).
+- Invariant: re-enabling a connection during closed hours produces one new `daily_book` row for that
+  one account, dated the last real completed trading session — never a weekend/holiday date, never
+  touching any other account's snapshot, and never written twice for the same session.
+
 **Execution mode resets to LIVE on admin/designated prod login (2026-11-02; commit `c7e66df7`)** — A
 forgotten Paper or Shadow toggle from a prior session no longer carries into a new one. On a successful
 prod `login` for role `admin` or `designated` ([`auth.py:855`](backend/api/routes/auth.py#L855)), the
