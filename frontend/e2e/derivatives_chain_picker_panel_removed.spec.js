@@ -26,13 +26,19 @@
  *    (from `$lib/marketHours`).
  *
  * Deliberately NOT removed (still has a live consumer — see the task's own
- * handback report for the full second-pass list): `chainUnderlying` (live
- * via `onTicketSubmit`'s draft branch), `_mergeIntoBasket`/`_quickKeyOpt`/
- * `_quickKeyFut`/`chainBasket`/`basketError` (live via SymbolPanel's
- * `onAddToBasket`), `placeBasket`/`basketPlacing`/`basketProgress`/
- * `basketJustDone` (pinned by the CRITICAL money-safety regression guard in
- * basket_mode_sim_replay_safety.spec.js even though nothing calls
- * `placeBasket()` on this page today).
+ * handback report for the full second-pass list): `_mergeIntoBasket`/
+ * `_quickKeyOpt`/`_quickKeyFut`/`chainBasket`/`basketError` (live via
+ * SymbolPanel's `onAddToBasket`), `placeBasket`/`basketPlacing`/
+ * `basketProgress`/`basketJustDone` (pinned by the CRITICAL money-safety
+ * regression guard in basket_mode_sim_replay_safety.spec.js even though
+ * nothing calls `placeBasket()` on this page today).
+ *
+ * `chainUnderlying` ITSELF was removed in a later follow-up audit (not this
+ * sweep): its own effect just mirrored `underlyingChoices[0]` one tick
+ * later, so `onTicketSubmit`'s draft-branch fallback (its one real
+ * consumer, confirmed live above) now reads `underlyingChoices[0]`
+ * directly instead — same value, no separate `$state`/`$effect` pair to
+ * keep in sync. See the "chainUnderlying is gone" test below.
  *
  * A SECOND dead-code sweep (2026-11, follow-up) removed the rest of the
  * vestigial "Option-chain picker (Strategy mode)" quick-add block that this
@@ -121,7 +127,18 @@ test.describe('Stale-code: dead showAddPanel chain-picker panel wiring stays rem
     expect(src).not.toContain('let chainQuotesMap = $state(null);');
   });
 
-  test('chainUnderlying survives — onTicketSubmit\'s draft branch is a live consumer', () => {
-    expect(src).toMatch(/selectedUnderlying = chainUnderlying\.toUpperCase\(\)/);
+  test('chainUnderlying is gone — onTicketSubmit\'s draft branch now reads underlyingChoices[0] directly', () => {
+    // Superseded: this file's own earlier pass kept `chainUnderlying`
+    // because onTicketSubmit's draft branch was a live consumer. A later
+    // follow-up audit found its own effect just mirrored
+    // `underlyingChoices[0]` one tick later, so the fallback now reads
+    // that derived value directly — no separate $state/$effect pair.
+    // Only the live declaration/usage forms are checked — a historical
+    // comment explaining the removal may still name `chainUnderlying`.
+    expect(src).not.toMatch(/let chainUnderlying\s*=\s*\$state/);
+    expect(src).not.toMatch(/chainUnderlying\s*=\s*list\[0\]/);
+    expect(src).not.toMatch(/chainUnderlying\.toUpperCase\(\)/);
+    expect(src).not.toMatch(/if \(!selectedUnderlying && chainUnderlying\)/);
+    expect(src).toMatch(/selectedUnderlying = underlyingChoices\[0\]\.toUpperCase\(\)/);
   });
 });

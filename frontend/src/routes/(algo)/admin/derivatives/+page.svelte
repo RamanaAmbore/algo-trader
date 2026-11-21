@@ -3642,14 +3642,16 @@
   // this so they re-trigger after the async fetch lands; without it,
   // the page would render with an empty proxy cache and never refresh.
   let proxyTableReady  = $state(false);
-  // chainUnderlying is a leftover of the removed chain-picker panel.
-  // Its only remaining live consumer is onTicketSubmit's draft branch
-  // below (selectedUnderlying fallback) — kept for that one read.
+  // chainUnderlying (a leftover of the removed chain-picker panel, whose
+  // only remaining live consumer was onTicketSubmit's draft-branch
+  // fallback below) was removed entirely (2026-11 follow-up audit): its
+  // own effect just mirrored `underlyingChoices[0]` one tick later, so
+  // that fallback now reads `underlyingChoices[0]` directly — same
+  // value, no separate $state/$effect pair to keep in sync.
   // chainExpiry/chainKinds/chainSide/chainLots had no live consumer
   // left and were removed in the same 2026-11 dead-code sweep that
   // removed addOptionToBasket/addFutureDraft/chainFutures (see
   // derivatives_chain_picker_panel_removed.spec.js).
-  let chainUnderlying  = $state('');
 
   // `_quickKeyOpt`/`_quickKeyFut` build the dedupe/toast key for a
   // basket leg; `_mergeIntoBasket` is the shared bump-lots-on-dupe
@@ -3829,28 +3831,6 @@
     }
     for (const u of _staticUnderlyingChoices) push(u);
     return out;
-  });
-
-  // Default the chain underlying to the top of the priority list
-  // (selectedUnderlying when set, otherwise the operator's first
-  // book underlying) once the instruments cache has loaded. Empty
-  // out the picked value if it disappears from the list. This is the
-  // one remaining writer of chainUnderlying — kept so the
-  // onTicketSubmit draft-branch fallback below has a real value to
-  // read (chainExpiry's own auto-pick effect, and chainExpiries/
-  // chainFutures that fed it, were removed in the same 2026-11
-  // dead-code sweep — see derivatives_chain_picker_panel_removed.spec.js).
-  $effect(() => {
-    const list = underlyingChoices;
-    untrack(() => {
-      if (!list.length) {
-        if (chainUnderlying) chainUnderlying = '';
-        return;
-      }
-      if (!chainUnderlying || !list.includes(chainUnderlying)) {
-        chainUnderlying = list[0];
-      }
-    });
   });
 
   // Order-ticket state — chain clicks open the reusable
@@ -4047,8 +4027,13 @@
       avg_cost: payload.price != null ? Number(payload.price) : '',
       ltp:      '',
     }];
-    if (!selectedUnderlying && chainUnderlying) {
-      selectedUnderlying = chainUnderlying.toUpperCase();
+    // Fallback target when no underlying is selected yet — same value
+    // the removed `chainUnderlying` mirror used to hold one tick later
+    // (`underlyingChoices[0]` already is "selectedUnderlying when set,
+    // else the operator's first book underlying, else a static choice";
+    // already uppercased by `underlyingChoices`'s own `push()`).
+    if (!selectedUnderlying && underlyingChoices[0]) {
+      selectedUnderlying = underlyingChoices[0].toUpperCase();
     }
   }
 
@@ -4763,10 +4748,15 @@
   /** Read the persisted snapshot payload (raw `payload`, not the
    *  `cachedRead` wrapper), tab-local sessionStorage first, falling back
    *  to the shared localStorage tier only when this tab has no
-   *  session-local copy of its own. Applies the 5-minute TTL itself on
-   *  both tiers — `cachedRead`'s own internal expiry check only covers
-   *  the localStorage tier, so this is the one place both are enforced
-   *  uniformly. Returns `null` when neither tier has a fresh entry. */
+   *  session-local copy of its own. The `d.ts` age check below is
+   *  LOAD-BEARING on the sessionStorage branch — `cachedRead` never sees
+   *  a raw `sessionStorage.getItem()` read, so nothing else enforces the
+   *  5-minute TTL there. On the `cachedRead` branch the same check is
+   *  redundant defense-in-depth: `cachedRead` already drops an expired
+   *  localStorage entry internally (returns `null`), so this file's own
+   *  `d.ts` compare there can never actually fire — kept anyway since
+   *  the payload's own `ts` field is part of the preserved stored shape.
+   *  Returns `null` when neither tier has a fresh entry. */
   function _readCacheEntry() {
     try {
       if (typeof sessionStorage !== 'undefined') {
