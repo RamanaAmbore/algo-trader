@@ -1,13 +1,30 @@
 """Tests for `_run_nav_compute_once()`'s MCX-close-settled trigger time
 (backend/api/background.py, 2026-09 fix).
 
-Root cause fixed: the daily NAV snapshot cron previously fired at a fixed
-`dtime(16, 0)` IST — hours before MCX's actual 23:30 IST close — so the
-"end of day" NAV figure always shipped with that day's commodity P&L
-still mid-session. The fix reuses the SAME effective-snapshot-time
-mechanism `_sg_recover_mcx_snapshot` already uses for the MCX EOD
-daily_book write (`exchange_clock._effective_gate_rows("MCX")` +
-`_effective_snapshot_time(row)`), so both consumers move together.
+Root cause fixed (2026-09): the daily NAV snapshot cron previously fired
+at a fixed `dtime(16, 0)` IST — hours before MCX's actual 23:30 IST
+close — so the "end of day" NAV figure always shipped with that day's
+commodity P&L still mid-session. The fix reused the effective-snapshot-
+time mechanism `exchange_clock._effective_gate_rows("MCX")` +
+`_effective_snapshot_time(row)`.
+
+**Known, CONFIRMED, NOT-yet-fixed bug (2026-11-21)**: `_sg_recover_mcx_snapshot`
+(SessionGuard) was found to have the identical bare-time-comparison
+defect and was fixed in the same pass that fixed `exchange_clock.py`'s
+root cause (see CLAUDE.md "MCX DST-aware non-agri close time" and
+`test_session_guard_mcx_winter_snapshot.py`) — `_run_nav_compute_once`
+here is NO LONGER using "the same mechanism" in the sense of being
+equally correct; it still uses the OLD bare `now.time() < target`
+comparison. Once MCX's `exchange_schedule` row holds the winter
+non-agri close_time (23:55 IST), `_effective_snapshot_time()` derives
+a `target` of 00:10 the next calendar day — and `now.time() < target`
+is false at almost ANY time of day, so this function fires a mid-
+session "EOD" NAV write almost immediately once the date latch resets
+for the new day. See `TestWinterWrapBugConfirmedNotFixed` below for
+the empirical repro. This is why the `exchange_schedule` DST sync
+(`_sync_mcx_dst_close_time_coro`) is deliberately NOT wired into
+`_task_holiday_refresh` yet — see `test_mcx_dst_close_time_sync.py`'s
+tripwire tests.
 """
 
 from __future__ import annotations
@@ -347,3 +364,68 @@ async def test_pops_latch_on_write_failure_for_retry():
         await _run_nav_compute_once(state)
 
     assert "nav_done" not in state
+
+
+# ---------------------------------------------------------------------------
+# KNOWN, CONFIRMED, NOT-YET-FIXED — the MCX winter non-agri close_time
+# (23:55 IST) wrap bug, same root cause as exchange_clock.py's fixed
+# weekday/midnight-wrap gap, but NOT fixed here. See the module
+# docstring above and CLAUDE.md "MCX DST-aware non-agri close time".
+# This is why _sync_mcx_dst_close_time_coro stays unwired.
+# ---------------------------------------------------------------------------
+
+class TestWinterWrapBugConfirmedNotFixed:
+    """Empirical repro, pinned so a future fix attempt has a concrete
+    failing-today test to work against. These tests assert the CURRENT
+    (buggy) behaviour — they must be flipped, not deleted, once
+    `_run_nav_compute_once` is fixed to anchor against an absolute,
+    session-dated datetime the way `_sg_recover_mcx_snapshot` now does.
+    """
+
+    @pytest.mark.asyncio
+    async def test_fires_prematurely_mid_session_with_winter_close_time(self):
+        """THIS IS THE BUG: with MCX's winter close_time (23:55 IST,
+        derived target=00:10 the next day), a check at 10:00 AM —
+        clearly mid-session, hours before the real close — currently
+        fires a NAV write. A fixed implementation must NOT do this."""
+        state: dict = {}
+        fake_now = SimpleNamespace(date=lambda: date(2026, 11, 21), time=lambda: dtime(10, 0))
+        with patch(
+            "backend.api.background.timestamp_indian", return_value=fake_now,
+        ), patch(
+            "backend.api.helpers.exchange_clock._effective_gate_rows",
+            side_effect=lambda gate: [_row(close_time=dtime(23, 55))] if gate == "MCX" else [],
+        ), patch(
+            "backend.api.algo.nav.write_nav_snapshot",
+            new=AsyncMock(return_value={"nav": 1000.0, "cash_total": 0,
+                                        "positions_mtm": 0, "holdings_mtm": 0}),
+        ) as mock_write:
+            await _run_nav_compute_once(state)
+
+        mock_write.assert_awaited_once(), (
+            "CONFIRMED BUG: fires at 10:00 AM mid-session once the MCX "
+            "close_time is the winter DST value — a correct "
+            "implementation must not fire until the REAL close + 15min"
+        )
+        assert state["nav_done"] == date(2026, 11, 21)
+
+    @pytest.mark.asyncio
+    async def test_does_not_fire_just_before_the_wrapped_trigger(self):
+        """Sanity companion: at 00:05 (before the real 00:10 wrapped
+        trigger), it correctly does not fire — the bug is specifically
+        that it ALSO fires at every other time of day, not that it
+        never gates at all."""
+        state: dict = {}
+        fake_now = SimpleNamespace(date=lambda: date(2026, 11, 21), time=lambda: dtime(0, 5))
+        with patch(
+            "backend.api.background.timestamp_indian", return_value=fake_now,
+        ), patch(
+            "backend.api.helpers.exchange_clock._effective_gate_rows",
+            side_effect=lambda gate: [_row(close_time=dtime(23, 55))] if gate == "MCX" else [],
+        ), patch(
+            "backend.api.algo.nav.write_nav_snapshot", new=AsyncMock(),
+        ) as mock_write:
+            await _run_nav_compute_once(state)
+
+        mock_write.assert_not_awaited()
+        assert "nav_done" not in state

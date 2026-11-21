@@ -147,8 +147,11 @@ def test_saturday_itself_does_not_spuriously_match_before_or_after_the_window():
     row = _mcx_row(close_time=time(23, 55))
     exchange_clock._CACHE = [row]
 
-    too_early = datetime(2026, 11, 21, 0, 8, 30, tzinfo=_IST)   # >1min before 00:10
-    too_late  = datetime(2026, 11, 21, 0, 11, 30, tzinfo=_IST)  # >1min after 00:10
+    # `now` is truncated to the minute before comparing (matches the
+    # pre-fix implementation's own truncation) — so these must clear a
+    # full extra minute of slack past the ±60s window, not just 90s.
+    too_early = datetime(2026, 11, 21, 0, 8, 59, tzinfo=_IST)   # truncates to 00:08 — >60s before 00:10
+    too_late  = datetime(2026, 11, 21, 0, 12, 0, tzinfo=_IST)   # truncates to 00:12 — >60s after 00:10
 
     with patch.object(exchange_clock, "_now_ist", return_value=too_early):
         assert exchange_clock.sessions_with_snapshot_time_now() == []

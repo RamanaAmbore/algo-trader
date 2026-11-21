@@ -358,7 +358,11 @@ def is_market_active_for_prev_close() -> bool:
     """
     if not _CACHE:
         return True  # fail-open: prefer single query over empty result
-    now = _now_ist()
+    # Truncated to the minute, matching the original implementation's
+    # own `now_t = now.time().replace(second=0, microsecond=0)` — every
+    # open/close/snapshot time here is itself a bare `time` with
+    # implicit :00 seconds, so this keeps boundary behaviour identical.
+    now = _now_ist().replace(second=0, microsecond=0)
     today = now.date()
     yesterday = today - timedelta(days=1)
     for gate in {r.gate for r in _CACHE}:
@@ -542,8 +546,17 @@ def sessions_with_snapshot_time_now(tolerance_minutes: int = 1) -> list["Exchang
     pre-2026-11 flat 23:30, etc. — none of those ever reach the
     "yesterday" branch's match condition; see
     `test_exchange_clock_mcx_winter_snapshot_gap.py`).
+
+    `now` is truncated to the minute (seconds/microseconds zeroed)
+    before comparing, exactly as the OLD implementation truncated its
+    own `now_t` before combining it into a datetime — every effective
+    snapshot time is itself a bare `time` with implicit :00 seconds, so
+    skipping this truncation would silently SHRINK the real tolerance
+    window from the pre-fix ~[-60s, +119s) to a symmetric ±60s, changing
+    behaviour for every gate, not just the wrapping MCX case this fix
+    targets.
     """
-    now = _now_ist()
+    now = _now_ist().replace(second=0, microsecond=0)
     today = now.date()
     yesterday = today - timedelta(days=1)
     delta_s = timedelta(minutes=tolerance_minutes).total_seconds()

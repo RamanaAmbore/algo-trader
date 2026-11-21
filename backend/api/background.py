@@ -3838,18 +3838,41 @@ def _sg_recover_mcx_close(now_t: dtime, today: date) -> None:
     _ticker_stop_done_global = stop_date
 
 
-async def _sg_recover_mcx_snapshot(mcx_rows: list, now_t: dtime, today: date) -> None:
-    """e. McxSnapshot: MCX EOD daily_book write."""
+async def _sg_recover_mcx_snapshot(mcx_rows: list, now: datetime, today: date) -> None:
+    """e. McxSnapshot: MCX EOD daily_book write.
+
+    `today` here is `sess_today` (session_date_of(now)) per the caller —
+    see `_session_guard()`'s own comment on why this one sentinel check
+    needs the session-aware date while sibling McxClose/NonMcxClose keep
+    using bare calendar `today`.
+
+    2026-11-21 fix — `now` is now the FULL real datetime (was previously
+    just its bare `.time()`). MCX's winter non-agri close (23:55 IST)
+    derives a close-snapshot trigger (`close_time + 15 min`) that wraps
+    to 00:10 THE NEXT CALENDAR DAY. The old bare-time heuristic
+    (`now_t >= snap_t or now_t < dtime(2, 0)`) could not represent that:
+    `now_t >= time(0, 10)` is true at almost ANY time of day (e.g.
+    10:00 AM), so a server restart at any point during the winter window
+    — not just shortly after the real close — would wrongly fire a
+    mid-session "EOD" write. Confirmed empirically before this fix.
+
+    Resolved via `_anchor_snapshot_datetime(today, mcx_rows[0])` —
+    anchored to the SESSION's own date (`today`/`sess_today`), rolling
+    forward one day only when the derivation itself crosses midnight —
+    compared against the real absolute `now`. This also subsumes the
+    old `< dtime(2, 0)` carve-out for a restart shortly after a NORMAL
+    (non-wrapping) close: anchoring to `sess_today` (which is already
+    YESTERDAY's calendar date for a 00:00-08:00 IST restart, per
+    `session_date_of()`) and comparing against the real `now` handles
+    that case directly, with no separate heuristic needed.
+    """
     if not mcx_rows:
         return
-    from backend.api.helpers.exchange_clock import _effective_snapshot_time
-    snap_t = _effective_snapshot_time(mcx_rows[0])
-    if snap_t is None:
+    from backend.api.helpers.exchange_clock import _anchor_snapshot_datetime
+    anchor_dt = _anchor_snapshot_datetime(today, mcx_rows[0])
+    if anchor_dt is None:
         return
-    # MCX snapshot time (≈23:45) is pre-midnight — post-midnight restarts
-    # (now_t < 02:00) treat as already past.
-    snap_past = now_t >= snap_t or now_t < dtime(2, 0)
-    if not snap_past or _snapshot_fired_today.get("MCX") == today:
+    if now < anchor_dt or _snapshot_fired_today.get("MCX") == today:
         return
     logger.info("SessionGuard: running McxSnapshot (MCX EOD write)")
     await _snapshot_fire("mcx", market_open=False)
@@ -3954,7 +3977,7 @@ async def _session_guard() -> None:
 
     # ── e. McxSnapshot ─────────────────────────────────────────────────────────
     try:
-        await _sg_recover_mcx_snapshot(mcx_rows, now_t, sess_today)
+        await _sg_recover_mcx_snapshot(mcx_rows, now, sess_today)
     except Exception as _exc:
         logger.warning("SessionGuard: McxSnapshot failed — %s", _exc)
 
@@ -5365,40 +5388,36 @@ async def _task_holiday_refresh() -> None:
                     f"ingestion failed (non-fatal): {e}"
                 )
 
-            # MCX non-agri DST-tracking close time (2026-11-21, re-wired
-            # after the exchange_clock.py weekday/midnight-wrap root-cause
-            # fix landed) — MCX revises its bullion/energy/base-metals
-            # evening close twice a year tracking US DST (23:30 in-DST,
-            # 23:55 winter). Keeps exchange_schedule's default MCX row in
-            # sync so every reader (this table directly, exchange_clock,
-            # DTE/Greeks in options.py, the ticker quiet-window) agrees.
-            # Was deliberately left unwired for one session because
-            # writing the winter close_time (23:55) exposed a real
-            # latent bug: `sessions_with_snapshot_time_now()`'s weekday
-            # filter checked the REAL clock weekday at the derived
-            # post-midnight snapshot moment (00:10 the next calendar
-            # day), not the Friday trading session that moment belongs
-            # to, so the MCX close-snapshot (which writes `daily_book.ltp`,
-            # the prev_close SSOT) silently never fired on any Friday
-            # night during the winter window. That root cause is now
-            # fixed in `exchange_clock.py` (`_effective_gate_rows_for_date`,
-            # `_anchor_snapshot_datetime`, `_effective_snapshot_day_offset`)
-            # — see CLAUDE.md "MCX DST-aware non-agri close time" for the
-            # full writeup and `test_exchange_clock_mcx_winter_snapshot_gap.py`
-            # for the regression coverage. Piggybacked on this same
-            # daily/restart-catch-up wake-up — never its own cron.
-            try:
-                from backend.brokers.broker_apis import _sync_mcx_dst_close_time_coro
-                _resolved_close = await _sync_mcx_dst_close_time_coro()
-                logger.debug(
-                    "[HOLIDAY-REFRESH] MCX non-agri DST close_time check: %s IST",
-                    _resolved_close.strftime("%H:%M") if _resolved_close else "unresolved (DB error)",
-                )
-            except Exception as e:
-                logger.warning(
-                    f"[HOLIDAY-REFRESH] MCX non-agri DST close_time sync "
-                    f"failed (non-fatal): {e}"
-                )
+            # MCX non-agri DST-tracking close time — `_sync_mcx_dst_close_time_coro()`
+            # (`backend/brokers/broker_apis.py`) exists and is unit-
+            # tested, but is STILL DELIBERATELY NOT WIRED HERE (2026-11-21,
+            # second pass). The ORIGINAL
+            # reason this was left unwired — a weekday/midnight-wrap bug
+            # in `exchange_clock.py`'s `sessions_with_snapshot_time_now()`
+            # / `is_market_active_for_prev_close()` — is now FIXED (see
+            # `_effective_gate_rows_for_date`, `_anchor_snapshot_datetime`,
+            # `_effective_snapshot_day_offset`, and
+            # `test_exchange_clock_mcx_winter_snapshot_gap.py`).
+            # `_sg_recover_mcx_snapshot()` (SessionGuard startup recovery)
+            # had the identical bug and is fixed too.
+            #
+            # Still blocking the re-wire: `_run_nav_compute_once()`
+            # (this same file) has the SAME bare-time-comparison bug
+            # against `_effective_snapshot_time()`'s return value
+            # (`now.time() < target`), confirmed empirically to fire a
+            # mid-session "EOD" NAV write at essentially any time of day
+            # once the MCX row holds the winter close_time. Fixing it
+            # safely requires also fixing its DATE ATTRIBUTION (its
+            # `today = now.date()` anchor is wrong for a fire that lands
+            # just after midnight — needs the same `session_date_of()`
+            # treatment SessionGuard already uses) and rewriting
+            # `test_nav_compute_trigger_time.py`'s fixtures, which stub
+            # `now` as a `SimpleNamespace` incompatible with the real
+            # datetime/timezone arithmetic that fix needs. NAV data is
+            # investor-facing; this was deliberately NOT attempted under
+            # time pressure in this pass. See CLAUDE.md "MCX DST-aware
+            # non-agri close time" for the full writeup and the
+            # required fix before this can be wired.
 
         _mirror_to_holidays_store(exch, got)
         added = sorted(d.isoformat() for d in (got - prev))
