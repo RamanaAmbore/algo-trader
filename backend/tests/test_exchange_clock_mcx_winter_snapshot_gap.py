@@ -22,9 +22,15 @@ is implemented and tested but DELIBERATELY NOT wired into
 `test_mcx_dst_close_time_sync.py`'s tripwire tests for that side.
 
 These tests exercise `exchange_clock`'s real cache + real functions
-directly (not a hand-simulated analogue) so a future fix attempt has a
-concrete, already-failing-without-the-fix regression test to work
-against.
+directly (not a hand-simulated analogue). They currently PASS, because
+they assert the BUG's present behavior (e.g. "the row is wrongly
+excluded on Saturday"). That is deliberate: a future fix to
+`exchange_clock.py`'s weekday/midnight-wrap handling should make
+`test_friday_23_55_close_derived_snapshot_never_matches_on_saturday`
+START FAILING — that failure is the signal to flip its assertion (the
+row should now correctly match) as part of that fix, and only then
+re-enable the wiring in `_task_holiday_refresh` per
+`test_mcx_dst_close_time_sync.py`'s tripwire tests.
 """
 
 from __future__ import annotations

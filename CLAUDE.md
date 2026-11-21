@@ -3767,12 +3767,23 @@ seasonal branch at all.
 - **Required before this can ship**: fix the weekday/midnight-wrap gap in
   `exchange_clock._effective_snapshot_time()` / `_row_matches_now()` / `sessions_with_snapshot_time_now()`
   (e.g. an explicit, non-derived `snapshot_time` for the MCX row, or a date-aware match that
-  anchors the weekday check to the TRADING day rather than the real clock moment) — THEN wire
-  `_sync_mcx_dst_close_time_coro()` into `_task_holiday_refresh` and flip the two tripwire tests in
-  `test_mcx_dst_close_time_sync.py` to assert the wiring exists, mirroring the now-superseded
-  wiring tests this entry originally shipped with. This is flagged as a separate follow-up task,
-  not attempted here, per "fix one issue at a time" and because `exchange_clock.py` is shared,
-  load-bearing infrastructure well beyond the scope of the options.py fix this entry started from.
+  anchors the weekday check to the TRADING day rather than the real clock moment) — THEN flip THREE
+  tests: the two wiring tripwires in `test_mcx_dst_close_time_sync.py`
+  (`test_sync_function_is_not_yet_wired_into_holiday_refresh`,
+  `test_background_flags_the_deferred_wiring_reason_in_comments`) to assert the wiring exists, AND
+  `test_exchange_clock_mcx_winter_snapshot_gap.py::test_friday_23_55_close_derived_snapshot_never_matches_on_saturday`
+  to assert the row NOW correctly matches (it currently passes by asserting the bug's present
+  broken behavior — see that file's own docstring) — THEN wire
+  `_sync_mcx_dst_close_time_coro()` into `_task_holiday_refresh`. This is flagged as a separate
+  follow-up task, not attempted here, per "fix one issue at a time" and because `exchange_clock.py`
+  is shared, load-bearing infrastructure well beyond the scope of the options.py fix this entry
+  started from.
+- **Deploy coupling.** `3c787204` (as committed) wires the sync into `_task_holiday_refresh` AND
+  depends on the resolver from the foreign commit `4f33e998` (see the attribution note below).
+  `15f1dd48` (this un-wire fix) must ship in the SAME range — shipping `3c787204` alone would push
+  the Friday-night snapshot-skip regression live. Both are unpushed on `workshop` as of this
+  writing, so a normal `/ddev` carries the full range together; this note exists in case that
+  changes.
 - **Known residual, not fixed.** `calendar_gate.py`'s own `_MCX_GATE_DEFAULT_CLOSE = time(23, 30)`
   fallback constant (used ONLY when the `exchange_schedule` DB read itself fails) is still a flat
   23:30 year-round. Left unchanged — it is a last-resort safety net, not the steady-state path.
