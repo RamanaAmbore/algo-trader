@@ -1574,3 +1574,123 @@ class TestEodWriteSelfSufficientPrevClose:
             oq_raw=0, avg_px=2500.0, qty_contracts=10, pos_close_ref=None, r={},
         )
         assert result_new == 2500.0
+
+
+# ---------------------------------------------------------------------------
+# book_changed WS broadcast — snapshot_daily_book() must fan out a
+# book_changed event whenever it actually commits ≥1 daily_book row, and
+# must NEVER do so on a genuine no-op call (no rows written at all, or
+# every row filtered by the bad-payload guard before any upsert ran).
+# ---------------------------------------------------------------------------
+
+class TestSnapshotDailyBookBroadcastsBookChanged:
+    async def _run(
+        self, *, holdings_rows=None, positions_rows=None,
+        trades_rows=None, funds_rows=None,
+        raw_holdings=None, raw_positions=None,
+    ):
+        """Drive snapshot_daily_book() for one fake account 'A' with the
+        given row-builder outputs, patching _upsert_rows to mirror the
+        real function's own contract (returns len(rows), no DB touched)
+        and capturing every backend.api.routes.ws.broadcast() call.
+        Returns the list of captured broadcast() message strings.
+        """
+        from unittest.mock import patch, MagicMock, AsyncMock
+        from contextlib import ExitStack
+        from backend.api.algo import daily_snapshot as ds
+
+        # Real Zerodha-shaped account code (not a bare "A") — this test
+        # asserts masking actually fires, and _scalar_mask only rewrites
+        # digit-bearing codes.
+        broker_a = MagicMock()
+        broker_a.account = "ZG0790"
+        conn_singleton = MagicMock()
+        conn_singleton.conn = {"ZG0790": MagicMock()}
+
+        raw = {
+            "holdings":  raw_holdings if raw_holdings is not None else [],
+            "positions": raw_positions if raw_positions is not None else [],
+            "trades": [], "funds": [],
+        }
+
+        captured_messages: list[str] = []
+
+        def _fake_broadcast(message):
+            captured_messages.append(message)
+
+        stack = ExitStack()
+        stack.enter_context(patch.object(ds, "_get_connections", return_value=conn_singleton))
+        stack.enter_context(patch("backend.brokers.registry.all_brokers", return_value=[broker_a]))
+        stack.enter_context(patch.object(ds, "_fetch_account_data", return_value=raw))
+        stack.enter_context(patch.object(
+            ds, "_holdings_rows", lambda *a, **k: holdings_rows if holdings_rows is not None else []))
+        stack.enter_context(patch.object(
+            ds, "_positions_rows", lambda *a, **k: positions_rows if positions_rows is not None else []))
+        stack.enter_context(patch.object(
+            ds, "_trades_rows", lambda *a, **k: trades_rows if trades_rows is not None else []))
+        stack.enter_context(patch.object(
+            ds, "_funds_rows", lambda *a, **k: funds_rows if funds_rows is not None else []))
+        # Mirror the real _upsert_rows contract (returns len(rows)) with
+        # no DB touched — see TestSnapshotDailyBookAccountsScoping for the
+        # same AsyncMock-over-_upsert_rows precedent in this file.
+        stack.enter_context(patch.object(ds, "_upsert_rows", AsyncMock(side_effect=lambda rows: len(rows))))
+        stack.enter_context(patch("backend.api.routes.ws.broadcast", side_effect=_fake_broadcast))
+        with stack:
+            # market_open=False — skips the orphan-prune step (a real DB
+            # call this test doesn't otherwise mock), same convention as
+            # TestSnapshotDailyBookAccountsScoping above.
+            await ds.snapshot_daily_book(
+                target_date=date(2026, 11, 20), market_open=False,
+            )
+        return captured_messages
+
+    @pytest.mark.asyncio
+    async def test_broadcasts_when_rows_actually_written(self):
+        """A real write (here: one holdings row) must fan out exactly one
+        book_changed event, shaped like the postback fan-out's own event
+        (_postback_broadcast_fanout in orders.py), with the masked
+        account and a reason distinct from a postback's terminal-status
+        vocabulary."""
+        messages = await self._run(
+            holdings_rows=[{"symbol": "INFY", "exchange": "NSE"}],
+            raw_holdings=[{"symbol": "INFY"}],
+        )
+        assert len(messages) == 1
+        payload = json.loads(messages[0])
+        assert payload["event"] == "book_changed"
+        assert payload["reason"] == "books_refreshed"
+        assert payload["account"]  # masked account code, non-empty
+        assert "ZG0790" not in payload["account"].split(","), (
+            "raw account code must never reach the broadcast unmasked"
+        )
+        assert "exchange" in payload and "tradingsymbol" in payload and "ts" in payload
+
+    @pytest.mark.asyncio
+    async def test_no_broadcast_when_every_row_builder_returns_empty(self):
+        """A genuine no-op call (every account flat — no holdings,
+        positions, trades or funds rows at all) must never broadcast."""
+        messages = await self._run()
+        assert messages == []
+
+    @pytest.mark.asyncio
+    async def test_no_broadcast_on_all_filtered_skip_write_guard(self):
+        """The _snap_all_filtered skip-write-guard branch (broker returned
+        real holdings data but every row was filtered by the bad-payload
+        guard) must never broadcast — _upsert_rows is never even reached
+        on this branch, so there is nothing to fan out."""
+        messages = await self._run(
+            raw_holdings=[{"symbol": "INFY", "average_price": 100}],
+            holdings_rows=[],  # every raw row filtered out
+        )
+        assert messages == []
+
+    @pytest.mark.asyncio
+    async def test_broadcasts_once_even_with_funds_only_write(self):
+        """A funds-only write (holdings/positions/trades all empty) still
+        counts as "wrote something" and must still broadcast."""
+        messages = await self._run(
+            funds_rows=[{"symbol": "__seg__"}],
+        )
+        assert len(messages) == 1
+        payload = json.loads(messages[0])
+        assert payload["event"] == "book_changed"

@@ -1555,6 +1555,13 @@ async def snapshot_daily_book(target_date: Optional[date] = None,
               "funds_rows": 0}
     errors: list[str] = []
     processed: list[str] = []
+    # Accounts for which this call actually wrote ≥1 real daily_book row
+    # (holdings/positions/trades/funds) — distinct from `processed`, which
+    # also includes an account that ran cleanly but had nothing written
+    # (the `_snap_all_filtered` skip-write-guard branch). Feeds the
+    # book_changed broadcast below: a call that wrote nothing must never
+    # fan out a "the book changed" event.
+    accounts_written: list[str] = []
 
     from backend.brokers.registry import all_brokers
     for broker in all_brokers():
@@ -1575,10 +1582,16 @@ async def snapshot_daily_book(target_date: Optional[date] = None,
                 processed.append(account)
                 continue
 
-            totals["holdings_rows"]  += await _upsert_rows(h_rows)
-            totals["positions_rows"] += await _upsert_rows(p_rows)
-            totals["trades_rows"]    += await _upsert_rows(t_rows)
-            totals["funds_rows"]     += await _upsert_rows(f_rows)
+            _n_h = await _upsert_rows(h_rows)
+            _n_p = await _upsert_rows(p_rows)
+            _n_t = await _upsert_rows(t_rows)
+            _n_f = await _upsert_rows(f_rows)
+            totals["holdings_rows"]  += _n_h
+            totals["positions_rows"] += _n_p
+            totals["trades_rows"]    += _n_t
+            totals["funds_rows"]     += _n_f
+            if (_n_h + _n_p + _n_t + _n_f) > 0:
+                accounts_written.append(account)
 
             await _prune_and_mark_positions(
                 account, target_date, raw, p_rows, market_open, now_ist,
@@ -1596,6 +1609,9 @@ async def snapshot_daily_book(target_date: Optional[date] = None,
             logger.error(msg)
             errors.append(msg)
 
+    if accounts_written:
+        _snap_broadcast_book_changed(accounts_written)
+
     return {
         "accounts":       processed,
         "holdings_rows":  totals["holdings_rows"],
@@ -1604,6 +1620,56 @@ async def snapshot_daily_book(target_date: Optional[date] = None,
         "funds_rows":     totals["funds_rows"],
         "errors":         errors,
     }
+
+
+def _snap_broadcast_book_changed(accounts: list[str]) -> None:
+    """Fan out a `book_changed` WS event after `snapshot_daily_book()`
+    has committed at least one real daily_book row for *accounts*.
+
+    `snapshot_daily_book()` is the SINGLE function every closed-hours
+    daily_book writer already calls through (the operator re-enable
+    refresh via `brokers.py:_snapshot_books_if_closed`, the 08:00 daily
+    reset, the 23:45 MCX settlement write, and the admin
+    `trigger_pnl_snapshot` route) — broadcasting here means every
+    current AND future caller gets this for free, with no per-caller
+    wiring ever needed again.
+
+    Mirrors the exact `book_changed` event shape
+    `backend/api/routes/orders.py:_postback_broadcast_fanout` already
+    emits on every terminal order status, which `frontend/src/lib/data/
+    bookChanged.js`'s existing singleton subscriber already listens for
+    — every current consumer (`PositionStrip.svelte`, `PerformancePage.
+    svelte`, `MarketPulse.svelte`, `portfolioStore.svelte.js`,
+    `orderFillDetector.js`) only reacts to the monotonic counter bump,
+    never branches on `reason`, so a new reason string here is safe.
+
+    `account` carries every masked account code that actually wrote a
+    row this call, comma-joined — a whole-books snapshot isn't scoped
+    to one symbol the way a postback is, so `exchange`/`tradingsymbol`
+    are left blank. `reason="books_refreshed"` is deliberately distinct
+    from a postback's own terminal-order-status reason vocabulary
+    (COMPLETE/CANCELLED/REJECTED/EXPIRED).
+
+    Best-effort only, same precedent as `_postback_broadcast_fanout`'s
+    own outer try/except: a broadcast failure must NEVER affect or roll
+    back the snapshot write, which has already committed by the time
+    this runs. `broadcast()` is imported lazily to match the existing
+    algo/background-layer → routes/ws.py calling convention (see
+    `background.py:_task_performance`, `orders_postback.py`).
+    """
+    try:
+        import time as _time
+        from backend.api.routes.ws import broadcast as _broadcast
+        from backend.shared.helpers.utils import mask_account
+        masked = ",".join(mask_account(a) for a in accounts if a)
+        _broadcast(json.dumps({
+            "event": "book_changed",
+            "account": masked, "exchange": "",
+            "tradingsymbol": "", "reason": "books_refreshed",
+            "ts": int(_time.time() * 1000),
+        }))
+    except Exception as e:
+        logger.warning(f"snapshot_daily_book: book_changed broadcast failed: {e}")
 
 
 # ---------------------------------------------------------------------------
