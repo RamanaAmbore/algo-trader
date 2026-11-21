@@ -3995,6 +3995,95 @@ async def _upsert_mcx_evening_closed_sessions_coro(dates: set) -> int:
         return 0
 
 
+async def _sync_mcx_dst_close_time_coro(today=None):
+    """Keep ``exchange_schedule``'s default MCX close_time correct across
+    MCX's twice-yearly US-DST-tracking revision for non-agri commodities
+    (bullion/energy/base metals) — 23:30 IST while US DST is active,
+    23:55 IST otherwise. See
+    ``backend.api.algo.derivatives.mcx_non_agri_close_time()`` for the
+    resolution rule, and CLAUDE.md's "MCX DST-aware non-agri close time"
+    entry for the incident this fixes (a genuinely still-open 23:37 IST
+    CRUDEOIL position treated as already past expiry during the 2026-11
+    winter window, because every reader of MCX's close time — this
+    table, directly or via ``exchange_clock._effective_gate_rows()`` —
+    carried a flat, year-round 23:30 hardcode).
+
+    Scope, deliberately narrow — mirrors
+    ``_upsert_mcx_evening_closed_sessions_coro``'s never-clobber-an-
+    operator-row discipline:
+      - Touches ONLY the recurring default row
+        (``gate='MCX' AND date IS NULL AND session_name='regular'``) —
+        never a date-specific override row (a genuine special session,
+        e.g. a one-off early close, is not this seasonal mechanism's
+        business).
+      - Touches ONLY ``source='system'`` rows — the exact same guard
+        ``exchange_clock.seed_and_warm()``'s own MCX migrations use — so
+        an operator who has hand-edited the default row's close_time
+        (any other ``source`` value) is never overwritten.
+      - A no-op write (``close_time`` already correct) updates nothing
+        and logs nothing — this runs once a day (piggybacked on the
+        05:30 IST holiday refresh, plus its restart catch-up path), so a
+        silent no-op on every ordinary day is the expected steady state.
+
+    Returns the resolved ``datetime.time`` on success (whether or not a
+    write actually happened), or ``None`` on any DB error — never raises;
+    the caller is a fire-and-forget step inside a broader daily refresh
+    and must not abort that refresh over this.
+    """
+    from datetime import time as dtime
+    from sqlalchemy import text as _text
+    from backend.api.algo.derivatives import mcx_non_agri_close_time
+    from backend.shared.helpers.date_time_utils import timestamp_indian
+
+    if today is None:
+        today = timestamp_indian().date()
+    resolved: dtime = mcx_non_agri_close_time(today)
+
+    try:
+        from backend.api.database import async_session
+    except Exception as e:
+        logger.warning(f"_sync_mcx_dst_close_time_coro: DB session import failed: {e}")
+        return None
+
+    try:
+        async with async_session() as s:
+            result = await s.execute(_text("""
+                UPDATE exchange_schedule
+                SET close_time = :close_time
+                WHERE gate = 'MCX'
+                  AND date IS NULL
+                  AND session_name = 'regular'
+                  AND source = 'system'
+                  AND close_time IS DISTINCT FROM :close_time
+            """), {"close_time": resolved})
+            await s.commit()
+        if result.rowcount:
+            logger.info(
+                "[MCX-DST-CLOSE] exchange_schedule default MCX close_time "
+                "synced to %s IST (today=%s)",
+                resolved.strftime("%H:%M"), today.isoformat(),
+            )
+            try:
+                # Force, not the public `refresh()` — that one skips the
+                # DB round-trip whenever the cache is still within its
+                # own 60s TTL (e.g. just warmed by this same 05:30
+                # wake-up's `load_today_open_time()` call), which would
+                # silently defer picking up the write just made above.
+                from backend.api.helpers import exchange_clock
+                async with exchange_clock._CACHE_LOCK:
+                    await exchange_clock._force_refresh()
+            except Exception as e:
+                logger.warning(
+                    f"[MCX-DST-CLOSE] close_time written but in-process "
+                    f"exchange_clock cache refresh failed (will self-heal "
+                    f"within its own TTL): {e}"
+                )
+        return resolved
+    except Exception as e:
+        logger.warning(f"[MCX-DST-CLOSE] sync failed (non-fatal, existing row untouched): {e}")
+        return None
+
+
 def _read_market_holidays_sync(exchange: str) -> set:
     """Synchronous read of `market_holidays` for `exchange` in the current
     IST year. Uses the sync-friendly connection path via `asyncio.run` on a

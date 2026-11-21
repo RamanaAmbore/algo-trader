@@ -51,6 +51,7 @@ from backend.api.algo.derivatives import (
     lookup_future_for_option,
     lookup_mcx_front_month_future,
     lookup_mcx_future_for_expiry,
+    mcx_non_agri_close_time,
     multileg_extremes,
     multileg_greeks,
     multileg_payoff_curve,
@@ -2665,7 +2666,11 @@ class OptionsController(Controller):
             expiry_hint=parsed["expiry"],
             option_symbol=sym)
         _is_mcx = is_mcx_underlying(parsed["root"])
-        _close_time = (23, 30) if _is_mcx else (15, 30)
+        # MCX revises its non-agri close twice a year tracking US DST —
+        # 23:30 IST in-DST, 23:55 IST otherwise. See mcx_non_agri_close_time()
+        # docstring + CLAUDE.md "MCX DST-aware non-agri close time".
+        _ct = mcx_non_agri_close_time(parsed["expiry"])
+        _close_time = (_ct.hour, _ct.minute) if _is_mcx else (15, 30)
         T_yrs = days_to_expiry(parsed["expiry"], close_time=_close_time) / 365.0
         # Pass avg_cost AND estimated-BS inputs as last-resort fallbacks
         # so a stale broker quote on an illiquid contract still produces
@@ -3171,7 +3176,17 @@ class OptionsController(Controller):
 
         # ── 3. Build resolved-leg list with σ calibrated per leg ──────
         _is_commodity = is_mcx_underlying(underlying)
-        _close_time = (23, 30) if _is_commodity else (15, 30)
+        # MCX revises its non-agri close twice a year tracking US DST —
+        # resolve against the nearest (min) leg expiry in the basket, the
+        # same anchor `eval_T` itself uses below. See
+        # mcx_non_agri_close_time() docstring + CLAUDE.md "MCX DST-aware
+        # non-agri close time".
+        if _is_commodity:
+            _nearest_expiry = date.fromisoformat(min(expiries))
+            _ct = mcx_non_agri_close_time(_nearest_expiry)
+            _close_time = (_ct.hour, _ct.minute)
+        else:
+            _close_time = (15, 30)
         eval_T, T_yrs_shared = _strategy_option_T_range(data, parsed_by_sym, _close_time)
 
         _leg_scale_ratios: dict[str, float] = {}

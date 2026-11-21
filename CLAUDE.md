@@ -3701,6 +3701,87 @@ spot basis flipped depending on which contract last ticked.
 - Invariant: frontend and backend agree on which MCX contract is front-month at every instant,
   except during the holiday residual above.
 
+**MCX DST-aware non-agri close time — a flat 23:30 hardcode was wrong for ~5 months of the year
+(2026-11-21; live operator testimony, a CRUDEOIL position genuinely still tradeable on MCX at
+23:37 IST on 2026-11-17)** — MCX revises its non-agri commodity (bullion/energy/base-metals —
+CRUDEOIL, NATURALGAS, GOLD, SILVER, COPPER, etc.) evening close twice a year, tracking the US
+daylight-saving calendar (confirmed via Zerodha/Upstox/ICICI Direct MCX trading-hours bulletins):
+**23:30 IST** while US DST is active (2nd Sunday of March → the Saturday before the 1st Sunday of
+November), **23:55 IST** otherwise (the US-winter window — roughly early November → mid-March).
+17 Nov 2026 is in the winter window, so the real close that day was 23:55, not 23:30. The codebase
+had hardcoded `(23, 30)` for every MCX DTE/Greeks/T-to-expiry computation, year-round, with no
+seasonal branch at all.
+- **Resolver.** `mcx_non_agri_close_time(date_)`
+  ([`derivatives.py`](backend/api/algo/derivatives.py), right after `days_to_expiry`) resolves via
+  the REAL US Eastern-time DST transition for `date_`'s year through `zoneinfo`
+  (`datetime(date_.year, date_.month, date_.day, 12, 0, tzinfo=ZoneInfo("America/New_York")).dst()`)
+  — never a hand-rolled "2nd Sunday of March / 1st Sunday of November" rule and never a
+  hardcoded year-specific date range, so it stays correct in every future year with zero manual
+  maintenance. The noon-ET anchor is a deliberate simplification: DST itself flips at 02:00 US
+  local time, nowhere near noon, so the only residual ambiguity is the IST↔ET offset
+  mis-anchoring the literal transition weekend by a day or two — immaterial given the transition
+  happens once a year and this only decides between a 23:30 and a 23:55 IST close.
+- **`options.py` fix.** Both of its hardcoded `(23, 30) if is_mcx/is_commodity else (15, 30)`
+  branches (`/analytics` and `_strategy_analytics_impl`) now call `mcx_non_agri_close_time()` —
+  anchored on `parsed["expiry"]` for `/analytics` (a single leg, one expiry already resolved), and
+  on `min(expiries)` (the nearest leg across the basket, the same anchor `eval_T` itself uses) for
+  `/strategy-analytics`. A multi-leg calendar spread whose legs straddle a DST transition month
+  still resolves one shared close time for the whole basket — a known, accepted simplification
+  (the existing architecture already shares one `_close_time` tuple across every leg in
+  `_strategy_build_legs`'s loop; per-leg resolution would be a larger restructure).
+- **`exchange_schedule` DB table — the deeper, shared root cause.** `resolve_mcx_gate_bounds()`
+  ([`calendar_gate.py`](backend/brokers/service/calendar_gate.py)) and
+  `exchange_clock._effective_gate_rows("MCX")` ([`exchange_clock.py`](backend/api/helpers/exchange_clock.py))
+  both read the SAME `exchange_schedule` row (`gate='MCX', date IS NULL, session_name='regular'`,
+  seeded `close_time='23:30'`) that `_ds_tick_mcx_stop()` (the 23:31 ticker-stop trigger,
+  `backend/api/background.py`) ALSO reads — confirmed it carries no independent hardcode of its
+  own. Fixing the DB row therefore fixes the ticker quiet-window AND the 23:45 MCX
+  settlement-snapshot trigger for free; neither needed its own code change.
+- **Self-maintaining daily sync — shipped, not deferred.** `_sync_mcx_dst_close_time_coro()`
+  ([`broker_apis.py`](backend/brokers/broker_apis.py), next to
+  `_upsert_mcx_evening_closed_sessions_coro`) resolves today's correct close time and UPDATEs the
+  `exchange_schedule` default MCX row ONLY when it differs, scoped to
+  `gate='MCX' AND date IS NULL AND session_name='regular' AND source='system'` — the exact same
+  guard `exchange_clock.seed_and_warm()`'s own MCX migrations use, so an operator-edited row (any
+  other `source` value) or a genuine date-specific override row (a real special session) is never
+  touched. Forces an immediate `exchange_clock` in-process cache reload after a real write (via
+  `_force_refresh()` under its lock, not the public `refresh()`, which would skip the reload
+  entirely if the cache was warmed moments earlier by the same wake-up's own
+  `load_today_open_time()` call). Never raises — a DB or cache-refresh failure logs and returns
+  `None`/leaves the existing row untouched, so it can never abort the broader daily refresh.
+  Piggybacked onto the EXISTING `if exch == "MCX":` block inside `_task_holiday_refresh()`
+  (`backend/api/background.py`) — the same 05:30 IST daily wake-up (plus its restart catch-up path)
+  that already syncs the MCX evening-holiday special sessions — deliberately not a new/separate
+  cron.
+- **Live DB rows are not patched by this change directly.** No manual SQL was run against prod/dev.
+  The self-maintaining job above corrects the stored `close_time` automatically on the next 05:30
+  IST wake-up (or immediately on the next cold-start restart catch-up, if the day's run hasn't
+  already fired) after this code deploys — expected self-heal window is at most one day.
+- **Known residual, not fixed.** `calendar_gate.py`'s own `_MCX_GATE_DEFAULT_CLOSE = time(23, 30)`
+  fallback constant (used ONLY when the `exchange_schedule` DB read itself fails) is still a flat
+  23:30 year-round — a DB outage during the winter window would fall back to the wrong boundary for
+  that one failure. Left unchanged: it is a last-resort safety net, not the steady-state path, and
+  making it DST-aware would need an async `zoneinfo` call inside a function documented as
+  deliberately synchronous/fast on the failure path.
+- **Known, separate, NOT fixed — found during the sweep, out of scope for this change.**
+  `GET /api/options/chain-snapshot`'s `days_to_expiry(expiry_d)` calls (both the early-return branch
+  and the main path) never pass `close_time=` at all, defaulting to the NFO/equity 15:30 close even
+  when `is_mcx_underlying(und)` is true (the SAME function already branches Greeks to
+  `greeks_76`/Black-76 for that case). This is a different, more severe, NON-seasonal defect — it is
+  wrong by 8+ hours every day of the year for an MCX chain snapshot, not just during one DST window
+  — and is a distinct bug from this entry's DST fix. Flagged for its own separate fix, per this
+  project's "fix one issue at a time" convention.
+- Tests: `test_mcx_non_agri_close_time.py` (resolver — winter/DST dates, the transition boundary
+  computed programmatically via the same zoneinfo approach rather than hardcoded, and the exact
+  23:37 IST 2026-11-17 reported scenario), `test_options_mcx_dst_close_time_wiring.py`
+  (source-grep for the removed hardcode + both call sites' wiring, plus a behavioral
+  `_strategy_option_T_range`/`_strategy_build_legs` check that T_years stays positive at the
+  reported instant), `test_mcx_dst_close_time_sync.py` (the DB sync coroutine's scoping,
+  no-op/failure paths, and the `background.py` piggyback wiring).
+- Invariant: MCX's non-agri close time is resolved once, via `mcx_non_agri_close_time()`, from the
+  real US DST calendar — never a flat hardcoded value, and never a second, independently-maintained
+  copy of the DST rule.
+
 **F&O order qty convention** — API now accepts LOTS as input for instruments with 
 `lot_size > 1`. `backend/api/routes/orders_place.py:_ticket_validate_input` converts 
 lots → contracts (`contracts = lots × lot_size`) at the request boundary. G2 (5-lot cap, 
@@ -4933,6 +5014,8 @@ now caches + returns a `stale` flag; `/api/nav/by-account` masks `errors` for no
 | Chase Kill / CANCEL_FAILED retry | `backend/api/routes/orders.py:kill_chase` + `chase.py:mark_order_killed` |
 | Alert identity line + email subject ("Alert:" label) | `backend/shared/helpers/alert_utils.py:dispatch_payload` (merged `alert_line`) + `_email_alert_body` |
 | MCX real per-contract expiry (live freeze filter) | `expiry_freeze.py:_mcx_future_real_expiry` |
+| MCX DST-aware non-agri close time (23:30 in-DST / 23:55 winter) | `backend/api/algo/derivatives.py:mcx_non_agri_close_time` + `backend/brokers/broker_apis.py:_sync_mcx_dst_close_time_coro` (daily `exchange_schedule` sync, piggybacked in `background.py:_task_holiday_refresh`) |
+| Options expiry-curve cache (leg-curve cache, bypassed at eval_T<=0) | `backend/api/routes/options.py:_strategy_compute_curves` |
 | generic_notice body (plain text, no origin line — see "Alert message format") | `event_agents.py:_render_deploy_sync` (pass-through) + producer `msg` in `background.py` |
 | Alert channel set for a seeded agent | `backend/api/algo/alert_routing.py` (`_PER_SLUG_OVERRIDES`, `_TIER_DEFAULTS`, `resolve_channels`) — not the agent's spec |
 | Alert identity header label ("Agent:" vs "Source: ... triggered ...") | `backend/shared/helpers/alert_utils.py:resolve_source` (SSOT) → `format_notification_header` / `dispatch_payload`; a producer sets `source_type="process"` + `source_name` on its log record (see "Alert identity SSOT" above) |

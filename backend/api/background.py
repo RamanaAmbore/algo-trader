@@ -5365,6 +5365,27 @@ async def _task_holiday_refresh() -> None:
                     f"ingestion failed (non-fatal): {e}"
                 )
 
+            # MCX non-agri DST-tracking close time (2026-11-21 fix) — MCX
+            # revises its bullion/energy/base-metals evening close twice
+            # a year tracking US DST (23:30 in-DST, 23:55 winter). Keeps
+            # exchange_schedule's default MCX row in sync so every
+            # reader (this table directly, exchange_clock, DTE/Greeks in
+            # options.py, the ticker quiet-window) agrees. See CLAUDE.md
+            # "MCX DST-aware non-agri close time". Piggybacked on this
+            # same daily/restart-catch-up wake-up — never its own cron.
+            try:
+                from backend.brokers.broker_apis import _sync_mcx_dst_close_time_coro
+                _resolved_close = await _sync_mcx_dst_close_time_coro()
+                logger.debug(
+                    "[HOLIDAY-REFRESH] MCX non-agri DST close_time check: %s IST",
+                    _resolved_close.strftime("%H:%M") if _resolved_close else "unresolved (DB error)",
+                )
+            except Exception as e:
+                logger.warning(
+                    f"[HOLIDAY-REFRESH] MCX non-agri DST close_time sync "
+                    f"failed (non-fatal): {e}"
+                )
+
         _mirror_to_holidays_store(exch, got)
         added = sorted(d.isoformat() for d in (got - prev))
         removed = sorted(d.isoformat() for d in (prev - got))
