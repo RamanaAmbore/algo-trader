@@ -3846,11 +3846,18 @@ def _ae_segment_flags(seg_name: str, seg_cfg: dict, now) -> dict:
     the top-level context. Extracted from _build_context to reduce CC there."""
     from datetime import time as _dtime
     from backend.brokers.broker_apis import fetch_holidays, fetch_special_sessions
-    from backend.shared.helpers.date_time_utils import is_market_open
+    from backend.shared.helpers.date_time_utils import is_market_open, resolve_dst_aware_sessions
 
     prefix = "nse" if seg_name == "equity" else "mcx"
     holiday_exchange = seg_cfg.get("holiday_exchange", "NSE")
-    sessions = seg_cfg.get("sessions") or None
+    # DST-aware (2026-11-21 fix) — resolves MCX's real non-agri close
+    # time (23:30 in-DST, 23:55 winter) instead of the static YAML
+    # value, so this function — the REAL gate behind ticket/basket/
+    # chase/template-attach order placement, per the "Order-path gate
+    # status" note elsewhere in this file — agrees with the
+    # exchange_schedule DB row every other reader already does. See
+    # CLAUDE.md "MCX DST-aware non-agri close time".
+    sessions = resolve_dst_aware_sessions(seg_cfg, now.date())
     evening_open = bool(seg_cfg.get("evening_open_on_holidays", False))
 
     h, m = map(int, seg_cfg.get("hours_start", "09:15").split(":"))

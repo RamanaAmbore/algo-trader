@@ -104,8 +104,11 @@ def test_mcx_open_one_minute_after_the_configured_open_time():
     assert flags["mcx_open"] is True, flags
     assert flags["minutes_since_mcx_open"] == 1
     assert flags["minutes_until_mcx_open"] == 0
-    # 23:30 close - 09:01 = 869 minutes.
-    assert flags["minutes_until_mcx_close"] == 869, flags
+    # _PLAIN_WEEKDAY (2026-11-05) is in the US winter (non-DST) window,
+    # so MCX's real non-agri close that day is 23:55 (DST-aware, see
+    # mcx_non_agri_close_time() + CLAUDE.md "MCX DST-aware non-agri
+    # close time"), not the old flat 23:30. 23:55 close - 09:01 = 894 min.
+    assert flags["minutes_until_mcx_close"] == 894, flags
 
 
 def test_mcx_minutes_until_close_counts_down_while_open():
@@ -113,7 +116,9 @@ def test_mcx_minutes_until_close_counts_down_while_open():
 
     flags = _ae_segment_flags("commodity", _commodity_seg(), _at(23, 0))
     assert flags["mcx_open"] is True
-    assert flags["minutes_until_mcx_close"] == 30, flags
+    # Real winter close 23:55 - 23:00 = 55 min (was 30 min against the
+    # old flat 23:30 close).
+    assert flags["minutes_until_mcx_close"] == 55, flags
 
 
 def test_mcx_minutes_until_open_and_close_are_none_after_todays_close():
@@ -122,7 +127,9 @@ def test_mcx_minutes_until_open_and_close_are_none_after_todays_close():
     number or a coerced 0 masquerading as "closed forever"."""
     from backend.api.algo.agent_engine import _ae_segment_flags
 
-    flags = _ae_segment_flags("commodity", _commodity_seg(), _at(23, 45))
+    # 23:45 is now INSIDE the session (real winter close is 23:55, not
+    # the old flat 23:30) — check just after the real close instead.
+    flags = _ae_segment_flags("commodity", _commodity_seg(), _at(23, 56))
     assert flags["mcx_open"] is False
     assert flags["minutes_until_mcx_open"] is None, flags
     assert flags["minutes_until_mcx_close"] is None, flags
@@ -244,7 +251,9 @@ class TestCycleEvaluateAgentThreadsSegmentFlags:
         from backend.api.algo import agent_engine as ae
         import pandas as pd
 
-        now = _at(23, 45)  # MCX closed on this plain weekday fixture
+        # Real winter close for this fixture date is 23:55 (DST-aware,
+        # not the old flat 23:30) — use a time genuinely after it.
+        now = _at(23, 56)  # MCX closed on this plain weekday fixture
         flags = ae._ae_segment_flags("commodity", _commodity_seg(), now)
         context = {
             "now": now,

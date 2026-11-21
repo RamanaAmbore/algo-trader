@@ -197,6 +197,55 @@ def _check_special_sessions(special_sessions, today, t) -> "bool | None":
     return any(s["start"] <= t < s["end"] for s in today_overrides)
 
 
+def resolve_dst_aware_sessions(seg_cfg: dict, today) -> "list | None":
+    """Return `seg_cfg['sessions']` with the commodity (MCX) segment's
+    evening close replaced by the REAL DST-resolved non-agri close time
+    for `today`, so every caller of `is_market_open()` for the MCX
+    segment agrees with the `exchange_schedule` DB row's own DST-aware
+    value — see `backend.api.algo.derivatives.mcx_non_agri_close_time()`
+    and CLAUDE.md's "MCX DST-aware non-agri close time" entry for the
+    full incident writeup.
+
+    This is the SSOT every caller of the YAML `market_segments`
+    config must route through before passing `sessions=` to
+    `is_market_open()` — `_segment_is_open()` (this module) and
+    `_ae_segment_flags()` (`agent_engine.py`, the real gate behind
+    ticket/basket/chase/template-attach order placement) both call
+    this instead of reading `seg_cfg.get("sessions")` raw, so the two
+    mechanisms (YAML session bounds vs. the DB-driven
+    `exchange_schedule` row) can never silently disagree about MCX's
+    real close time again.
+
+    Returns the raw `sessions` list, completely unresolved, for every
+    OTHER segment (e.g. equity/NSE) — MCX's seasonal close-time rule
+    applies to MCX alone. Fails safe (returns the raw list unchanged)
+    on any resolver error, so a transient import/zoneinfo failure can
+    never make this function raise or silently close a genuinely open
+    market.
+    """
+    sessions = (seg_cfg or {}).get("sessions") or None
+    if not sessions:
+        return sessions
+    if ((seg_cfg or {}).get("holiday_exchange") or "").upper() != "MCX":
+        return sessions
+    try:
+        from backend.api.algo.derivatives import mcx_non_agri_close_time
+        close_t = mcx_non_agri_close_time(today)
+    except Exception as e:
+        logger.warning(
+            "resolve_dst_aware_sessions: MCX close-time resolution failed, "
+            "falling back to the static YAML value: %s", e,
+        )
+        return sessions
+    # Replace the LAST configured session's end time (the evening
+    # close) — the only entry this seasonal rule ever applies to. An
+    # earlier entry (if a segment ever configures more than one
+    # session window) keeps its own value untouched.
+    resolved = [dict(w) for w in sessions]
+    resolved[-1]["end"] = f"{close_t.hour:02d}:{close_t.minute:02d}"
+    return resolved
+
+
 def _parse_session_windows(
     sessions, market_start: dtime, market_end: dtime
 ) -> "list[tuple[dtime, dtime]]":
@@ -307,9 +356,15 @@ def _segment_is_open(seg_cfg: dict, now) -> bool:
     Fetches holidays and special sessions for the segment's exchange,
     then delegates to is_market_open. Returns False on any error so the
     caller's loop can continue to the next segment.
+
+    `sessions` is resolved via `resolve_dst_aware_sessions()` (not read
+    raw from `seg_cfg`) so MCX's evening close reflects the real
+    US-DST-tracking non-agri close time (23:30 in-DST, 23:55 winter)
+    rather than the static YAML value — see that function's own
+    docstring and CLAUDE.md "MCX DST-aware non-agri close time".
     """
     from backend.brokers.broker_apis import fetch_holidays
-    sessions = (seg_cfg or {}).get("sessions") or None
+    sessions = resolve_dst_aware_sessions(seg_cfg, now.date())
     evening  = bool((seg_cfg or {}).get("evening_open_on_holidays", False))
     exch     = (seg_cfg or {}).get("holiday_exchange", "NSE")
     h_s, m_s = map(int, (seg_cfg or {}).get("hours_start", "09:15").split(":"))
