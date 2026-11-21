@@ -1,5 +1,5 @@
 """
-test_ticker_window_mcx_dst_aware.py — two residual MCX-DST-season
+test_ticker_window_mcx_dst_aware.py — four residual MCX-DST-season
 hardcodes found inside `backend/api/background.py` after the base
 `mcx_non_agri_close_time()` fix shipped (see CLAUDE.md "MCX DST-aware
 non-agri close time"):
@@ -19,12 +19,25 @@ non-agri close time"):
      disconnect/reconnect mechanism; that is `_task_ticker_watchdog`'s
      job, unaffected by either hardcode.
 
-Both now resolve the window's upper bound via the new shared
-`_ticker_window_end(today)` helper, which prefers the DB-backed
-`exchange_schedule` MCX row's own `close_time` (the SAME source
-`_ds_tick_mcx_stop()` already uses to decide when to actually tear the
-WebSocket down) and falls back to the computed `mcx_non_agri_close_time()`
-when the DB cache is empty/unsynced.
+  3. `_sg_recover_ticker_connect()` — SessionGuard's cold-start catch-up
+     (a server restart after 08:00 on a calendar-confirmed-open day
+     connects the KiteTicker immediately rather than waiting for the
+     next in-window 30s tick) carried the identical hardcoded 23:30
+     upper bound. A restart landing in [23:30, 23:55) IST during the
+     winter window skipped this backstop 25 minutes early.
+
+  4. `_snapshot_stop_ticker()`'s recorded idle `reason` string was a
+     static literal — "ticker stopped for the night at 23:31 IST" —
+     regardless of season. COSMETIC ONLY: the real stop TRIGGER
+     (`_ds_tick_mcx_stop()`) was already DST-aware; only the displayed
+     claim about when it fired was wrong during the winter window.
+
+All four now resolve (or, for #4, describe) the window's upper bound via
+the shared `_ticker_window_end(today)` helper, which prefers the
+DB-backed `exchange_schedule` MCX row's own `close_time` (the SAME
+source `_ds_tick_mcx_stop()` already uses to decide when to actually
+tear the WebSocket down) and falls back to the computed
+`mcx_non_agri_close_time()` when the DB cache is empty/unsynced.
 
 Reference dates match the convention established in
 `test_mcx_non_agri_close_time.py` and `test_order_gate_mcx_dst_aware.py`.
@@ -34,7 +47,7 @@ from __future__ import annotations
 
 import types
 from datetime import date, datetime, time as dtime
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -260,3 +273,126 @@ async def test_restart_tick_dst_season_2329_still_connects_unchanged():
 
     m_restart.assert_called_once()
     assert bg._ticker_restart_done_global == _DST_DATE
+
+
+# ── 4. _sg_recover_ticker_connect — SessionGuard cold-start catch-up ───
+
+
+async def test_session_guard_catchup_connects_at_2340_during_winter_window():
+    """A server restart at 23:40 IST on a winter-window date (real MCX
+    close 23:55) must still attempt the cold-start catch-up connect —
+    before this fix the hardcoded 23:30 upper bound refused it 25
+    minutes early."""
+    import backend.api.background as bg
+
+    now_t = dtime(23, 40)
+
+    with patch("backend.api.background._ticker_calendar_verdict", new_callable=AsyncMock, return_value=bg._CAL_OPEN), \
+         patch("backend.api.background._snapshot_restart_ticker") as m_restart:
+        await bg._sg_recover_ticker_connect(now_t, _WINTER_DATE)
+
+    m_restart.assert_called_once()
+    assert bg._ticker_restart_done_global == _WINTER_DATE
+
+
+async def test_session_guard_catchup_noop_at_2356_past_the_real_winter_close():
+    """Past the real 23:55 winter close, the catch-up must still be a
+    no-op — the fix widens the window, it does not remove the cap."""
+    import backend.api.background as bg
+
+    now_t = dtime(23, 56)
+
+    with patch(
+        "backend.api.background._ticker_calendar_verdict",
+        new_callable=AsyncMock,
+        side_effect=AssertionError("must not be called outside the real window"),
+    ):
+        await bg._sg_recover_ticker_connect(now_t, _WINTER_DATE)
+
+    assert bg._ticker_restart_done_global is None
+
+
+async def test_session_guard_catchup_dst_season_2340_still_noop_unchanged():
+    """DST-season contrast case — at 23:40, already past the real 23:30
+    close, the catch-up must stay a no-op exactly as before this fix."""
+    import backend.api.background as bg
+
+    now_t = dtime(23, 40)
+
+    with patch(
+        "backend.api.background._ticker_calendar_verdict",
+        new_callable=AsyncMock,
+        side_effect=AssertionError("must not be called outside the DST-season window"),
+    ):
+        await bg._sg_recover_ticker_connect(now_t, _DST_DATE)
+
+    assert bg._ticker_restart_done_global is None
+
+
+async def test_session_guard_catchup_dst_season_2329_still_connects_unchanged():
+    """One minute before the unchanged DST-season boundary — still
+    connects, exactly as before this fix."""
+    import backend.api.background as bg
+
+    now_t = dtime(23, 29)
+
+    with patch("backend.api.background._ticker_calendar_verdict", new_callable=AsyncMock, return_value=bg._CAL_OPEN), \
+         patch("backend.api.background._snapshot_restart_ticker") as m_restart:
+        await bg._sg_recover_ticker_connect(now_t, _DST_DATE)
+
+    m_restart.assert_called_once()
+    assert bg._ticker_restart_done_global == _DST_DATE
+
+
+# ── 5. _snapshot_stop_ticker — the recorded idle `reason` string ───────
+
+
+def test_stop_ticker_reason_reflects_real_winter_close_plus_one_minute():
+    """The recorded reason string must say 23:56 (real 23:55 winter
+    close + 1 min) during the winter window, not the stale "23:31 IST"
+    literal."""
+    import backend.api.background as bg
+
+    frozen_now = datetime(_WINTER_DATE.year, _WINTER_DATE.month, _WINTER_DATE.day, 23, 56, tzinfo=_IST)
+    with patch("backend.api.background.timestamp_indian", return_value=frozen_now), \
+         patch("backend.brokers.kite_ticker.get_ticker", return_value=MagicMock()), \
+         patch("backend.api.background.is_cutover_on", return_value=False):
+        bg._snapshot_stop_ticker()
+
+    assert bg._TICKER_CALENDAR_STATE["reason"] == "ticker stopped for the night at 23:56 IST"
+
+
+def test_stop_ticker_reason_dst_season_stays_byte_identical_to_pre_fix():
+    """During the DST window the resolved stop time is still 23:31 —
+    the reason string must be byte-identical to the pre-fix literal, so
+    this is a genuinely additive fix for most of the year."""
+    import backend.api.background as bg
+
+    frozen_now = datetime(_DST_DATE.year, _DST_DATE.month, _DST_DATE.day, 23, 31, tzinfo=_IST)
+    with patch("backend.api.background.timestamp_indian", return_value=frozen_now), \
+         patch("backend.brokers.kite_ticker.get_ticker", return_value=MagicMock()), \
+         patch("backend.api.background.is_cutover_on", return_value=False):
+        bg._snapshot_stop_ticker()
+
+    assert bg._TICKER_CALENDAR_STATE["reason"] == "ticker stopped for the night at 23:31 IST"
+
+
+def test_stop_ticker_reason_resolver_failure_falls_back_to_pre_fix_literal():
+    """A resolver exception while computing the reason text must never
+    block the real idle mark — degrades to the pre-fix literal text."""
+    import backend.api.background as bg
+
+    frozen_now = datetime(_WINTER_DATE.year, _WINTER_DATE.month, _WINTER_DATE.day, 23, 56, tzinfo=_IST)
+    with patch("backend.api.background.timestamp_indian", return_value=frozen_now), \
+         patch("backend.brokers.kite_ticker.get_ticker", return_value=MagicMock()), \
+         patch("backend.api.background.is_cutover_on", return_value=False), \
+         patch(
+             "backend.api.background._ticker_window_end",
+             side_effect=RuntimeError("boom"),
+         ):
+        bg._snapshot_stop_ticker()
+
+    assert bg._TICKER_CALENDAR_STATE["reason"] == "ticker stopped for the night at 23:31 IST"
+    # The real idle mark must still land despite the resolver failure.
+    assert bg._TICKER_CALENDAR_STATE["idle"] is True
+    assert bg._TICKER_CALENDAR_STATE["connected"] is False

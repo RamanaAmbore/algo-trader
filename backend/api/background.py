@@ -3494,7 +3494,8 @@ async def _snapshot_unsub_nonmcx() -> None:
 def _snapshot_stop_ticker() -> None:
     """Stop the KiteTicker after MCX settlement.
 
-    Fires at MCX close + 1 min (default 23:31 IST) via
+    Fires at MCX close + 1 min (default 23:31 IST, 23:56 IST during the
+    US-winter non-agri window — see `_ticker_window_end()`) via
     ``_ds_tick_mcx_stop``; SessionGuard's ``_sg_recover_mcx_close`` can
     also fire it post-midnight in [00:00, 02:00) after a restart that
     missed the original window.
@@ -3519,11 +3520,19 @@ def _snapshot_stop_ticker() -> None:
     this same function), so the watchdog was skipping real checks
     against a connection that no longer exists.
     `get_ticker_calendar_status()` (the `/api/admin/broker-health`
-    badge) was never affected by this gap — its own [08:00, 23:30)
+    badge) was never affected by this gap — its own [08:00, window_end)
     clock-window check already reports idle regardless of this field's
     staleness; only `ticker_connected_today()`'s bare date-equality
     check had it. Uses the SAME `_ticker_calendar_mark()` idiom every
     other writer of this state uses — no parallel mechanism.
+
+    2026-11 fix — the recorded `reason` string used to hardcode the
+    literal text "23:31 IST" regardless of season. It now reflects the
+    REAL resolved stop time for `today` (`_ticker_window_end(today) + 1
+    min`, the same arithmetic `_ds_tick_mcx_stop()` itself uses to
+    decide WHEN to call this function) — cosmetic only, since the real
+    stop trigger was already DST-aware; this fixes only the displayed
+    claim about it.
     """
     try:
         from backend.brokers.kite_ticker import get_ticker
@@ -3539,9 +3548,19 @@ def _snapshot_stop_ticker() -> None:
         logger.warning(f"Background: ticker stop failed: {_stop_exc}")
     finally:
         try:
+            today = timestamp_indian().date()
+            try:
+                stop_at = (
+                    datetime.combine(today, _ticker_window_end(today))
+                    + timedelta(minutes=1)
+                ).time()
+                reason = f"ticker stopped for the night at {stop_at:%H:%M} IST"
+            except Exception:
+                # Never let a resolver hiccup block the real mark below —
+                # degrade to the pre-fix literal text.
+                reason = "ticker stopped for the night at 23:31 IST"
             _ticker_calendar_mark(
-                timestamp_indian().date(), connected=False, idle=True,
-                reason="ticker stopped for the night at 23:31 IST",
+                today, connected=False, idle=True, reason=reason,
             )
         except Exception as _mark_exc:
             logger.warning(
@@ -3907,8 +3926,14 @@ async def _sg_recover_ticker_connect(now_t: dtime, today: date) -> None:
     `_ticker_restart_done_global` is checked (cheap, no DB) before any
     of this runs, so a successful `_start_kite_ticker()` connect makes
     this step an instant no-op.
+
+    Window upper bound is `_ticker_window_end(today)` (2026-11 DST fix)
+    — 23:30 for most of the year, 23:55 during the US-winter non-agri
+    window — same resolver `get_ticker_calendar_status()` and
+    `_ds_tick_ticker_restart()` already use, so this backstop never
+    disagrees with either of them about when the connect window ends.
     """
-    if not (dtime(8, 0) <= now_t < dtime(23, 30)):
+    if not (dtime(8, 0) <= now_t < _ticker_window_end(today)):
         return
     if _ticker_restart_done_global == today:
         return

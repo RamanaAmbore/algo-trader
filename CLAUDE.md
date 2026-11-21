@@ -4000,22 +4000,33 @@ seasonal branch at all.
     still idle at 23:40), and a byte-identical-reason-string regression guard; the restart tick
     actually attempting a connect at 23:40 IST winter, correctly staying a no-op past 23:55, and two
     DST-season contrast cases proving the unchanged-season boundary behaviour).
-  - **Newly found while fixing the two above, flagged, NOT fixed** — `_sg_recover_ticker_connect()`
-    (`background.py`, ~L3896) carries the identical `dtime(8, 0) <= now_t < dtime(23, 30)` literal
-    bound. This is SessionGuard's cold-start catch-up for a server restart after 08:00 — its
-    practical exposure is narrower than the two fixed above (a restart landing specifically inside
-    the 23:30–23:55 winter window would skip this one backstop; `_ds_tick_ticker_restart`'s own
-    30s-ticking closed-day recheck loop, now fixed, covers the same connect attempt within one tick
-    either way), but it is the same hardcode class and was left untouched here per this project's
-    "fix one issue at a time" / Scope Discipline convention — it was not named in the originating
-    task. Also flagged, purely cosmetic: `_snapshot_stop_ticker()`'s own `reason="ticker stopped
-    for the night at 23:31 IST"` string is a static literal regardless of the real resolved stop
-    time — the actual trigger (`_ds_tick_mcx_stop`) already fires at the correct DB-resolved
-    close+1min in both seasons, so this is display-text-only, not a behavioural defect. Line ~135's
+  - **Two more, found while fixing the two above — FIXED in a same-day follow-up pass, once the
+    operator asked for them too.** `_sg_recover_ticker_connect()` (`background.py`, ~L3896) carried
+    the identical `dtime(8, 0) <= now_t < dtime(23, 30)` literal bound. This is SessionGuard's
+    cold-start catch-up for a server restart after 08:00 — its practical exposure was narrower than
+    the two fixed above (a restart landing specifically inside the 23:30–23:55 winter window would
+    have skipped this one backstop; `_ds_tick_ticker_restart`'s own 30s-ticking closed-day recheck
+    loop, already fixed, covers the same connect attempt within one tick either way), but it is the
+    same hardcode class. Routed through the SAME `_ticker_window_end(today)` helper, no new
+    mechanism — the literal is replaced in place and nothing else about the function changed.
+    `_snapshot_stop_ticker()`'s own `reason="ticker stopped for the night at 23:31 IST"` string was
+    a static literal regardless of the real resolved stop time — the actual trigger
+    (`_ds_tick_mcx_stop`) already fired at the correct DB-resolved close+1min in both seasons, so
+    this was display-text-only, never a behavioural defect. It now computes
+    `_ticker_window_end(today) + 1 minute` and formats the reason from that (e.g. "...at 23:56 IST"
+    in winter), with its own inner fail-safe degrading to the pre-fix literal text on any resolver
+    exception — the real idle mark (`connected`/`idle`/`date`) is unconditionally written either
+    way, so a resolver hiccup can only ever cost the display text, never the mark itself. Line ~135's
     `'hours_end': dtime(23, 30)` literal (inside the cold-start fallback segment list, used only
     before `exchange_clock._CACHE` is ever populated) was read and confirmed to be an intentional
     static mirror of the `exchange_schedule` seed row's own default — not a residual, since the real
-    DST-resolved value only ever matters once the cache is warm.
+    DST-resolved value only ever matters once the cache is warm; left unchanged.
+    Tests: `test_ticker_window_mcx_dst_aware.py` (7 more tests, 20 total in the file) — the
+    SessionGuard catch-up connecting at the operator's own 23:40 IST winter instant, correctly
+    staying a no-op past the real 23:55 close, and the two unchanged DST-season contrast cases;
+    the stop-ticker reason string reading "23:56 IST" in winter, staying byte-identical to the
+    pre-fix "23:31 IST" literal during DST season, and falling back to that same literal on a
+    forced resolver exception while still landing the real idle mark.
   - **Frontend residual, confirmed, NOT fixed (outside this agent's domain)** —
     `frontend/src/lib/marketHours.js`'s `MCX_CLOSE_MIN = 23 * 60 + 30` is a static, non-DST-aware
     constant. During the winter window, the ticket UI would show a "Market closed" warning for an
@@ -4047,8 +4058,8 @@ seasonal branch at all.
   `test_chain_snapshot_mcx_close_time.py` (the chain-snapshot fix), `test_order_gate_mcx_dst_aware.py`
   (the order-placement gate fix), `test_expiry_mcx_dst_residual.py` (the `expiry.py` Greeks/theta
   and `_parse_segment_close_times` fixes), `test_ticker_window_mcx_dst_aware.py` (the
-  `_ticker_window_end` shared helper, the broker-health idle badge, and the first-connect
-  restart tick).
+  `_ticker_window_end` shared helper, the broker-health idle badge, the first-connect restart
+  tick, SessionGuard's cold-start catch-up, and the stop-ticker reason string — 20 tests total).
 - **Deploy coupling, full history of this range.** `4d24d758` (chain-snapshot fix) was always safe
   and independently shippable. `b30c96f4` was NOT independently shippable on its own — as committed
   it both RE-WIRED the DB sync before `_run_nav_compute_once` was fixed, and carried a
@@ -4111,15 +4122,15 @@ seasonal branch at all.
   within the YAML-driven order-placement gate (`_segment_is_open()`/`_ae_segment_flags()`, via
   `resolve_dst_aware_sessions()`), within `expiry.py`'s `_compute_theta()` and
   `_parse_segment_close_times()`, and within `background.py`'s ticker connectivity window
-  (`_ticker_window_end()`, feeding `get_ticker_calendar_status()` and `_ds_tick_ticker_restart()`),
+  (`_ticker_window_end()`, feeding `get_ticker_calendar_status()`, `_ds_tick_ticker_restart()` and
+  `_sg_recover_ticker_connect()`, plus the display-only `_snapshot_stop_ticker()` reason string),
   MCX's non-agri close time is resolved from the real US DST calendar — never a flat hardcoded
   value. A cross-midnight snapshot/settlement trigger inside `exchange_clock.py`,
   `_sg_recover_mcx_snapshot`, and `_run_nav_compute_once` is always resolved against its OWN
   trading session's calendar date (or same-day-clamped, for NAV), via an absolute datetime
   comparison — never a bare time-of-day compared against "now"'s real-clock weekday. This
   invariant does NOT yet hold codebase-wide outside those surfaces — see the residual bullets above
-  (including the newly-flagged `_sg_recover_ticker_connect()` and the cosmetic
-  `_snapshot_stop_ticker()` reason string) for every other site still on the old flat value.
+  for every other site still on the old flat value.
 
 **F&O order qty convention** — API now accepts LOTS as input for instruments with 
 `lot_size > 1`. `backend/api/routes/orders_place.py:_ticket_validate_input` converts 
@@ -5353,7 +5364,7 @@ now caches + returns a `stale` flag; `/api/nav/by-account` masks `errors` for no
 | Chase Kill / CANCEL_FAILED retry | `backend/api/routes/orders.py:kill_chase` + `chase.py:mark_order_killed` |
 | Alert identity line + email subject ("Alert:" label) | `backend/shared/helpers/alert_utils.py:dispatch_payload` (merged `alert_line`) + `_email_alert_body` |
 | MCX real per-contract expiry (live freeze filter) | `expiry_freeze.py:_mcx_future_real_expiry` |
-| MCX DST-aware non-agri close time (23:30 in-DST / 23:55 winter) | `backend/api/algo/derivatives.py:mcx_non_agri_close_time`, used by `options.py` (`/analytics`, `/strategy-analytics`, `/chain-snapshot`) and `backend/api/algo/expiry.py` (`ExpiryEngine._compute_theta`, `_parse_segment_close_times` via `resolve_dst_aware_sessions`). Self-maintaining `exchange_schedule` DB sync wired: `broker_apis.py:_sync_mcx_dst_close_time_coro` in `background.py:_task_holiday_refresh` — confirmed live on dev (`close_time: 23:55:00` queried directly from `exchange_schedule`); prod still on `dev` only, pending the operator's "deploy" (see CLAUDE.md entry's "Live DB state" bullet). Order-placement gate: `date_time_utils.py:resolve_dst_aware_sessions`, used by `_segment_is_open()` and `agent_engine.py:_ae_segment_flags` — confirmed on dev via the real `_ticket_gate_market_hours_and_align_price()` at 23:40/23:56 IST on a genuine future trading day. Ticker connectivity window (idle badge + first-connect restart tick): `backend/api/background.py:_ticker_window_end`, used by `get_ticker_calendar_status` and `_ds_tick_ticker_restart` |
+| MCX DST-aware non-agri close time (23:30 in-DST / 23:55 winter) | `backend/api/algo/derivatives.py:mcx_non_agri_close_time`, used by `options.py` (`/analytics`, `/strategy-analytics`, `/chain-snapshot`) and `backend/api/algo/expiry.py` (`ExpiryEngine._compute_theta`, `_parse_segment_close_times` via `resolve_dst_aware_sessions`). Self-maintaining `exchange_schedule` DB sync wired: `broker_apis.py:_sync_mcx_dst_close_time_coro` in `background.py:_task_holiday_refresh` — confirmed live on dev (`close_time: 23:55:00` queried directly from `exchange_schedule`); prod still on `dev` only, pending the operator's "deploy" (see CLAUDE.md entry's "Live DB state" bullet). Order-placement gate: `date_time_utils.py:resolve_dst_aware_sessions`, used by `_segment_is_open()` and `agent_engine.py:_ae_segment_flags` — confirmed on dev via the real `_ticket_gate_market_hours_and_align_price()` at 23:40/23:56 IST on a genuine future trading day. Ticker connectivity window (idle badge, first-connect restart tick, SessionGuard cold-start catch-up, stop-ticker reason text): `backend/api/background.py:_ticker_window_end`, used by `get_ticker_calendar_status`, `_ds_tick_ticker_restart`, `_sg_recover_ticker_connect`, and `_snapshot_stop_ticker` |
 | Cross-midnight snapshot/settlement trigger resolution (exchange_clock.py) | `backend/api/helpers/exchange_clock.py:_effective_gate_rows_for_date` / `_anchor_snapshot_datetime` / `_effective_snapshot_day_offset` |
 | Options expiry-curve cache (leg-curve cache, bypassed at eval_T<=0) | `backend/api/routes/options.py:_strategy_compute_curves` |
 | generic_notice body (plain text, no origin line — see "Alert message format") | `event_agents.py:_render_deploy_sync` (pass-through) + producer `msg` in `background.py` |
