@@ -8,6 +8,13 @@ BRANCH="${REF#refs/heads/}"
 
 if [ "$BRANCH" = "main" ]; then
     exec /opt/ramboq/webhook/deploy.sh prod "$REF"
-else
+elif [ "$BRANCH" = "dev" ]; then
     exec /opt/ramboq_dev/webhook/deploy.sh dev "$REF"
+else
+    # workshop (local-only, no deploy target) and any other branch: no-op.
+    # Previously this fell through to the dev deploy for ANY non-main push,
+    # so a workshop push queued a redundant dev-deploy behind the real one,
+    # delaying a concurrent main push on the shared /tmp/ramboq_deploy.lock.
+    echo "[$(date '+%F %T')] dispatch: branch '$BRANCH' has no deploy target, skipping"
+    exit 0
 fi
