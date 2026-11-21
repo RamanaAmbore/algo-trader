@@ -5365,26 +5365,27 @@ async def _task_holiday_refresh() -> None:
                     f"ingestion failed (non-fatal): {e}"
                 )
 
-            # MCX non-agri DST-tracking close time (2026-11-21 fix) — MCX
-            # revises its bullion/energy/base-metals evening close twice
-            # a year tracking US DST (23:30 in-DST, 23:55 winter). Keeps
-            # exchange_schedule's default MCX row in sync so every
-            # reader (this table directly, exchange_clock, DTE/Greeks in
-            # options.py, the ticker quiet-window) agrees. See CLAUDE.md
-            # "MCX DST-aware non-agri close time". Piggybacked on this
-            # same daily/restart-catch-up wake-up — never its own cron.
-            try:
-                from backend.brokers.broker_apis import _sync_mcx_dst_close_time_coro
-                _resolved_close = await _sync_mcx_dst_close_time_coro()
-                logger.debug(
-                    "[HOLIDAY-REFRESH] MCX non-agri DST close_time check: %s IST",
-                    _resolved_close.strftime("%H:%M") if _resolved_close else "unresolved (DB error)",
-                )
-            except Exception as e:
-                logger.warning(
-                    f"[HOLIDAY-REFRESH] MCX non-agri DST close_time sync "
-                    f"failed (non-fatal): {e}"
-                )
+            # MCX non-agri DST-tracking close time — DELIBERATELY NOT
+            # WIRED HERE. `_sync_mcx_dst_close_time_coro()`
+            # (`backend/brokers/broker_apis.py`) exists and is unit-
+            # tested, but calling it would write `close_time='23:55'`
+            # into `exchange_schedule`'s default MCX row during the
+            # winter DST window — and that exposes a real, separate
+            # latent bug in `exchange_clock.py`: `_effective_snapshot_time()`
+            # derives the close-snapshot trigger as `close_time + 15min`
+            # with NO date, so 23:55+15min wraps to 00:10 THE NEXT
+            # CALENDAR DAY. `_row_matches_now()`'s weekday filter
+            # (`weekdays=[0,1,2,3,4]`) then checks that moment's REAL
+            # weekday — on a Friday close, the matching 00:10 instant is
+            # a SATURDAY, which fails the Mon–Fri filter, so the MCX
+            # close-snapshot (which writes `daily_book.ltp`, the prev_close
+            # SSOT — see CLAUDE.md's "close_price / ltp invariant")
+            # would silently never fire on any Friday night throughout
+            # the winter window. Wiring this sync in before that
+            # weekday/midnight-wrap gap is fixed in `exchange_clock.py`
+            # would regress Monday's Day P&L for 5 months a year. See
+            # CLAUDE.md "MCX DST-aware non-agri close time" for the full
+            # writeup and the required fix before this can be wired.
 
         _mirror_to_holidays_store(exch, got)
         added = sorted(d.isoformat() for d in (got - prev))
