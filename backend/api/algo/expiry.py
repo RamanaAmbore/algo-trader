@@ -329,11 +329,24 @@ class ExpiryEngine:
         try:
             from backend.api.algo.derivatives import (
                 greeks, greeks_76, days_to_expiry, DEFAULT_RISK_FREE,
+                mcx_non_agri_close_time,
             )
             if pos.underlying_ltp <= 0 or pos.strike <= 0:
                 return 0.0
             is_mcx = pos.exchange == "MCX"
-            close_time = (23, 30) if is_mcx else (15, 30)
+            if is_mcx:
+                # DST-aware: 23:30 IST in-DST, 23:55 IST in the US-winter
+                # window — see mcx_non_agri_close_time()'s own docstring
+                # and CLAUDE.md's "MCX DST-aware non-agri close time".
+                # Was previously hardcoded (23, 30) year-round, which
+                # silently zeroed theta (T<=0 at 23:31) up to 24 minutes
+                # before MCX's real winter close — theta drives
+                # `_net_commodity_group`'s greedy netting priority, so a
+                # stale T=0 could pick the wrong leg to leave open.
+                _close_t = mcx_non_agri_close_time(pos.expiry)
+                close_time = (_close_t.hour, _close_t.minute)
+            else:
+                close_time = (15, 30)
             d = float(days_to_expiry(pos.expiry, ref=ref, close_time=close_time))
             T_years = d / 365.25
             if T_years <= 0:
@@ -797,13 +810,43 @@ class ExpiryEngine:
     # Main run loop (called by background task on expiry days)
     # ------------------------------------------------------------------
 
-    def _parse_segment_close_times(self) -> "tuple[dtime, dtime]":
-        """Read equity_close and mcx_close from config. Returns (equity_close, mcx_close)."""
+    def _parse_segment_close_times(
+        self, today: "date | None" = None,
+    ) -> "tuple[dtime, dtime]":
+        """Read equity_close and mcx_close from config. Returns (equity_close, mcx_close).
+
+        Routes each segment's `sessions` list through
+        `resolve_dst_aware_sessions()` — the documented SSOT for the YAML
+        `market_segments` config (see CLAUDE.md's "MCX DST-aware non-agri
+        close time") — before reading its `end` time, so the commodity
+        segment's resolved close tracks the real US-DST-dependent MCX
+        non-agri close (23:30 in-DST, 23:55 in the US-winter window)
+        instead of the static legacy `hours_end` literal, which always
+        reads 23:30 regardless of season. Equity/NSE is untouched by the
+        resolver (it is keyed on `holiday_exchange == "MCX"`), so its
+        close is still read the old way. Falls back to the legacy
+        `hours_end` field — same default as before this fix — whenever a
+        segment carries no `sessions` list at all (not the current
+        production YAML shape, but a config this function must not
+        mishandle).
+
+        `today` defaults to the real IST date — tests/callers may pass an
+        explicit date to pin the DST-season resolution.
+        """
+        from backend.shared.helpers.date_time_utils import resolve_dst_aware_sessions
+        if today is None:
+            today = timestamp_indian().date()
         segments = config.get("market_segments", {})
         equity_close = dtime(15, 30)
         mcx_close    = dtime(23, 30)
         for name, seg in segments.items():
-            h, m = map(int, seg.get("hours_end", "15:30").split(":"))
+            resolved_sessions = resolve_dst_aware_sessions(seg, today)
+            end_str = (
+                resolved_sessions[-1].get("end")
+                if resolved_sessions
+                else seg.get("hours_end", "15:30")
+            )
+            h, m = map(int, end_str.split(":"))
             if name == "equity":
                 equity_close = dtime(h, m)
             elif name == "commodity":
@@ -863,7 +906,7 @@ class ExpiryEngine:
         """
         now_ist = timestamp_indian()
         today = now_ist.date()
-        equity_close, mcx_close = self._parse_segment_close_times()
+        equity_close, mcx_close = self._parse_segment_close_times(today)
 
         # Morning scan
         logger.info("Expiry: starting morning scan")
