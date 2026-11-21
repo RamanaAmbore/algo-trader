@@ -1626,13 +1626,27 @@ def _snap_broadcast_book_changed(accounts: list[str]) -> None:
     """Fan out a `book_changed` WS event after `snapshot_daily_book()`
     has committed at least one real daily_book row for *accounts*.
 
-    `snapshot_daily_book()` is the SINGLE function every closed-hours
-    daily_book writer already calls through (the operator re-enable
-    refresh via `brokers.py:_snapshot_books_if_closed`, the 08:00 daily
-    reset, the 23:45 MCX settlement write, and the admin
-    `trigger_pnl_snapshot` route) — broadcasting here means every
-    current AND future caller gets this for free, with no per-caller
-    wiring ever needed again.
+    `snapshot_daily_book()` is the function every closed-hours FULL
+    daily_book writer (holdings/positions/trades/funds from a broker
+    fetch) already calls through — the operator re-enable refresh via
+    `brokers.py:_snapshot_books_if_closed`, the 08:00 daily reset, the
+    23:45 MCX settlement write, and the admin `trigger_pnl_snapshot`
+    route — so broadcasting here means every current AND future caller
+    of THIS function gets it for free, with no per-caller wiring ever
+    needed again.
+
+    It is NOT the only writer of the `daily_book` table. Two other
+    paths write directly via SQL and intentionally do NOT broadcast
+    here, by scope: `fix_daily_book_prev_close()` (this module) issues
+    its own `UPDATE daily_book` for the prev_close/ltp/day_pnl repair
+    pass (called from `background.py`'s 08:00 IST transition and the
+    overnight catch-up tick) — a dedicated SQL-level writer, not a
+    caller of this function; and `routes/history.py:_hist_upsert_entry`
+    (the admin-operator-triggered `/funds/backfill` endpoint) writes
+    historical `kind='funds'` rows directly, a one-shot manual backfill
+    rather than a live-state change. Neither is in scope for this fix —
+    see CLAUDE.md's Scope Discipline note. A `daily_book` row changed
+    by either path will NOT fan out a `book_changed` event.
 
     Mirrors the exact `book_changed` event shape
     `backend/api/routes/orders.py:_postback_broadcast_fanout` already

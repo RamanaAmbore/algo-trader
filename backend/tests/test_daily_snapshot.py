@@ -1694,3 +1694,39 @@ class TestSnapshotDailyBookBroadcastsBookChanged:
         assert len(messages) == 1
         payload = json.loads(messages[0])
         assert payload["event"] == "book_changed"
+
+    @pytest.mark.asyncio
+    async def test_broadcast_failure_never_affects_the_snapshot_result(self):
+        """A broadcast() exception must be swallowed by
+        _snap_broadcast_book_changed's own try/except — the already-
+        committed snapshot write (row counts, accounts, errors list) is
+        completely unaffected by a WS fan-out failure, matching the same
+        best-effort precedent as orders.py:_postback_broadcast_fanout."""
+        from unittest.mock import patch, MagicMock, AsyncMock
+        from contextlib import ExitStack
+        from backend.api.algo import daily_snapshot as ds
+
+        broker_a = MagicMock()
+        broker_a.account = "ZG0790"
+        conn_singleton = MagicMock()
+        conn_singleton.conn = {"ZG0790": MagicMock()}
+        raw = {"holdings": [], "positions": [], "trades": [], "funds": []}
+
+        stack = ExitStack()
+        stack.enter_context(patch.object(ds, "_get_connections", return_value=conn_singleton))
+        stack.enter_context(patch("backend.brokers.registry.all_brokers", return_value=[broker_a]))
+        stack.enter_context(patch.object(ds, "_fetch_account_data", return_value=raw))
+        stack.enter_context(patch.object(ds, "_holdings_rows", lambda *a, **k: [{"symbol": "INFY"}]))
+        stack.enter_context(patch.object(ds, "_positions_rows", lambda *a, **k: []))
+        stack.enter_context(patch.object(ds, "_trades_rows", lambda *a, **k: []))
+        stack.enter_context(patch.object(ds, "_funds_rows", lambda *a, **k: []))
+        stack.enter_context(patch.object(ds, "_upsert_rows", AsyncMock(side_effect=lambda rows: len(rows))))
+        stack.enter_context(patch("backend.api.routes.ws.broadcast", side_effect=RuntimeError("WS down")))
+        with stack:
+            result = await ds.snapshot_daily_book(
+                target_date=date(2026, 11, 20), market_open=False,
+            )
+
+        assert result["errors"] == [], f"a broadcast failure must never surface as a snapshot error: {result['errors']}"
+        assert result["holdings_rows"] == 1
+        assert result["accounts"] == ["ZG0790"]
