@@ -189,4 +189,101 @@ test.describe('SWR reload survival — Derivatives strategy + spot (B3)', () => 
 
     await Promise.all(held.map((route) => route.continue().catch(() => {})));
   });
+
+  /**
+   * Cross-tab isolation. `cachedWrite`/`cachedRead` (persistentCache.js)
+   * are localStorage-backed and therefore shared across every tab of the
+   * origin. Two derivatives tabs open AT THE SAME TIME each periodically
+   * call the page's own `_saveCache()`, so before this fix whichever tab
+   * wrote most recently silently won the one shared
+   * `rbq.cache.ramboq:options-state` entry — a plain reload of the OTHER
+   * tab would then come back showing the wrong snapshot.
+   *
+   * The fix reads/writes a tab-local sessionStorage copy FIRST, falling
+   * back to the shared localStorage copy only when this tab has none of
+   * its own.
+   *
+   * The probe field is `drafts` (the page's own "hypothetical positions"
+   * list — a plain client-side array, rendered via a bare symbol-text
+   * `<input>`, with no backend validation), not `selectedUnderlying`.
+   * Confirmed live against dev.ramboq.com while writing this test: the
+   * account holds exactly one real underlying (GOLD) right now, and
+   * `selectedUnderlying` has its OWN promotion `$effect` (~line 1812,
+   * "popular provisional → any position tier") that silently overrides
+   * ANY cached underlying lacking a real position back to GOLD — the
+   * SAME outcome regardless of whether the restore came from
+   * sessionStorage or localStorage, which would make a
+   * `selectedUnderlying`-based probe pass against both pre-fix and
+   * post-fix code and prove nothing. `drafts` has no such effect, so it
+   * isolates the one thing actually under test: which storage tier
+   * `_readCacheEntry()` restores from. Both tiers are written directly
+   * via `page.evaluate`, in the exact shapes `_saveCache()`/`cachedWrite`
+   * themselves produce (sessionStorage: raw payload; localStorage: the
+   * `{value, refreshed_at, ttl_ms}` wrapper — see persistentCache.js) —
+   * this also sidesteps two unrelated flakiness sources found while
+   * iterating on a UI-driven version of this test: an index-based
+   * dropdown scan can click a different row than it read while a
+   * sibling tab keeps reactively re-rendering the list, and
+   * `loadStrategy()` never calls `_saveCache()` at all for an underlying
+   * with no enabled F&O legs (`_hasEnabledLegs` guard, ~line 4568).
+   */
+  test('tab A keeps its own cached snapshot after a sibling tab writes a different one to the shared tier', async ({ context }) => {
+    // ── 1. Tab A: real page load (establishes a real selectedUnderlying
+    // so no promotion effect fires later), then its OWN sessionStorage
+    // snapshot is written directly — this is what a real `_saveCache()`
+    // call from this tab would have produced. Left OPEN, not closed —
+    // simultaneously-open tabs is the scenario under test. ─────────────
+    const page1 = await context.newPage();
+    await loginAsAdmin(page1);
+    await page1.goto('/admin/derivatives', { waitUntil: 'domcontentloaded' });
+    await expect(page1.locator('.payoff-svg').first()).toBeVisible({ timeout: 60_000 });
+    const realUnderlying = await underlyingLabel(page1);
+    expect(realUnderlying, 'page should have resolved a real underlying before priming the probe').not.toBe('');
+
+    const SESSION_KEY = OPTIONS_STATE_KEY; // same literal key; different storage object
+    const TAB_A_MARKER = 'TABAOWNDRAFT';
+    const SIBLING_MARKER = 'SIBLINGPOISONDRAFT';
+    const draftPayload = (marker) => ({
+      ts: Date.now(),
+      strategy: null,
+      drafts: [{ id: 1, symbol: marker, qty: '1', avg_cost: '1', ltp: '1' }],
+      selectedAccounts: [],
+      selectedUnderlying: realUnderlying,
+      selectedExpiries: [],
+    });
+
+    await page1.evaluate(({ key, payload }) => {
+      sessionStorage.setItem(key, JSON.stringify(payload));
+    }, { key: SESSION_KEY, payload: draftPayload(TAB_A_MARKER) });
+
+    // ── 2. Simulate a sibling tab's write to the SHARED (localStorage)
+    // tier only — never to tab A's own sessionStorage, which is isolated
+    // per tab in a real browser regardless of this test's technique. ───
+    const wrote = await page1.evaluate(({ key, payload }) => {
+      const entry = { value: payload, refreshed_at: Date.now(), ttl_ms: 5 * 60 * 1000 };
+      localStorage.setItem(key, JSON.stringify(entry));
+      return localStorage.getItem(key) != null;
+    }, { key: OPTIONS_STATE_KEY, payload: draftPayload(SIBLING_MARKER) });
+    expect(wrote, 'synthetic sibling-tab write should have landed in localStorage').toBe(true);
+
+    // Sanity: the shared tier really does now disagree with tab A's own
+    // sessionStorage copy — otherwise the next assertion would pass by
+    // accident.
+    const sharedAfterWrite = await readOptionsState(page1);
+    expect(sharedAfterWrite?.drafts?.[0]?.symbol).toBe(SIBLING_MARKER);
+
+    // ── 3. Re-navigate tab A (same tab, same sessionStorage). ───────────
+    await page1.goto('/admin/derivatives', { waitUntil: 'domcontentloaded' });
+    await expect(page1.locator('.payoff-svg').first()).toBeVisible({ timeout: 60_000 });
+
+    const draftInput = page1.locator('.opt-drafts-card .leg-row input.field-input').first();
+    await expect(draftInput).toBeVisible({ timeout: 10_000 });
+    await expect(
+      draftInput,
+      `tab A should restore its OWN drafts snapshot (${TAB_A_MARKER}), not the sibling tab's ` +
+        `(${SIBLING_MARKER}), which only exists in the shared localStorage tier`,
+    ).toHaveValue(TAB_A_MARKER);
+
+    await page1.close();
+  });
 });

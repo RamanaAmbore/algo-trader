@@ -127,6 +127,21 @@ function createAuthStore() {
           }
           for (const k of keys) localStorage.removeItem(k);
         } catch { /* quota / privacy mode — non-fatal */ }
+        // Same sweep, sessionStorage tier. Some pages (derivatives
+        // strategy snapshot) keep a tab-local `rbq.cache.*` copy
+        // alongside the shared localStorage one so simultaneously-open
+        // tabs on different symbols don't clobber each other's restore —
+        // see the `+page.svelte` comment near `_SESSION_CACHE_KEY`. That
+        // copy carries whichever identity's masking was in effect when it
+        // was written, so it must be swept here too, not just localStorage.
+        try {
+          const sKeys = [];
+          for (let i = 0; i < sessionStorage.length; i++) {
+            const k = sessionStorage.key(i);
+            if (k && k.startsWith('rbq.cache.')) sKeys.push(k);
+          }
+          for (const k of sKeys) sessionStorage.removeItem(k);
+        } catch { /* quota / privacy mode — non-fatal */ }
       }
       const claims = _decodeJwt(token);
       set({ token, user, impBy: claims?.imp_by || null });
@@ -150,6 +165,16 @@ function createAuthStore() {
             if (k && k.startsWith('rbq.cache.')) keys.push(k);
           }
           for (const k of keys) localStorage.removeItem(k);
+        } catch { /* quota / privacy mode — non-fatal */ }
+        // Same sweep, sessionStorage tier — see the matching comment in
+        // login() above.
+        try {
+          const sKeys = [];
+          for (let i = 0; i < sessionStorage.length; i++) {
+            const k = sessionStorage.key(i);
+            if (k && k.startsWith('rbq.cache.')) sKeys.push(k);
+          }
+          for (const k of sKeys) sessionStorage.removeItem(k);
         } catch { /* quota / privacy mode — non-fatal */ }
       }
       set({ token: null, user: null, impBy: null });

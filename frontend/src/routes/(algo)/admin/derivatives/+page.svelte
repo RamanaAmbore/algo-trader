@@ -4678,23 +4678,70 @@
   }
 
   // ── Stale-while-revalidate cache ──────────────────────────────────
-  // persistentCache.js (localStorage-backed, survives reload + deploy +
-  // browser close) snapshot of the page's data + operator selections so a
-  // tab reopen / SPA back-nav / hard reload comes up with the previous
-  // view (chart, dropdowns, leg toggles, drafts) instead of a blank page.
-  // The first fresh fetch overwrites the snapshot; entries > 5 minutes old
-  // are discarded so the operator never sees a wildly stale chart.
+  // Two-tier snapshot of the page's data + operator selections so a tab
+  // reopen / SPA back-nav / hard reload comes up with the previous view
+  // (chart, dropdowns, leg toggles, drafts) instead of a blank page. The
+  // first fresh fetch overwrites the snapshot; entries > 5 minutes old are
+  // discarded so the operator never sees a wildly stale chart.
   //
-  // PLAN.md Part B, item B3 — this used to be a raw `sessionStorage`
-  // read/write (dies on tab close, same 5-minute cap enforced by hand via
-  // `d.ts`). Swapped to the shared `cachedWrite`/`cachedRead` pair every
-  // other domain in this app uses (`$lib/data/persistentCache.js`) so the
-  // snapshot survives a full page reload too — ONLY the storage tier
-  // changed here. The stored payload shape, the generation guard, the
-  // "never null `strategy`" behaviour, and the `legsKey`-based
-  // memoization elsewhere in this file are all unchanged.
+  // PLAN.md Part B, item B3 moved this from a raw per-tab `sessionStorage`
+  // read/write to the shared `cachedWrite`/`cachedRead` pair
+  // (`$lib/data/persistentCache.js`, localStorage-backed) so a BRAND NEW
+  // tab — or a reload after a deploy, which hands the browser a fresh JS
+  // bundle — paints instantly instead of a blank page. localStorage is
+  // shared across every tab of the origin, which created a regression B3
+  // didn't anticipate: two derivatives tabs open at once on DIFFERENT
+  // underlyings each periodically call `_saveCache()`, so whichever tab
+  // fetched most recently silently overwrote the other's entry — a plain
+  // F5 reload of tab A could come back showing tab B's underlying.
+  //
+  // Fix: read/write BOTH tiers, sessionStorage first. sessionStorage is
+  // genuinely per-tab (unlike localStorage), so it is this tab's own
+  // authoritative "what was I just looking at" record and can never be
+  // clobbered by a sibling tab's writes. localStorage is read only as a
+  // FALLBACK, when this tab has no session-local copy of its own — which
+  // is exactly the brand-new-tab / post-deploy-reload case B3 was written
+  // for (see swr_derivatives_strategy_spot_reload_survival.spec.js's own
+  // docstring: a fresh tab has empty sessionStorage by construction, so
+  // it still falls through to the shared localStorage snapshot). The
+  // stored payload shape, the generation guard, the "never null
+  // `strategy`" behaviour, and the `legsKey`-based memoization elsewhere
+  // in this file are all unchanged.
   const _CACHE_KEY = 'ramboq:options-state';
+  // Same literal prefix persistentCache.js uses for localStorage (`PREFIX`
+  // there), so authStore's login()/logout() wholesale `rbq.cache.*` sweep
+  // (stores.js) also clears this tab-local sessionStorage copy on an
+  // identity switch — it must never survive into a different operator's
+  // session and show stale (possibly differently-masked) account data.
+  const _SESSION_CACHE_KEY = 'rbq.cache.' + _CACHE_KEY;
   const _CACHE_MAX_AGE_MS = 5 * 60 * 1000;
+  /** Read the persisted snapshot payload (raw `payload`, not the
+   *  `cachedRead` wrapper), tab-local sessionStorage first, falling back
+   *  to the shared localStorage tier only when this tab has no
+   *  session-local copy of its own. Applies the 5-minute TTL itself on
+   *  both tiers — `cachedRead`'s own internal expiry check only covers
+   *  the localStorage tier, so this is the one place both are enforced
+   *  uniformly. Returns `null` when neither tier has a fresh entry. */
+  function _readCacheEntry() {
+    try {
+      if (typeof sessionStorage !== 'undefined') {
+        const raw = sessionStorage.getItem(_SESSION_CACHE_KEY);
+        if (raw) {
+          const d = JSON.parse(raw);
+          if (d && (Date.now() - (d.ts || 0)) <= _CACHE_MAX_AGE_MS) return d;
+          // Expired tab-local copy — drop it and fall through to the
+          // shared tier below (a sibling tab may hold a fresher one).
+          try { sessionStorage.removeItem(_SESSION_CACHE_KEY); } catch {}
+        }
+      }
+    } catch (_) { /* parse failure / private mode — fall through */ }
+    try {
+      const cached = cachedRead(_CACHE_KEY);
+      const d = cached?.value;
+      if (!d || (Date.now() - (d.ts || 0)) > _CACHE_MAX_AGE_MS) return null;
+      return d;
+    } catch (_) { return null; }
+  }
   /** Persist the page snapshot for stale-while-revalidate.
    *  @param {object} [opts]
    *  @param {boolean} [opts.includeSelections=true]  When false, omits
@@ -4733,18 +4780,27 @@
       if (opts.includeSelections !== false) {
         payload.enabledSymbols = enabledSymbols;
       }
+      // Tab-scoped tier, written first: this tab's own authoritative
+      // "what was I just looking at" record. Never clobbered by a
+      // sibling tab's write to the shared tier below, and never clobbers
+      // a sibling tab's own sessionStorage copy either — see the
+      // "Stale-while-revalidate cache" header comment above.
+      try {
+        if (typeof sessionStorage !== 'undefined') {
+          sessionStorage.setItem(_SESSION_CACHE_KEY, JSON.stringify(payload));
+        }
+      } catch (_) { /* quota / private mode — silent, matches cachedWrite's own silence */ }
+      // Shared tier: survives tab close / browser restart / a post-deploy
+      // reload so a brand-new tab with no session-local history of its
+      // own still paints instantly instead of a blank page. Only ever
+      // consulted as a FALLBACK — see _readCacheEntry().
       cachedWrite(_CACHE_KEY, payload, _CACHE_MAX_AGE_MS);
     } catch (_) { /* quota / private mode — silent */ }
   }
   function _loadCache() {
     try {
-      const cached = cachedRead(_CACHE_KEY);
-      const d = cached?.value;
-      // `cachedRead` already enforces `ttl_ms` expiry internally (the
-      // entry wouldn't come back at all once stale) — the `d.ts` check is
-      // kept as a harmless belt-and-suspenders defense since the payload's
-      // own `ts` field is part of the preserved stored shape.
-      if (!d || (Date.now() - (d.ts || 0)) > _CACHE_MAX_AGE_MS) return false;
+      const d = _readCacheEntry();
+      if (!d) return false;
       // Restore data first, then selections — derived state (candidates,
       // legs) recomputes off the restored drafts + the store-seeded
       // `positions` (no longer restored from this cache — see _saveCache).
@@ -4800,9 +4856,8 @@
    *  as before; see derivatives_payoff_default_underlying.spec.js. */
   function _readCachedUnderlying() {
     try {
-      const cached = cachedRead(_CACHE_KEY);
-      const d = cached?.value;
-      if (!d || (Date.now() - (d.ts || 0)) > _CACHE_MAX_AGE_MS) return null;
+      const d = _readCacheEntry();
+      if (!d) return null;
       return (typeof d.selectedUnderlying === 'string' && d.selectedUnderlying) ? d.selectedUnderlying : null;
     } catch (_) { return null; }
   }
@@ -4829,6 +4884,7 @@
     untrack(() => {
       try {
         cachedDelete(_CACHE_KEY);
+        if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem(_SESSION_CACHE_KEY);
       } catch (_) { /* private mode / quota — ignore */ }
       // Wipe in-memory rows whose account values came from the
       // previous session. The fetches below repopulate from the
