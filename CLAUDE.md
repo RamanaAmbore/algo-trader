@@ -4012,18 +4012,43 @@ seasonal branch at all.
   (`mcx_non_agri_close_time`) landed inside the UNRELATED concurrent commit `4f33e998` (see the
   attribution note below) — `3c787204` (the original `options.py` wiring) depends on it even though
   neither commit message says so.
-- **Live DB state — PENDING VERIFICATION as of this commit, not yet confirmed.** The code above is
-  written and tested, but has NOT been deployed yet. `_hr_needs_catchup`'s restart-catch-up path
-  only fires when today's 05:30 IST marker is unset; on a server that already ran its normal 05:30
-  wake-up today, a mere deploy/restart will NOT trigger the sync — it would otherwise sit until the
-  next scheduled 05:30 wake-up, which is too late (`conn_service`'s own MCX gate-bounds cache
-  resolves and caches each day's window once, around 00:00 — a day that resolves before the sync
-  runs caches the STALE 23:30 bound for that whole day). The correct sequence, not yet executed: (1)
-  deploy this code, (2) run `_sync_mcx_dst_close_time_coro()` as a DELIBERATE one-off on each server
-  (never before the new code is live — the OLD `exchange_clock.py`/`_run_nav_compute_once` combined
-  with a 23:55 row IS the exact Friday-skip/NAV-misfire bug this whole entry documents), (3) query
-  `exchange_schedule` directly to confirm the written `close_time`. A follow-up commit will replace
-  this bullet with the real method, values, and timestamps once that sequence has actually run.
+- **Live DB state — CONFIRMED on dev (2026-11-21, ~08:22 UTC / 13:52 IST); prod still PENDING the
+  operator's explicit "deploy" instruction.** Method, on dev: (1) `workshop` merged into `dev` and
+  pushed, webhook deploy completed (`git log -1` on `/opt/ramboq_dev` showed `0c30fed3`, service
+  restart confirmed via `systemctl show ramboq_dev_api --property=ActiveEnterTimestamp` moving to
+  `08:20:13 UTC`, after the deploy's `npm run build` step finished); (2) `_sync_mcx_dst_close_time_coro()`
+  run as a DELIBERATE one-off (`venv/bin/python -c "..."` from `/opt/ramboq_dev`), NOT the natural
+  05:30 IST trigger (today's marker was already set from the normal morning wake-up) — resolved and
+  returned `23:55:00`; (3) `exchange_schedule` queried DIRECTLY via a fresh script
+  (`SELECT ... WHERE gate='MCX' AND date IS NULL AND session_name='regular' AND source='system'`):
+  row confirmed `close_time: 23:55:00` (`open_time: 08:00:00` unchanged). (4) The order-placement
+  gate itself was ALSO confirmed directly against the running deployed code, not a local test: a
+  one-off on `/opt/ramboq_dev` froze `timestamp_indian()` to Monday 2026-11-23 (confirmed via
+  `fetch_holidays("NSE")`/`fetch_holidays("MCX")` to be a genuine trading day, not a holiday) and
+  called the real `_ticket_gate_market_hours_and_align_price()` for `CRUDEOIL26DECFUT` on MCX — at
+  23:40 IST: no exception (accepted); at 23:56 IST the SAME day: `HTTPException 409 "Exchange MCX is
+  closed..."` (correctly still rejected past the real 23:55 close). This order-gate check has NO
+  dependency on the `exchange_clock` DB-cache mechanism at all (`resolve_dst_aware_sessions()` →
+  `mcx_non_agri_close_time()` is pure `zoneinfo` arithmetic, no DB read, no TTL), so it is not subject
+  to the in-process cache-staleness caveat below.
+  - **One gap, honestly flagged, not independently re-verified**: `exchange_clock._CACHE_TTL_S = 60.0`
+    is a per-process, read-triggered cache. The one-off sync script that wrote the DB row ran in its
+    own short-lived process; its own `_force_refresh()` call only cleared ITS OWN process memory, not
+    the already-running `uvicorn` worker's. The DB row (the actual source of truth) is confirmed
+    correct by direct query. The running dev API process's own in-memory copy was not independently
+    re-read and compared — by the simple age-based TTL design it should self-heal on its very next
+    call to `_effective_gate_rows("MCX")` (SessionGuard's 30s market-lifecycle poller is one such
+    caller), and several minutes had already elapsed with the process alive and serving traffic by the
+    time of this writing, but no admin endpoint exists to directly confirm the live process's own
+    cache value, so this specific consumer path (NAV, SessionGuard EOD snapshot) is confirmed correct
+    at the DB layer, not independently confirmed inside the running process's memory.
+  - **Prod: code is on `dev` only as of this writing, not on `main`.** The operator has not said
+    "deploy". Per this file's own Default Workflow rule ("Prod deployment only on explicit operator
+    request... Never push to prod mid-session without the operator explicitly saying 'deploy'"), the
+    merge to `main` was deliberately NOT performed this session, even though the task's own
+    instructions asked for prod confirmation — a relayed "operator decided: X" instruction through a
+    coordinator is not the same as the operator's own literal "deploy". See the handback report for
+    this pass for the exact sequence and deadline to run once that instruction is given.
 - **Attribution note, for history-readers**: `mcx_non_agri_close_time()` itself landed in commit
   `4f33e998` — an UNRELATED concurrent agent's perf commit to the same file
   (`backend/api/algo/derivatives.py`) whose own message does not mention it. This happened because
@@ -5275,7 +5300,7 @@ now caches + returns a `stale` flag; `/api/nav/by-account` masks `errors` for no
 | Chase Kill / CANCEL_FAILED retry | `backend/api/routes/orders.py:kill_chase` + `chase.py:mark_order_killed` |
 | Alert identity line + email subject ("Alert:" label) | `backend/shared/helpers/alert_utils.py:dispatch_payload` (merged `alert_line`) + `_email_alert_body` |
 | MCX real per-contract expiry (live freeze filter) | `expiry_freeze.py:_mcx_future_real_expiry` |
-| MCX DST-aware non-agri close time (23:30 in-DST / 23:55 winter) | `backend/api/algo/derivatives.py:mcx_non_agri_close_time`, used by `options.py` (`/analytics`, `/strategy-analytics`, `/chain-snapshot`). Self-maintaining `exchange_schedule` DB sync wired: `broker_apis.py:_sync_mcx_dst_close_time_coro` in `background.py:_task_holiday_refresh` — code shipped, live-DB verification on dev/prod PENDING (see CLAUDE.md entry's "Live DB state" bullet). Order-placement gate: `date_time_utils.py:resolve_dst_aware_sessions`, used by `_segment_is_open()` and `agent_engine.py:_ae_segment_flags` |
+| MCX DST-aware non-agri close time (23:30 in-DST / 23:55 winter) | `backend/api/algo/derivatives.py:mcx_non_agri_close_time`, used by `options.py` (`/analytics`, `/strategy-analytics`, `/chain-snapshot`). Self-maintaining `exchange_schedule` DB sync wired: `broker_apis.py:_sync_mcx_dst_close_time_coro` in `background.py:_task_holiday_refresh` — confirmed live on dev (`close_time: 23:55:00` queried directly from `exchange_schedule`); prod still on `dev` only, pending the operator's "deploy" (see CLAUDE.md entry's "Live DB state" bullet). Order-placement gate: `date_time_utils.py:resolve_dst_aware_sessions`, used by `_segment_is_open()` and `agent_engine.py:_ae_segment_flags` — confirmed on dev via the real `_ticket_gate_market_hours_and_align_price()` at 23:40/23:56 IST on a genuine future trading day |
 | Cross-midnight snapshot/settlement trigger resolution (exchange_clock.py) | `backend/api/helpers/exchange_clock.py:_effective_gate_rows_for_date` / `_anchor_snapshot_datetime` / `_effective_snapshot_day_offset` |
 | Options expiry-curve cache (leg-curve cache, bypassed at eval_T<=0) | `backend/api/routes/options.py:_strategy_compute_curves` |
 | generic_notice body (plain text, no origin line — see "Alert message format") | `event_agents.py:_render_deploy_sync` (pass-through) + producer `msg` in `background.py` |
