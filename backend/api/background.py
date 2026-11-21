@@ -4212,6 +4212,47 @@ async def _ds_tick_nonmcx_unsub(now: datetime, today: date) -> None:
     _unsub_nonmcx_done_global = today
 
 
+def _ticker_window_end(today: date) -> dtime:
+    """Resolve the upper bound of the ticker's daily connectivity window
+    for `today` — the moment MCX's real non-agri close makes a further
+    connect/restart pointless for the day.
+
+    Prefers the SAME DB-backed source `_ds_tick_mcx_stop()` already uses
+    to decide when to actually tear the WebSocket down
+    (`exchange_clock._effective_gate_rows("MCX")[0].close_time`), so the
+    restart tick / idle badge and the real stop trigger can never
+    silently disagree — e.g. the `exchange_schedule` DST sync hasn't run
+    yet for `today` while the computed value already reflects it, or a
+    date-specific override row exists. Falls back to
+    `mcx_non_agri_close_time(today)` (computed directly via `zoneinfo`,
+    no DB round-trip) when the cache is empty, no row governs `today`
+    (a plain weekend/holiday with no override row), or the governing
+    row is a holiday override (`close_time=None`) — covers cold start
+    (before the daily sync has ever populated the DB row) and tests
+    that never warm the `exchange_clock` cache.
+
+    DST season (US DST active, roughly March-November) resolves to the
+    unchanged 23:30 either way, so this is a no-op for most of the year
+    — only the winter window (23:55) changes behaviour. See CLAUDE.md's
+    "MCX DST-aware non-agri close time" entry.
+    """
+    try:
+        rows = exchange_clock._effective_gate_rows("MCX")
+        if rows and rows[0].close_time is not None:
+            return rows[0].close_time
+    except Exception:
+        pass
+    try:
+        from backend.api.algo.derivatives import mcx_non_agri_close_time
+        return mcx_non_agri_close_time(today)
+    except Exception:
+        # Last-resort fail-safe — never let a resolver hiccup (bad
+        # import, zoneinfo failure) crash the background tick loop.
+        # Matches the pre-fix literal, so a resolver failure degrades
+        # to the old (non-DST-aware) behaviour rather than raising.
+        return dtime(23, 30)
+
+
 def _ds_tick_mcx_stop(now: datetime, today: date) -> None:
     """Stop KiteTicker once per day at MCX close + 1 min.
 
@@ -4336,10 +4377,17 @@ def get_ticker_calendar_status(now: "datetime | None" = None) -> dict:
     Two independent reasons an operator should see "idle", checked in
     this order:
 
-    1. **Clock-window (2026-10-25 fix).** Outside [08:00, 23:30) IST, the
-       ticker is never expected to be connected — before today's connect
-       window has started, OR after `_ds_tick_mcx_stop` has torn it down
-       for the night — REGARDLESS of whether today is a trading day.
+    1. **Clock-window (2026-10-25 fix; DST-aware upper bound, 2026-11
+       fix).** Outside [08:00, window_end) IST, the ticker is never
+       expected to be connected — before today's connect window has
+       started, OR after `_ds_tick_mcx_stop` has torn it down for the
+       night — REGARDLESS of whether today is a trading day.
+       `window_end` is resolved via `_ticker_window_end(today)` — 23:30
+       for most of the year, 23:55 during the US-winter non-agri window
+       (see CLAUDE.md's "MCX DST-aware non-agri close time"). Before the
+       DST fix this was a hardcoded 23:30, so during the winter window
+       the badge read idle for the ~25 minutes MCX genuinely still
+       traded.
        `_TICKER_CALENDAR_STATE` only ever gets WRITTEN inside that same
        window (or by the CLOSED-day recheck loop, which also only runs
        inside it); nothing resets `connected`/`idle` back when the window
@@ -4367,7 +4415,8 @@ def get_ticker_calendar_status(now: "datetime | None" = None) -> dict:
     now = now if now is not None else timestamp_indian()
     st = _TICKER_CALENDAR_STATE
     same_day = st.get("date") == now.date()
-    if not (dtime(8, 0) <= now.time() < dtime(23, 30)):
+    window_end = _ticker_window_end(now.date())
+    if not (dtime(8, 0) <= now.time() < window_end):
         # Prefer the more specific calendar reason when today's own state
         # already explains it (e.g. a genuine holiday) — the generic
         # clock-window text is only the fallback, for the common case
@@ -4375,7 +4424,13 @@ def get_ticker_calendar_status(now: "datetime | None" = None) -> dict:
         # stored reason is stale ("connected") rather than explanatory.
         if same_day and st.get("idle"):
             return {"idle": True, "reason": str(st.get("reason") or "")}
-        return {"idle": True, "reason": "outside the 08:00–23:30 IST connectivity window"}
+        return {
+            "idle": True,
+            "reason": (
+                f"outside the 08:00–{window_end.strftime('%H:%M')} "
+                "IST connectivity window"
+            ),
+        }
     if not same_day:
         return {"idle": False, "reason": ""}
     return {"idle": bool(st.get("idle")), "reason": str(st.get("reason") or "")}
@@ -4603,20 +4658,38 @@ async def _ds_tick_ticker_restart(now: datetime, today: date) -> None:
     """Restart KiteTicker once per trading day, calendar-gated (2026-10-24)
     instead of connecting unconditionally every day.
 
-    Runs across the full active window [08:00, 23:30) IST — widened from
-    the original [08:00, 09:00) — so a confirmed-closed verdict keeps
+    Runs across the full active window [08:00, window_end) IST — widened
+    from the original [08:00, 09:00) — so a confirmed-closed verdict keeps
     re-checking `market_special_sessions` for a same-day special session
     for the rest of the window (the "closed-day recheck loop", item 5).
+    `window_end` is `_ticker_window_end(today)` (2026-11 DST fix) — 23:30
+    for most of the year, 23:55 during the US-winter non-agri window.
     `_ticker_restart_done_global` (seeded by `_start_kite_ticker()` at
     true process startup or `_sg_recover_ticker_connect()`'s SessionGuard
     cold-start catch-up, same pattern as `_ticker_stop_done_global`)
     ensures whichever of the three call sites connects first blocks the
     others for the rest of the day.
+
+    This is the FIRST-connect path for the day, not a continuous
+    mid-session disconnect/reconnect mechanism — `_ticker_calendar_mark()`
+    seeds `_ticker_restart_done_global` the moment `do_connect()` is
+    called (regardless of whether that connect attempt itself actually
+    succeeds), so after the first in-window tick that doesn't hit a
+    CLOSED verdict, this function is a no-op for the rest of the day.
+    A ticker that drops mid-session is recovered by the separate,
+    continuously-running `_task_ticker_watchdog`, not here. The practical
+    effect of widening `window_end` to 23:55 in winter is: (a) the
+    closed-day recheck loop (a same-day special session discovered late)
+    keeps running for the extra ~25 minutes instead of going silent at
+    23:30, and (b) on a day that genuinely never connected (calendar
+    verdict stayed CLOSED, or every earlier in-window tick was skipped —
+    e.g. a cold process start after 23:30), the FIRST tick that can still
+    attempt a connect is no longer refused 25 minutes early.
     """
     global _ticker_restart_done_global
     if _ticker_restart_done_global == today:
         return
-    if not (dtime(8, 0) <= now.time() < dtime(23, 30)):
+    if not (dtime(8, 0) <= now.time() < _ticker_window_end(today)):
         return
     if await _ticker_calendar_decide_and_act(
         today, _snapshot_restart_ticker, label="08:00-23:30 tick", throttle=True,
