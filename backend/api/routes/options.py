@@ -2953,6 +2953,20 @@ class OptionsController(Controller):
         expiry_d = _chain_snapshot_parse_expiry(exp)
         spot, src, prev = await _chain_snapshot_resolve_spot(und, expiry_d)
 
+        # Close time for DTE/Greeks — MCX non-agri commodities close at
+        # 23:30/23:55 IST (DST-dependent; see mcx_non_agri_close_time())
+        # rather than NFO/equity's 15:30. Bug fixed 2026-11-21: this
+        # endpoint used to never pass close_time= at all, so it silently
+        # defaulted to 15:30 even for an MCX underlying — wrong by 8+
+        # hours every single day of the year, independent of DST season.
+        # See CLAUDE.md "MCX DST-aware non-agri close time".
+        _is_mcx = is_mcx_underlying(und)
+        if _is_mcx and expiry_d:
+            _ct = mcx_non_agri_close_time(expiry_d)
+            _close_time = (_ct.hour, _ct.minute)
+        else:
+            _close_time = (15, 30)
+
         from backend.api.routes.options_helpers import (
             _chain_snapshot_instruments,
             _chain_snapshot_batch_quote,
@@ -2967,7 +2981,7 @@ class OptionsController(Controller):
             return ChainSnapshotResponse(
                 underlying=und, expiry=exp, spot=spot, spot_source=src,
                 spot_prev_close=prev,
-                days_to_expiry=days_to_expiry(expiry_d) if expiry_d else 0.0,
+                days_to_expiry=days_to_expiry(expiry_d, close_time=_close_time) if expiry_d else 0.0,
                 risk_free_rate=DEFAULT_RISK_FREE,
                 atm_strike=None, rows=[],
             )
@@ -2978,19 +2992,19 @@ class OptionsController(Controller):
         )
 
         # 5. Time-to-expiry.
-        T_yrs = days_to_expiry(expiry_d) / 365.0 if expiry_d else 0.0
+        T_yrs = days_to_expiry(expiry_d, close_time=_close_time) / 365.0 if expiry_d else 0.0
 
         # 6. Per-strike IV + greeks.
         rows = _chain_snapshot_compute_rows(
             sym_by_strike, window_strikes, quote_resp, spot, T_yrs,
             ChainSnapshotLeg, ChainSnapshotRow,
-            is_mcx_underlying(und),
+            _is_mcx,
         )
 
         return ChainSnapshotResponse(
             underlying=und, expiry=exp, spot=spot, spot_source=src,
             spot_prev_close=prev,
-            days_to_expiry=days_to_expiry(expiry_d) if expiry_d else 0.0,
+            days_to_expiry=days_to_expiry(expiry_d, close_time=_close_time) if expiry_d else 0.0,
             risk_free_rate=DEFAULT_RISK_FREE,
             atm_strike=atm_strike, rows=rows,
         )
