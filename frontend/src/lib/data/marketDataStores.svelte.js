@@ -1125,7 +1125,22 @@ export function startBookPollers(intervalMs) {
   // increment — see bookChanged.js's debounce) triggers exactly one
   // forced _loadBookOnce(true) here: edge-triggered on an actual
   // backend event, never a resumed/continuous poll.
+  //
+  // Market-hours guard (2026-11 follow-up, operator-confirmed): bookChanged
+  // also bumps on fill_event/positions_refreshed, and book_changed itself
+  // fires on EVERY terminal order status (including each chase cancel-
+  // and-replace's CANCELLED postback) — during live trading hours that's
+  // a forced 5-store refresh per fill/cancel-replace in every open tab,
+  // pure redundant broker-layer load on top of the already-running 5 s
+  // poller, which already covers this. _snapshot_books_if_closed (the
+  // backend write this subscription exists to pick up) is itself a
+  // no-op while the market is open, so there's nothing new to fetch
+  // either way. Same condition _tickBookPollers already uses to decide
+  // "nothing in daily_book can change right now" — when the market is
+  // open, no-op entirely (not even the unforced path; the routine
+  // poller already has it covered).
   _bookChangedUnsub = subscribeSkipInitial(bookChanged, () => {
+    if (isNseOpen() || isMcxOpen()) return;
     _loadBookOnce(true);
   });
 }
