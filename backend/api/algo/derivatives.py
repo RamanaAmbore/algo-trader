@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import math
 import re
-from datetime import date, datetime
+from datetime import date, datetime, time
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -197,6 +197,40 @@ def days_to_expiry(expiry: date, *, ref: Optional[datetime] = None,
     delta = expiry_dt - ref
     days  = delta.total_seconds() / 86400.0
     return max(0.0, days)
+
+
+_US_EASTERN = ZoneInfo("America/New_York")
+
+
+def mcx_non_agri_close_time(date_: date) -> time:
+    """IST close time for MCX non-agri commodities (bullion/energy/base
+    metals — CRUDEOIL, NATURALGAS, GOLD, SILVER, COPPER, etc.) on `date_`.
+
+    MCX revises this close twice a year, tracking the US daylight-saving
+    calendar (confirmed via Zerodha/Upstox/ICICI Direct MCX trading-hours
+    bulletins):
+      - US DST active            → 23:30 IST
+      - US standard time (winter) → 23:55 IST
+
+    Resolved via the REAL US Eastern-time DST transition for `date_`'s
+    year through `zoneinfo` — never a hand-rolled "2nd Sunday of March /
+    1st Sunday of November" calculation, and never a hardcoded date
+    range, so this stays correct in every future year with zero manual
+    maintenance. A fixed noon-ET anchor on `date_` is a deliberate
+    simplification: DST itself flips at 02:00 US local time, nowhere
+    near noon, so the only residual ambiguity is the up-to-~10.5h IST↔ET
+    offset mis-anchoring the literal transition weekend by a day or two
+    — immaterial given the transition happens once a year and this is
+    used only to pick between a 23:30 and a 23:55 IST close time.
+
+    Example incident this fixes: MCX's real close on 2026-11-17 (winter
+    window) was 23:55 IST, not the hardcoded 23:30 — a CRUDEOIL position
+    genuinely still tradeable at 23:37 IST was being treated as already
+    past its own day's close (T<=0) for DTE/Greeks/payoff purposes.
+    """
+    anchor = datetime(date_.year, date_.month, date_.day, 12, 0,
+                      tzinfo=_US_EASTERN)
+    return time(23, 30) if anchor.dst() else time(23, 55)
 
 
 # ── Black-Scholes ─────────────────────────────────────────────────────
@@ -914,6 +948,21 @@ def futures_symbol_for_expiry(underlying: str, expiry: date) -> str:
     return f"{(underlying or '').upper()}{yy:02d}{mon}FUT"
 
 
+# Roots confirmed (live Kite instruments dump, 2026-11-21) to list a real
+# future every calendar month for the foreseeable near term — the full
+# cache scan below is a guaranteed no-op for them. This is deliberately a
+# SKIP-LIST of verified-safe roots, not an allowlist of "needs the scan":
+# every root NOT in this set still runs the full scan below, which is the
+# correct, if slower, answer for all of them. GOLD/SILVER (bi-monthly —
+# the bug this function exists to fix) and every other MCX root (base
+# metals, agri, GOLDM/GOLDGUINEA/...) were deliberately left off rather
+# than guessed at — an unverified root just costs one extra scan, while a
+# wrongly-added one would silently resurrect the "underlying_ltp stays 0"
+# bug. Re-verify against a fresh instruments dump before adding to this
+# set.
+_MCX_VERIFIED_MONTHLY_FUTURES = frozenset({"CRUDEOIL", "CRUDEOILM", "NATURALGAS"})
+
+
 def _mcx_nearest_future_symbol(underlying: str, expiry: date) -> str:
     """Resolve the real MCX future tradingsymbol to quote as the spot
     proxy for an option expiring on `expiry`.
@@ -932,8 +981,18 @@ def _mcx_nearest_future_symbol(underlying: str, expiry: date) -> str:
     resolution path in options_helpers.py. Returns the naive same-month
     symbol unchanged when the cache is cold or that exact symbol is
     actually listed — a no-op for every commodity that trades monthly.
+
+    Performance: this is called once per MCX option row on every
+    positions poll. For a root in `_MCX_VERIFIED_MONTHLY_FUTURES`, the
+    scan below is ALWAYS a no-op (the naive symbol is always listed), so
+    it returns immediately, before ever peeking the instruments cache —
+    skipping a walk of the full ~156K-row cross-exchange instruments
+    dump that would otherwise run on every call, for every MCX option,
+    even for commodities that never needed the bi-monthly fallback.
     """
     naive = futures_symbol_for_expiry(underlying, expiry)
+    if (underlying or "").upper() in _MCX_VERIFIED_MONTHLY_FUTURES:
+        return naive
     from backend.api import cache as _cache
     cached = _cache.peek_stale("instruments")
     if cached is None:
