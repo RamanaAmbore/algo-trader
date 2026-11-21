@@ -1958,18 +1958,46 @@ def _strategy_compute_curves(
     the fresh today_value curve; expiry_value is either freshly computed or
     rewritten from cache in place (see leg-curve-cache Phase-4 comment block).
     """
-    _lc_key = _leg_curve_cache_key(
-        resolved_legs, span_pct_resolved,
-        data_span_sigmas, pts, n_slices,
-    )
-    _lc_hit = _leg_curve_cache_get(_lc_key)
-
     curve = multileg_payoff_curve(
         resolved_legs, S=S,
         span_pct=span_pct_resolved,
         points=pts,
         eval_T=eval_T,
     )
+
+    if eval_T <= 0:
+        # At or past the nearest leg's own expiry, expiry_value collapses
+        # to per-leg intrinsic (max(S-K,0) / max(K-S,0)), which is NOT
+        # ratio-invariant with absolute spot the way away-from-expiry
+        # extrinsic+intrinsic value is — the x_ratio remap below assumes
+        # ratio-invariance and would silently freeze the curve at whatever
+        # spot was current the first time this leg geometry crossed T=0.
+        # Every cache-key input (T_years, sigma, span) also freezes at
+        # T=0, so a cached entry here would never naturally expire via a
+        # geometry change — only its sliding TTL, which itself keeps
+        # getting pushed forward by this same request. Bypass the cache
+        # entirely (no get, no put) and always use the curve just computed
+        # fresh above, at the CURRENT spot. T=0 intrinsic is O(1) per
+        # point, so there is no meaningful perf cost to never caching it.
+        slices = multileg_intermediate_curves(
+            resolved_legs, S=S,
+            span_pct=span_pct_resolved,
+            points=pts,
+            time_slices=n_slices,
+        )
+        max_p, max_l = multileg_extremes(curve)
+        agg_rr = risk_reward_ratio(max_p, max_l)
+        logger.debug(
+            "[leg-curve-cache] bypass (eval_T<=0, at/past expiry) legs=%d pts=%d",
+            len(resolved_legs), pts,
+        )
+        return curve, slices, max_p, max_l, agg_rr
+
+    _lc_key = _leg_curve_cache_key(
+        resolved_legs, span_pct_resolved,
+        data_span_sigmas, pts, n_slices,
+    )
+    _lc_hit = _leg_curve_cache_get(_lc_key)
 
     if _lc_hit is not None:
         _ev_norm: list[float] = _lc_hit["expiry_values_norm"]
