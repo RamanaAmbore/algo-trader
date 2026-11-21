@@ -416,23 +416,17 @@ export const fundsStore = createDataStore({
 
 // ── Orders ────────────────────────────────────────────────────────────────
 //
-// Order book SWR extension (PLAN.md Part B, item B1). The actual blank-
-// on-reload surface reported was OrderBook.svelte's OWN `orderRows`/
-// `_loading` local state (shown as "Loading…" until its first fetch
-// resolved) — NOT the /orders page's own `orders = $state([])`, which is
-// nearly dead code. This promotes the merge logic OrderBook.svelte used
-// to own locally — fetchOrders()+fetchAlgoOrdersRecent() dedup, chase
-// cancel-and-replace supersede tracking, and the session-boundary filter
-// — to this shared createDataStore singleton, so every mount of
-// OrderBook.svelte (across /orders, SymbolPanel embeds, etc.) shares one
-// poll and paints last-good rows immediately on reload instead of
-// "Loading…". LogPanel.svelte keeps its own INDEPENDENT order merge for
-// its Orders/Console tabs (mode/simScope-branching fetchers don't fit
-// createDataStore's key-stable, must-throw contract cleanly) — see that
-// file's own Tier-2 hydrate-and-persist pair (PLAN.md B2) for its
-// treatment of the identical reload-blank problem. `HeldOrdersCard.svelte`
-// and `ChaseCard.svelte` are deliberately OUT of scope for this store —
-// lower-traffic surfaces, not the reported pain point.
+// This store owns the merge logic OrderBook.svelte used to own locally —
+// fetchOrders()+fetchAlgoOrdersRecent() dedup, chase cancel-and-replace
+// supersede tracking, and the session-boundary filter — as a shared
+// createDataStore singleton, so every mount of OrderBook.svelte (across
+// /orders, SymbolPanel embeds, etc.) shares one poll and paints last-good
+// rows immediately on reload instead of "Loading…". LogPanel.svelte keeps
+// its own INDEPENDENT order merge for its Orders/Console tabs
+// (mode/simScope-branching fetchers don't fit createDataStore's
+// key-stable, must-throw contract cleanly). `HeldOrdersCard.svelte` and
+// `ChaseCard.svelte` are deliberately OUT of scope for this store —
+// lower-traffic surfaces.
 
 /** Mirrors OrderBook.svelte's own `_STATUS_PREDICATES` table (open/held/
  *  complete only — the three needed by the merge/session-filter below).
@@ -453,9 +447,10 @@ function _ordersIsCompleteStatus(/** @type {string} */ st) {
   return st === 'COMPLETE' || st === 'FILLED';
 }
 
-/** Row timestamp → epoch-ms — ported verbatim from OrderBook.svelte's
- *  pre-B1 `_rowTsMs` (see that file's history for the Safari Date.parse
- *  non-ISO-string rationale). */
+/** Row timestamp → epoch-ms. The regex path handles a non-ISO
+ *  "YYYY-MM-DD HH:MM:SS" broker timestamp (assumed IST) that Safari's
+ *  Date.parse can't handle directly; `created_at` is assumed UTC unless
+ *  it already carries a zone suffix. */
 function _ordersRowTsMs(/** @type {any} */ o) {
   if (o?.order_timestamp) {
     const s = String(o.order_timestamp).trim();
@@ -470,11 +465,10 @@ function _ordersRowTsMs(/** @type {any} */ o) {
   return NaN;
 }
 
-/** Drops TERMINAL rows from a PRIOR trading session (08:00 IST rollover) —
- *  ported verbatim from OrderBook.svelte's pre-B1 `_isCurrentSessionRow`.
+/** Drops TERMINAL rows from a PRIOR trading session (08:00 IST rollover).
  *  Still-working (OPEN/TRIGGER PENDING) and HELD/CANCEL_FAILED rows are
- *  NEVER dropped regardless of age — operator instruction (2026-09-30):
- *  "keep them visible until reconciled." */
+ *  NEVER dropped regardless of age — operator instruction: "keep them
+ *  visible until reconciled." */
 function _ordersIsCurrentSessionRow(/** @type {any} */ o) {
   const st = (o?.status || '').toUpperCase();
   if (_ordersIsOpenStatus(st)) return true;
@@ -484,15 +478,14 @@ function _ordersIsCurrentSessionRow(/** @type {any} */ o) {
   return isCurrentTradingSession(ms);
 }
 
-// ── Chase cancel-and-replace dedup (ported verbatim from OrderBook.svelte's
-// pre-B1 2026-10-23 fix — see that file's git history for the full race
-// rationale: during a chase cancel-and-replace, the algo row moves on to a
-// NEW broker_order_id immediately, but the broker's own order book can lag
-// behind the cancel by a second or more, producing a confusing duplicate
-// "open" card for the just-superseded order). Module-level (not $state) —
-// this is fetch-cycle bookkeeping, never rendered directly. Now shared
-// across every OrderBook.svelte mount instead of per-component-instance,
-// which is strictly more correct: there is only one real fetch cycle now. */
+// ── Chase cancel-and-replace dedup — during a chase cancel-and-replace,
+// the algo row moves on to a NEW broker_order_id immediately, but the
+// broker's own order book can lag behind the cancel by a second or more,
+// producing a confusing duplicate "open" card for the just-superseded
+// order. Module-level (not $state) — this is fetch-cycle bookkeeping,
+// never rendered directly. Shared across every OrderBook.svelte mount
+// instead of per-component-instance, since there is only one real fetch
+// cycle now.
 let _ordersPrevAlgoBrokerIdById = new Map();
 /** @type {Map<string, {algoOrderId: any, ts: number}>} */
 let _ordersSupersededBrokerIds = new Map();
@@ -503,16 +496,20 @@ let _ordersBackendSupersededIds = new Set();
 
 /**
  * Predicate the merge filter below calls to decide which broker_order_id
- * counts as superseded — ported verbatim from OrderBook.svelte's pre-B1
- * `_isSupersededBrokerId` (including that function's own doc comment,
- * which claimed OrderBook.svelte's Cancel-button guard also called it;
- * checked against the real pre-B1 code and that claim was already
- * inaccurate THEN — `_cancelRow`'s stale-broker-id guard has always done
- * its own independent, fresh re-fetch instead, precisely because this
- * predicate only ever reflects the LAST POLL's snapshot, not "right now"
- * — see that function's own comment in OrderBook.svelte). Exported so a
- * future consumer of this module's merge semantics has one place to read
- * it from; not currently called from outside `_fetchOrdersMerged` itself.
+ * counts as superseded. The backend's `AlgoOrderInfo.superseded_broker_
+ * order_ids` field (always present, default `[]`) is the primary source
+ * — `_ordersBackendSupersededShipped` is recomputed from the CURRENT
+ * poll's algoRows every fetch, so it only reads `true` when this poll's
+ * algo leg actually succeeded and carried the field. A rejected/empty
+ * algo leg (a transient outage) makes it `false` for that cycle, and
+ * this predicate falls back to `_ordersSupersededBrokerIds` — the
+ * poll-derived map below, which still holds a just-superseded id for up
+ * to `_ORDERS_SUPERSEDED_GRACE_MS` even when the current poll's algo
+ * fetch failed. This fallback is a real, reachable safety net for that
+ * window, not dead code — do not remove it on the assumption that the
+ * backend field alone is sufficient. Not currently called from outside
+ * `_fetchOrdersMerged` itself; exported so a future consumer of this
+ * module's merge semantics has one place to read it from.
  * @param {string} bid
  */
 export function isOrderSuperseded(bid) {
@@ -521,22 +518,14 @@ export function isOrderSuperseded(bid) {
 }
 
 /**
- * Fetch + merge the broker order book with the algo order book — ported
- * verbatim from OrderBook.svelte's pre-B1 `_loadOrders` (see that file's
- * git history for every individual fix's own rationale: Sprint 2a's
- * broker_order_id dedup key, the chase-field passthrough, the
- * hold_json passthrough, etc.).
+ * Fetch + merge the broker order book with the algo order book.
  *
  * Fetcher-must-throw contract (createDataStore's keep-last-good path) —
- * OrderBook.svelte's OWN pre-B1 code used `Promise.allSettled` and
- * silently returned early (freezing `orderRows` by hand) when the broker
- * leg rejected. That was a second, parallel freeze mechanism duplicating
- * what `createDataStore`'s `_fetch` catch handler already does for every
- * other store in this module. A rejected broker leg now THROWS, so
- * `_value` stays at last-good and `_error`/`meta.fetchFailed` are set by
- * the shared mechanism instead. A rejected ALGO leg does NOT throw —
- * `algoRows` degrades to `[]`, matching the pre-B1 tolerance (the algo
- * book is a secondary/enrichment source here, not the authoritative one).
+ * a rejected broker leg THROWS, so `_value` stays at last-good and
+ * `_error`/`meta.fetchFailed` are set by `createDataStore`'s own `_fetch`
+ * catch handler, same as every other store in this module. A rejected
+ * ALGO leg does NOT throw — `algoRows` degrades to `[]`, since the algo
+ * book is a secondary/enrichment source here, not the authoritative one.
  */
 async function _fetchOrdersMerged() {
   const [brokerResp, algoResp] = await Promise.allSettled([

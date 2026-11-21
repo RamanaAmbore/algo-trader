@@ -271,8 +271,7 @@
   // on the mode→tab/filter ROUTING branches running unconditionally on
   // first mount, so the hydrate fix must only ever skip the CLEAR, never
   // the routing — see the hydrate IIFE's own comment for the full
-  // rationale and the earlier (confirmed wrong) "no live caller passes
-  // mode" claim this corrects.
+  // rationale.
   let _hydratedForMode;
   $effect(() => {
     if (!mode) return;
@@ -281,9 +280,10 @@
     // (_lastMode still at its initial `null`) AND only when the current
     // `mode` matches what the hydrate IIFE actually saw — the hydrated
     // orderRows/agentLog/simLog are already correct for THIS mode, so
-    // wiping them would just reintroduce the exact blank-flash B2 exists
-    // to remove. Any later genuine mode change (including a flip back to
-    // the same value after visiting another mode) clears normally.
+    // wiping them would just reintroduce the exact blank-flash the
+    // Tier-2 hydrate exists to remove. Any later genuine mode change
+    // (including a flip back to the same value after visiting another
+    // mode) clears normally.
     const skipClear = _lastMode === null && mode === _hydratedForMode;
     _lastMode = mode;
     // Clear stale in-memory rows on mode switch so the chip filter
@@ -319,16 +319,17 @@
   let simLog      = $state(/** @type {any[]} */ ([]));
   let alertsLog   = $state(/** @type {any[]} */ ([]));   // AlertEvent rows (agent-fire history)
 
-  // ── Tier-2 hydrate-and-persist (PLAN.md Part B, item B2) ────────────────
+  // ── Tier-2 hydrate-and-persist ───────────────────────────────────────
   // The reload/tab-switch SWR extension (`createDataStore`, Tier-1 $state
   // + Tier-2 localStorage) isn't a clean fit for this component's own
   // streams: the mode-switch-wipe $effect above clears state right after
   // mount, `_loadAgents`'s fetcher branches on `wantSim` (not key-stable),
   // and `_loadOrders`/`_loadAlerts` use `Promise.allSettled`/try-catch
   // without throwing on partial failure (keep-last-good is already
-  // hand-rolled per-stream here, unlike OrderBook.svelte's B1 fix — see
-  // that file's own comment for why ITS merge moved into a real
-  // `createDataStore`). Instead: a lightweight, per-component-instance
+  // hand-rolled per-stream here — OrderBook.svelte's own order-book merge
+  // moved into a real `createDataStore` instead, since its fetcher is
+  // key-stable and can throw cleanly on partial failure). Instead: a
+  // lightweight, per-component-instance
   // read-before-first-fetch + write-on-success pair directly against
   // `persistentCache.js`'s localStorage-backed cache — just enough to
   // paint last-good rows on a hard reload instead of blank/"Loading…",
@@ -732,7 +733,7 @@
       const data = wantSim ? await fetchSimEvents(100)
                            : await fetchRecentAgentEvents(100);
       agentLog = Array.isArray(data) ? data : [];
-      // Tier-2 persist (B2) — success path only, so a keep-last-good
+      // Tier-2 persist — success path only, so a keep-last-good
       // catch never writes a degraded/empty result over a good cache.
       _persistAgentTabCache(wantSim);
     } catch (_) { /* keep last-good */ }
@@ -764,7 +765,7 @@
     try {
       const data = await fetchAlertsHistory({ limit: 200, since_minutes: 1440, sim_mode: false });
       alertsLog = Array.isArray(data?.events) ? data.events : (Array.isArray(data) ? data : []);
-      // Tier-2 persist (B2) — success path only.
+      // Tier-2 persist — success path only.
       _persistAlertsCache();
     } catch (_) { /* keep last-good */ }
   }
@@ -1033,17 +1034,16 @@
         //
         // `_rowOrigin` stamped here is the explicit origin flag
         // `_isOpenBroker` below reads instead of the old `!o?.mode`
-        // heuristic — mirrors OrderBook.svelte's identical fix.
-        // 2026-11-02 (PLAN.md items 2/4) — `hold_json` added to the
-        // passthrough, mirroring OrderBook.svelte's identical fix. A
-        // broker-fetched row never carries it (hold bookkeeping lives
-        // only on the AlgoOrder row); without this, the held-pending-
-        // release toast silently read `undefined` the instant a live,
-        // chased order reached the broker book.
-        // `template_id`/`attached_gtts_json` were part of this same
-        // passthrough until 2026-11 (Track 3, T3.6, Bracket/Template/GTT
-        // removal) dropped both columns from AlgoOrder/AlgoOrderInfo —
-        // removed here as the now-permanently-dead fields they'd become.
+        // heuristic — mirrors OrderBook.svelte's identical fix. `hold_json`
+        // is also in the passthrough, mirroring OrderBook.svelte's
+        // identical fix: a broker-fetched row never carries it (hold
+        // bookkeeping lives only on the AlgoOrder row); without this, the
+        // held-pending-release toast silently read `undefined` the instant
+        // a live, chased order reached the broker book. `template_id`/
+        // `attached_gtts_json` were part of this same passthrough until
+        // the Bracket/Template/GTT removal dropped both columns from
+        // AlgoOrder/AlgoOrderInfo entirely — removed here as the
+        // now-permanently-dead fields they'd become.
         const merged = [
           ...brokerRows.map(o => {
             const _m = _algoByBrokerId.get(String(o?.order_id || ''));
@@ -1059,14 +1059,13 @@
           return tb - ta;
         });
         orderRows = merged;
-        // Channel-agnostic fresh-books trigger (2026-09-30 follow-up to
-        // c90a9d04) — same wiring as OrderBook.svelte's _loadOrders. See
-        // orderFillDetector.js header for the full channel inventory this
-        // closes (live broker-order-book TTL refresh, 5-min
-        // open_order_watchdog sweep, admin reconcile — none broadcast a
-        // WS event today).
+        // Channel-agnostic fresh-books trigger — same wiring as
+        // OrderBook.svelte's _loadOrders. See orderFillDetector.js header
+        // for the full channel inventory this closes (live broker-order-
+        // book TTL refresh, 5-min open_order_watchdog sweep, admin
+        // reconcile — none broadcast a WS event today).
         noteOrderPollFills(merged);
-        // Tier-2 persist (B2) — success path only. orderEvents/gttRows
+        // Tier-2 persist — success path only. orderEvents/gttRows
         // haven't landed yet (fire-and-forget below); their own .then()
         // callbacks re-persist the combined entry once they do.
         _persistOrderTabCache();

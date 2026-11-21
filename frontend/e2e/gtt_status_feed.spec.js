@@ -67,14 +67,19 @@ test('order book no longer imports fetchGtts/cancelGtt or renders a GTT chip/car
 // exclusive to OrderBook's own guarded poll) no longer has an exclusive
 // endpoint to intercept now that OrderBook never calls fetchGtts() at
 // all — it would otherwise observe zero requests and vacuously pass.
-// withGuard's own unit mechanics stay covered by withGuard.test.js; this
-// just pins that OrderBook's onMount still wires BOTH the immediate call
-// and the visibleInterval tick through the SAME guarded instance.
-test('order book wraps its poll loop in exactly one withGuard-wrapped _loadOrders, shared by the immediate call and every interval tick', () => {
-  expect(BOOK).toMatch(/const _guardedLoadOrders = withGuard\(_loadOrders\);/);
-  const mountBlock = BOOK.slice(BOOK.indexOf('const _guardedLoadOrders = withGuard(_loadOrders);'));
+//
+// OrderBook's own `withGuard`-wrapped poll loop was removed (dead-code
+// cleanup): `_loadOrders()` delegates to the shared `ordersStore.load()`
+// (marketDataStores.svelte.js/dataStore.svelte.js), whose own in-flight
+// dedup already shares one fetch across overlapping calls with the same
+// args, so the local guard was redundant. This now pins that OrderBook
+// no longer imports/uses withGuard, and that the immediate call and the
+// visibleInterval tick both call `_loadOrders()` directly (no wrapper).
+test('order book no longer wraps its poll loop in withGuard — ordersStore.load() already dedupes overlapping calls', () => {
+  expect(BOOK).not.toMatch(/withGuard/);
+  const mountBlock = BOOK.slice(BOOK.indexOf('onMount(() => {'));
   const nextFn = mountBlock.indexOf('\n  }', 40);
   const scoped = mountBlock.slice(0, nextFn > 0 ? nextFn : undefined);
-  expect(scoped).toMatch(/_guardedLoadOrders\(\);/);
-  expect(scoped).toMatch(/visibleInterval\(\(\) => \{ _guardedLoadOrders\(\); \}, pollMs\)/);
+  expect(scoped).toMatch(/\n    _loadOrders\(\);/);
+  expect(scoped).toMatch(/visibleInterval\(\(\) => \{ _loadOrders\(\); \}, pollMs\)/);
 });

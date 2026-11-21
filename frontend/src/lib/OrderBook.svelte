@@ -43,7 +43,7 @@
    *                    card's chip/card-grid presentation of it is gone.
    */
   import { onMount, onDestroy, untrack } from 'svelte';
-  import { visibleInterval, formatDualTz, withGuard } from '$lib/stores';
+  import { visibleInterval, formatDualTz } from '$lib/stores';
   import { fetchAlgoOrdersRecent, cancelOrder, reconcileSingleOrder, fetchOrderEventsById } from '$lib/api';
   import { ordersStore } from '$lib/data/marketDataStores.svelte.js';
   import { priceFmt } from '$lib/format';
@@ -80,45 +80,27 @@
     isFullscreen  = $bindable(false),
   } = $props();
 
-  // ── Data (B1 SWR extension, PLAN.md Part B) ────────────────────────────
-  // `orderRows`/`_loading` used to be local $state assigned from this
-  // component's own `_loadOrders()` merge. Both the merge logic (broker +
-  // algo dedup, chase cancel-and-replace supersede tracking, session-
-  // boundary filter) and the fetch itself are now owned by the shared
-  // `ordersStore` singleton (marketDataStores.svelte.js) so every mount of
-  // this component shares one poll AND paints last-good rows immediately
-  // on reload instead of "Loading…" — see that module's own "Orders"
-  // section header comment for the full rationale. LogPanel.svelte keeps
-  // its own independent order merge (its Orders/Console tabs) — unaffected
-  // by this; see that file's own Tier-2 hydrate-and-persist pair (PLAN.md
-  // B2) for its treatment of the identical reload-blank problem.
+  // ── Data ─────────────────────────────────────────────────────────────
+  // `orderRows`/`_loading` read the shared `ordersStore` singleton
+  // (marketDataStores.svelte.js), which owns the fetch + merge logic
+  // (broker/algo dedup, chase cancel-and-replace supersede tracking,
+  // session-boundary filter) so every mount of this component shares one
+  // poll AND paints last-good rows immediately on reload instead of
+  // "Loading…". LogPanel.svelte keeps its own independent order merge for
+  // its Orders/Console tabs.
   const orderRows = $derived(ordersStore.value ?? []);
-  // `_loading` here means "we have no data yet to show" (cold start with
-  // no Tier-2 cache hit, first fetch still pending), NOT "a fetch happens
-  // to be in flight right now". `ordersStore.loading` flips `true` at the
-  // START of EVERY poll (createDataStore's own `_fetch`, success or not)
-  // and back to `false` once it lands — using it directly here would
-  // blank the grid to "Loading…" on every single ~5s poll tick (via
-  // `_defaultActiveId`'s own `_loading`-gated branch below, which would
-  // resolve to `null` → `_applyStatusFilter` returns `[]`), and would ALSO
-  // hide an already-hydrated Tier-2 cache hit behind "Loading…" for the
-  // brief window between mount and the first fetch resolving — exactly
-  // the blank-on-reload problem B1 exists to remove. `ordersStore.value`
-  // stays non-null (even an empty array) once ANY fetch has ever
-  // succeeded OR failed (stale-while-error keeps the prior value, never
-  // resets to null), so this mirrors the original local `_loading`
-  // $state's one-shot-false-forever behaviour exactly.
+  // `_loading` means "no data has ever landed yet" (cold start, no cache
+  // hit, first fetch still pending) — NOT "a fetch is in flight right
+  // now". `ordersStore.loading` flips true at the START of every poll
+  // (success or not), so using it directly here would blank the grid to
+  // "Loading…" on every ~5s poll tick. `ordersStore.value` stays non-null
+  // (even an empty array) once any fetch has ever succeeded or failed.
   //
-  // `!ordersStore.meta.fetchFailed` (not just `!ordersStore.error`) —
-  // `_error` is reset to `null` SYNCHRONOUSLY at the start of every poll
-  // attempt (dataStore.svelte.js's `_fetch`), including a retry during a
-  // sustained cold-start outage with no cache — without this,
-  // `value==null && !error` would flip back `true` for the duration of
-  // every retry, flickering the grid between "Loading…" and "No orders
-  // today" each poll cycle. `meta.fetchFailed` stays `true` across
-  // repeated failures (only cleared by the NEXT success — see
-  // markFetchFailedMeta's own doc in dataStore.svelte.js), so once a
-  // genuine failure has been recorded, this gate stays stable at `false`.
+  // `!ordersStore.meta.fetchFailed` (not just `!ordersStore.error`) — the
+  // error is reset to `null` at the START of every retry too, so without
+  // this the grid would flicker between "Loading…" and "No orders today"
+  // on each retry during a sustained outage. `meta.fetchFailed` stays
+  // `true` across repeated failures, only cleared by the next success.
   const _loading  = $derived(ordersStore.value == null && !ordersStore.error && !ordersStore.meta.fetchFailed);
 
   // `_internalStatus` is set the moment the operator clicks a chip and
@@ -128,25 +110,15 @@
   // (now-inert) `statusFilter` prop — see its JSDoc above for why.
   let _internalStatus = $state(/** @type {string|null} */ (null));
 
-  // ── Chase cancel-and-replace dedup / row-timestamp / session-boundary
-  // filter — all moved to the shared `ordersStore` fetcher in
-  // marketDataStores.svelte.js (B1 SWR extension). See that module's
-  // `_fetchOrdersMerged`/`isOrderSuperseded`/`_ordersRowTsMs`/
-  // `_ordersIsCurrentSessionRow` for the ported-verbatim logic — this
-  // component no longer needs its own copy of any of it.
-
   /**
    * Trigger a background refresh of the shared `ordersStore`.
    * `opts.force=true` bypasses createDataStore's in-flight dedup — used
    * by every MANUAL trigger (CardHeader's refresh button, the post-
    * cancel/post-reconcile reloads below) so an operator-initiated
    * refresh is never silently coalesced into an already-in-flight
-   * routine poll's result — mirrors this function's pre-B1 contract,
-   * where the raw (unguarded) `_loadOrders()` always ran a genuinely
-   * fresh fetch regardless of any poll tick in flight. The routine poll
-   * tick (onMount/visibleInterval below) deliberately omits `force` —
-   * `createDataStore`'s own in-flight dedup means overlapping ticks are
-   * free, no second guard needed.
+   * routine poll's result. The routine poll tick (onMount/visibleInterval
+   * below) deliberately omits `force` — `createDataStore`'s own in-flight
+   * dedup means overlapping ticks already share one fetch for free.
    * @param {{force?: boolean}} [opts]
    */
   async function _loadOrders(opts) {
@@ -218,28 +190,17 @@
   const _intervals = [];
 
   onMount(() => {
-    // In-flight guard on the poll cadence (audit fix, 2026-10-02) — a slow
-    // response (network blip, broker lag) could previously still be
-    // in-flight when the next visibleInterval tick fired, stacking a
-    // second concurrent fetch for the same resource. Mirrors LogPanel's
-    // `_every()` (LogPanel.svelte:392-404): the immediate call and every
-    // interval tick share the SAME guarded instance. Belt-and-suspenders
-    // now that `_loadOrders` delegates to the shared `ordersStore` (B1 —
-    // see marketDataStores.svelte.js): `createDataStore`'s own in-flight
-    // dedup already makes two overlapping, non-forced `.load()` calls
-    // share one fetch for free, so this wrapper is mostly redundant but
-    // harmless to keep.
-    //
+    // The immediate call and every interval tick below call `_loadOrders()`
+    // with no `force` — `ordersStore.load()`'s own in-flight dedup
+    // (dataStore.svelte.js) already shares one fetch across overlapping
+    // calls with the same (empty) args, so no local guard is needed here.
     // Manual triggers (_cancelRow/_reconcileRow's post-action reload,
-    // CardHeader's onRefresh button) deliberately keep calling
-    // `_loadOrders({ force: true })` below, NOT this guarded wrapper —
-    // an operator-initiated refresh must never be silently coalesced into
-    // an already-in-flight routine poll's result just because a tick
-    // happens to be in-flight at that instant.
-    const _guardedLoadOrders = withGuard(_loadOrders);
-    _guardedLoadOrders();
+    // CardHeader's onRefresh button) deliberately call
+    // `_loadOrders({ force: true })` instead, so an operator-initiated
+    // refresh is never coalesced into an in-flight routine poll's result.
+    _loadOrders();
     if (pollMs > 0 && typeof document !== 'undefined') {
-      const teardown = visibleInterval(() => { _guardedLoadOrders(); }, pollMs);
+      const teardown = visibleInterval(() => { _loadOrders(); }, pollMs);
       _intervals.push(teardown);
     }
   });
@@ -336,18 +297,16 @@
 
   /**
    * Returns true when the order is an OPEN broker order that can be acted
-   * on (Modify/Cancel). Sprint 2a fix — this used to test `!o?.mode` as a
-   * proxy for "is this a bare broker row" (broker rows carried no `mode`
-   * field, algo rows always did), which happened to work only because
-   * nothing else about a broker row's shape had changed yet. Now that
-   * `AlgoOrderInfo` rows carry more surfaced fields (`broker_order_id`,
-   * `source`, `agent_id`) — and any future broker-row enrichment could
-   * just as easily add a `mode`-shaped field of its own — an implicit
-   * "absence of a field" test is the wrong long-term signal for origin.
-   * `_rowOrigin` is stamped explicitly in `_loadOrders` at the one point
-   * each row's real source (fetchOrders() vs fetchAlgoOrdersRecent()) is
-   * known, so this check never depends on which fields happen to be
-   * present or absent on either shape.
+   * on (Modify/Cancel). Testing `!o?.mode` as a proxy for "is this a bare
+   * broker row" is the wrong long-term signal — `AlgoOrderInfo` rows carry
+   * surfaced fields (`broker_order_id`, `source`, `agent_id`) that a
+   * future broker-row enrichment could just as easily add a `mode`-shaped
+   * field of its own. `_rowOrigin` is stamped explicitly by the shared
+   * `ordersStore`'s fetcher (`_fetchOrdersMerged` in
+   * marketDataStores.svelte.js) at the one point each row's real source
+   * (fetchOrders() vs fetchAlgoOrdersRecent()) is known, so this check
+   * never depends on which fields happen to be present or absent on
+   * either shape.
    */
   function _isOpenBroker(/** @type {any} */ o) {
     const st = (o?.status || '').toUpperCase();
@@ -573,11 +532,10 @@
 <!-- Order card grid -->
   <div class="ob-status-bar scroll-x">
     {#each [
-      // Item 3 (2026-11-02, PLAN.md) — "Held" → "Pending" for the
-      // template-exit-hold mechanism (order_hold_gate.py); "Attn" (the
-      // CANCEL_FAILED half of this combined chip) is unaffected — a
-      // failed cancel is a genuine attention-needed state, not a
-      // release-pending one.
+      // "Held" → "Pending" for the template-exit-hold mechanism
+      // (order_hold_gate.py); "Attn" (the CANCEL_FAILED half of this
+      // combined chip) is unaffected — a failed cancel is a genuine
+      // attention-needed state, not a release-pending one.
       { id: 'held',               label: 'Pending/Attn',       status: 'held',    count: _statusCounts.held },
       { id: 'chase',              label: 'Chase',              status: 'chase',   count: _statusCounts.chase },
       { id: 'open',               label: 'Open',               status: 'running', count: _statusCounts.open },

@@ -3642,23 +3642,11 @@
   // this so they re-trigger after the async fetch lands; without it,
   // the page would render with an empty proxy cache and never refresh.
   let proxyTableReady  = $state(false);
-  // chainUnderlying (a leftover of the removed chain-picker panel, whose
-  // only remaining live consumer was onTicketSubmit's draft-branch
-  // fallback below) was removed entirely (2026-11 follow-up audit): its
-  // own effect just mirrored `underlyingChoices[0]` one tick later, so
-  // that fallback now reads `underlyingChoices[0]` directly — same
-  // value, no separate $state/$effect pair to keep in sync.
-  // chainExpiry/chainKinds/chainSide/chainLots had no live consumer
-  // left and were removed in the same 2026-11 dead-code sweep that
-  // removed addOptionToBasket/addFutureDraft/chainFutures (see
-  // derivatives_chain_picker_panel_removed.spec.js).
 
   // `_quickKeyOpt`/`_quickKeyFut` build the dedupe/toast key for a
   // basket leg; `_mergeIntoBasket` is the shared bump-lots-on-dupe
-  // helper. Both are still live — the only caller left is
-  // SymbolPanel's `onAddToBasket` callback further down this file
-  // (the direct-to-basket quick-add buttons that used to call these
-  // too were removed in the same 2026-11 dead-code sweep as above).
+  // helper. The only caller left is SymbolPanel's `onAddToBasket`
+  // callback further down this file.
   function _quickKeyOpt(strike, optType) { return `o:${strike}:${optType}`; }
   function _quickKeyFut(sym)             { return `f:${sym}`; }
 
@@ -5821,15 +5809,13 @@
                    onclick={(e) => { e.stopPropagation(); toggleAllCandidates(); }} />
             <!-- State column header — matches second grid-template-columns track (28px).
                  Not sortable. Removed from layout entirely (not just blanked) on the
-                 unpaired 'legs' view (2026-11 operator correction, reversing the earlier
-                 "keep St visible on all 3 views" decision) — that view's entire point is
-                 to show positions WITHOUT CE/PE pairing, so a pairing-state column there
-                 is meaningless. `.cand-grid-no-state` (below) drops the matching 28px
-                 track from the parent grid at the same time this header cell is removed,
-                 so the remaining columns reflow with no empty gap. Stays visible on
-                 'paired' (today's existing Paired-mode behavior, unchanged) and on
-                 'expiry' (the track stays, but each row's own cell renders empty —
-                 CandidateLegRow.svelte's pre-existing, unchanged 2026-10-17 decision). -->
+                 unpaired 'legs' view — that view's entire point is to show positions
+                 WITHOUT CE/PE pairing, so a pairing-state column there is meaningless.
+                 `.cand-grid-no-state` (below) drops the matching 28px track from the
+                 parent grid at the same time this header cell is removed, so the
+                 remaining columns reflow with no empty gap. Stays visible on 'paired'
+                 and on 'expiry' (the track stays, but each row's own cell renders
+                 empty — CandidateLegRow.svelte's own decision). -->
             {#if legsTab !== 'legs'}
               <span class="cand-state-hdr" title="Position state: GTT (green) / Paired (cyan) / Orphan (amber)">St</span>
             {/if}
@@ -6019,10 +6005,10 @@
                 <input type="checkbox" checked disabled
                   title="Always included — underlying reference, not a tradable leg" />
               </span>
-              <!-- St cell removed from layout on the unpaired 'legs' view (2026-11
-                   operator correction) — this row never renders on 'expiry' (see
-                   `legsUnderlyingAnchor`'s own gate above), so the only other mode
-                   it can appear in is 'paired', where the badge still shows. -->
+              <!-- St cell removed from layout on the unpaired 'legs' view — this
+                   row never renders on 'expiry' (see `legsUnderlyingAnchor`'s own
+                   gate above), so the only other mode it can appear in is
+                   'paired', where the badge still shows. -->
               {#if legsTab !== 'legs'}
                 <span class="cand-state-cell"
                   style:background={_anchorBadge.bg}
@@ -6174,8 +6160,8 @@
               <span></span>
               <!-- Checkbox-track filler above; this is the state-track filler —
                    removed from layout on 'legs' in lockstep with the header's
-                   and every leg row's own St cell (2026-11 operator correction),
-                   so the TOTAL row's tracks keep matching the parent grid's. -->
+                   and every leg row's own St cell, so the TOTAL row's tracks
+                   keep matching the parent grid's. -->
               {#if legsTab !== 'legs'}
                 <span></span>
               {/if}
@@ -6454,16 +6440,16 @@
                 panel title="Greeks (position)" text={'Sum of every leg\'s signed-qty Greeks, including +qty per enabled equity-holding leg (long stock = +1 Δ/share). Θ / 𝒱 / Γ / ρ stay option-only since vanilla stock has zero convexity, decay, IV and rate sensitivity.'} />
             {/snippet}
           </CardHeader>
-          <!-- Header-row + value-row grid (2026-11-18 restructure, operator
-               request): the 5 Greek symbols now form ONE header row, their 5
-               values form ONE data row directly below, each value aligned
-               under its own header. No `.kv-pair` wrapper is needed any more
-               — `.opt-kv-greeks` uses `grid-template-columns: repeat(5, ...)`
-               with no explicit `grid-row`, so the browser's default
-               row-major auto-placement puts these 10 flat children into
-               exactly 2 rows: the 5 `.kv-k` labels fill row 1, the 5 `.kv-v`
-               values fill row 2, each value landing in the same column
-               track as its own header. -->
+          <!-- Header-row + value-row grid: the 5 Greek symbols form ONE
+               header row, their 5 values form ONE data row directly below,
+               each value aligned under its own header. No `.kv-pair`
+               wrapper is needed — `.opt-kv-greeks` uses
+               `grid-template-columns: repeat(5, ...)` with no explicit
+               `grid-row`, so the browser's default row-major
+               auto-placement puts these 10 flat children into exactly 2
+               rows: the 5 `.kv-k` labels fill row 1, the 5 `.kv-v` values
+               fill row 2, each value landing in the same column track as
+               its own header. -->
           <div class="opt-kv opt-kv-greeks">
             <span class="kv-k kv-k-greek" bind:this={_sumHintAnchor.delta} role="button" tabindex="0"
                   aria-expanded={_sumHintOpen.delta}
@@ -6510,19 +6496,14 @@
                 panel title="Risk &amp; expected value" text={'Aggregate risk + expected value across all legs. Probability-weighted outcomes integrated against the lognormal pdf of the underlying using a qty-weighted IV proxy. POP × magnitudes captures the asymmetry that POP alone misses.'} />
             {/snippet}
           </CardHeader>
-          <!-- 2026-11-18 restructure (operator request): a strict 2-column
-               grid (label | value) with each `.kv-pair` set to `display:
-               contents` so its own label + value cells fall directly into
-               the grid as one row — one metric per row, 6 rows (5 when
-               EV/cost's `{#if}` guard below hides it).
-               2026-11-19 follow-up — first described (immediately above)
-               as "no header row expected"; the operator then said this
-               card "can have a header too", so a real header row was
-               added. The 6 `.kv-risk-colhdr` spans below are the header
-               cells for 3 metric|value pairs, laid out responsively: 2
-               pairs per row (4 tracks) below 1180px, all 3 pairs in one
-               row (6 tracks) at ≥1180px — the same breakpoint the
-               Payoff+Legs row already uses elsewhere in this file. No
+          <!-- Each `.kv-pair` is `display: contents` so its own label +
+               value cells fall directly into the grid as one row — one
+               metric per row, 6 rows (5 when EV/cost's `{#if}` guard below
+               hides it). The 6 `.kv-risk-colhdr` spans below are the
+               header cells for 3 metric|value pairs, laid out
+               responsively: 2 pairs per row (4 tracks) below 1180px, all 3
+               pairs in one row (6 tracks) at ≥1180px — the same breakpoint
+               the Payoff+Legs row already uses elsewhere in this file. No
                explicit `grid-row` is needed: with the headers placed
                before the first `.kv-pair` in markup order, the browser's
                default row-major auto-placement fills row 1 with the 6
@@ -7023,9 +7004,9 @@
   .tag-greek      { color: #c084fc; background: rgba(192,132,252,0.10); }
   .tag-greek-neg  { color: #fda4af; background: rgba(253,164,175,0.10); }
   /* Greek chip value — the click trigger for its InfoHint popover (no
-     separate visible (i) chip per operator request). Styled as plain
-     text matching the surrounding chip, with only `cursor: pointer` +
-     a hover underline hinting it's interactive. */
+     separate visible (i) chip). Styled as plain text matching the
+     surrounding chip, with only `cursor: pointer` + a hover underline
+     hinting it's interactive. */
   .greek-val-trigger {
     font: inherit;
     color: inherit;
@@ -7092,12 +7073,10 @@
     gap: 0;
     min-width: 0;
   }
-  /* Card padding — scoped override, not a Tailwind utility swap
-     (2026-11-03, operator: "padding is inconsistent for grid, grid
-     container, and other panels... Pulse has balanced padding").
-     An earlier attempt here swapped the `p-3` Tailwind class for
-     `p-1.5`, matching what a padding audit reported as Pulse's own
-     value — WRONG on two counts, confirmed by direct measurement
+  /* Card padding — scoped override, not a Tailwind utility swap. An
+     earlier attempt here swapped the `p-3` Tailwind class for `p-1.5`,
+     matching what a padding audit reported as Pulse's own value —
+     WRONG on two counts, confirmed by direct measurement
      (`getComputedStyle`), not by re-reading source: (1) `.algo-status-
      card`'s own base rule in `(algo)/+layout.svelte` hardcodes
      `padding: 0.75rem` directly — every `p-*` Tailwind utility on this
@@ -7108,11 +7087,10 @@
      comparable per-side card padding to match at all. This rule instead
      overrides the global base directly, at higher specificity (two
      classes vs. the base rule's one), scoped to this page's own cards
-     only — not a global change to every `.algo-status-card` app-wide,
-     which would be a much larger blast radius than this request asked
-     for. 0.375rem chosen as a real, verified-compiling literal value
-     (not a Tailwind decimal utility, which this build does not
-     reliably generate for an unused class — also confirmed by direct
+     only — not a global change to every `.algo-status-card` app-wide.
+     0.375rem chosen as a real, verified-compiling literal value (not a
+     Tailwind decimal utility, which this build does not reliably
+     generate for an unused class — also confirmed by direct
      measurement, not assumption). */
   .opt-payoff-full.algo-status-card,
   .opt-legs-card.algo-status-card,
@@ -7122,9 +7100,8 @@
     padding: 0.375rem;
   }
   /* Greeks/Risk title's left-border bar reads as "missing" next to
-     Snapshot's (2026-11-03, operator: "for greeks and risk labels, the
-     left border should be present like snapshot label") — it is NOT
-     missing; confirmed by direct measurement (getComputedStyle):
+     Snapshot's — it is NOT missing; confirmed by direct measurement
+     (getComputedStyle):
      `.algo-label-decor`'s `border-left: 3px solid currentColor` and its
      white color are byte-identical on both. The only real difference is
      HEIGHT: Snapshot's CardHeader has `showControls` (the default,
@@ -7171,15 +7148,12 @@
   }
   /* Fallback label treatment: dashed underline signals "tap for
      explanation" — only applies to a `.kv-k` with no `.kv-k-greek`
-     companion class. 2026-11-06 fix (operator: "the label text in
-     risk & expected value grid is not readable and also smaller
-     compared to values... remove dashed underline... make the label
-     as tooltip like greek labels") — the Risk & EV card's 6 labels
-     (R:R, Risk-of-ruin, Breakevens, POP, EV, EV/cost) now carry
-     `.kv-k-greek` too, same as the 5 Greek labels, so none of the 11
-     Strategy-Summary kv-pair labels hit this rule any more. Left in
-     place as the general fallback for any future `.kv-k` that doesn't
-     opt into the bigger/bolder treatment. */
+     companion class. The Risk & EV card's 6 labels (R:R, Risk-of-ruin,
+     Breakevens, POP, EV, EV/cost) now carry `.kv-k-greek` too, same as
+     the 5 Greek labels, so none of the 11 Strategy-Summary kv-pair
+     labels hit this rule any more. Left in place as the general
+     fallback for any future `.kv-k` that doesn't opt into the
+     bigger/bolder treatment. */
   .kv-k:not(.kv-k-greek) {
     border-bottom: 1px dashed rgba(148,163,184,0.3);
     display: inline-flex;
@@ -7199,39 +7173,35 @@
   }
   /* Greek symbols — clean, slightly heavier than other labels but
      not oversize. The visual identity of each Greek pair without
-     overpowering the value next to it.
-     2026-11-06 fix (operator: "greeks, risk & expected value grid data
-     row labels and values should have different colors") — this used
-     to set `color: var(--algo-slate)`, the EXACT same token `.kv-v`
-     uses for the value text (both resolve to #ffffff), so a label and
-     its value were visually indistinguishable by color, only by
-     weight/size. No color override here now — `.kv-k`'s own
-     `color: var(--text-muted)` (the correct, already-semantic "label"
-     token) applies instead, same as every other non-Greek label. */
+     overpowering the value next to it. This used to set
+     `color: var(--algo-slate)`, the EXACT same token `.kv-v` uses for
+     the value text (both resolve to #ffffff), so a label and its value
+     were visually indistinguishable by color, only by weight/size. No
+     color override here now — `.kv-k`'s own `color: var(--text-muted)`
+     (the correct, already-semantic "label" token) applies instead, same
+     as every other non-Greek label. */
   .kv-k-greek {
     font-size: var(--fs-lg);
     font-weight: 700;
   }
-  /* Greeks card — 2026-11-18 restructure (operator request): a true
-     header-row + value-row grid instead of 5 independent label+value
-     flex pairs. `repeat(5, minmax(max-content, 1fr))` gives each of
-     the 5 Greeks its own column track, sized no narrower than its own
-     widest content (header symbol OR value, whichever is wider) but
-     free to grow to fill extra width — never shrinks below content,
-     so a value can never get ellipsized by its own `.kv-v` `overflow:
-     hidden` base rule fighting a `1fr` track for space. With no
-     `grid-row` assigned, the browser's default row-major auto-
-     placement fills row 1 with the first 5 children (the `.kv-k`
+  /* Greeks card — a true header-row + value-row grid instead of 5
+     independent label+value flex pairs. `repeat(5, minmax(max-content,
+     1fr))` gives each of the 5 Greeks its own column track, sized no
+     narrower than its own widest content (header symbol OR value,
+     whichever is wider) but free to grow to fill extra width — never
+     shrinks below content, so a value can never get ellipsized by its
+     own `.kv-v` `overflow: hidden` base rule fighting a `1fr` track for
+     space. With no `grid-row` assigned, the browser's default row-major
+     auto-placement fills row 1 with the first 5 children (the `.kv-k`
      headers, in markup order) and row 2 with the next 5 (the `.kv-v`
      values, in the SAME order) — each value lands in the same column
      track as its own header, so it's visually aligned underneath it
      for free, no explicit `grid-row`/`grid-column` bookkeeping needed.
-     2026-11-19 follow-up: the 5 header cells and 5 value cells were
-     still shrink-wrapped `inline-flex` content with none of the real
-     grid-header decoration this app's other grids use (`.cand-headrow`,
-     `.byund-headrow`). `.opt-kv-greeks .kv-k-greek` now gets the same
-     full-width header-cell treatment (background/border-bottom via the
-     shared `--grid-header-*` tokens), and `.opt-kv-greeks .kv-v` gets a
+     The 5 header cells and 5 value cells get real grid-header
+     decoration matching this app's other grids (`.cand-headrow`,
+     `.byund-headrow`): `.opt-kv-greeks .kv-k-greek` gets the full-width
+     header-cell treatment (background/border-bottom via the shared
+     `--grid-header-*` tokens), and `.opt-kv-greeks .kv-v` gets a
      matching full-width value-cell treatment (padding + a fainter
      bottom border) — both scoped to this grid only, so the shared base
      `.kv-k-greek` rule (also used by Risk & EV's labels) is untouched. */
@@ -7249,59 +7219,47 @@
        scrolling, never by shrinking a column below its content. */
     overflow-x: auto;
     min-width: 0;
-    /* 2026-11-03, operator: "the data row text is not vertically
-       centered" — `.opt-block` is a column flex (header + this grid),
-       and the 3-card `.opt-side-row` stretches every card to the
-       tallest sibling's height, so Greeks/Risk's own short content
-       left all its slack space below itself: the header-to-content
-       gap is deliberately zero (see the padding/header comments
-       above), so the rows sat flush against the header with nothing
-       pushing them down. `flex: 1` lets this grid claim the column's
-       remaining height; `align-content: center` then centers its two
-       rows (as a block) within that taller box. The grid's own TOP
-       edge is unaffected (flex children stack with no gap — see
-       `.opt-block`'s `gap: 0` — so growth happens below, not above),
-       so the existing zero-gap header-to-content measurement
-       (derivatives_card_spacing_consistency.spec.js) stays correct.
-       Preserved unchanged across the 2026-11-18 restructure — still 2
-       rows now instead of 1, `align-content: center` centers the pair
-       of rows exactly the same way it centered the single row before. */
+    /* `.opt-block` is a column flex (header + this grid), and the
+       3-card `.opt-side-row` stretches every card to the tallest
+       sibling's height, so Greeks/Risk's own short content would
+       otherwise leave all its slack space below itself: the
+       header-to-content gap is deliberately zero (see the padding/
+       header comments above), so the rows would sit flush against the
+       header with nothing pushing them down. `flex: 1` lets this grid
+       claim the column's remaining height; `align-content: center`
+       then centers its two rows (as a block) within that taller box.
+       The grid's own TOP edge is unaffected (flex children stack with
+       no gap — see `.opt-block`'s `gap: 0` — so growth happens below,
+       not above), so the existing zero-gap header-to-content
+       measurement (derivatives_card_spacing_consistency.spec.js) stays
+       correct. */
     flex: 1;
     align-content: center;
   }
-  /* 2026-11-19 — real grid-header decoration for the 5 Greek header
-     cells, matching `.cand-headrow`/`.byund-headrow`'s own treatment
-     elsewhere in this file. Scoped to `.opt-kv-greeks .kv-k-greek`
-     only — the shared base `.kv-k-greek` rule (also used by Risk &
-     EV's 6 labels) is untouched, so this does not affect those.
-     2026-11-20 follow-up — this cell had the background/border but
-     none of the shared `--grid-header-*` FONT tokens (it was still
-     inheriting the base `.kv-k-greek` rule's `font-size: var(--fs-lg);
-     font-weight: 700;`, sized for the Greek SYMBOL glyph, not a grid
-     header label), no `min-height` pin (so this header's computed
-     height disagreed with `.cand-headrow`/`.opt-kv-risk .kv-risk-colhdr`
-     elsewhere in this file), and painted its background per-cell with
-     a real `column-gap` between cells (0.55rem, see `.opt-kv-greeks`
-     above) — a row of 5 disconnected color blocks instead of one
-     continuous band. Fixed: font tokens + `min-height` now match the
-     other two header rows exactly; the background now bleeds outward
-     by half the column-gap via a negative margin (compensated by equal
+  /* Real grid-header decoration for the 5 Greek header cells, matching
+     `.cand-headrow`/`.byund-headrow`'s own treatment elsewhere in this
+     file. Scoped to `.opt-kv-greeks .kv-k-greek` only — the shared base
+     `.kv-k-greek` rule (also used by Risk & EV's 6 labels) is untouched,
+     so this does not affect those. The background bleeds outward by
+     half the column-gap via a negative margin (compensated by equal
      extra padding so the visible glyph position doesn't move) — the
-     standard gapless-background-across-a-grid-gap technique.
-     `:first-child`/`:nth-child(5)` (not `:last-child` — the grid's
-     actual last child is a `.kv-v` value cell, not this 5th header,
-     since the 5 headers + 5 values are flat siblings under row-major
-     auto-placement, see `.opt-kv-greeks`'s own comment above) stop the
-     bleed at this card's own left/right edges. Visually verified in the
-     dev server: Δ Γ Θ 𝒱 ρ stay legible at the smaller
-     `--grid-header-font-size` (0.65rem vs the base rule's 0.72rem) — no
-     deviation from the shared token was needed. */
+     standard gapless-background-across-a-grid-gap technique, needed
+     because this grid paints its background per-cell with a real
+     `column-gap` between cells (0.55rem, see `.opt-kv-greeks` above) —
+     without it, the row would read as 5 disconnected color blocks
+     instead of one continuous band. `:first-child`/`:nth-child(5)`
+     (not `:last-child` — the grid's actual last child is a `.kv-v`
+     value cell, not this 5th header, since the 5 headers + 5 values
+     are flat siblings under row-major auto-placement, see
+     `.opt-kv-greeks`'s own comment above) stop the bleed at this
+     card's own left/right edges. Δ Γ Θ 𝒱 ρ stay legible at the
+     smaller `--grid-header-font-size` (0.65rem vs the base rule's
+     0.72rem) — no deviation from the shared token is needed. */
   .opt-kv-greeks .kv-k-greek {
     display: flex;
     align-items: center;
-    /* No explicit `width` (removed from the pre-existing rule this
-       follow-up edits) — load-bearing for the bleed below. A grid item
-       with an EXPLICIT width resolves that percentage against the
+    /* No explicit `width` — load-bearing for the bleed below. A grid
+       item with an EXPLICIT width resolves that percentage against the
        track's own width regardless of margin, so a negative margin
        only TRANSLATES the box sideways (shifting both edges together)
        instead of expanding it — verified empirically (a translated box
@@ -7335,8 +7293,7 @@
   .opt-kv-greeks .kv-v {
     font-size: var(--fs-md);
     text-align: left;
-    /* 2026-11-03, operator: "the data row text is not vertically
-       centered" — `.kv-v` is plain `display: block` (base rule
+    /* `.kv-v` is plain `display: block` (base rule
        above), so when the grid row's cross-axis stretches this cell
        taller than the value's own line-height (to match the Greek
        SYMBOL's own larger font-size/line-height in `.kv-k-greek`,
@@ -7350,8 +7307,8 @@
        deliberately left untouched). */
     display: inline-flex;
     align-items: center;
-    /* 2026-11-19 — match the header cells' full-width treatment above
-       so the value row reads as a real grid-value row, not a
+    /* Match the header cells' full-width treatment above so the value
+       row reads as a real grid-value row, not a
        shrink-wrapped flex pair. A fainter bottom border than the
        header's (`--algo-amber-border-soft`) separates the value row
        from whatever sits below it without competing visually with the
@@ -7361,29 +7318,20 @@
     padding: 0.15rem 0.35rem;
     border-bottom: 1px solid rgba(126,151,184,0.10);
   }
-  /* Risk & expected value card — 2026-11-18 restructure (operator
-     request): a strict 2-column grid (label | value), no header row,
-     one metric per row — unconditional at every viewport, replacing
-     the old "2 pairs per row below 1180px / 6-pairs-in-1-row above
-     1180px" responsive shape. `.kv-pair` stays `display: contents` at
-     all widths now, so each pair's own label + value cells fall
-     straight into the grid's 2 columns as one row; 6 `.kv-pair`s (5
-     when the `{#if strategy?.risk?.ev_pct != null}` guard around the
-     EV/cost pair, further down in the markup, hides it — the `{#if}`
-     drops that whole pair, not just its text, so there is never a
-     blank trailing row) auto-flow into 6 (or 5) rows with no leading
-     header row — the grid goes straight into the first metric.
-     2026-11-19 follow-up — this card was first described (just above)
-     as having "no header row expected". The operator then explicitly
-     said this card "can have a header too", which reopens that
-     decision: the grid now floors at 4 tracks (2 metric|value pairs
-     per row, with a real header row) below 1180px, and widens to 6
-     tracks (all 3 pairs in one row) at ≥1180px — the exact same
-     breakpoint the Payoff+Legs row already uses elsewhere in this
+  /* Risk & expected value card — a responsive grid of 3 metric|value
+     pairs: 2 pairs per row (4 tracks), with a real header row, below
+     1180px; all 3 pairs in one row (6 tracks) at ≥1180px — the exact
+     same breakpoint the Payoff+Legs row already uses elsewhere in this
      file (see `.opt-payoff-legs-row`'s own `@media (min-width:
-     1180px)` block, reused rather than inventing a new number). A
-     flex-pair redesign, or `repeat(auto-fit, minmax(...))`, was
-     considered and rejected for the same reason `.opt-kv-greeks`
+     1180px)` block, reused rather than inventing a new number).
+     `.kv-pair` stays `display: contents` at all widths, so each pair's
+     own label + value cells fall straight into the grid's columns; 6
+     `.kv-pair`s (5 when the `{#if strategy?.risk?.ev_pct != null}`
+     guard around the EV/cost pair, further down in the markup, hides
+     it — the `{#if}` drops that whole pair, not just its text, so
+     there is never a blank trailing row) auto-flow into rows below the
+     header. A flex-pair redesign, or `repeat(auto-fit, minmax(...))`,
+     was considered and rejected for the same reason `.opt-kv-greeks`
      already rejected `auto-fit` above: either would give up the
      `minmax(max-content, 1fr)` overflow-safety invariant — a long
      value (3+ breakevens) must force the grid to scroll horizontally,
@@ -7408,18 +7356,15 @@
        at 320px). */
     overflow-x: auto;
     min-width: 0;
-    /* 2026-11-03, operator: "the data row text is not vertically
-       centered" — same fix as `.opt-kv-greeks` above, same reason
-       (this card's own content otherwise sits flush against the
-       zero-gap header with all its slack collapsed below it).
-       Preserved unchanged across the 2026-11-18 restructure — it now
-       centers the full block of 6 (or 5) stacked rows, the same way
-       it centered the single row before. */
+    /* Same fix as `.opt-kv-greeks` above, same reason (this card's own
+       content otherwise sits flush against the zero-gap header with
+       all its slack collapsed below it). Centers the full block of 6
+       (or 5) stacked rows. */
     flex: 1;
     align-content: center;
   }
-  /* 2026-11-19 — widen to 6 tracks (3 metric|value pairs in one row)
-     at the same ≥1180px breakpoint the Payoff+Legs row uses. */
+  /* Widen to 6 tracks (3 metric|value pairs in one row) at the same
+     ≥1180px breakpoint the Payoff+Legs row uses. */
   @media (min-width: 1180px) {
     .opt-kv-risk {
       grid-template-columns: repeat(3, max-content minmax(max-content, 1fr));
@@ -7437,9 +7382,9 @@
     align-items: center;
     text-align: left;
   }
-  /* 2026-11-19 — the new header row (`.kv-risk-colhdr`, 6 spans,
-     3 Metric|Value pairs, see the markup comment above `.opt-kv-risk`'s
-     markup). Below 1180px only 2 of the 3 pairs are visible per row, so
+  /* The header row (`.kv-risk-colhdr`, 6 spans, 3 Metric|Value pairs,
+     see the markup comment above `.opt-kv-risk`'s markup). Below
+     1180px only 2 of the 3 pairs are visible per row, so
      only the first 4 header cells (pairs 1-2) should show; the 3rd
      pair's own 2 header cells (`:nth-child(5)`/`:nth-child(6)`) hide
      below that breakpoint and reveal at ≥1180px, matching the grid's
@@ -7454,16 +7399,14 @@
       display: flex;
     }
   }
-  /* 2026-11-20 — this header cell already carried the shared
-     `--grid-header-*` font tokens (unlike Greeks' `.kv-k-greek` above,
-     which didn't), but had no `min-height` pin and painted its
-     background per-cell with a real `column-gap` (0.6rem, see
-     `.opt-kv-risk` above) between cells — a row of disconnected color
-     blocks instead of one continuous band, same defect as Greeks.
-     Fixed the same way: `min-height` now matches `.cand-headrow`/
-     `.opt-kv-greeks .kv-k-greek`'s shared token, canonical padding, and
-     a half-column-gap background bleed. The "last visible cell" in
-     this bleed differs by breakpoint — below 1180px only header cells
+  /* This header cell carries the shared `--grid-header-*` font tokens,
+     a `min-height` matching `.cand-headrow`/`.opt-kv-greeks
+     .kv-k-greek`'s shared token, canonical padding, and a
+     half-column-gap background bleed — same defect/fix class as
+     Greeks above, needed because this grid also paints its background
+     per-cell with a real `column-gap` (0.6rem, see `.opt-kv-risk`
+     above) between cells. The "last visible cell" in this bleed
+     differs by breakpoint — below 1180px only header cells
      1-4 are visible (5/6 are `display:none`, see the rule above), so
      `:nth-child(4)` is the true last cell there; at >=1180px cells 5/6
      become visible too and `:nth-child(6)` becomes the true last cell
@@ -7477,9 +7420,8 @@
     display: flex;
     align-items: center;
     /* No explicit `width` — same reason as `.opt-kv-greeks .kv-k-greek`
-       above (removed from the pre-existing rule this follow-up edits).
-       Do not re-add `width: 100%` here; see that comment for the full
-       explanation of why it breaks this bleed technique. */
+       above. Do not re-add `width: 100%` here; see that comment for
+       the full explanation of why it breaks this bleed technique. */
     box-sizing: border-box;
     min-height: var(--grid-row-height);
     background: var(--grid-header-bg);
@@ -8109,12 +8051,11 @@
   .cand-scroll::-webkit-scrollbar-thumb:hover {
     background: rgba(251,191,36,0.85);
   }
-  /* .legs-header-row/.legs-header retired (2026-10 CardHeader adoption
-     sweep) — this card's chrome now renders via <CardHeader>, with a
-     plain `title="Positions"` (2026-10-13 — replaced the underlying-
-     chip prefix per operator request, so this card gets the standard
-     border-left+padding label decoration every other header has,
-     instead of a bespoke chip) and the Legs/Paired/Exp Close view
+  /* .legs-header-row/.legs-header retired — this card's chrome now
+     renders via <CardHeader>, with a plain `title="Positions"`
+     (replacing the underlying-chip prefix, so this card gets the
+     standard border-left+padding label decoration every other header
+     has, instead of a bespoke chip) and the Legs/Paired/Exp Close view
      picker in `middle` (see the card markup above). .legs-underlying-chip
      and .legs-header-sep (a manual divider span, removed separately) are
      both fully retired now — no remaining markup user. */
@@ -8240,14 +8181,13 @@
     column-gap: 0.35rem;
     width: max-content;
   }
-  /* St-column track removed entirely on the unpaired 'legs' view (2026-11
-     operator correction, reversing the earlier "keep St visible on all 3
-     views" decision — see `legsTab === 'legs'` guards on `.cand-state-hdr`/
-     `.cand-state-cell` above). Byte-identical to `.cand-grid` above MINUS the
-     28px pos-state track — every other track keeps its exact sizing, so
-     columns reflow left by one slot with no leftover gap. KEEP THIS LIST IN
-     SYNC with `.cand-grid` above (one comment line removed, nothing else
-     changed); the markup side of this pairing is guarded by a Playwright
+  /* St-column track removed entirely on the unpaired 'legs' view — see
+     `legsTab === 'legs'` guards on `.cand-state-hdr`/`.cand-state-cell`
+     above. Byte-identical to `.cand-grid` above MINUS the 28px pos-state
+     track — every other track keeps its exact sizing, so columns reflow
+     left by one slot with no leftover gap. KEEP THIS LIST IN SYNC with
+     `.cand-grid` above (one comment line removed, nothing else changed);
+     the markup side of this pairing is guarded by a Playwright
      track-count assertion (derivatives_legs_paired_expclose_dropdown.spec.js). */
   .cand-grid.cand-grid-no-state {
     grid-template-columns:
@@ -8454,7 +8394,7 @@
      same badge width. Bump only this glyph's own weight (not the
      shared cell's font-size, which stayed byte-identical to real rows
      — a size bump there previously had an unintended knock-on visual
-     effect on the row). 2026-10-19 operator request/correction. */
+     effect on the row). */
   .cand-row-underlying-anchor .cand-state-badge-btn {
     font-weight: 900;
   }

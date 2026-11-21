@@ -38,7 +38,7 @@ let _lastTickAt = {};
  */
 let _quotes = $state({});
 
-// ── Tier-2 persistence (PLAN.md Part B, item B3) ───────────────────────
+// ── Tier-2 persistence ───────────────────────────────────────────────────
 // This store previously had ZERO persistence — a reload wiped `_quotes`
 // back to `{}`, so NavStrip's Exp P&L pill and the derivatives Payoff
 // chart's spot/prev-close math both reset to 0 until the next
@@ -108,7 +108,7 @@ export const underlyingSpotStore = {
 export async function loadUnderlyingSpots(pairs) {
   if (!pairs || pairs.length === 0) return;
 
-  // Tier-2 hydrate (B3) — seed any root this call tracks that the live
+  // Tier-2 hydrate — seed any root this call tracks that the live
   // map doesn't already have, from a cached quote, BEFORE the network
   // call. Safe to mutate `_quotes` here: `loadUnderlyingSpots` is always
   // invoked from an onMount/$effect context (PositionStrip.svelte), never
@@ -147,7 +147,7 @@ export async function loadUnderlyingSpots(pairs) {
 
   _quotes = buildUnderlyingQuoteUpdate(pairs, items, _quotes, _lastTickAt, reqStartedAt);
 
-  // Tier-2 persist (B3) — one entry per root just fetched, not the whole
+  // Tier-2 persist — one entry per root just fetched, not the whole
   // map, matching the per-root key scheme `getUnderlyingSpot` hydrates
   // from. A root this call didn't touch keeps whatever it already had.
   for (const p of pairs) {
@@ -176,7 +176,7 @@ export function pruneUnderlyingSpotRoots(roots) {
   for (const r of roots) {
     if (r in next) { delete next[r]; changed = true; }
     delete _lastTickAt[r];
-    // Tier-2 cleanup (B3) — a pruned root's stale cached quote must not
+    // Tier-2 cleanup — a pruned root's stale cached quote must not
     // get lazily re-hydrated by `getUnderlyingSpot` after some OTHER page
     // stops tracking it too and it ages past `TTL.short` anyway; deleting
     // it here is just a prompt version of the same eventual expiry.
@@ -209,7 +209,7 @@ export function patchUnderlyingSpot(root, ltp) {
   const next = applyUnderlyingTickLtp(_quotes, root, ltp);
   if (next !== _quotes) {
     _quotes = next;
-    // Tier-2 persist (B3) — a live tick is a real update too, not just a
+    // Tier-2 persist — a live tick is a real update too, not just a
     // batchQuote poll; without this, a reload immediately after a tick
     // (no poll in between) would still hydrate the pre-tick value.
     const updated = _quotes[root];
