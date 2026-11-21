@@ -45,6 +45,8 @@ import { cachedDelete } from './persistentCache.js';
 import { browser } from '$app/environment';
 import { marketAwareInterval, visibleInterval, lastRefreshAt } from '$lib/stores';
 import { isNseOpen, isMcxOpen, isBookSnapshotGraceWindow } from '$lib/marketHours';
+import { bookChanged } from '$lib/data/bookChanged.js';
+import { subscribeSkipInitial } from './subscribeSkipInitial.js';
 // Hardening: dev-only runtime shape assertions on backend responses.
 // Vite dead-code-eliminates the assertion body in production so the
 // operator's browser pays zero cost.
@@ -971,6 +973,13 @@ let _bookPollerStarted = false;
 /** @type {(() => void) | null} */
 let _bookPollerTeardown = null;
 
+/** Unsubscribe handle for the `bookChanged` WS-event subscription below
+ *  (one-shot forced refresh on a real backend write — e.g. a closed-
+ *  hours broker-account re-enable). Mirrors `_bookPollerTeardown`'s
+ *  module-scoped start/stop convention. */
+/** @type {(() => void) | null} */
+let _bookChangedUnsub = null;
+
 /**
  * Reactive counter incremented after every successful book-poller cycle.
  * PositionStrip watches this to fire its poll-stamp and flash animation
@@ -1003,14 +1012,24 @@ let _lastGraceFetchAt = 0;
 // Promise.allSettled so a single broker failure (e.g. /api/funds 502
 // mid-session) doesn't stall the next tick's positions refresh. The
 // stores themselves keep last-good value on error — no UI flash.
-async function _loadBookOnce() {
+//
+// `force` (default false) — bypass createDataStore's in-flight dedup so
+// a WS-triggered one-shot refresh (see the `bookChanged` subscription in
+// startBookPollers below) always issues a brand-new fetch rather than
+// sharing whatever request (routine poller tick, mount kick) may already
+// be in flight with the same (empty) args — that in-flight request could
+// have been issued BEFORE the backend wrote the fresh row this refresh
+// exists to pick up, and createDataStore's own generation guard (see
+// dataStore.svelte.js) would then apply the older response.
+async function _loadBookOnce(force = false) {
   try {
+    const opts = force ? { force: true } : undefined;
     await Promise.allSettled([
-      positionsStore.load(),
-      holdingsStore.load(),
-      pulsePositionsStore.load(),
-      pulseHoldingsStore.load(),
-      fundsStore.load(),
+      positionsStore.load(opts),
+      holdingsStore.load(opts),
+      pulsePositionsStore.load(opts),
+      pulseHoldingsStore.load(opts),
+      fundsStore.load(opts),
     ]);
     // Signal completion so PositionStrip's flash animation fires at
     // book-poller cadence (default 5 s) rather than its own 30 s interval.
@@ -1022,7 +1041,13 @@ async function _loadBookOnce() {
     // shape as RefreshButton.svelte / tickStaleness.svelte.js.
     const live = isNseOpen() || isMcxOpen();
     if (live) lastRefreshAt.set(Date.now());
-    _lastGraceFetchAt = live ? 0 : Date.now();
+    // A forced refresh (the bookChanged WS subscription below) is a
+    // one-off, event-triggered fetch unrelated to the routine grace-
+    // window throttle — it must not stamp or reset _lastGraceFetchAt:
+    // stamping "now" would suppress the next genuine grace-window fetch,
+    // and resetting to 0 would make the next one fire immediately
+    // regardless of the throttle. Leave that bookkeeping untouched.
+    if (!force) _lastGraceFetchAt = live ? 0 : Date.now();
     // Keep the running timer's cadence reconciled with the `polling.
     // book_live_ms` setting (settings change takes effect on the next
     // landed fetch). No more open/closed branch here — the closed-window
@@ -1083,6 +1108,26 @@ export function startBookPollers(intervalMs) {
   // outside a snapshot-write grace window, see above). hiddenMs throttle
   // applies only when the tab is backgrounded (hibernation).
   _bookPollerTeardown = visibleInterval(_tickBookPollers, _bookForegroundMs, `throttle:${_BOOK_HIDDEN_MS}`);
+
+  // One-shot forced refresh on a real `book_changed` WS event — e.g. a
+  // closed-hours broker-account re-enable writing a fresh `daily_book`
+  // row (backend/api/routes/brokers.py:_snapshot_books_if_closed). That
+  // write happens once, from whichever tab/role performed the re-enable,
+  // but every OTHER open tab/device/role must also see the refreshed
+  // data — _tickBookPollers' own closed-hours gate (above) otherwise
+  // skips every poll until the next grace window or market open.
+  //
+  // subscribeSkipInitial drops the synchronous initial-value echo
+  // svelte/store always fires on subscribe (bookChanged may already be
+  // >0 by the time a later tab mounts) — without it every page mount
+  // would fire a spurious forced refresh. Every REAL subsequent
+  // increment (the WS bus already coalesces a burst of events into one
+  // increment — see bookChanged.js's debounce) triggers exactly one
+  // forced _loadBookOnce(true) here: edge-triggered on an actual
+  // backend event, never a resumed/continuous poll.
+  _bookChangedUnsub = subscribeSkipInitial(bookChanged, () => {
+    _loadBookOnce(true);
+  });
 }
 
 /** Update the foreground cadence at runtime. Used by the layout when the
@@ -1112,6 +1157,7 @@ export function setBookPollerClosedMs(ms) {
  *  doesn't unmount, so this is rarely called outside the test harness. */
 export function stopBookPollers() {
   if (_bookPollerTeardown) { _bookPollerTeardown(); _bookPollerTeardown = null; }
+  if (_bookChangedUnsub) { _bookChangedUnsub(); _bookChangedUnsub = null; }
   _bookPollerStarted = false;
 }
 

@@ -355,8 +355,12 @@ describe('marketDataStores.svelte.js — real control flow matches the harness',
 
   it('_loadBookOnce fetches all five book stores and bumps tick/lastRefreshAt on success', () => {
     const block = extractFunctionBlock('_loadBookOnce');
+    // `.load(` (open paren only, not `.load()`) — 2026-11 forced-refresh
+    // fix threads an `opts` arg (undefined when not forced, `{force:true}`
+    // when a bookChanged WS event triggers a one-shot forced refresh —
+    // see marketDataStoresBookChangedForce.test.js) into every call.
     for (const store of ['positionsStore', 'holdingsStore', 'pulsePositionsStore', 'pulseHoldingsStore', 'fundsStore']) {
-      expect(block).toMatch(new RegExp(`${store}\\.load\\(\\)`));
+      expect(block).toMatch(new RegExp(`${store}\\.load\\(`));
     }
     expect(block).toMatch(/_bookPollerTick\+\+/);
     expect(block).toMatch(/lastRefreshAt\.set\(Date\.now\(\)\)/);
