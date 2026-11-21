@@ -312,3 +312,53 @@ def test_exchange_clock_is_any_segment_open_still_stale_pre_sync():
             assert exchange_clock.is_any_segment_open(["MCX"]) is False
     finally:
         exchange_clock._CACHE = original_cache
+
+
+# ── 5. End-to-end through the REAL ticket-route gate function ──────────
+#
+# _ticket_gate_market_hours_and_align_price() (orders_place.py) is what
+# POST /api/orders/ticket actually calls — it wraps _symbol_exchange_open
+# via _build_now_ctx(), the same mechanism tested above, but driving THIS
+# function directly is the most honest version of "simulated order
+# placement": no HTTPException(409) means the order was accepted as
+# market-open.
+
+
+@pytest.mark.asyncio
+async def test_ticket_route_gate_accepts_mcx_order_at_2340_winter():
+    """The explicit confirmation through the REAL route-level gate
+    function: a simulated MCX order at 23:40 IST on the winter-window
+    date must NOT be rejected with HTTPException(409) 'market closed'."""
+    import types
+    from datetime import datetime as _dt
+    from unittest.mock import patch as _patch
+    from backend.api.routes.orders_place import _ticket_gate_market_hours_and_align_price
+    from backend.shared.helpers import date_time_utils
+
+    data = types.SimpleNamespace(exchange="MCX", price=None, trigger_price=None)
+    frozen_now = _dt(_WINTER_DATE.year, _WINTER_DATE.month, _WINTER_DATE.day, 23, 40, tzinfo=_IST)
+
+    with _patch.object(date_time_utils, "timestamp_indian", return_value=frozen_now):
+        # No exception == accepted as market-open.
+        await _ticket_gate_market_hours_and_align_price(data, "CRUDEOIL26NOV9200PE")
+
+
+@pytest.mark.asyncio
+async def test_ticket_route_gate_rejects_mcx_order_during_dst_at_2340():
+    """Contrast through the same real route-level function: during the
+    DST window (real close 23:30, already passed), the SAME 23:40
+    instant must still be rejected as closed."""
+    import types
+    from datetime import datetime as _dt
+    from unittest.mock import patch as _patch
+    from litestar.exceptions import HTTPException
+    from backend.api.routes.orders_place import _ticket_gate_market_hours_and_align_price
+    from backend.shared.helpers import date_time_utils
+
+    data = types.SimpleNamespace(exchange="MCX", price=None, trigger_price=None)
+    frozen_now = _dt(_DST_DATE.year, _DST_DATE.month, _DST_DATE.day, 23, 40, tzinfo=_IST)
+
+    with _patch.object(date_time_utils, "timestamp_indian", return_value=frozen_now):
+        with pytest.raises(HTTPException) as exc_info:
+            await _ticket_gate_market_hours_and_align_price(data, "CRUDEOIL26JUN9200PE")
+    assert exc_info.value.status_code == 409

@@ -498,3 +498,33 @@ class TestWinterWrapBugConfirmedNotFixed:
 
         # 23:40 < 23:45 (the real, unclamped derived target) -> must not fire.
         mock_write.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# _nav_resolve_clamped_target — direct unit tests for the extracted helper
+# (pulled out of _run_nav_compute_once to stay under the radon D-grade
+# complexity gate; C(15) -> D(21) with the inline clamp branches -> C(11)
+# for both functions after this extraction).
+# ---------------------------------------------------------------------------
+
+def test_nav_resolve_clamped_target_mcx_winter_clamps_to_2359():
+    from backend.api.background import _nav_resolve_clamped_target
+    mcx_rows = [_row(close_time=dtime(23, 55))]
+    assert _nav_resolve_clamped_target(mcx_rows, []) == dtime(23, 59)
+
+
+def test_nav_resolve_clamped_target_mcx_normal_unclamped():
+    from backend.api.background import _nav_resolve_clamped_target
+    mcx_rows = [_row(close_time=dtime(23, 30))]
+    assert _nav_resolve_clamped_target(mcx_rows, []) == dtime(23, 45)
+
+
+def test_nav_resolve_clamped_target_falls_back_to_non_mcx():
+    from backend.api.background import _nav_resolve_clamped_target
+    non_mcx_rows = [_row(close_time=dtime(15, 30))]
+    assert _nav_resolve_clamped_target([], non_mcx_rows) == dtime(15, 45)
+
+
+def test_nav_resolve_clamped_target_falls_back_to_1600():
+    from backend.api.background import _nav_resolve_clamped_target
+    assert _nav_resolve_clamped_target([], []) == dtime(16, 0)

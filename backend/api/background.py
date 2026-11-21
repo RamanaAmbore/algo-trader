@@ -8956,6 +8956,41 @@ async def _run_close_once(state: dict) -> None:
 _NAV_FORCE_GRACE = timedelta(minutes=10)
 
 
+def _nav_resolve_clamped_target(mcx_rows: list, non_mcx_rows: list) -> dtime:
+    """Resolve `_run_nav_compute_once`'s trigger `target`, extracted to
+    keep that function's own cyclomatic complexity under the project's
+    radon D-grade gate (pushed from C(15) to D(21) by the inline
+    same-day-clamp branches before this extraction).
+
+    Resolution order: MCX's own effective snapshot time, else NON-MCX's
+    (MCX holiday/weekend), else the fixed `dtime(16, 0)` last resort.
+    Whichever row supplies the value, if THAT row's own `close_time +
+    15 min` derivation crosses midnight
+    (`exchange_clock._effective_snapshot_day_offset(row) == 1` — e.g.
+    MCX's winter non-agri close, 23:55 IST), the target is clamped to
+    `dtime(23, 59)` the SAME day instead of the unclamped value rolling
+    to the next calendar day — see `_run_nav_compute_once`'s own
+    docstring for the operator-chosen tradeoffs this accepts.
+    """
+    from backend.api.helpers.exchange_clock import (
+        _effective_snapshot_time, _effective_snapshot_day_offset,
+    )
+
+    target = _effective_snapshot_time(mcx_rows[0]) if mcx_rows else None
+    if target is not None and mcx_rows and _effective_snapshot_day_offset(mcx_rows[0]) == 1:
+        return dtime(23, 59)  # same-day clamp
+    if target is not None:
+        return target
+
+    target = _effective_snapshot_time(non_mcx_rows[0]) if non_mcx_rows else None
+    if target is not None and non_mcx_rows and _effective_snapshot_day_offset(non_mcx_rows[0]) == 1:
+        return dtime(23, 59)  # defensive — NON-MCX never wraps today, kept for symmetry
+    if target is not None:
+        return target
+
+    return dtime(16, 0)
+
+
 async def _run_nav_compute_once(state: dict) -> None:
     """Write a NAV snapshot once per day, at the MCX EOD settlement moment
     (MCX close + 15 min ≈ 23:45 IST) — not a fixed 16:00 IST.
@@ -9019,26 +9054,16 @@ async def _run_nav_compute_once(state: dict) -> None:
     fallback's own documented tradeoff for an unusually late target.
     """
     from backend.api.algo.nav import write_nav_snapshot
-    from backend.api.helpers.exchange_clock import (
-        _effective_gate_rows, _effective_snapshot_time, _effective_snapshot_day_offset,
-    )
+    from backend.api.helpers.exchange_clock import _effective_gate_rows
 
     now   = timestamp_indian()
     today = now.date()
     if state.get("nav_done") == today:
         return
 
-    mcx_rows = _effective_gate_rows("MCX")
-    target = _effective_snapshot_time(mcx_rows[0]) if mcx_rows else None
-    if target is not None and mcx_rows and _effective_snapshot_day_offset(mcx_rows[0]) == 1:
-        target = dtime(23, 59)  # same-day clamp — see docstring above
-    if target is None:
-        non_mcx_rows = _effective_gate_rows("NON-MCX")
-        target = _effective_snapshot_time(non_mcx_rows[0]) if non_mcx_rows else None
-        if target is not None and non_mcx_rows and _effective_snapshot_day_offset(non_mcx_rows[0]) == 1:
-            target = dtime(23, 59)  # defensive — NON-MCX never wraps today, kept for symmetry
-    if target is None:
-        target = dtime(16, 0)
+    target = _nav_resolve_clamped_target(
+        _effective_gate_rows("MCX"), _effective_gate_rows("NON-MCX"),
+    )
     if now.time() < target:
         return
     state["nav_done"] = today

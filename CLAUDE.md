@@ -3939,17 +3939,52 @@ seasonal branch at all.
   - **Still NOT fixed, flagged, out of scope for this pass**: `grammar.py`, the OTHER
     `agent_engine.py` hardcode (line ~612, IV/theoretical-repricing baseline capture for alert
     conditions — unrelated to the order-placement gate just fixed), `actions_paper.py`, `expiry.py`
-    (the expiry auto-close engine), `order_hold_gate._CLOSE_HM`, `derivatives._close_time_for_row`,
-    `metric_days_until_expiry.py`, `scope_positions_expiring_today.py`, and `background.py`'s own
-    `[08:00, 23:30)` connectivity-window checks (unrelated to session end-time; this is the
-    broker-connectivity window, not a trading-session boundary). Each needs its own dedicated fix
-    and is flagged, not silently propagated to.
-  - Tests: `test_order_gate_mcx_dst_aware.py` — 17 tests covering `resolve_dst_aware_sessions()`
+    (the expiry auto-close engine — has TWO of its own, see the dedicated bullet below),
+    `order_hold_gate._CLOSE_HM` (checked: `cutoff_for`/`before_cutoff`, the only consumers of this
+    dict, have NO live caller anywhere outside `order_hold_gate.py` itself — effectively dead code
+    today, confirmed by grep, not assumed), `derivatives._close_time_for_row`,
+    `metric_days_until_expiry.py`, `scope_positions_expiring_today.py`. **Also confirmed still
+    hardcoded, genuinely real-money/operator-visible** (an earlier draft of this entry wrongly
+    dismissed these as "unrelated to session end-time" — corrected after reading the actual code):
+    two of `background.py`'s own `[08:00, 23:30)` checks. `get_ticker_calendar_status()`
+    (~L4370, `dtime(8,0) <= now.time() < dtime(23,30)`) drives the operator-facing broker-health
+    idle badge — during the winter window this reports the ticker as "idle" from 23:30 onward even
+    though MCX genuinely trades, and conn_service's own ticker connection, until 23:55 (that
+    underlying connection is itself already correct — see "Closed-window broker calls gated..." —
+    this is a DISPLAY-ONLY defect in the badge). `_ds_tick_ticker_restart()` (~L4619, same literal
+    bound) caps its own operating/recovery window at 23:30 — a ticker that disconnects unexpectedly
+    between 23:30 and the real 23:55 close would not be restarted by this particular backstop during
+    the winter window. Neither was fixed in this pass; both are flagged here, not silently
+    propagated to.
+  - **`expiry.py`'s two internal close-time hardcodes, confirmed, NOT fixed** — now a real,
+    confirmed inconsistency against the agent trigger window this pass DID fix. A Greeks/theta
+    helper (~L336) hardcodes `close_time = (23, 30) if is_mcx else (15, 30)` for its own
+    `days_to_expiry()` call. `_parse_segment_close_times()` (~L799) reads `seg.get("hours_end")`
+    DIRECTLY from the YAML config — the LEGACY fallback field, not `sessions` — so even though
+    `resolve_dst_aware_sessions()` now fixes the `sessions` list the order-placement gate reads,
+    this function is untouched by that fix and stays flat 23:30. Live-visible consequence, reported
+    for operator awareness, not fixed here: `market-preclose-mcx-v2`
+    (`minutes_until_mcx_close <= 30`) and `expiry-day-preclose-alert`/`expiry-day-itm-auto-close`
+    (their own preclose-window metrics) now correctly fire ~25 minutes LATER during the winter
+    window (since `minutes_until_mcx_close` is computed by the now-fixed `_ae_segment_flags`), while
+    the expiry ENGINE's own internal Greeks/theta math underneath those same agents still assumes
+    the old 23:30 close — a real internal inconsistency between when the agent fires and what the
+    engine's own math assumes about time remaining. Flagged for its own dedicated fix.
+  - **Frontend residual, confirmed, NOT fixed (outside this agent's domain)** —
+    `frontend/src/lib/marketHours.js`'s `MCX_CLOSE_MIN = 23 * 60 + 30` is a static, non-DST-aware
+    constant. During the winter window, the ticket UI would show a "Market closed" warning for an
+    MCX order at, say, 23:40 IST, even though the backend (per this pass's fix) now correctly
+    accepts it. This is the single most operator-visible residual of this whole entry and should be
+    the FIRST follow-up a frontend agent picks up.
+  - Tests: `test_order_gate_mcx_dst_aware.py` — 19 tests covering `resolve_dst_aware_sessions()`
     directly (winter/DST resolution, non-MCX segments untouched, multi-window last-entry-only
     adjustment, fail-safe fallback on resolver error), `_segment_is_open()` at the exact reported
     instant plus the DST-window contrast and post-close boundary, the real order-placement gate via
     `_build_context`/`_symbol_exchange_open` (MCX, NCO, NSE-unaffected, DST contrast, post-close),
-    a sanity check proving the pre-fix static YAML alone would have rejected the order, and
+    the REAL ticket-route function `_ticket_gate_market_hours_and_align_price()` driven end to end
+    at 23:40 IST winter (accepted, no `HTTPException(409)`) and the DST contrast (rejected) — the
+    most literal "simulated order placement" check available, a sanity check proving the pre-fix
+    static YAML alone would have rejected the order, and
     `exchange_clock.is_any_segment_open()` confirmed correct both pre- and post-DB-sync (the latter
     needed no code fix, only the already-shipped DST sync).
 - Tests: `test_mcx_non_agri_close_time.py` (resolver — winter/DST dates, the transition boundary
@@ -3977,12 +4012,18 @@ seasonal branch at all.
   (`mcx_non_agri_close_time`) landed inside the UNRELATED concurrent commit `4f33e998` (see the
   attribution note below) — `3c787204` (the original `options.py` wiring) depends on it even though
   neither commit message says so.
-- **Live DB state, confirmed on BOTH dev and prod, not assumed.** After deploying this range, the
-  `exchange_schedule` MCX row's `close_time` was independently queried on each server and confirmed
-  to equal the real DST-resolved value for that day (23:55 during the current winter window),
-  written by `_sync_mcx_dst_close_time_coro()`'s own restart-catch-up run (the same 05:30 IST
-  wake-up's cold-start path in `_task_holiday_refresh`, not a hand-run SQL patch). See the operator
-  report for this pass for the exact queried values and timestamps.
+- **Live DB state — PENDING VERIFICATION as of this commit, not yet confirmed.** The code above is
+  written and tested, but has NOT been deployed yet. `_hr_needs_catchup`'s restart-catch-up path
+  only fires when today's 05:30 IST marker is unset; on a server that already ran its normal 05:30
+  wake-up today, a mere deploy/restart will NOT trigger the sync — it would otherwise sit until the
+  next scheduled 05:30 wake-up, which is too late (`conn_service`'s own MCX gate-bounds cache
+  resolves and caches each day's window once, around 00:00 — a day that resolves before the sync
+  runs caches the STALE 23:30 bound for that whole day). The correct sequence, not yet executed: (1)
+  deploy this code, (2) run `_sync_mcx_dst_close_time_coro()` as a DELIBERATE one-off on each server
+  (never before the new code is live — the OLD `exchange_clock.py`/`_run_nav_compute_once` combined
+  with a 23:55 row IS the exact Friday-skip/NAV-misfire bug this whole entry documents), (3) query
+  `exchange_schedule` directly to confirm the written `close_time`. A follow-up commit will replace
+  this bullet with the real method, values, and timestamps once that sequence has actually run.
 - **Attribution note, for history-readers**: `mcx_non_agri_close_time()` itself landed in commit
   `4f33e998` — an UNRELATED concurrent agent's perf commit to the same file
   (`backend/api/algo/derivatives.py`) whose own message does not mention it. This happened because
@@ -5234,7 +5275,7 @@ now caches + returns a `stale` flag; `/api/nav/by-account` masks `errors` for no
 | Chase Kill / CANCEL_FAILED retry | `backend/api/routes/orders.py:kill_chase` + `chase.py:mark_order_killed` |
 | Alert identity line + email subject ("Alert:" label) | `backend/shared/helpers/alert_utils.py:dispatch_payload` (merged `alert_line`) + `_email_alert_body` |
 | MCX real per-contract expiry (live freeze filter) | `expiry_freeze.py:_mcx_future_real_expiry` |
-| MCX DST-aware non-agri close time (23:30 in-DST / 23:55 winter) | `backend/api/algo/derivatives.py:mcx_non_agri_close_time`, used by `options.py` (`/analytics`, `/strategy-analytics`, `/chain-snapshot`). Self-maintaining `exchange_schedule` DB sync is LIVE: `broker_apis.py:_sync_mcx_dst_close_time_coro`, wired into `background.py:_task_holiday_refresh`, confirmed on dev+prod. Order-placement gate: `date_time_utils.py:resolve_dst_aware_sessions`, used by `_segment_is_open()` and `agent_engine.py:_ae_segment_flags` |
+| MCX DST-aware non-agri close time (23:30 in-DST / 23:55 winter) | `backend/api/algo/derivatives.py:mcx_non_agri_close_time`, used by `options.py` (`/analytics`, `/strategy-analytics`, `/chain-snapshot`). Self-maintaining `exchange_schedule` DB sync wired: `broker_apis.py:_sync_mcx_dst_close_time_coro` in `background.py:_task_holiday_refresh` — code shipped, live-DB verification on dev/prod PENDING (see CLAUDE.md entry's "Live DB state" bullet). Order-placement gate: `date_time_utils.py:resolve_dst_aware_sessions`, used by `_segment_is_open()` and `agent_engine.py:_ae_segment_flags` |
 | Cross-midnight snapshot/settlement trigger resolution (exchange_clock.py) | `backend/api/helpers/exchange_clock.py:_effective_gate_rows_for_date` / `_anchor_snapshot_datetime` / `_effective_snapshot_day_offset` |
 | Options expiry-curve cache (leg-curve cache, bypassed at eval_T<=0) | `backend/api/routes/options.py:_strategy_compute_curves` |
 | generic_notice body (plain text, no origin line — see "Alert message format") | `event_agents.py:_render_deploy_sync` (pass-through) + producer `msg` in `background.py` |
