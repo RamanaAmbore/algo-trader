@@ -773,7 +773,17 @@ class KiteConnection:
                 self._login_blocked_until
             ).strftime('%H:%M:%S')
             _err_msg = _extract_http_error_message(e)
-            logger.error(
+            # 2026-11-21 fix — INFO, not ERROR. This fires once per failed
+            # outer attempt during an escalating cooloff (every ~120s-30min
+            # until the cap), and with no `self_alerted`/`alert_event`
+            # it was matching ERROR_AGENT's blanket catch-all every time —
+            # i.e. every retry of an already-known, already-tracked login
+            # block paged the operator again. Still fully audit-traceable
+            # (log_events' floor is INFO, so DEBUG would be lost): every
+            # failed attempt, streak, and the real Zerodha error text is
+            # still logged here. The real alarm is the dedicated one-shot
+            # F3 escalation below (fires once, at the cooloff cap).
+            logger.info(
                 "[KITE-LOGIN-COOLOFF] %r: login failed (streak=%d) — cooloff "
                 "active for %ds (persisted to disk). Next retry at %s. Cause: %s",
                 self.account, self._login_fail_streak, cooloff_s, _next_retry,
@@ -905,7 +915,11 @@ class KiteConnection:
             # HTTPError string ("400 Client Error: Bad Request for url:
             # ..."). See `_extract_http_error_message`'s docstring.
             _err_msg = _extract_http_error_message(e)
-            logger.error(f"Login failed: {_err_msg}")
+            # 2026-11-21 fix — INFO, not ERROR (see the matching note on
+            # `_attempt_login_with_cooloff`'s own per-failure log above):
+            # a single retried attempt must not be alert-worthy on its
+            # own; the real text is still fully captured here for audit.
+            logger.info(f"Login attempt failed: {_err_msg}")
             _emit_conn_event(
                 self.account, "zerodha_kite", "auth_fail",
                 {"error": _err_msg, "stage": "login"},
@@ -925,7 +939,8 @@ class KiteConnection:
             # F2 — see login()'s comment above; same real-error-body
             # extraction applied here.
             _err_msg = _extract_http_error_message(e)
-            logger.error(f"2FA authentication failed: {_err_msg}")
+            # 2026-11-21 fix — INFO, not ERROR; same rationale as login().
+            logger.info(f"2FA authentication attempt failed: {_err_msg}")
             _emit_conn_event(
                 self.account, "zerodha_kite", "auth_fail",
                 {"error": _err_msg, "stage": "totp_authenticate"},
@@ -952,8 +967,9 @@ class KiteConnection:
             # truncated) while still picking up a real body if the SDK
             # ever raises an exception that DOES carry one.
             _err_msg = _extract_http_error_message(e)
-            logger.error(
-                f"Failed to generate access token for account {self.account}: {_err_msg}"
+            # 2026-11-21 fix — INFO, not ERROR; same rationale as login().
+            logger.info(
+                f"Access-token attempt failed for account {self.account}: {_err_msg}"
             )
             _emit_conn_event(
                 self.account, "zerodha_kite", "auth_fail",

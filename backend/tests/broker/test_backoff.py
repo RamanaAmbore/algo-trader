@@ -204,8 +204,11 @@ class TestOtherBackoffMechanismsUntouched:
 # E (2026-11-20, same session, operator-reported Alerts-tab flood during
 # the incident): `retry_kite_conn` must fail fast — no retry, no sleep,
 # DEBUG not ERROR — on `KiteLoginCoolingOff` specifically, while every
-# OTHER exception type keeps today's exact 3-attempt-then-ERROR behaviour.
-# The genuine-exhaustion ERROR line must also now include the last
+# OTHER exception type keeps today's exact 3-attempt-then-INFO-exhaustion
+# behaviour (2026-11-21: downgraded from ERROR to INFO — see decorators.py's
+# own comment at the exhaustion branch — so a routine retried attempt is
+# audit-traceable without being alert-worthy via ERROR_AGENT's catch-all).
+# The genuine-exhaustion log line must also still include the last
 # exception's own text, so F2's captured real error message (e.g.
 # "Invalid CAPTCHA values.") actually reaches an operator reading it.
 # ---------------------------------------------------------------------------
@@ -245,17 +248,21 @@ class TestKiteLoginCoolingOffFailsFastAndLogsAtDebug:
         debug_text = " ".join(str(c.args[0]) for c in debug_mock.call_args_list)
         assert "cooling off" in debug_text.lower()
 
-    def test_a_different_exception_through_the_same_decorator_still_retries_3x_and_logs_error(
+    def test_a_different_exception_through_the_same_decorator_still_retries_3x_and_logs_exhaustion_at_info(
         self, monkeypatch,
     ):
         """No regression to the general case — confirms the
-        KiteLoginCoolingOff fast-path is narrowly scoped to that one type."""
+        KiteLoginCoolingOff fast-path is narrowly scoped to that one type.
+        The exhaustion log itself is INFO (2026-11-21), not ERROR — see
+        decorators.py's own comment at the exhaustion branch."""
         from backend.shared.helpers.decorators import retry_kite_conn
         from backend.brokers.errors import BrokerNetworkError
 
         call_count = {"n": 0}
         error_mock = MagicMock()
+        info_mock = MagicMock()
         monkeypatch.setattr("backend.shared.helpers.decorators.logger.error", error_mock)
+        monkeypatch.setattr("backend.shared.helpers.decorators.logger.info", info_mock)
         monkeypatch.setattr("backend.shared.helpers.decorators.time.sleep", lambda *a: None)
 
         @retry_kite_conn(max_attempts=3)
@@ -270,16 +277,24 @@ class TestKiteLoginCoolingOffFailsFastAndLogsAtDebug:
             f"a genuinely different exception must still retry the full "
             f"3 attempts, got {call_count['n']}"
         )
-        error_mock.assert_called_once()
+        error_mock.assert_not_called(), (
+            "exhaustion must no longer log at ERROR — it would re-flood "
+            "ERROR_AGENT's catch-all on every retry of a known failure"
+        )
+        info_mock.assert_called_once()
 
-    def test_exhaustion_error_log_includes_the_last_exception_text(self, monkeypatch):
+    def test_exhaustion_info_log_includes_the_last_exception_text(self, monkeypatch):
         """F2's captured real error text (e.g. the Zerodha CAPTCHA
         message) must actually reach this exhaustion log line, not be
-        silently dropped by a generic wrapper phrase."""
+        silently dropped by a generic wrapper phrase. 2026-11-21: this
+        line is INFO, not ERROR — still fully audit-traceable (log_events'
+        floor is INFO), just no longer alert-worthy on every retry."""
         from backend.shared.helpers.decorators import retry_kite_conn
 
         error_mock = MagicMock()
+        info_mock = MagicMock()
         monkeypatch.setattr("backend.shared.helpers.decorators.logger.error", error_mock)
+        monkeypatch.setattr("backend.shared.helpers.decorators.logger.info", info_mock)
         monkeypatch.setattr("backend.shared.helpers.decorators.time.sleep", lambda *a: None)
 
         @retry_kite_conn(max_attempts=2)
@@ -289,8 +304,9 @@ class TestKiteLoginCoolingOffFailsFastAndLogsAtDebug:
         with pytest.raises(RuntimeError):
             always_fails_with_real_message()
 
-        error_mock.assert_called_once()
-        logged_text = str(error_mock.call_args[0][0])
+        error_mock.assert_not_called()
+        info_mock.assert_called_once()
+        logged_text = str(info_mock.call_args[0][0])
         assert "Invalid CAPTCHA values." in logged_text, (
             f"expected the last exception's own text in the exhaustion "
             f"log line, got {logged_text!r}"

@@ -81,12 +81,29 @@ def retry_kite_conn(max_attempts):
                         # reading this generic exhaustion line — it got
                         # captured correctly at the exception level, then
                         # silently dropped by this wrapper's own
-                        # detail-free text. Deliberately generic (just
-                        # `{e}`, no attempt to extract account/context
-                        # beyond the exception's own string) — this
-                        # decorator wraps many different kinds of
-                        # functions, not just Kite login.
-                        logger.error(
+                        # detail-free text.
+                        #
+                        # 2026-11-21 fix — INFO, not ERROR. This decorator
+                        # is in practice Kite-login-only (get_kite_conn/
+                        # login/totp_authenticate/setup_access_token — see
+                        # connections.py); for every one of those, ERROR
+                        # here duplicated `_attempt_login_with_cooloff`'s
+                        # own per-failure log one level up AND, since
+                        # ERROR_AGENT's catch-all matches any bare
+                        # `logger.error()` with no `self_alerted`/
+                        # `alert_event`, fired an alert on every retry of
+                        # an ordinary, already-tracked login block —
+                        # exactly the flooding this decorator's own
+                        # KiteLoginCoolingOff fast-fail branch above was
+                        # built to stop. A retry attempt must still be
+                        # fully audit-traceable (log_events' floor is
+                        # INFO, so DEBUG above would be lost — see
+                        # `_dispatch_agent`'s DEBUG exemption), it just
+                        # must not be alert-worthy on its own: the real
+                        # alarm is the dedicated one-shot F3 escalation in
+                        # `_attempt_login_with_cooloff` (fires once per
+                        # blocked episode, at the cooloff cap).
+                        logger.info(
                             f"{func.__name__}: Operation failed after {n} "
                             f"attempts. Last error: {e}"
                         )

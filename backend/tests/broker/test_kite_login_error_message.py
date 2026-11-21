@@ -187,28 +187,38 @@ class TestLoginSurfacesRealErrorMessage:
         """connections.py's `logger` has `propagate=False` (see
         ramboq_logger.get_logger), so pytest's `caplog` fixture (which
         attaches to the root logger) never sees these records — mock
-        `logger.error` directly instead, same as every other assertion
-        in this module."""
+        `logger.info` directly instead, same as every other assertion
+        in this module. 2026-11-21: this per-attempt log moved from
+        ERROR to INFO — a single retried login attempt must not be
+        alert-worthy via ERROR_AGENT's catch-all, but the real Zerodha
+        message must still be fully audit-traceable at INFO."""
         conn = _kite_conn_bare("ZG_ERRMSG_LOGIN2")
         resp = _FakeResponse(json_body={"message": "Invalid CAPTCHA values."})
         conn.session.post = MagicMock(return_value=resp)
 
         error_mock = MagicMock()
+        info_mock = MagicMock()
         monkeypatch.setattr(
             "backend.brokers.connections.logger.error", error_mock
+        )
+        monkeypatch.setattr(
+            "backend.brokers.connections.logger.info", info_mock
         )
 
         with pytest.raises(requests.exceptions.HTTPError):
             conn.login()
 
-        error_mock.assert_called_once()
-        logged_text = str(error_mock.call_args[0][0])
+        error_mock.assert_not_called(), (
+            "a single retried login attempt must not log at ERROR"
+        )
+        info_mock.assert_called_once()
+        logged_text = str(info_mock.call_args[0][0])
         assert "Invalid CAPTCHA values." in logged_text, (
-            f"expected the real Zerodha message in the logged error, got "
+            f"expected the real Zerodha message in the logged attempt, got "
             f"{logged_text!r}"
         )
         assert "400 Client Error" not in logged_text, (
-            "the logged error must not just be the bare HTTPError status "
+            "the logged attempt must not just be the bare HTTPError status "
             f"line — got {logged_text!r}"
         )
 
