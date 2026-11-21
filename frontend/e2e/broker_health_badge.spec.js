@@ -108,14 +108,18 @@ async function mockHealthEndpoint(P, state, opts = {}) {
 }
 
 /**
- * Navigate to /dashboard and wait for broker chip.
- * Returns null if chip not present.
+ * Navigate to /dashboard and return the broker chip that is actually displayed
+ * at this viewport. Throws (test fails) if it does not render — never returns null.
  */
 async function openPage(P) {
   await P.goto('/dashboard', { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT });
-  const chip = P.locator('button.broker-chip').first();
-  const present = await chip.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT }).then(() => true).catch(() => false);
-  return present ? chip : null;
+  // The navbar renders two .broker-chip buttons: the desktop block (`hidden lg:flex`,
+  // hidden below 1024px) and the mobile block (`lg:hidden`). A bare .first() picks
+  // the hidden desktop copy at 360px and 800px, so select the one actually displayed.
+  const chip = P.locator('button.broker-chip:visible').first();
+  // Hard assertion: a missing chip fails the test. It must never silently pass or skip.
+  await expect(chip, 'broker chip must render in the navbar').toBeVisible({ timeout: WAIT_TIMEOUT });
+  return chip;
 }
 
 // ---------------------------------------------------------------------------
@@ -141,7 +145,6 @@ test.describe('broker-chip color + popup broker names', () => {
   test('chip carries broker-chip-ok when health state is green', async () => {
     await mockHealthEndpoint(P, 'green');
     const chip = await openPage(P);
-    if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
     await expect(chip, 'chip must have broker-chip-ok class for green state').toHaveClass(/broker-chip-ok/);
     await expect(chip, 'chip must NOT have broker-chip-unknown').not.toHaveClass(/broker-chip-unknown/);
   });
@@ -151,7 +154,6 @@ test.describe('broker-chip color + popup broker names', () => {
   test('chip carries broker-chip-partial when health state is amber', async () => {
     await mockHealthEndpoint(P, 'amber');
     const chip = await openPage(P);
-    if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
     await expect(chip, 'chip must have broker-chip-partial for amber state').toHaveClass(/broker-chip-partial/);
     await expect(chip, 'chip must NOT have broker-chip-unknown').not.toHaveClass(/broker-chip-unknown/);
   });
@@ -161,7 +163,6 @@ test.describe('broker-chip color + popup broker names', () => {
   test('chip carries broker-chip-down when health state is red', async () => {
     await mockHealthEndpoint(P, 'red');
     const chip = await openPage(P);
-    if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
     await expect(chip, 'chip must have broker-chip-down for red state').toHaveClass(/broker-chip-down/);
     await expect(chip, 'chip must NOT have broker-chip-unknown').not.toHaveClass(/broker-chip-unknown/);
   });
@@ -173,7 +174,6 @@ test.describe('broker-chip color + popup broker names', () => {
   test('ticker_idle=true + all amber → chip is broker-chip-idle, not partial', async () => {
     await mockHealthEndpoint(P, 'amber', { tickerIdle: true, secondState: 'amber' });
     const chip = await openPage(P);
-    if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
     await expect(chip, 'idle must win over expected amber staleness').toHaveClass(/broker-chip-idle/);
     await expect(chip).not.toHaveClass(/broker-chip-partial/);
     await expect(chip).not.toHaveClass(/broker-chip-unknown/);
@@ -182,14 +182,12 @@ test.describe('broker-chip color + popup broker names', () => {
   test('ticker_idle=true + all green → chip is broker-chip-idle', async () => {
     await mockHealthEndpoint(P, 'green', { tickerIdle: true, secondState: 'green' });
     const chip = await openPage(P);
-    if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
     await expect(chip).toHaveClass(/broker-chip-idle/);
   });
 
   test('ticker_idle=true + one red account → chip stays broker-chip-down (idle never masks a real red)', async () => {
     await mockHealthEndpoint(P, 'amber', { tickerIdle: true, secondState: 'red' });
     const chip = await openPage(P);
-    if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
     await expect(chip, 'a genuine red failure must win over the idle flag').toHaveClass(/broker-chip-down/);
     await expect(chip).not.toHaveClass(/broker-chip-idle/);
   });
@@ -197,7 +195,6 @@ test.describe('broker-chip color + popup broker names', () => {
   test('ticker_idle=false + amber → chip stays broker-chip-partial (unaffected)', async () => {
     await mockHealthEndpoint(P, 'amber', { tickerIdle: false });
     const chip = await openPage(P);
-    if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
     await expect(chip).toHaveClass(/broker-chip-partial/);
     await expect(chip).not.toHaveClass(/broker-chip-idle/);
   });
@@ -206,7 +203,6 @@ test.describe('broker-chip color + popup broker names', () => {
     const reason = 'market calendar confirms closed today — ticker not connected by design';
     await mockHealthEndpoint(P, 'amber', { tickerIdle: true, secondState: 'amber', tickerIdleReason: reason });
     const chip = await openPage(P);
-    if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
     await chip.click();
     const modal = P.locator('.bh-modal').first();
     await modal.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT });
@@ -220,7 +216,6 @@ test.describe('broker-chip color + popup broker names', () => {
   test('ticker_idle=false → modal has no idle banner', async () => {
     await mockHealthEndpoint(P, 'green', { tickerIdle: false });
     const chip = await openPage(P);
-    if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
     await chip.click();
     const modal = P.locator('.bh-modal').first();
     await modal.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT });
@@ -240,7 +235,6 @@ test.describe('broker-chip color + popup broker names', () => {
   test('ticker_idle=true + green accounts → popup dot/Status/account-name recolor to idle, text reads IDLE', async () => {
     await mockHealthEndpoint(P, 'green', { tickerIdle: true, secondState: 'green' });
     const chip = await openPage(P);
-    if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
     await chip.click();
     const modal = P.locator('.bh-modal').first();
     await modal.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT });
@@ -266,7 +260,6 @@ test.describe('broker-chip color + popup broker names', () => {
   test('ticker_idle=true + one red account → that row stays red (dot + Status + account-name), others go idle', async () => {
     await mockHealthEndpoint(P, 'amber', { tickerIdle: true, secondState: 'red' });
     const chip = await openPage(P);
-    if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
     await chip.click({ force: true });
     const modal = P.locator('.bh-modal').first();
     await modal.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT });
@@ -289,7 +282,6 @@ test.describe('broker-chip color + popup broker names', () => {
   test('ticker_idle=false → popup renders normal green dot/Status/account-name, no idle classes', async () => {
     await mockHealthEndpoint(P, 'green', { tickerIdle: false, secondState: 'green' });
     const chip = await openPage(P);
-    if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
     await chip.click();
     const modal = P.locator('.bh-modal').first();
     await modal.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT });
@@ -308,18 +300,14 @@ test.describe('broker-chip color + popup broker names', () => {
   test('popup broker column shows broker names, never "unknown"', async () => {
     await mockHealthEndpoint(P, 'green');
     const chip = await openPage(P);
-    if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
 
     await chip.click();
     const modal = P.locator('.bh-modal').first();
     await modal.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT });
 
-    const brokerCells = modal.locator('.bh-row-broker');
+    const brokerCells = modal.locator('.ag-row .ag-cell.bh-col-broker');
     const count = await brokerCells.count();
-    if (count === 0) {
-      test.info().annotations.push({ type: 'skip', description: 'No broker rows' });
-      return;
-    }
+    expect(count, "popup must render at least one broker row").toBeGreaterThan(0);
 
     for (let i = 0; i < count; i++) {
       const text = (await brokerCells.nth(i).textContent() ?? '').trim().toLowerCase();
@@ -337,7 +325,6 @@ test.describe('broker-chip color + popup broker names', () => {
   test('red chip → popup contains at least one red dot row', async () => {
     await mockHealthEndpoint(P, 'red');
     const chip = await openPage(P);
-    if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
 
     // force:true — the red/down chip carries a continuous pulse animation
     // (.broker-chip-down, see layout.svelte), which makes Playwright's
@@ -359,14 +346,14 @@ test.describe('broker-chip color + popup broker names', () => {
   test('popup broker names are readable broker labels (not raw broker_id)', async () => {
     await mockHealthEndpoint(P, 'green');
     const chip = await openPage(P);
-    if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
 
     await chip.click();
     const modal = P.locator('.bh-modal').first();
     await modal.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT });
 
-    const brokerCells = modal.locator('.bh-row-broker');
+    const brokerCells = modal.locator('.ag-row .ag-cell.bh-col-broker');
     const count = await brokerCells.count();
+    expect(count, "popup must render at least one broker cell").toBeGreaterThan(0);
     const knownBrokers = new Set(['kite', 'dhan', 'groww', '—']);
 
     for (let i = 0; i < count; i++) {
@@ -402,7 +389,6 @@ test.describe('broker-chip color + popup broker names', () => {
     for (const state of /** @type {const} */ (['green', 'amber', 'red'])) {
       await mockHealthEndpoint(P, state);
       const chip = await openPage(P);
-      if (!chip) continue;
       await expect(chip, `chip must not be unknown when health=${state}`).not.toHaveClass(/broker-chip-unknown/);
     }
   });
@@ -420,7 +406,6 @@ test.describe('broker-chip color + popup broker names', () => {
   test('.ag-cell.ag-col-acct border-left resolves --acct-color at 3px width', async () => {
     await mockHealthEndpoint(P, 'green');
     const chip = await openPage(P);
-    if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
 
     await chip.click();
     const modal = P.locator('.bh-modal').first();
@@ -430,10 +415,7 @@ test.describe('broker-chip color + popup broker names', () => {
     // headerClass mirroring cellClass for theme parity.
     const rows = modal.locator('.ag-row .ag-cell.ag-col-acct');
     const count = await rows.count();
-    if (count === 0) {
-      test.info().annotations.push({ type: 'skip', description: 'No account rows' });
-      return;
-    }
+    expect(count, "popup must render at least one account row").toBeGreaterThan(0);
 
     for (let i = 0; i < count; i++) {
       const row = rows.nth(i);
@@ -498,7 +480,6 @@ test.describe('broker-chip color + popup broker names', () => {
     }));
 
     const chip = await openPage(P);
-    if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
 
     // force:true — the red/down chip carries a continuous pulse animation
     // (.broker-chip-down, see layout.svelte), which makes Playwright's
@@ -509,12 +490,7 @@ test.describe('broker-chip color + popup broker names', () => {
     await modal.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT });
 
     const circuitChip = modal.locator('.bh-circuit-chip').first();
-    const present = await circuitChip.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT }).then(() => true).catch(() => false);
-    if (!present) {
-      test.info().annotations.push({ type: 'skip', description: 'No circuit-open chip rendered' });
-      await P.locator('.bh-close').first().click().catch(() => {});
-      return;
-    }
+    await expect(circuitChip, "open-circuit account must render a .bh-circuit-chip").toBeVisible({ timeout: WAIT_TIMEOUT });
 
     const result = await circuitChip.evaluate((el) => {
       const cs = getComputedStyle(el);
@@ -541,7 +517,6 @@ test.describe('broker-chip color + popup broker names', () => {
   test('popup grid columns are 20% narrower than the pre-fix widths', async () => {
     await mockHealthEndpoint(P, 'green');
     const chip = await openPage(P);
-    if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
 
     await chip.click();
     const modal = P.locator('.bh-modal').first();
@@ -629,7 +604,6 @@ test.describe('broker-chip color + popup broker names', () => {
       });
 
       const chip = await openPage(P);
-      if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
       await chip.click();
       const modal = P.locator('.bh-modal').first();
       await modal.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT });
@@ -661,7 +635,6 @@ test.describe('broker-chip color + popup broker names', () => {
       });
 
       const chip = await openPage(P);
-      if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
       await chip.click();
       const modal = P.locator('.bh-modal').first();
       await modal.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT });
@@ -694,7 +667,6 @@ test.describe('broker-chip color + popup broker names', () => {
       });
 
       const chip = await openPage(P);
-      if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
       await chip.click();
       const modal = P.locator('.bh-modal').first();
       await modal.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT });
@@ -752,7 +724,6 @@ test.describe('broker-chip color + popup broker names', () => {
         P.on('dialog', onDialog);
         try {
           const chip = await openPage(P);
-          test.skip(!chip, 'No broker chip rendered');
           await chip.click();
           const modal = P.locator('.bh-modal').first();
           await modal.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT });
@@ -774,7 +745,6 @@ test.describe('broker-chip color + popup broker names', () => {
 
       test('enable path (inactive row) shows the Enable title, non-danger styling', async () => {
         const chip = await openPage(P);
-        test.skip(!chip, 'No broker chip rendered');
         await chip.click();
         const modal = P.locator('.bh-modal').first();
         await modal.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT });
@@ -790,7 +760,6 @@ test.describe('broker-chip color + popup broker names', () => {
 
       test('themed confirm z-index (--z-confirm-over-drawer) sits above the broker popup (--z-drawer)', async () => {
         const chip = await openPage(P);
-        test.skip(!chip, 'No broker chip rendered');
         await chip.click();
         const modal = P.locator('.bh-modal').first();
         await modal.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT });
@@ -820,7 +789,6 @@ test.describe('broker-chip color + popup broker names', () => {
       test('Cancel closes the confirm with NO PATCH fired and the account state unchanged', async () => {
         const patches = await captureBrokerPatches();
         const chip = await openPage(P);
-        test.skip(!chip, 'No broker chip rendered');
         await chip.click();
         const modal = P.locator('.bh-modal').first();
         await modal.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT });
@@ -851,7 +819,6 @@ test.describe('broker-chip color + popup broker names', () => {
 
         // Page load runs the first poll, which now fails.
         const chip = await openPage(P);
-        test.skip(!chip, 'No broker chip rendered');
         await chip.click();
         const modal = P.locator('.bh-modal').first();
         await modal.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT });
