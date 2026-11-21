@@ -8,23 +8,26 @@ commodity P&L still mid-session. The fix reused the effective-snapshot-
 time mechanism `exchange_clock._effective_gate_rows("MCX")` +
 `_effective_snapshot_time(row)`.
 
-**Known, CONFIRMED, NOT-yet-fixed bug (2026-11-21)**: `_sg_recover_mcx_snapshot`
+**Winter non-agri close_time wrap bug — FOUND AND FIXED (2026-11-21,
+operator-chosen "same-day clamp")**: `_sg_recover_mcx_snapshot`
 (SessionGuard) was found to have the identical bare-time-comparison
-defect and was fixed in the same pass that fixed `exchange_clock.py`'s
-root cause (see CLAUDE.md "MCX DST-aware non-agri close time" and
-`test_session_guard_mcx_winter_snapshot.py`) — `_run_nav_compute_once`
-here is NO LONGER using "the same mechanism" in the sense of being
-equally correct; it still uses the OLD bare `now.time() < target`
-comparison. Once MCX's `exchange_schedule` row holds the winter
-non-agri close_time (23:55 IST), `_effective_snapshot_time()` derives
-a `target` of 00:10 the next calendar day — and `now.time() < target`
-is false at almost ANY time of day, so this function fires a mid-
-session "EOD" NAV write almost immediately once the date latch resets
-for the new day. See `TestWinterWrapBugConfirmedNotFixed` below for
-the empirical repro. This is why the `exchange_schedule` DST sync
-(`_sync_mcx_dst_close_time_coro`) is deliberately NOT wired into
-`_task_holiday_refresh` yet — see `test_mcx_dst_close_time_sync.py`'s
-tripwire tests.
+defect and was fixed in an earlier pass (see CLAUDE.md "MCX DST-aware
+non-agri close time" and `test_session_guard_mcx_winter_snapshot.py`)
+via a session-dated absolute-datetime anchor. `_run_nav_compute_once`
+here had the same underlying defect (`now.time() < target` where
+`target` becomes 00:10 the next calendar day once MCX's `exchange_schedule`
+row holds the winter non-agri close_time, 23:55 IST) but is fixed with
+a DIFFERENT shape, chosen explicitly by the operator over the
+session-dated alternative: when the resolved row's own derivation
+crosses midnight (`exchange_clock._effective_snapshot_day_offset(row)
+== 1`), `target` is CLAMPED to 23:59 the SAME day rather than left to
+roll onto tomorrow. Accepted tradeoffs: NAV fires ~4 minutes after the
+real close instead of ~15, and the force-write grace window collapses
+to near-zero on such a day — both documented in the function's own
+docstring, and both mirror the identical clamp-to-23:59 pattern the
+pre-existing `_cutoff` fallback already used for an unusually late
+target. See `TestWinterWrapBugConfirmedNotFixed` below, which now
+asserts the FIXED (clamped) behaviour.
 """
 
 from __future__ import annotations
@@ -375,19 +378,20 @@ async def test_pops_latch_on_write_failure_for_retry():
 # ---------------------------------------------------------------------------
 
 class TestWinterWrapBugConfirmedNotFixed:
-    """Empirical repro, pinned so a future fix attempt has a concrete
-    failing-today test to work against. These tests assert the CURRENT
-    (buggy) behaviour — they must be flipped, not deleted, once
-    `_run_nav_compute_once` is fixed to anchor against an absolute,
-    session-dated datetime the way `_sg_recover_mcx_snapshot` now does.
+    """Winter non-agri close_time wrap — FIXED (2026-11-21, operator-
+    chosen same-day clamp). Class name kept for history/grep continuity
+    with the earlier "confirmed not fixed" pass — these tests now
+    assert the FIXED (clamped) behaviour, flipped per the operator's
+    explicit instruction rather than deleted.
     """
 
     @pytest.mark.asyncio
-    async def test_fires_prematurely_mid_session_with_winter_close_time(self):
-        """THIS IS THE BUG: with MCX's winter close_time (23:55 IST,
-        derived target=00:10 the next day), a check at 10:00 AM —
-        clearly mid-session, hours before the real close — currently
-        fires a NAV write. A fixed implementation must NOT do this."""
+    async def test_does_not_fire_mid_session_with_winter_close_time(self):
+        """FIXED: with MCX's winter close_time (23:55 IST, which would
+        have derived an unclamped target of 00:10 the next day), a
+        check at 10:00 AM — clearly mid-session, hours before the real
+        close — must NOT fire. The clamp pins the target to 23:59 the
+        SAME day, so 10:00 AM is still well before it."""
         state: dict = {}
         fake_now = SimpleNamespace(date=lambda: date(2026, 11, 21), time=lambda: dtime(10, 0))
         with patch(
@@ -396,27 +400,23 @@ class TestWinterWrapBugConfirmedNotFixed:
             "backend.api.helpers.exchange_clock._effective_gate_rows",
             side_effect=lambda gate: [_row(close_time=dtime(23, 55))] if gate == "MCX" else [],
         ), patch(
-            "backend.api.algo.nav.write_nav_snapshot",
-            new=AsyncMock(return_value={"nav": 1000.0, "cash_total": 0,
-                                        "positions_mtm": 0, "holdings_mtm": 0}),
+            "backend.api.algo.nav.write_nav_snapshot", new=AsyncMock(),
         ) as mock_write:
             await _run_nav_compute_once(state)
 
-        mock_write.assert_awaited_once(), (
-            "CONFIRMED BUG: fires at 10:00 AM mid-session once the MCX "
-            "close_time is the winter DST value — a correct "
-            "implementation must not fire until the REAL close + 15min"
+        mock_write.assert_not_awaited(), (
+            "FIXED: must not fire at 10:00 AM mid-session once the MCX "
+            "close_time is the winter DST value — the same-day clamp "
+            "pins the target to 23:59, hours later"
         )
-        assert state["nav_done"] == date(2026, 11, 21)
+        assert "nav_done" not in state
 
     @pytest.mark.asyncio
-    async def test_does_not_fire_just_before_the_wrapped_trigger(self):
-        """Sanity companion: at 00:05 (before the real 00:10 wrapped
-        trigger), it correctly does not fire — the bug is specifically
-        that it ALSO fires at every other time of day, not that it
-        never gates at all."""
+    async def test_does_not_fire_just_before_the_clamped_target(self):
+        """At 23:58 — one minute before the clamped 23:59 target — must
+        not fire yet."""
         state: dict = {}
-        fake_now = SimpleNamespace(date=lambda: date(2026, 11, 21), time=lambda: dtime(0, 5))
+        fake_now = SimpleNamespace(date=lambda: date(2026, 11, 20), time=lambda: dtime(23, 58))
         with patch(
             "backend.api.background.timestamp_indian", return_value=fake_now,
         ), patch(
@@ -429,3 +429,72 @@ class TestWinterWrapBugConfirmedNotFixed:
 
         mock_write.assert_not_awaited()
         assert "nav_done" not in state
+
+    @pytest.mark.asyncio
+    async def test_fires_at_the_clamped_target_same_day(self):
+        """At 23:59 — the clamped target, same day as the session being
+        recorded — must fire, and must latch `nav_done` to THAT day
+        (2026-11-20), never the next calendar day the unclamped 00:10
+        trigger would have belonged to."""
+        state: dict = {}
+        fake_now = SimpleNamespace(date=lambda: date(2026, 11, 20), time=lambda: dtime(23, 59))
+        with patch(
+            "backend.api.background.timestamp_indian", return_value=fake_now,
+        ), patch(
+            "backend.api.helpers.exchange_clock._effective_gate_rows",
+            side_effect=lambda gate: [_row(close_time=dtime(23, 55))] if gate == "MCX" else [],
+        ), patch(
+            "backend.api.algo.nav.write_nav_snapshot",
+            new=AsyncMock(return_value={"nav": 1000.0, "cash_total": 0,
+                                        "positions_mtm": 0, "holdings_mtm": 0}),
+        ) as mock_write:
+            await _run_nav_compute_once(state)
+
+        mock_write.assert_awaited_once()
+        assert state["nav_done"] == date(2026, 11, 20)
+
+    @pytest.mark.asyncio
+    async def test_force_write_grace_window_collapses_on_a_wrapping_day(self):
+        """Accepted tradeoff, pinned: because `target` clamps to 23:59,
+        `_cutoff_dt = combine(today, 23:59) + 10min` rolls past
+        midnight, so the pre-existing `_cutoff` fallback clamps the
+        force-write deadline to 23:59 too — force_write is only True in
+        the last-minute window, not after the usual ~10-minute grace."""
+        state: dict = {}
+        fake_now = SimpleNamespace(date=lambda: date(2026, 11, 20), time=lambda: dtime(23, 59))
+        with patch(
+            "backend.api.background.timestamp_indian", return_value=fake_now,
+        ), patch(
+            "backend.api.helpers.exchange_clock._effective_gate_rows",
+            side_effect=lambda gate: [_row(close_time=dtime(23, 55))] if gate == "MCX" else [],
+        ), patch(
+            "backend.api.algo.nav.write_nav_snapshot",
+            new=AsyncMock(return_value={
+                "nav": 1000.0, "cash_total": 0, "positions_mtm": 0, "holdings_mtm": 0,
+            }),
+        ) as mock_write:
+            await _run_nav_compute_once(state)
+
+        # force=True is passed at exactly 23:59 on a clamped day (the
+        # grace window has already collapsed to this single minute).
+        assert mock_write.await_args.kwargs.get("force") is True
+
+    @pytest.mark.asyncio
+    async def test_non_wrapping_close_time_is_never_clamped(self):
+        """Sanity / non-regression: a normal (non-wrapping) MCX close
+        (23:30, deriving 23:45) must NOT be clamped — the clamp only
+        applies when the row's own derivation crosses midnight."""
+        state: dict = {}
+        fake_now = SimpleNamespace(date=lambda: date(2026, 11, 20), time=lambda: dtime(23, 40))
+        with patch(
+            "backend.api.background.timestamp_indian", return_value=fake_now,
+        ), patch(
+            "backend.api.helpers.exchange_clock._effective_gate_rows",
+            side_effect=lambda gate: [_row(close_time=dtime(23, 30))] if gate == "MCX" else [],
+        ), patch(
+            "backend.api.algo.nav.write_nav_snapshot", new=AsyncMock(),
+        ) as mock_write:
+            await _run_nav_compute_once(state)
+
+        # 23:40 < 23:45 (the real, unclamped derived target) -> must not fire.
+        mock_write.assert_not_awaited()

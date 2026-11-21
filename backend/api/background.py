@@ -5402,36 +5402,50 @@ async def _task_holiday_refresh() -> None:
                     f"ingestion failed (non-fatal): {e}"
                 )
 
-            # MCX non-agri DST-tracking close time — `_sync_mcx_dst_close_time_coro()`
-            # (`backend/brokers/broker_apis.py`) exists and is unit-
-            # tested, but is STILL DELIBERATELY NOT WIRED HERE (2026-11-21,
-            # second pass). The ORIGINAL
-            # reason this was left unwired — a weekday/midnight-wrap bug
-            # in `exchange_clock.py`'s `sessions_with_snapshot_time_now()`
-            # / `is_market_active_for_prev_close()` — is now FIXED (see
-            # `_effective_gate_rows_for_date`, `_anchor_snapshot_datetime`,
-            # `_effective_snapshot_day_offset`, and
-            # `test_exchange_clock_mcx_winter_snapshot_gap.py`).
-            # `_sg_recover_mcx_snapshot()` (SessionGuard startup recovery)
-            # had the identical bug and is fixed too.
-            #
-            # Still blocking the re-wire: `_run_nav_compute_once()`
-            # (this same file) has the SAME bare-time-comparison bug
-            # against `_effective_snapshot_time()`'s return value
-            # (`now.time() < target`), confirmed empirically to fire a
-            # mid-session "EOD" NAV write at essentially any time of day
-            # once the MCX row holds the winter close_time. Fixing it
-            # safely requires also fixing its DATE ATTRIBUTION (its
-            # `today = now.date()` anchor is wrong for a fire that lands
-            # just after midnight — needs the same `session_date_of()`
-            # treatment SessionGuard already uses) and rewriting
-            # `test_nav_compute_trigger_time.py`'s fixtures, which stub
-            # `now` as a `SimpleNamespace` incompatible with the real
-            # datetime/timezone arithmetic that fix needs. NAV data is
-            # investor-facing; this was deliberately NOT attempted under
-            # time pressure in this pass. See CLAUDE.md "MCX DST-aware
-            # non-agri close time" for the full writeup and the
-            # required fix before this can be wired.
+            # MCX non-agri DST-tracking close time (2026-11-21, THIRD
+            # pass — re-wired live). MCX revises its bullion/energy/
+            # base-metals evening close twice a year tracking US DST
+            # (23:30 in-DST, 23:55 winter). Keeps exchange_schedule's
+            # default MCX row in sync so every reader (this table
+            # directly, exchange_clock, DTE/Greeks in options.py, the
+            # ticker quiet-window) agrees. Was deliberately left unwired
+            # across two earlier passes:
+            #   1. exchange_clock.py's weekday/midnight-wrap bug in
+            #      sessions_with_snapshot_time_now()/
+            #      is_market_active_for_prev_close() — FIXED via
+            #      _effective_gate_rows_for_date/_anchor_snapshot_datetime/
+            #      _effective_snapshot_day_offset. SessionGuard's own
+            #      copy (_sg_recover_mcx_snapshot) had the identical bug
+            #      and is fixed too, with its catch-up window's upper
+            #      bound restored.
+            #   2. _run_nav_compute_once()'s identical bare-time bug
+            #      (now.time() < target) — FIXED via an operator-chosen
+            #      same-day clamp: when the resolved row's own
+            #      close_time+15min derivation crosses midnight, target
+            #      is pinned to 23:59 the SAME day instead of rolling
+            #      to 00:10 tomorrow. NAV now fires ~4 min after the
+            #      real close instead of ~15, and the force-write grace
+            #      window collapses to near-zero on such a day — both
+            #      accepted tradeoffs, documented in that function's own
+            #      docstring.
+            # See CLAUDE.md "MCX DST-aware non-agri close time" for the
+            # full writeup and `test_exchange_clock_mcx_winter_snapshot_gap.py`
+            # / `test_session_guard_mcx_winter_snapshot.py` /
+            # `test_nav_compute_trigger_time.py::TestWinterWrapBugConfirmedNotFixed`
+            # for the regression coverage. Piggybacked on this same
+            # daily/restart-catch-up wake-up — never its own cron.
+            try:
+                from backend.brokers.broker_apis import _sync_mcx_dst_close_time_coro
+                _resolved_close = await _sync_mcx_dst_close_time_coro()
+                logger.debug(
+                    "[HOLIDAY-REFRESH] MCX non-agri DST close_time check: %s IST",
+                    _resolved_close.strftime("%H:%M") if _resolved_close else "unresolved (DB error)",
+                )
+            except Exception as e:
+                logger.warning(
+                    f"[HOLIDAY-REFRESH] MCX non-agri DST close_time sync "
+                    f"failed (non-fatal): {e}"
+                )
 
         _mirror_to_holidays_store(exch, got)
         added = sorted(d.isoformat() for d in (got - prev))
@@ -8983,10 +8997,30 @@ async def _run_nav_compute_once(state: dict) -> None:
     for why this is relative to `target` rather than a fixed clock time.
     See `write_nav_snapshot`'s own docstring for the full write-policy
     rationale.
+
+    2026-11-21 fix (operator-chosen "same-day clamp") — `target` is a
+    BARE time with no date, and `today = now.date()` is a bare calendar
+    date, not session-aware. MCX's winter non-agri close (23:55 IST)
+    derives a snapshot trigger (`close_time + 15 min`) that crosses
+    midnight to 00:10 the NEXT calendar day
+    (`exchange_clock._effective_snapshot_day_offset` returns 1 for this
+    row). Left alone, `now.time() < target` would be false at almost
+    ANY time of day once that happens — confirmed empirically — firing
+    a mid-session NAV write almost immediately once `nav_done` resets
+    for the new day. Operator-chosen fix shape (not a session-dated
+    latch, which would also need the latch/`target_date` semantics
+    rewritten): when the resolved row's own derivation wraps, CLAMP
+    `target` to 23:59 the SAME day rather than letting it roll to
+    tomorrow. This reuses the identical clamp-to-23:59 pattern the
+    `_cutoff` fallback below already applies to the force-write grace
+    deadline — accepted tradeoffs: NAV fires ~4 minutes after the real
+    close instead of ~15, and the force-write grace window collapses to
+    (near-)zero on such a day, exactly like the pre-existing `_cutoff`
+    fallback's own documented tradeoff for an unusually late target.
     """
     from backend.api.algo.nav import write_nav_snapshot
     from backend.api.helpers.exchange_clock import (
-        _effective_gate_rows, _effective_snapshot_time,
+        _effective_gate_rows, _effective_snapshot_time, _effective_snapshot_day_offset,
     )
 
     now   = timestamp_indian()
@@ -8996,9 +9030,13 @@ async def _run_nav_compute_once(state: dict) -> None:
 
     mcx_rows = _effective_gate_rows("MCX")
     target = _effective_snapshot_time(mcx_rows[0]) if mcx_rows else None
+    if target is not None and mcx_rows and _effective_snapshot_day_offset(mcx_rows[0]) == 1:
+        target = dtime(23, 59)  # same-day clamp — see docstring above
     if target is None:
         non_mcx_rows = _effective_gate_rows("NON-MCX")
         target = _effective_snapshot_time(non_mcx_rows[0]) if non_mcx_rows else None
+        if target is not None and non_mcx_rows and _effective_snapshot_day_offset(non_mcx_rows[0]) == 1:
+            target = dtime(23, 59)  # defensive — NON-MCX never wraps today, kept for symmetry
     if target is None:
         target = dtime(16, 0)
     if now.time() < target:

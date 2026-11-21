@@ -185,75 +185,84 @@ async def test_exchange_clock_refresh_failure_is_non_fatal():
     assert fake_session.committed is True
 
 
-# ── background.py wiring — STILL DELIBERATELY NOT wired (second pass) ──
+# ── background.py wiring — NOW LIVE (2026-11-21, third pass) ───────────
 #
-# A pre-ship review had found a real latent bug this coroutine would
-# have exposed if wired in before the root cause was fixed:
-# `exchange_clock._effective_snapshot_time()` derives the MCX
-# close-snapshot trigger as `close_time + 15 min` with no date
-# component. Writing `close_time='23:55'` (the winter value) makes that
-# derived snapshot_time wrap to `00:10` THE NEXT CALENDAR DAY, and the
-# OLD weekday filter checked the REAL weekday at that later moment — on
-# a Friday MCX close, the matching instant is a Saturday, which failed
-# the Mon-Fri filter, so the MCX close-snapshot (which writes
-# `daily_book.ltp`, the prev_close SSOT) silently never fired on ANY
-# Friday night throughout the winter window.
+# Two real latent bugs had to be found and fixed, across two earlier
+# passes, before this coroutine was safe to wire in:
 #
-# THAT root cause is now FIXED in `exchange_clock.py`
-# (`_effective_gate_rows_for_date`, `_anchor_snapshot_datetime`,
-# `_effective_snapshot_day_offset` — see
-# `test_exchange_clock_mcx_winter_snapshot_gap.py`). SessionGuard's own
-# copy of the same bug, `_sg_recover_mcx_snapshot()`, is fixed too (see
-# `test_session_guard_mcx_winter_snapshot.py`).
+#   1. `exchange_clock._effective_snapshot_time()` derives the MCX
+#      close-snapshot trigger as `close_time + 15 min` with no date
+#      component. Writing `close_time='23:55'` (the winter value) made
+#      that derived snapshot_time wrap to `00:10` THE NEXT CALENDAR
+#      DAY, and the OLD weekday filter checked the REAL weekday at that
+#      later moment — on a Friday MCX close, the matching instant is a
+#      Saturday, which failed the Mon-Fri filter, so the MCX
+#      close-snapshot (which writes `daily_book.ltp`, the prev_close
+#      SSOT) would have silently never fired on ANY Friday night
+#      throughout the winter window. FIXED via
+#      `_effective_gate_rows_for_date`/`_anchor_snapshot_datetime`/
+#      `_effective_snapshot_day_offset` — see
+#      `test_exchange_clock_mcx_winter_snapshot_gap.py`. SessionGuard's
+#      own copy, `_sg_recover_mcx_snapshot()`, had the identical bug
+#      (plus its own catch-up-window upper-bound regression, caught and
+#      fixed in review) — see `test_session_guard_mcx_winter_snapshot.py`.
 #
-# STILL BLOCKING the re-wire: `_run_nav_compute_once()` (same file,
-# background.py) has the identical bare-time-comparison bug against
-# `_effective_snapshot_time()`'s return value (`now.time() < target`),
-# confirmed empirically to fire a mid-session "EOD" NAV write at
-# essentially any time of day once the MCX row holds the winter close
-# time. Fixing it safely needs the same `session_date_of()` treatment
-# for its date attribution AND a rewrite of
-# `test_nav_compute_trigger_time.py`'s fixtures (they stub `now` as a
-# `SimpleNamespace`, incompatible with the real datetime/timezone
-# arithmetic that fix needs) — NAV data is investor-facing, and this
-# was deliberately not attempted under time pressure. See CLAUDE.md
-# "MCX DST-aware non-agri close time" for the full writeup.
+#   2. `_run_nav_compute_once()` (same file, background.py) had the
+#      identical bare-time-comparison bug against
+#      `_effective_snapshot_time()`'s return value
+#      (`now.time() < target`), confirmed empirically to fire a
+#      mid-session "EOD" NAV write at essentially any time of day once
+#      the MCX row held the winter close time. FIXED via an
+#      operator-chosen same-day clamp (not a session-dated latch): when
+#      the resolved row's own derivation crosses midnight, `target` is
+#      pinned to 23:59 the SAME day — see
+#      `test_nav_compute_trigger_time.py::TestWinterWrapBugConfirmedNotFixed`.
+#
+# See CLAUDE.md "MCX DST-aware non-agri close time" for the full
+# writeup.
 
 
-def test_sync_function_is_not_yet_wired_into_holiday_refresh():
-    """Must stay unwired until `_run_nav_compute_once()`'s own
-    bare-time-comparison bug (see the module-level comment block above)
-    is fixed."""
+def test_sync_function_is_wired_into_holiday_refresh():
+    """`_sync_mcx_dst_close_time_coro` must be called from inside the
+    same `if exch == "MCX":` block as the MCX evening-holiday
+    special-session upsert in `_task_holiday_refresh` — the same daily
+    05:30 IST / restart-catch-up wake-up, never a new independent
+    schedule."""
     import backend.api.background as background
 
     src = inspect.getsource(background._task_holiday_refresh)
-    # The function name may still appear in an explanatory comment (see
-    # the sibling test below) — what must be absent is an actual CALL.
-    assert "await _sync_mcx_dst_close_time_coro(" not in src, (
-        "_sync_mcx_dst_close_time_coro must not be called from "
-        "_task_holiday_refresh yet — _run_nav_compute_once()'s own "
-        "bare-time comparison against the same MCX winter close_time "
-        "would fire a mid-session NAV write. See CLAUDE.md "
-        "'MCX DST-aware non-agri close time'."
-    )
-    assert "import _sync_mcx_dst_close_time_coro" not in src, (
-        "the function must not even be imported inside _task_holiday_refresh "
-        "yet (a dead import would be a half-wired state, not a clean defer)"
+    mcx_block_start = src.index('if exch == "MCX":')
+    evening_idx = src.index("_upsert_mcx_evening_closed_sessions_coro", mcx_block_start)
+    dst_idx = src.index("await _sync_mcx_dst_close_time_coro(", mcx_block_start)
+    assert evening_idx > 0 and dst_idx > 0
+    # Both calls must live inside the same single `if exch == "MCX":`
+    # block — i.e. no second `if exch == "MCX":` guard was introduced.
+    assert src.count('if exch == "MCX":') == 1, (
+        "the DST close_time sync must piggyback on the existing MCX "
+        "block, not introduce a second if-guard / separate cron"
     )
 
 
-def test_background_flags_the_deferred_wiring_reason_in_comments():
-    """The deferral reason must be documented inline in background.py,
-    not only in this test file, so a future implementer sees it at the
-    call site they'd naturally add the wiring back at."""
+def test_wiring_never_raises_on_sync_failure():
+    """The call site must be wrapped in its own try/except so a sync
+    failure can never abort the rest of the holiday-refresh cycle."""
     import backend.api.background as background
 
     src = inspect.getsource(background._task_holiday_refresh)
-    assert "_sync_mcx_dst_close_time_coro" in src, (
-        "background.py should still name the deferred function in a "
-        "comment at the natural call site, for discoverability"
+    dst_idx = src.index("_sync_mcx_dst_close_time_coro")
+    tail = src[dst_idx:]
+    assert "except Exception as e:" in tail[:1200], (
+        "the DST close_time sync call must be wrapped in its own "
+        "try/except so a failure there is non-fatal to the whole cycle"
     )
-    assert "_run_nav_compute_once" in src, (
-        "the specific blocking function must be named inline, not just "
-        "a vague reference to 'a latent bug'"
-    )
+
+
+def test_wiring_call_has_no_arguments():
+    """The production call site must invoke the coroutine with no
+    arguments (defaulting `today=None` → resolved via `timestamp_indian()`
+    inside the coroutine) — never a hardcoded or pre-computed date, which
+    would defeat the point of a DAILY sync."""
+    import backend.api.background as background
+
+    src = inspect.getsource(background._task_holiday_refresh)
+    assert "await _sync_mcx_dst_close_time_coro()" in src
