@@ -668,6 +668,19 @@ async def _positions_refresh_after_fill(
                     invalidate("positions")
                     invalidate("holdings")
                     _raw_cache_invalidate("holdings")
+                    # A fill also moves cash and consumes/releases margin —
+                    # same staleness race as positions/holdings above.
+                    # _rco_invalidate_terminal_caches() already busts
+                    # "funds"/"margins" once at t+0 (postback receipt), but
+                    # that bust can be repopulated with stale pre-fill data
+                    # by a frontend poll landing in the 0-2s propagation gap
+                    # this whole poll loop exists to close for positions —
+                    # nothing re-busts funds/margins after that, so they'd
+                    # silently lag until the raw-cache TTL (30s) naturally
+                    # expires. Bust both cache layers here too, the same
+                    # confirmed-change gate as positions/holdings.
+                    invalidate("funds")
+                    _raw_cache_invalidate("margins")
                     broadcast(json.dumps({
                         "event": "positions_refreshed",
                         "tradingsymbol": tradingsymbol,

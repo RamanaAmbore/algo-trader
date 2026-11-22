@@ -200,6 +200,71 @@ class TestPositionsRefreshAfterFillInvalidatesRouteCache:
 
         assert invalidated_keys == []
 
+    @pytest.mark.asyncio
+    async def test_also_invalidates_funds_and_margins_cache_on_change(self):
+        """2026-11-22 fix — a fill also moves cash and consumes/releases
+        margin, the same staleness race as positions/holdings above.
+        `_rco_invalidate_terminal_caches` busts "funds"/"margins" once at
+        t+0 (postback receipt), but a frontend poll landing in the 0-2s
+        propagation gap this poll loop exists to close for positions can
+        repopulate that cache with stale pre-fill data, with nothing to
+        bust it again afterward. This poll's confirmed-change gate must
+        also re-bust funds/margins, exactly like positions/holdings."""
+        import pandas as pd
+        from backend.api.routes.orders import _positions_refresh_after_fill
+
+        empty_df = pd.DataFrame([])
+        filled_df = pd.DataFrame([{"tradingsymbol": "NIFTY25JUL24000CE", "quantity": 50}])
+        call_count = {"n": 0}
+
+        def _fake_fetch_positions(*args, **kwargs):
+            call_count["n"] += 1
+            return [empty_df] if call_count["n"] == 1 else [filled_df]
+
+        invalidated_keys = []
+        raw_invalidated_keys = []
+        with patch("asyncio.sleep", new=AsyncMock()), \
+             patch("backend.brokers.broker_apis.fetch_positions", side_effect=_fake_fetch_positions), \
+             patch("backend.brokers.broker_apis._raw_cache_invalidate",
+                   side_effect=lambda key: raw_invalidated_keys.append(key)), \
+             patch("backend.api.routes.orders.invalidate",
+                   side_effect=lambda key: invalidated_keys.append(key)), \
+             patch("backend.api.routes.orders.broadcast"):
+            await _positions_refresh_after_fill("ZG0001", "NIFTY25JUL24000CE", 50)
+
+        assert "funds" in invalidated_keys, (
+            "route-level funds cache must be busted once a fill is "
+            "confirmed — cash must refresh like positions"
+        )
+        assert "margins" in raw_invalidated_keys, (
+            "raw broker-DataFrame margins cache must be busted once a "
+            "fill is confirmed — margin must refresh like positions"
+        )
+
+    @pytest.mark.asyncio
+    async def test_does_not_invalidate_funds_or_margins_when_no_change_detected(self):
+        """Mirrors the no-change-detected case above: if no genuine qty
+        change is observed across all 5 attempts, funds/margins must not
+        be busted a second time by this poll either."""
+        import pandas as pd
+        from backend.api.routes.orders import _positions_refresh_after_fill
+
+        same_df = pd.DataFrame([{"tradingsymbol": "NIFTY25JUL24000CE", "quantity": 50}])
+
+        invalidated_keys = []
+        raw_invalidated_keys = []
+        with patch("asyncio.sleep", new=AsyncMock()), \
+             patch("backend.brokers.broker_apis.fetch_positions", return_value=[same_df]), \
+             patch("backend.brokers.broker_apis._raw_cache_invalidate",
+                   side_effect=lambda key: raw_invalidated_keys.append(key)), \
+             patch("backend.api.routes.orders.invalidate",
+                   side_effect=lambda key: invalidated_keys.append(key)), \
+             patch("backend.api.routes.orders.broadcast"):
+            await _positions_refresh_after_fill("ZG0001", "NIFTY25JUL24000CE", 50)
+
+        assert "funds" not in invalidated_keys
+        assert "margins" not in raw_invalidated_keys
+
 
 # ── _opp_live_handle_success: Dhan/Groww proactive refresh trigger ─────────
 
