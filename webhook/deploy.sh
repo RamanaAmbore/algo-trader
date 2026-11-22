@@ -82,10 +82,19 @@ trap 'on_exit $?' EXIT
   # D3 — Self-healing chown BEFORE git ops so subsequent git/npm operations
   # don't choke on root-owned files left by aborted deploys or manual SSH work.
   # Idempotent — harmless on a clean tree.
-  sudo chown -R www-data:www-data \
-      "$APP_ROOT/.git" "$APP_ROOT/.log" "$APP_ROOT/backend/config" \
-      "$APP_ROOT/frontend/.svelte-kit" "$APP_ROOT/frontend/build" \
-      "$APP_ROOT/frontend/node_modules" 2>/dev/null || true
+  #
+  # D13 (2026-11-22, operator: "the ownership of files is sometimes issue") —
+  # widened from a 6-path whitelist (.git, .log, backend/config,
+  # frontend/.svelte-kit, frontend/build, frontend/node_modules) to the WHOLE
+  # tree. `git reset --hard origin/$BRANCH` below can touch ANY file in the
+  # repo, not just those six paths — a file left root-owned by a manual SSH
+  # edit or an aborted sudo operation ANYWHERE else in the tree would make
+  # `git reset --hard` fail with a permission error on that one file and,
+  # under `set -e` (enabled right after this block), abort the whole deploy.
+  # The whitelist already covered the two largest directories (.git,
+  # node_modules), so the marginal cost of the remaining (much smaller)
+  # source tree is small relative to the risk it closes.
+  sudo chown -R www-data:www-data "$APP_ROOT" 2>/dev/null || true
 
   # One-time migration: rename old config file names to new names
   [ -f "backend/config/config.yaml" ] && [ ! -f "backend/config/backend_config.yaml" ] && \
@@ -433,8 +442,27 @@ JSONEOF
   # duration blocks any concurrent deploy (e.g. prod waiting on dev).
   # All safety-critical steps (pull, build, restart, health check,
   # notification) are done above — metrics are best-effort only.
+  #
+  # D14 (2026-11-22, operator: "even lock may be an issue with multiple
+  # processes running in dev and prod") — this used to ALSO delete the lock
+  # file (`rm -f "$LOCK"`) right after releasing it. That deletion was never
+  # needed to release the lock — closing fd 200 (the line below) already
+  # drops the flock immediately; the next waiter's `flock` on the SAME
+  # still-existing file unblocks the instant this process closes fd 200.
+  # Deleting the file instead opened a real race: `flock` locks an INODE,
+  # not a path. If a THIRD deploy starts in the narrow window after this
+  # `rm` but before a SECOND, already-queued deploy (call it B) finishes —
+  # that third process's `exec 200>"$LOCK"` finds no file at that path and
+  # CREATES A NEW ONE (a new inode). It then `flock`s its own fd on that
+  # brand-new inode, which no one else holds — so it proceeds immediately,
+  # fully concurrently with B, which is still locked on the OLD (now
+  # unlinked but still open) inode. Three or more overlapping deploys
+  # (e.g. a dev push and a main push landing seconds apart, or a webhook
+  # redelivery) could silently defeat serialization entirely from that
+  # point on — the exact CPU-contention bug D7 above was written to fix.
+  # Fix: never delete the lock file at runtime. It is a permanent sentinel
+  # path; only the advisory lock on it is meant to be transient.
   exec 200>&-
-  rm -f "$LOCK" 2>/dev/null || sudo rm -f "$LOCK" 2>/dev/null || true
 
   # D12 — Capture per-release code metrics. Best-effort; never fails
   # the deploy. Main branch deploys land under `git describe`, dev
