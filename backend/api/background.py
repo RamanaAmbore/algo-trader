@@ -3383,19 +3383,22 @@ def _html_inr(v: Optional[float]) -> str:
     return f"{sign}₹{int(round(abs_v)):,}"
 
 
-async def trigger_close_snapshot(gate: str) -> None:
+async def trigger_close_snapshot(gate: str) -> bool:
     """Fire the daily_book LTP close snapshot for *gate* (e.g. "NON-MCX" or "MCX").
 
     Called by ``_snapshot_probe_nse_mcx`` when a session's ``snapshot_time``
     matches the current IST minute and the session is a regular trading window
     (not a settlement pass).  Logs the gate label so incidents are traceable.
+
+    Returns ``_snapshot_fire``'s own result — whether the caller's daily dedup
+    sentinel should be marked "fired" (see that function's docstring).
     """
     label = f"{gate.lower()}-close"
     logger.info(f"Background: {gate} close-snapshot trigger — firing [{label}]")
-    await _snapshot_fire(label)
+    return await _snapshot_fire(label)
 
 
-async def trigger_settlement_capture(gate: str) -> None:
+async def trigger_settlement_capture(gate: str) -> bool:
     """Fire the BHAV/settlement snapshot pass for *gate*.
 
     Called by ``_snapshot_probe_nse_mcx`` when the matched session's
@@ -3403,10 +3406,12 @@ async def trigger_settlement_capture(gate: str) -> None:
     MCX at 00:15 IST.  The ``market_open=False`` flag ensures ``snapshot_daily_book``
     captures settlement prices even if the time-of-day check would otherwise
     classify the exchange as still active.
+
+    Returns ``_snapshot_fire``'s own result (see that function's docstring).
     """
     label = f"{gate.lower()}-settlement"
     logger.info(f"Background: {gate} settlement trigger — firing [{label}]")
-    await _snapshot_fire(label, market_open=False)
+    return await _snapshot_fire(label, market_open=False)
 
 
 async def _snapshot_probe_nse_mcx() -> None:
@@ -3417,7 +3422,11 @@ async def _snapshot_probe_nse_mcx() -> None:
     whose ``snapshot_time`` matches the current IST minute (±1 min tolerance).
     A per-gate daily dedup sentinel (``_snapshot_fired_today``) ensures each gate
     fires exactly once per calendar day even if multiple 30-second polls land in
-    the ±1 min window.
+    the ±1 min window — but ONLY once it actually succeeds cleanly for every
+    account (2026-11-23 fix, see ``_snapshot_fire``'s own docstring). A run with
+    per-account errors leaves the sentinel unset so the NEXT 30s tick inside the
+    same window retries it, instead of silently never writing that account's
+    EOD row for the day.
 
     Settlement snapshot sessions (session_name == "settlement") are intentionally
     skipped — previous_close is now set at 08:00 IST via fix_daily_book_prev_close
@@ -3439,30 +3448,72 @@ async def _snapshot_probe_nse_mcx() -> None:
                 "(prev_close handled by 08:00 IST fix_daily_book_prev_close)",
                 session.gate,
             )
+            _snapshot_fired_today[session.gate] = today
         else:
-            await trigger_close_snapshot(session.gate)
-        _snapshot_fired_today[session.gate] = today
+            if await trigger_close_snapshot(session.gate):
+                _snapshot_fired_today[session.gate] = today
 
 
-async def _snapshot_fire(label: str, *, market_open: bool = True) -> None:
+async def _snapshot_fire(label: str, *, market_open: bool = True) -> bool:
     """Invoke ``snapshot_daily_book`` and log the result summary.
 
-    Catches and logs all exceptions so the caller's dedup sentinel can
-    still be updated — a transient failure should not trigger a retry
-    storm on the next 30s poll.
+    Returns whether the caller should mark its daily dedup sentinel as
+    "fired" (see ``_snapshot_fired_today``):
+
+    - A raised exception (e.g. DB unreachable) always returns ``True`` —
+      catches and logs it so the sentinel still gets marked, same as
+      before this function returned a value at all. A systemic failure
+      like this is unlikely to self-heal within the same ~1-2 minute
+      snapshot_time window, so retrying it every 30s would just repeat
+      the same failure noisily with no benefit (the original "no retry
+      storm" rationale this function's docstring used to carry).
+    - A clean run (``result["errors"]`` empty) returns ``True`` — the
+      normal case.
+    - A run with per-account errors (``result["errors"]`` non-empty, but
+      ``snapshot_daily_book`` itself returned normally — e.g. one
+      account's broker call threw a connection/server error at MCX close,
+      caught per-account inside ``_fetch_account_data``) returns
+      ``False``. 2026-11-23 fix (operator: "snapshot refresh ... when
+      snapshot is not taken at the end of mcx because of server issue or
+      connection issue with specific account") — this used to be
+      indistinguishable from the clean case: the sentinel was marked
+      "fired" either way, so that one account's EOD row for the day was
+      never written and NOTHING ever retried it (not the next 30s tick,
+      whose own dedup check saw "already fired"; not the restart
+      catch-up path, which checks the identical sentinel). A per-account
+      degradation is usually transient — allowing the caller to retry it
+      within the same bounded ±1 min snapshot_time window (a handful of
+      30s ticks, not an unbounded storm) gives it a real chance to
+      self-heal same-night instead of silently staying stale until
+      tomorrow.
+
+    Also promotes the errors-present case from INFO to ERROR — logged
+    through the generic ``logger.error`` call, ERROR_AGENT's existing
+    blanket catch-all picks it up with no new alert wiring, same as
+    every other unscoped error in this codebase.
     """
     from backend.api.algo.daily_snapshot import snapshot_daily_book
 
     try:
         result = await snapshot_daily_book(market_open=market_open)
+        if result["errors"]:
+            logger.error(
+                f"Background: daily snapshot [{label}] had per-account "
+                f"failures — accounts={result['accounts']} "
+                f"h={result['holdings_rows']} p={result['positions_rows']} "
+                f"t={result['trades_rows']} errors={result['errors']}"
+            )
+            return False
         logger.info(
             f"Background: daily snapshot [{label}] — "
             f"accounts={result['accounts']} "
             f"h={result['holdings_rows']} p={result['positions_rows']} "
             f"t={result['trades_rows']} errors={result['errors']}"
         )
+        return True
     except Exception as e:
         logger.error(f"Background: daily snapshot [{label}] failed: {e}")
+        return True
 
 
 async def _snapshot_unsub_nonmcx() -> None:
@@ -3908,8 +3959,15 @@ async def _sg_recover_mcx_snapshot(mcx_rows: list, now: datetime, today: date) -
     if not in_window or _snapshot_fired_today.get("MCX") == today:
         return
     logger.info("SessionGuard: running McxSnapshot (MCX EOD write)")
-    await _snapshot_fire("mcx", market_open=False)
-    _snapshot_fired_today["MCX"] = today
+    # 2026-11-23 fix — only mark the sentinel on a clean run (see
+    # _snapshot_fire's own docstring). SessionGuard itself only runs once
+    # per process start, so this doesn't add a retry loop here directly —
+    # but it keeps this sentinel's meaning consistent with
+    # _snapshot_probe_nse_mcx's, and a later restart (e.g. the next
+    # deploy) will correctly retry a day that never cleanly succeeded
+    # instead of silently treating it as done.
+    if await _snapshot_fire("mcx", market_open=False):
+        _snapshot_fired_today["MCX"] = today
 
 
 async def _sg_recover_ticker_connect(now_t: dtime, today: date) -> None:
