@@ -12,12 +12,17 @@ allowed-tools: Bash, Read, Write, Edit, Glob, Grep, Agent, ExitPlanMode, EnterPl
 ```bash
 .claude/set-bypass.sh
 ```
+This may be denied by the permission system (it mutates global CLI settings, which the
+auto-mode classifier can flag as undermining oversight). That denial is not a pipeline
+blocker — continue with the remaining steps via individually-approved tool calls. Do not
+retry the script and do not treat the denial itself as a failure to report.
 
-**Final step — Restore plan mode:** After Step 8 (commit), before calling `EnterPlanMode`, run:
+**Final step — Restore plan mode:** After Step 7 (foreground report), before calling `EnterPlanMode`, run:
 ```bash
 .claude/set-plan.sh
 ```
-Then call `EnterPlanMode`.
+Then call `EnterPlanMode`. This restore step is also best-effort — if denied for the
+same reason, proceed to `EnterPlanMode` anyway.
 
 Read `.claude/PLAN.md` (written during plan mode), dispatch implementation agents,
 run tests until green, commit, and report ready for `/ddev`.
@@ -140,27 +145,19 @@ Run all self-audit checks from CLAUDE.md:
 3. If a function was delegated/refactored: verify the called helper contains the original logic
 4. **Per-file test coverage check (hard gate — no exceptions)**
 
-   Run:
-   ```bash
-   git diff --name-only HEAD
-   ```
-   For every changed source file, confirm a corresponding test change exists in the same commit:
+   This duplicates `/tprep`'s own gap-finding + dispatch logic (Steps 2-3 of that
+   command) almost exactly, so reuse it rather than re-implementing it here: invoke
+   `/tprep`'s Step 2 ("Find the gaps") scoped to `git diff --name-only HEAD` (the
+   files THIS implementation changed, not a full coverage sweep), then its Step 3
+   ("Batch dispatch") for whatever gaps that finds. `/tprep`'s own per-file test
+   location map and dispatch convention (haiku-model `backend-test`/`playwright`
+   agents) applies unchanged — do not re-derive a second copy of that table here.
 
-   | Changed file pattern | Required test location |
-   |---|---|
-   | `backend/brokers/*.py` | `backend/tests/broker/test_*.py` |
-   | `backend/api/*.py` or `backend/api/**/*.py` | `backend/tests/test_*.py` |
-   | `frontend/src/lib/data/*.js` | `frontend/src/lib/__tests__/data/*.test.js` |
-   | `frontend/src/lib/*.js` or `*.svelte` | `frontend/tests/*.spec.js` (Playwright) |
-
-   How to check: `git diff --name-only HEAD | grep -E 'backend/brokers|backend/api|frontend/src'` — then for each result, verify `git diff --name-only HEAD` includes at least one corresponding test file.
-
-   If **any** changed source file has no corresponding test change:
-   - Identify which files are missing test coverage
-   - Dispatch a `backend-test`, `broker`, `frontend`, or `playwright` agent with the specific changed lines and instruction to write tests for those exact changes
-   - Wait for the agent and re-run affected tests
-   - Only commit once every changed source file has a test covering it
-   - This gate is **non-negotiable and cannot be waived**
+   - Only commit once every changed source file has a test covering it.
+   - This gate is **non-negotiable and cannot be waived**.
+   - Unlike a standalone `/tprep` run, do NOT let this sub-invocation commit on its
+     own — fold its test-file changes into THIS step's commit (Step 5 below), since
+     `/impl` owns one commit for the whole plan.
 
 5. **Coverage thresholds** — verify thresholds hold after the change:
    - Broker layer (backend/brokers/) must remain ≥ 80%
@@ -192,9 +189,17 @@ git add -u
 git add .claude/
 ```
 
-Commit using the message derived from the staged diff:
-```
-git commit -m "<message from diff>\n\nCo-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>"
+Commit using the message derived from the staged diff, via a HEREDOC (never a `-m`
+string with literal `\n` — those are not interpreted as newlines by the shell) and
+ending with whatever attribution trailer the current session's own system-reminder
+specifies (do not hardcode a model name/version here — it goes stale):
+```bash
+git commit -m "$(cat <<'EOF'
+<message from diff>
+
+<Co-Authored-By trailer from the current session's attribution reminder>
+EOF
+)"
 ```
 
 ---
@@ -232,10 +237,16 @@ After committing, identify which documentation surfaces are affected and update 
    ```
    Use Monitor to collect output. Verify the command exits 0 and report the PDF file size. If it fails, fix DESIGN_GUIDE.md and retry before proceeding.
 
-5. If any doc agent made changes, commit them together in one commit:
-   ```
+5. If any doc agent made changes, commit them together in one commit (same HEREDOC +
+   attribution convention as Step 5):
+   ```bash
    git add docs/
-   git commit -m "docs: sync specs/DESIGN_GUIDE after $(git log -1 --format='%s' HEAD~1)"
+   git commit -m "$(cat <<'EOF'
+   docs: sync specs/DESIGN_GUIDE after $(git log -1 --format='%s' HEAD~1)
+
+   <Co-Authored-By trailer from the current session's attribution reminder>
+   EOF
+   )"
    ```
    Skip if no docs were changed.
 
@@ -252,7 +263,7 @@ tests: pytest 2712 passed, 0 failed | broker cov 91% ✓ | api cov 83% ✓ | sve
 
 ---
 
-## Step 8 — Enter plan mode
+## Step 7 — Enter plan mode
 
 Call `EnterPlanMode` to return to plan mode after completion.
 

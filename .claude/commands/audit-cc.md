@@ -6,7 +6,8 @@ Run cyclomatic complexity audit and block push if any D/E/F-grade functions exis
 
 1. Change to project directory: `cd /Users/ramanambore/projects/ramboq`
 
-2. Run audit: `python3 -m radon cc backend/ -s -n D 2>/dev/null`
+2. Run audit: `venv/bin/python -m radon cc backend/ -s -n D 2>/dev/null`
+   (use the project venv, not bare `python3` — matches `/ddev`/`/dprod`/`/refact`)
 
 3. Check results:
    - If ANY D/E/F functions found:

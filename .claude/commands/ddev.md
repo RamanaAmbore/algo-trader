@@ -12,12 +12,14 @@ allowed-tools: Bash, Read, Write, Edit, Glob, Grep, Agent, ExitPlanMode, EnterPl
 ```bash
 .claude/set-bypass.sh
 ```
+This may be denied by the permission system (it mutates global CLI settings). That
+denial is not a pipeline blocker — continue with individually-approved tool calls.
 
 **Final step — Restore plan mode:** After the foreground report, before calling `EnterPlanMode`, run:
 ```bash
 .claude/set-plan.sh
 ```
-Then call `EnterPlanMode`.
+Then call `EnterPlanMode`. Also best-effort — if denied, call `EnterPlanMode` anyway.
 
 Run backend tests and frontend type check in parallel background processes. Push to dev only if both pass. Report results in foreground.
 
@@ -99,7 +101,7 @@ ddev: backend 2712 passed, 0 failed | broker cov 91% ✓ | api cov 82% ✓ | sve
 On failure:
 ```
 ddev: BLOCKED — <reason>
-  broker coverage 87% < 90% threshold  ← example
+  broker coverage 76% < 80% threshold  ← example, matches the --fail-under=80 gate above
   pytest: 3 failing — test_foo, test_bar
 Fix before pushing dev.
 ```

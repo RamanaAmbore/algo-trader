@@ -12,12 +12,14 @@ allowed-tools: Bash, Read, Write, Edit, Glob, Grep, Agent, ExitPlanMode, EnterPl
 ```bash
 .claude/set-bypass.sh
 ```
+This may be denied by the permission system (it mutates global CLI settings). That
+denial is not a pipeline blocker — continue with individually-approved tool calls.
 
 **Final step — Restore plan mode:** After Step 7, before calling `EnterPlanMode`, run:
 ```bash
 .claude/set-plan.sh
 ```
-Then call `EnterPlanMode`.
+Then call `EnterPlanMode`. Also best-effort — if denied, call `EnterPlanMode` anyway.
 
 Update specs, guides, DESIGN_GUIDE, PDF, and complexity — then merge dev→main and push. Doc agents run in background; report each result in foreground as it completes.
 
@@ -52,7 +54,7 @@ Launch all three checks in parallel with `run_in_background: true` in one messag
 venv/bin/python -m radon cc backend/ -s -n D 2>/dev/null | head -20
 ```
 
-**Broker coverage gate (90%)**:
+**Broker coverage gate (80%)**:
 ```
 cd /Users/ramanambore/projects/ramboq && \
   venv/bin/pytest backend/tests/ -q --tb=no \
@@ -74,9 +76,14 @@ cd /Users/ramanambore/projects/ramboq/frontend && npx vitest run 2>&1
 ```
 
 Use Monitor to collect all four results.
-- Any D/E/F CC grade → **block prod deploy**. Report hotspots. Stop.
-- Broker coverage < 80% → **block prod deploy**. Report coverage %. Stop.
-- API coverage < 45% → **block prod deploy**. Report coverage %. Stop.
+- Any D/E/F CC grade → **block prod deploy**. Report hotspots and point the operator at
+  `/refact` as the fix path (batch complexity-gate pass → re-run `/dprod`). Do NOT
+  auto-invoke `/refact` from inside this pipeline — a mid-deploy refactor is a
+  separate, deliberate operator decision, not an automatic unblock. Stop.
+- Broker coverage < 80% → **block prod deploy**. Report coverage %. Point the operator
+  at `/tprep` as the fix path (same non-auto-invoke rule). Stop.
+- API coverage < 45% → **block prod deploy**. Report coverage %. Point the operator at
+  `/tprep`. Stop.
 - Any Vite test failure → **block prod deploy**. Stop.
 - All green → proceed.
 
@@ -100,7 +107,7 @@ dprod: <N> doc(s) updated | CC clean | PDF <size>MB
 On block:
 ```
 dprod: BLOCKED — CC gate: <function> (grade D, CC=<N>) in <file>
-Fix complexity before deploying to prod.
+Run /refact to clear it, then re-run /dprod.
 ```
 
 ### 7. Enter plan mode

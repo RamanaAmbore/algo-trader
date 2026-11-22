@@ -1,6 +1,6 @@
 # /council — Convene multi-perspective planning council
 
-Dispatch all five council agents in parallel on the current task or plan draft.
+Dispatch all six council agents in parallel on the current task or plan draft.
 Synthesize their verdicts and use the result to inform PLAN.md.
 
 Invoked automatically during plan mode for non-trivial tasks.
@@ -13,7 +13,7 @@ If `$ARGUMENTS` is non-empty, use it as the task brief.
 Otherwise read `.claude/PLAN.md` (draft or partial). If neither exists, ask the user.
 
 ### Step 2 — Dispatch council in parallel
-Send a single message with **all five** Agent tool calls, each `run_in_background: true`:
+Send a single message with **all six** Agent tool calls, each `run_in_background: true`:
 
 | Agent | subagent_type |
 |---|---|
@@ -37,7 +37,7 @@ Return your structured verdict exactly as your instructions specify.
 ```
 
 ### Step 3 — Collect results
-Use Monitor to wait for all five agents to complete. Each returns a structured verdict
+Use Monitor to wait for all six agents to complete. Each returns a structured verdict
 (## Section, **Verdict**: APPROVE|CONCERN|BLOCK, bullets, **Recommendation**).
 
 ### Step 4 — Synthesize

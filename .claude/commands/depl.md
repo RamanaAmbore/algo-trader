@@ -17,89 +17,47 @@ processes; use Monitor to collect each result. Returns to plan mode when done.
 ```bash
 .claude/set-bypass.sh
 ```
+This may be denied by the permission system (it mutates global CLI settings). That
+denial is not a pipeline blocker — continue with individually-approved tool calls
+through all three phases.
 
 **Final step — Restore plan mode:** Before calling `EnterPlanMode` (after the dprod report or on any hard block), run:
 ```bash
 .claude/set-plan.sh
 ```
-Then call `EnterPlanMode`.
+Then call `EnterPlanMode`. Also best-effort — if denied, call `EnterPlanMode` anyway.
 
 ---
 
 ## Phase 1 — impl (build)
 
-Follow all steps from `/impl` exactly:
-
-1. Guard: check `.claude/PLAN.md` exists. If missing, auto-copy from `~/.claude/plans/` (most recently modified `.md`) **and delete the source**: `_src=$(ls -t ~/.claude/plans/*.md | head -1) && cp "$_src" .claude/PLAN.md && rm "$_src"`. If no plan anywhere, stop and call `EnterPlanMode`.
-2. Read plan (title, agents, tests, commit message, done criteria).
-3. Dispatch agents in parallel (backend, frontend, doc, backend-test as specified in plan). All agents run as background Agent calls in a single message.
-4. Run test loop (pytest + svelte-check + playwright per plan flags). Max 3 fix iterations.
-   - pytest: `run_in_background: true` + Monitor
-   - svelte-check: `run_in_background: true` + Monitor
-   - Both launched in one message (parallel). Wait for Monitor notifications before evaluating.
-   - If still failing after 3 iterations: report blockers, call `EnterPlanMode`, stop.
-5. Self-audit (unreachable code, P&L consumer grep, delegation verification).
-6. Archive plan + Commit: `mv .claude/PLAN.md .claude/PLAN.done.md`, then `git add -u && git add .claude/`, commit with plan message + Co-Authored-By trailer.
-7. Spec/doc sync (NAVSTRIP_SPEC, PULSE_SPEC, BROKER_SPEC, USER_GUIDE, DESIGN_GUIDE as affected). Doc agents dispatched in parallel.
-8. Report: `impl: <title> → committed <hash>`.
-
-Do NOT call `EnterPlanMode` here — continue to Phase 2.
+Follow all steps from `/impl` exactly — the full command (Steps 0-7), not a restated
+subset, so this phase can never drift out of sync with the standalone command (e.g.
+its `/tprep`-reuse coverage gate, its HEREDOC commit convention, its step numbering).
+Do NOT call `EnterPlanMode` on its "Final step" — continue to Phase 2 instead.
 
 ---
 
 ## Phase 2 — ddev (gate + push dev)
 
-Follow all steps from `/ddev` exactly:
-
-1. Run pytest + coverage gates with `run_in_background: true`:
-   ```
-   cd /Users/ramanambore/projects/ramboq && \
-     venv/bin/pytest backend/tests/ -q --tb=line \
-       --cov=backend/brokers --cov=backend/api \
-       --cov-report=term-missing && \
-     venv/bin/coverage report --include="backend/brokers/*" --fail-under=80 && \
-     venv/bin/coverage report --include="backend/api/*" --fail-under=45
-   ```
-2. Run svelte-check (`cd frontend && npx svelte-check --output machine 2>&1`) with `run_in_background: true`.
-3. Run Vite unit tests (`cd frontend && npx vitest run 2>&1`) with `run_in_background: true`.
-4. Launch all three in one message (parallel). Use Monitor to collect each result when done.
-5. Spec-sync gate: check `git diff origin/dev...HEAD --name-only` for unsynced spec files (warning only, non-blocking).
-6. Decision:
-   - Any pytest failure, broker coverage < 80%, api coverage < 45%, svelte-check error, or Vite failure → report, call `EnterPlanMode`, **stop**.
-   - All green → `git push origin dev`.
-7. Report: `ddev: backend <N> passed, 0 failed | broker cov <N>% ✓ | api cov <N>% ✓ | svelte-check 0 errors | vite <N> passed → pushed dev <hash>`.
-
-Do NOT call `EnterPlanMode` here — continue to Phase 3.
+Follow all steps from `/ddev` exactly — the full command, not a restated subset
+(its spec-sync gate and exact decision/report wording are part of the contract and
+must not drift out of sync with the standalone command). Do NOT call `EnterPlanMode`
+on its "Final step" — continue to Phase 3 instead.
 
 ---
 
 ## Phase 3 — dprod (docs + merge + prod)
 
-Follow all steps from `/dprod` exactly:
+Follow all steps from `/dprod` exactly — the full command, not a restated subset, so
+a CC-gate or coverage block here always carries `/dprod`'s current fix-path pointers
+(`/refact`, `/tprep`) with no risk of this file's own copy drifting stale.
 
-1. Prerequisite: `git log main..dev --oneline`. If nothing, report "already up to date", call `EnterPlanMode`, stop.
-2. Identify changed surfaces; dispatch doc agents for affected specs/guides (parallel, background).
-3. Launch PDF regen, CC gate, and coverage gate simultaneously with `run_in_background: true`:
-   - PDF: `python3 docs/generate_pdf.py` (only if DESIGN_GUIDE.md was touched)
-   - CC gate: `venv/bin/python -m radon cc backend/ -s -n D 2>/dev/null | head -20`
-   - Broker cov: `cd /Users/ramanambore/projects/ramboq && venv/bin/pytest backend/tests/ -q --tb=no --cov=backend/brokers && venv/bin/coverage report --include="backend/brokers/*" --fail-under=80`
-   - API cov: `cd /Users/ramanambore/projects/ramboq && venv/bin/pytest backend/tests/ -q --tb=no --cov=backend/api && venv/bin/coverage report --include="backend/api/*" --fail-under=45`
-   - Vite: `cd /Users/ramanambore/projects/ramboq/frontend && npx vitest run 2>&1`
-   - Use Monitor for all. Wait before proceeding.
-   - Any D/E/F CC grade → report hotspots, call `EnterPlanMode`, **stop**.
-   - Broker coverage < 80% or API coverage < 45% → report %, call `EnterPlanMode`, **stop**.
-   - Any Vite failure → report, call `EnterPlanMode`, **stop**.
-4. Merge and push:
-   ```
-   git checkout main && git merge dev --no-edit && git push origin main
-   git checkout dev && git push origin dev
-   ```
-5. Report:
-   ```
-   depl: impl ✓ | ddev ✓ | dprod ✓
-   → <N> doc(s) updated | CC clean | broker cov <N>% ✓ | api cov <N>% ✓ | vite <N> passed | PDF <size>MB
-   → merged dev→main <hash> | pushed main + dev
-   ```
+After Phase 3's own report, prefix/merge it into the combined `depl` summary:
+```
+depl: impl ✓ | ddev ✓ | dprod ✓
+→ <dprod's own foreground report, verbatim>
+```
 
 ---
 

@@ -6,7 +6,9 @@ Show cyclomatic complexity grades for the backend codebase.
 
 1. Change to project directory: `cd /Users/ramanambore/projects/ramboq`
 
-2. Run Radon complexity scan: `python3 -m radon cc backend/ -s -n C 2>/dev/null | head -80`
+2. Run Radon complexity scan: `venv/bin/python -m radon cc backend/ -s -n C 2>/dev/null | head -80`
+   (use the project venv, not bare `python3` — matches `/ddev`/`/dprod`/`/refact`'s
+   own convention; radon may not be installed outside the venv in every environment)
 
 3. Summarize results:
    - Count of C-grade functions (CC 11-20)
