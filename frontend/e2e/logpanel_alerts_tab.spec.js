@@ -330,6 +330,27 @@ test.describe('Contextual default-active tab — modal opened from different lau
     expect(derivActiveLabel, 'Derivatives bell icon contextual default is Agents').toBe('Agents');
   });
 
+  test('a fresh session with no launch-site hint defaults to the System tab (2026-11-22)', async ({ browser }) => {
+    // Operator request: the Log button should open on System by default
+    // when nothing else (a `logTabHint` or a remembered tab from earlier
+    // in the session) has already set activityStore.activeTab. /pulse
+    // passes no logTabHint, so this is a genuine "nothing has overridden
+    // it yet" first open — mirrors the fresh-context pattern used above
+    // for the Orders/Derivatives contextual-hint test.
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    await loginAsAdmin(page);
+    await page.goto('/pulse', { waitUntil: 'domcontentloaded' });
+    await page.locator('body').click({ position: { x: 400, y: 100 } });
+    await page.keyboard.press('h');
+    const modal = page.locator('[role="dialog"][aria-label="Activity log"]');
+    await expect(modal, 'modal opens via generic keyboard shortcut').toBeVisible({ timeout: 10_000 });
+    const activeTab = modal.getByRole('tab', { selected: true });
+    await expect(activeTab, 'an active tab is marked on open').toBeVisible({ timeout: 10_000 });
+    await expect(activeTab, 'baseline default (no hint, fresh session) is System').toHaveText('System');
+    await ctx.close();
+  });
+
   test('generic open (keyboard `h`, no launch-site hint) preserves the remembered tab instead of resetting', async ({ page }) => {
     await loginAsAdmin(page);
     await page.goto('/pulse', { waitUntil: 'domcontentloaded' });

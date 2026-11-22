@@ -45,7 +45,12 @@ export const ACTIVITY_TABS = /** @type {ActivityTab[]} */ (
 );
 
 // ── Reactive backing state ───────────────────────────────────────────────
-let _activeTab      = $state(/** @type {ActivityTab} */ ('order'));
+// 2026-11-22: baseline default is 'system', not 'order' (operator request —
+// the Log button should open on System by default when no launch-site hint
+// or remembered tab overrides it; see PageHeaderActions' `logTabHint` for
+// the per-page contextual overrides, e.g. /orders → 'order', /admin/
+// derivatives → 'agent', which are deliberate and untouched by this).
+let _activeTab      = $state(/** @type {ActivityTab} */ ('system'));
 let _accountFilter  = $state(/** @type {string[]} */ ([]));
 let _levelFilter    = $state(/** @type {'all'|'error'|'warning'|'info'} */ ('all'));
 
