@@ -5400,5 +5400,9 @@ Workflow shortcuts in `/.claude/commands/`:
 - **`/depl`** — Full pipeline: impl → ddev → dprod in one command (bypass-permissions)
 - **`/tlm`** — Run daily TLM audit pipeline, parse P1 findings, fix + commit
 - **`/cc`** — Show cyclomatic complexity grades (C/D/E/F summary + top 10 hotspots)
-- **`/push`** — Quick push dev+main (no gates — use only for doc/config-only changes)
-- **`/audit-cc`** — Block push if any D/E/F-grade functions exist; unblock if clean
+- **`/push`** — Quick push workshop→dev→main (no test gates — doc/config-only changes only)
+- **`/tprep`** — Batch-find test/coverage gaps against current CLAUDE.md gates, write+fix to green, commit to `workshop`
+- **`/refact`** — Batch-find CC-gate hotspots (D/E/F), refactor to clean with no behavior change, commit to `workshop`
+- **`/prep`** — `/tprep` then `/refact` in one pass, merged report (still `workshop`-only, never pushes)
+- **`/btprep`** / **`/brefact`** / **`/bprep`** — Unattended nightly wrappers around `/tprep` / `/refact` / `/prep`, logging each run to `docs/audits/NIGHTLY_BATCH_LOG.md`. `/bprep` is the one the 01:00 IST nightly schedule invokes (`scripts/nightly_batch_runner.sh`, gated via a launchd job the operator loads explicitly — see that script's own header for why)
+- **`/council`** — Dispatch the 6-perspective planning council (architect/ux/risk/perf/devil/research), auto-invoked in plan mode for non-trivial tasks

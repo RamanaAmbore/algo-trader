@@ -10,7 +10,7 @@ per-step confirmation — batch, background, cost-efficient.
 
 1. Read `CLAUDE.md`'s **Development Commands** section for the exact complexity-gate
    command already in use: `venv/bin/python -m radon cc backend/ -s -n D`.
-   This is the SAME command `/cc`, `/audit-cc`, `/dprod`, and `/depl` all already
+   This is the SAME command `/cc`, `/dprod`, and `/depl` all already
    use — reuse it verbatim, do not invent a different threshold or flag set.
 2. The gate blocks on any D/E/F grade (CC ≥ 21). A/B/C stay as-is — this command
    does not chase cosmetic complexity reduction below the gate's own bar.
