@@ -292,3 +292,72 @@ def test_fetch_positions_with_account_kwarg_bypasses_ttl():
 
     mock_cached.assert_not_called()
     mock_local.assert_called_once_with(account="ZG0790")
+
+
+# ---------------------------------------------------------------------------
+# Test 6 (2026-11-22 live-incident regression): a cache-HIT call must never
+# reset the TTL clock, or the TTL auto-force never fires under continuous
+# traffic. Live-confirmed: an account's /api/positions response was missing
+# 4 of 8 real MCX legs for hours — every unforced request re-stamped
+# _positions_ssot_refresh_at even though it was just a cache hit, so the
+# "> 30s since last fetch" check never tripped while background pollers /
+# page loads kept calling fetch_positions() more often than every 30s.
+# Only an explicit ?fresh=1 (force_refresh=True) ever self-healed it, and
+# only until the next cache-hit call reset the clock again.
+# ---------------------------------------------------------------------------
+
+def test_fetch_positions_cache_hit_does_not_reset_ttl_clock():
+    """A sequence of cache-hit calls spaced well under the TTL must not
+    repeatedly push back the "last genuine fetch" clock — otherwise the
+    TTL auto-force can be perpetually postponed and never actually fire,
+    even though real wall-clock time keeps advancing since the last
+    genuine broker round-trip."""
+    _reset_ttl_state()
+    # Baseline: "a genuine fetch happened at t=0" — set directly (not via
+    # a real call) so every call in this test is a controlled probe of the
+    # TTL check itself, matching the pre-existing boundary test's own
+    # convention (test_fetch_positions_ttl_boundary_exactly_30s).
+    broker_apis._positions_ssot_refresh_at = 0.0
+
+    sentinel = [object()]
+
+    with patch.object(broker_apis, '_fetch_positions_cached', return_value=sentinel) as mock_cached, \
+         patch('backend.brokers.broker_apis._time') as mock_time:
+
+        # A caller every 10 s for 50 s — well inside what continuous
+        # traffic (background pollers + page loads) produces in practice.
+        for t in (10.0, 20.0, 30.0, 40.0, 50.0):
+            mock_time.monotonic.return_value = t
+            broker_apis.fetch_positions()
+
+    calls = mock_cached.call_args_list
+    assert len(calls) == 5
+
+    # t=10/20/30: each within 30 s of the t=0 baseline -> cache hit.
+    assert calls[0] == call(force_refresh=False), "t=10: within TTL of the t=0 baseline"
+    assert calls[1] == call(force_refresh=False), "t=20: within TTL of the t=0 baseline"
+    assert calls[2] == call(force_refresh=False), "t=30: exactly at the TTL boundary, not yet expired"
+
+    # t=40: 40 s have now genuinely elapsed since the ONLY real fetch (t=0)
+    # — the TTL MUST fire here. Before the fix, each earlier cache-hit call
+    # (t=10/20/30) wrongly re-stamped the clock, so this check would have
+    # compared against t=30 (40-30=10, not >30) and stayed a cache hit —
+    # the exact bug: a cache poisoned once at t=0 would then never
+    # self-heal via the TTL for as long as something kept polling more
+    # often than every 30 s.
+    assert calls[3] == call(force_refresh=True), (
+        "t=40: 40s since the last GENUINE fetch (t=0) — the TTL must "
+        "fire here regardless of how many cache-hit calls happened in "
+        "between. A cache-hit call must never postpone this."
+    )
+
+    # t=50: the t=40 call was a genuine fetch, so the clock correctly
+    # reset to 40 — 50-40=10 is within the new window.
+    assert calls[4] == call(force_refresh=False), (
+        "t=50: the t=40 genuine fetch correctly reset the clock to 40"
+    )
+
+    assert broker_apis._positions_ssot_refresh_at == 40.0, (
+        "the clock must reflect the last GENUINE fetch (t=40), not the "
+        "last call of any kind (t=50)"
+    )

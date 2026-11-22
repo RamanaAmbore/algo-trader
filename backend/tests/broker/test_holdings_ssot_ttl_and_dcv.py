@@ -124,6 +124,34 @@ class TestHoldingsSsotTtl:
         # Should still be 0 (or very close to reset value)
         assert ba._holdings_ssot_refresh_at == 0.0
 
+    def test_cache_hit_does_not_reset_ttl_clock(self):
+        """2026-11-22 live-incident regression (same bug class as
+        fetch_positions(), see its own test file for the full narrative):
+        a cache-hit call must not reset _holdings_ssot_refresh_at, or
+        continuous traffic can postpone the TTL auto-force indefinitely."""
+        import backend.brokers.broker_apis as ba
+        self._reset_refresh_ts()
+        ba._holdings_ssot_refresh_at = 0.0  # baseline: genuine fetch at t=0
+
+        call_args = []
+
+        def fake_fetch_holdings_cached(force_refresh=False):
+            call_args.append(force_refresh)
+            return [pd.DataFrame([{"tradingsymbol": "SBIN", "quantity": 10}])]
+
+        with patch.object(ba, "_fetch_holdings_cached", side_effect=fake_fetch_holdings_cached), \
+             patch("backend.brokers.broker_apis._time") as mock_time:
+            for t in (10.0, 20.0, 30.0, 40.0, 50.0):
+                mock_time.monotonic.return_value = t
+                ba.fetch_holdings()
+
+        assert call_args == [False, False, False, True, False], (
+            "t=40 (40s since the t=0 baseline fetch) must force a refresh "
+            "regardless of the cache-hit calls at t=10/20/30 — those must "
+            "never reset the clock. Got: " + repr(call_args)
+        )
+        assert ba._holdings_ssot_refresh_at == 40.0
+
 
 # ---------------------------------------------------------------------------
 # Fix 2 — day_change_val recomputed for ALL rows with previous_close > 0

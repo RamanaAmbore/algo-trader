@@ -1651,7 +1651,15 @@ def fetch_holdings(*args, **kwargs):
         now = _time.monotonic()
         force_refresh = (now - _holdings_ssot_refresh_at) > _HOLDINGS_SSOT_TTL
         result = _fetch_holdings_cached(force_refresh=force_refresh)
-        if result is not None:
+        # 2026-11-22 fix — stamp the clock only when this call actually
+        # bypassed the cache (force_refresh True). Stamping on every call
+        # (including a cache-hit read) reset the "seconds since last
+        # fetch" clock on every read, so under continuous traffic the
+        # TTL elapsed-check above never aged past _HOLDINGS_SSOT_TTL and
+        # the auto-refresh never fired — same bug confirmed live on the
+        # sibling fetch_positions() (see its own comment for the
+        # live-reproduced symptom).
+        if force_refresh and result is not None:
             _holdings_ssot_refresh_at = _time.monotonic()
         return result
     return _fetch_holdings_local(*args, **kwargs)
@@ -2267,7 +2275,21 @@ def fetch_positions(*args, force_refresh: bool = False, **kwargs):
             result = _fetch_positions_cached(force_refresh=force_refresh, _upstream_force=True)
         else:
             result = _fetch_positions_cached(force_refresh=force_refresh)
-        if result is not None:
+        # 2026-11-22 fix — only stamp the clock on a call that ACTUALLY
+        # bypassed the cache (force_refresh True here, whether explicit or
+        # TTL-triggered). Stamping on every call (including a cache-HIT
+        # call with force_refresh still False) reset the "seconds since
+        # last fetch" clock on every read, so under continuous traffic
+        # (background pollers, every page load) the TTL elapsed-check
+        # above never aged past _POSITIONS_SSOT_TTL and the auto-force
+        # never fired — a cache poisoned once (e.g. a transient partial
+        # fetch) could then serve stale/incomplete positions indefinitely
+        # until an explicit ?fresh=1 landed. Live-confirmed 2026-11-22:
+        # an account's positions were missing 4 of 8 real MCX legs for
+        # hours; `?fresh=1` returned the correct 8 every time, but the
+        # very next unforced request reverted to 4 because this stamp
+        # had just reset the clock on that cache-hit read too.
+        if force_refresh and result is not None:
             _positions_ssot_refresh_at = _time.monotonic()
         return result
     return _fetch_positions_local(*args, **kwargs)
@@ -3178,7 +3200,12 @@ def fetch_margins(*args, force_refresh: bool = False, **kwargs):
         if not force_refresh and (now - _margins_ssot_refresh_at) > _MARGINS_SSOT_TTL:
             force_refresh = True
         result = _fetch_margins_cached(force_refresh=force_refresh)
-        if result is not None:
+        # 2026-11-22 fix — same bug class as fetch_positions()/
+        # fetch_holdings(): stamp the clock only on a call that actually
+        # bypassed the cache (force_refresh True here), not on every
+        # cache-hit read — otherwise continuous traffic keeps resetting
+        # the clock and the TTL auto-force never fires.
+        if force_refresh and result is not None:
             _margins_ssot_refresh_at = _time.monotonic()
         return result
     return _fetch_margins_local(*args, **kwargs)

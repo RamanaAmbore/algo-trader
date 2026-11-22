@@ -205,6 +205,36 @@ def test_fetch_margins_with_account_kwarg_bypasses_ttl():
     mock_local.assert_called_once_with(account="DH6847")
 
 
+def test_fetch_margins_cache_hit_does_not_reset_ttl_clock():
+    """2026-11-22 live-incident regression (same bug class as
+    fetch_positions()/fetch_holdings(), see test_positions_ssot_ttl.py for
+    the full narrative): a cache-hit call must not reset
+    _margins_ssot_refresh_at, or continuous traffic can postpone the TTL
+    auto-force indefinitely."""
+    _reset_ttl_state()
+    broker_apis._margins_ssot_refresh_at = 0.0  # baseline: genuine fetch at t=0
+
+    sentinel = [object()]
+
+    with patch.object(broker_apis, '_fetch_margins_cached', return_value=sentinel) as mock_cached, \
+         patch('backend.brokers.broker_apis._time') as mock_time:
+        for t in (10.0, 20.0, 30.0, 40.0, 50.0):
+            mock_time.monotonic.return_value = t
+            broker_apis.fetch_margins()
+
+    calls = mock_cached.call_args_list
+    assert len(calls) == 5
+    assert calls[0] == call(force_refresh=False)
+    assert calls[1] == call(force_refresh=False)
+    assert calls[2] == call(force_refresh=False)
+    assert calls[3] == call(force_refresh=True), (
+        "t=40 (40s since the t=0 baseline fetch) must force a refresh "
+        "regardless of the cache-hit calls at t=10/20/30"
+    )
+    assert calls[4] == call(force_refresh=False)
+    assert broker_apis._margins_ssot_refresh_at == 40.0
+
+
 # ---------------------------------------------------------------------------
 # Test 6: The REAL shared-interval-gate mechanism — not mocked at the
 # _fetch_margins_cached boundary. Reproduces the actual live-observed
