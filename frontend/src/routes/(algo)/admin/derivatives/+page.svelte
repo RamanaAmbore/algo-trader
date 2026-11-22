@@ -6398,7 +6398,7 @@
         {/each}
         {#if _byUnderlyingTotals.length > 0}
           <div class="byund-row byund-row-total">
-            <span class="byund-und" style="color: inherit" title="F&O positions total">TOTAL</span>
+            <span class="byund-und byund-und-total" title="F&O positions total">TOTAL</span>
             <span class="num"></span>
             <span class="num"></span>
             <span class="num"></span>
@@ -7952,6 +7952,16 @@
   .byund-row-total > .cell-pos  { color: var(--algo-green) !important; }
   .byund-row-total > .cell-neg  { color: var(--algo-red) !important; }
   .byund-row-total > .cell-flat { color: var(--algo-slate) !important; }
+  /* Label-text color parity with the Legs grid's .cand-total-label
+     (2026-11-22 fix). This span used to carry an inline
+     `style="color: inherit"` that the regular (non-total) byund row's
+     equivalent cell never had — nothing else in this file sets `color`
+     on the row container, so it fell through to the page's default text
+     color instead of the intended amber `--c-action` every other TOTAL
+     label already uses. Removing the inline override let `.byund-und`'s
+     own `color: var(--c-action)` apply again; this rule only bumps
+     font-weight to 800 to match `.cand-total-label` exactly. */
+  .byund-und-total { font-weight: 800; }
   .byund-empty {
     grid-column: 1 / -1;
     padding: 0.85rem 0.7rem;
@@ -8243,7 +8253,21 @@
     color: var(--c-action);
     font-weight: 700;
   }
-  /* Legs TOTAL row — layout + positioning only (amber comes from shared rule above). */
+  /* Legs TOTAL row — layout + positioning only (amber comes from shared rule above).
+     Height SSOT fix (2026-11-22, operator: "derivatives positions and snapshot
+     height and color of the text total different, make them consistent") — this
+     row's markup carries `class="cand-row cand-row-total"`, which LOOKS like it
+     reuses the real leg row's `.cand-row` height treatment
+     (CandidateLegRow.svelte: `min-height: var(--grid-row-height); align-items:
+     stretch;`), but it doesn't: that rule is Svelte-scoped to
+     CandidateLegRow.svelte, and this div lives in +page.svelte, a different
+     component — cross-component class reuse with no `:global()` has zero
+     effect. This local rule was the ONLY one actually governing this element,
+     and it had no height/min-height at all — just ad-hoc padding, unlike every
+     other row in both grids (`.cand-headrow`, `.cand-row`, `.byund-headrow`,
+     `.byund-row`, `.byund-row-total`), all of which pin to `--grid-row-height`.
+     Now mirrors `.cand-row`'s own mechanism exactly (min-height + stretch),
+     since that's the class this row was always meant to match. */
   .cand-row.cand-row-total {
     display: grid;
     grid-template-columns: subgrid;
@@ -8252,11 +8276,20 @@
     bottom: 0;
     z-index: 2;
     cursor: default;
+    min-height: var(--grid-row-height);
+    box-sizing: border-box;
+    align-items: stretch;
   }
   /* Legs TOTAL row cell typography — font + padding + overflow on each span.
-     Background/border live on the container (shared rule above). */
+     Background/border live on the container (shared rule above). Vertical
+     padding removed (was 0.32rem, part of the height bug above) — the
+     container's `align-items: stretch` + `min-height` now own the row's
+     height, matching `.cand-row > span`'s own 0-vertical-padding + flex-center
+     convention for a stretched grid cell. */
   .cand-row.cand-row-total > span {
-    padding: 0.32rem 0.45rem;
+    padding: 0 0.45rem;
+    display: flex;
+    align-items: center;
     /* Matches real leg rows' font (CandidateLegRow.svelte .cand-row:
        --fs-lg / monospace) — was --fs-sm / --font-numeric, visibly
        smaller than the leg rows above it (2026-10-19 fix). */
@@ -8268,7 +8301,15 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .cand-row.cand-row-total > span.num { text-align: right; }
+  .cand-row.cand-row-total > span.num {
+    text-align: right;
+    /* `display: flex` on the span above (added for the height fix) makes
+       plain `text-align` inert — flex layout aligns its content via
+       justify-content, not text-align. Real leg rows hit this identical
+       trap and already carry both properties together
+       (CandidateLegRow.svelte .cand-row > span.num) — same fix here. */
+    justify-content: flex-end;
+  }
   /* Direction tints — lighter green/red readable against amber. */
   .cand-row.cand-row-total > .cell-pos  { color: var(--algo-green) !important; }
   .cand-row.cand-row-total > .cell-neg  { color: var(--algo-red) !important; }
