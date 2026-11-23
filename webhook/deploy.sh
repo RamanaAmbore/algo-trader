@@ -225,8 +225,19 @@ PYEOF
   #
   # Code paths that affect the connection service — everything under
   # backend/brokers/ (Broker ABC + adapters + connections + the
-  # service + the client + kite_ticker) OR the systemd unit itself.
-  # Post-reorg this collapses to one prefix.
+  # service + the client + kite_ticker) OR the systemd unit itself, OR
+  # backend/shared/ (helpers ramboq_conn's own process imports directly —
+  # ramboq_logger, settings, recovery, ssot_fetch, utils, etc.).
+  #
+  # 2026-11-23 live incident: a fix to backend/shared/helpers/recovery.py
+  # (recoverable()'s retry/escalate decorator, actually used by
+  # backend/brokers/adapters/kite.py's @recoverable calls) landed on disk
+  # but ramboq_conn never restarted — CONN_TOUCHED was false because the
+  # changed file sat outside backend/brokers/, even though the running
+  # conn_service process imports it. Confirmed live via
+  # ActiveEnterTimestamp predating the deploy. Widened to backend/shared/
+  # too, rather than patching this one file in by name, since any other
+  # shared helper ramboq_conn imports has the identical latent gap.
   #
   # When ONLY non-conn backend code changes (routes/, algo/, models, etc.),
   # we restart ramboq_api but leave ramboq_conn alone — broker sessions
@@ -237,7 +248,7 @@ PYEOF
   # restart ramboq_conn — dev shares the prod UDS. conn-related code
   # changes only take effect after merging to main.
   CONN_TOUCHED=false
-  if [ "$ENV" = "prod" ] && echo "$CHANGED" | grep -qE '^(backend/brokers/|webhook/ramboq_conn\.service)'; then
+  if [ "$ENV" = "prod" ] && echo "$CHANGED" | grep -qE '^(backend/brokers/|backend/shared/|webhook/ramboq_conn\.service)'; then
       CONN_TOUCHED=true
   fi
   echo "[$TS] conn_service restart needed: $CONN_TOUCHED"
