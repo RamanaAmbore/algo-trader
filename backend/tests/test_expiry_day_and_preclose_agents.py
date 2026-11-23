@@ -87,10 +87,12 @@ class TestMarketPrecloseNonMcx:
 
 class TestExpiryDayPrecloseAlertAgent:
     """expiry-day-preclose-alert: ONE agent covering both MCX and NFO,
-    firing within 30 minutes of whichever exchange's own close applies
+    firing within 65 minutes of whichever exchange's own close applies
     (2026-10-29 consolidation — operator: "can you create one agent for
     order placing and one agent for alert instead of two" / "why can't
-    you have one agent for nfo and mcx")."""
+    you have one agent for nfo and mcx"; retimed 30→65 on 2026-11-22,
+    operator: "unnetted in the money positions closed... one hour
+    before market close")."""
 
     SLUG = "expiry-day-preclose-alert"
 
@@ -119,15 +121,18 @@ class TestExpiryDayPrecloseAlertAgent:
         assert agent is not None
         assert agent.get('tier') == "high"
 
-    def test_cooldown_is_180_minutes_not_22_hours(self):
-        """180 min (3h), not the 22h used elsewhere — a 22h cooldown on
-        this single shared metric would let NFO's ~15:00 fire suppress
-        MCX's own ~23:00 fire the same day. See the comment above
+    def test_cooldown_is_30_minutes(self):
+        """30 min (changed from 180 on 2026-11-22) — short enough that
+        the operator is re-notified of a newly-staged leg within the
+        65-min window (matching the sibling close-action agent's own
+        periodic re-scan cadence), yet short enough that it never
+        risks NFO's own fire suppressing MCX's fire hours later the
+        same day either. See the comment above
         _EXPIRY_DAY_AWARENESS_AGENTS for the full reasoning."""
         agent = _by_slug(self.SLUG)
         assert agent is not None
-        assert agent.get('cooldown_minutes') == 180, \
-            f"expected cooldown_minutes=180, got {agent.get('cooldown_minutes')}"
+        assert agent.get('cooldown_minutes') == 30, \
+            f"expected cooldown_minutes=30, got {agent.get('cooldown_minutes')}"
 
     def test_events_cover_all_four_channels_with_high_ntfy(self):
         agent = _by_slug(self.SLUG)
@@ -139,8 +144,12 @@ class TestExpiryDayPrecloseAlertAgent:
 
 class TestExpiryDayItmAutoCloseAgent:
     """expiry-day-itm-auto-close: ONE order-placing agent covering both
-    MCX and NFO, firing 25 minutes before each exchange's own close (5
-    min after the alert sibling's 30-min window)."""
+    MCX and NFO, firing starting 60 minutes before each exchange's own
+    close (5 min after the alert sibling's 65-min window), then
+    re-firing every 30 minutes while still in that window (2026-11-22
+    retime — closes the gap where a leg could turn unnetted-ITM in the
+    last hour with no periodic re-scan, matching NFO's own pre-existing
+    re-scan cadence)."""
 
     SLUG = "expiry-day-itm-auto-close"
 
@@ -152,7 +161,7 @@ class TestExpiryDayItmAutoCloseAgent:
         assert agent is not None
         assert agent.get('fire_at_time') is None
 
-    def test_condition_is_one_flat_leaf_at_25_minutes(self):
+    def test_condition_is_one_flat_leaf_at_60_minutes(self):
         agent = _by_slug(self.SLUG)
         assert agent is not None
         assert agent.get('conditions') == {
@@ -165,10 +174,16 @@ class TestExpiryDayItmAutoCloseAgent:
         assert agent is not None
         assert agent.get('tier') == "critical"
 
-    def test_cooldown_is_180_minutes(self):
+    def test_cooldown_is_30_minutes(self):
+        """30 min (changed from 180 on 2026-11-22) — lets this agent
+        re-fire ~2x inside its own 60-min window (T-60, T-30),
+        re-running ExpiryEngine.scan_positions() each time. Safe to
+        repeat: record_held_order()'s per-leg dedup guard returns the
+        existing HELD row's id for an already-staged leg instead of
+        duplicating it."""
         agent = _by_slug(self.SLUG)
         assert agent is not None
-        assert agent.get('cooldown_minutes') == 180
+        assert agent.get('cooldown_minutes') == 30
 
     def test_status_is_active(self):
         """New slug, not bound by the _ae_guard_seed_status fail-safe
@@ -192,14 +207,16 @@ class TestExpiryDayItmAutoCloseAgent:
         assert actions[0]["params"] == {}, \
             "params must be empty — the action processes both exchanges from one scan"
 
-    def test_events_have_no_ntfy(self):
-        """Critical-tier order-placing agent: telegram+email+log only,
-        matching the legacy agents' own channel set — not an ntfy push
-        (the held-order-by-default design means this isn't an
-        action-required alert the way a live close failure would be)."""
+    def test_events_include_ntfy_high(self):
+        """ntfy(high) added 2026-11-22 (operator: a real-money milestone
+        — positions staged HELD and waiting for release need an urgent
+        mobile push), matching the sibling alert agent's own channel
+        set."""
         agent = _by_slug(self.SLUG)
         assert agent is not None
-        assert _channels(agent) == {"telegram", "email", "log"}
+        assert _channels(agent) == {"telegram", "email", "log", "ntfy"}
+        ntfy = next(e for e in agent["events"] if e["channel"] == "ntfy")
+        assert ntfy.get("priority") == "high"
 
     def test_trade_mode_is_live(self):
         """2026-10-31 live-incident fix: without an explicit trade_mode
@@ -223,9 +240,11 @@ class TestExpiryDayAgentsSameDayNoSuppression:
     introduced: both agents now share ONE metric name across MCX and
     NFO, so the per-fire latch (keyed on agent_slug+metric+scope+account,
     no exchange dimension) must not let one exchange's fire suppress
-    the other's on the same day. cooldown_minutes=180 is the fix —
-    this test pins the actual escalation-gate behaviour, not just the
-    config value."""
+    the other's on the same day. cooldown_minutes=30 (changed from 180
+    on 2026-11-22, to enable periodic re-scanning within each
+    exchange's own window) is short enough that this was never a risk
+    to begin with — this test pins both the periodic-re-fire behaviour
+    AND the cross-exchange independence, not just the config value."""
 
     @pytest.mark.parametrize("slug,metric", [
         ("expiry-day-preclose-alert", "is_expiry_preclose_alert_window"),
@@ -245,26 +264,39 @@ class TestExpiryDayAgentsSameDayNoSuppression:
         nfo_match = [{"metric": metric, "scope": "funds.total", "op": "==",
                       "value": 1.0, "threshold": 1.0, "row": {}}]
         # NFO fires at t=0 (its own ~15:00 window).
-        effective = _v2_apply_escalation_gate(agent, nfo_match, now0, 180, store=store)
+        effective = _v2_apply_escalation_gate(agent, nfo_match, now0, 30, store=store)
         assert effective, "NFO's own fire must pass the gate"
 
-        # A SECOND fire 5 minutes later (still well inside the 180-min
-        # cooldown) must be suppressed — same exchange's own window
-        # should not double-fire every cycle tick.
+        # A SECOND fire 5 minutes later (still well inside the 30-min
+        # cooldown) must be suppressed.
         now_dup = now0 + timedelta(minutes=5)
         dup_match = [{"metric": metric, "scope": "funds.total", "op": "==",
                       "value": 1.0, "threshold": 1.0, "row": {}}]
-        effective_dup = _v2_apply_escalation_gate(agent, dup_match, now_dup, 180, store=store)
+        effective_dup = _v2_apply_escalation_gate(agent, dup_match, now_dup, 30, store=store)
         assert not effective_dup, \
             "a re-fire 5 min later (same window) must be suppressed by the cooldown"
 
+        # A THIRD fire 31 minutes after the FIRST (cooldown elapsed,
+        # still well inside NFO's own ~65-min window) must now be
+        # ALLOWED — this IS the periodic re-scan this retime exists to
+        # provide (a leg that turns unnetted-ITM in the last hour must
+        # get a fresh chance to be flagged/staged, not wait for
+        # next-day review).
+        now_rescan = now0 + timedelta(minutes=31)
+        rescan_match = [{"metric": metric, "scope": "funds.total", "op": "==",
+                         "value": 1.0, "threshold": 1.0, "row": {}}]
+        effective_rescan = _v2_apply_escalation_gate(agent, rescan_match, now_rescan, 30, store=store)
+        assert effective_rescan, \
+            "a re-fire >30 min later, still inside the same window, must be " \
+            "ALLOWED — this is the periodic re-scan the 2026-11-22 retime exists for"
+
         # MCX fires ~7.5h later the SAME day (its own ~23:00 window) —
-        # must NOT be suppressed by NFO's 180-min cooldown, which has
-        # long since cleared.
+        # must NOT be suppressed by NFO's 30-min cooldown, which has
+        # long since cleared (trivially, given it's only 30 min).
         now1 = now0 + timedelta(hours=7.5)
         mcx_match = [{"metric": metric, "scope": "funds.total", "op": "==",
                       "value": 1.0, "threshold": 1.0, "row": {}}]
-        effective2 = _v2_apply_escalation_gate(agent, mcx_match, now1, 180, store=store)
+        effective2 = _v2_apply_escalation_gate(agent, mcx_match, now1, 30, store=store)
         assert effective2, \
             "MCX's fire 7.5h later the same day must not be suppressed by NFO's cooldown"
 

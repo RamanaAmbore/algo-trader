@@ -3,6 +3,12 @@ day, `market-preclose-nonmcx` (generic reminder), `expiry-day-preclose-
 alert` (the richer, expiry-specific alert with the real position
 breakdown) and the expiry risk alert could all fire within about a
 minute of each other, 30 minutes before that exchange's close.
+`expiry-nfo-risk-alert`'s own suppression leaf was retimed to 65 min on
+2026-11-22, alongside `expiry-day-preclose-alert`/`expiry-day-itm-
+auto-close`'s own retime from 30/25 to 65/60 (operator: "unnetted in
+the money positions closed... one hour before market close").
+`market-preclose-nonmcx`/`market-preclose-mcx-v2`'s own 30-min
+condition is untouched — a different, unrelated agent pair.
 
 2026-11-19 — `expiry-nfo-risk-alert` and `expiry-mcx-risk-alert` were
 merged into ONE agent (`expiry-nfo-risk-alert`, edited in place — see
@@ -19,7 +25,7 @@ Covers:
     untouched either way.
   - The merged `expiry-nfo-risk-alert` agent's NFO branch and MCX
     branch each fire independently of the other, and each is
-    suppressed specifically inside its OWN exchange's 30-minute
+    suppressed specifically inside its OWN exchange's 65-minute
     pre-close window on an expiry day (where `expiry-day-preclose-
     alert` already covers the same position) — and, critically, one
     exchange's own pre-close window must NEVER suppress the OTHER
@@ -172,20 +178,20 @@ class TestExpiryRiskAlertMerged:
     # ── NFO branch ──────────────────────────────────────────────────
 
     def test_suppressed_inside_nse_preclose_window(self):
-        """An ITM NFO position exists AND it's within 30 min of NSE
+        """An ITM NFO position exists AND it's within 65 min of NSE
         close on an NSE expiry day — expiry-day-preclose-alert already
         reports this; the NFO branch must go quiet. No MCX position
         exists, so the MCX branch contributes nothing either way."""
-        now = datetime(2025, 4, 24, 9, 30, tzinfo=timezone.utc)  # ~15:00 IST, 30 min to 15:30 close
+        now = datetime(2025, 4, 24, 9, 30, tzinfo=timezone.utc)  # ~15:00 IST, 65 min to 15:30 close (approx)
         ctx = _ctx(now=now, position_rows=[
             {"tradingsymbol": "NIFTY25APR22000CE", "exchange": "NFO", "quantity": 50},
         ], spot_prices={"NIFTY": 22200.0},
-                   segment_flags={"nse_open": True, "minutes_until_nse_close": 30})
+                   segment_flags={"nse_open": True, "minutes_until_nse_close": 65})
         matches = evaluate(_agent_cond("expiry-nfo-risk-alert"), ctx)
         assert matches == [], "must be suppressed inside NSE's own pre-close window"
 
     def test_fires_outside_nse_preclose_window_same_expiry_day(self):
-        """Same expiry day, but well before the 30-min pre-close
+        """Same expiry day, but well before the 65-min pre-close
         window — the risk alert's earlier-warning cadence must survive."""
         now = datetime(2025, 4, 24, 4, 0, tzinfo=timezone.utc)  # ~09:30 IST — market just opened
         ctx = _ctx(now=now, position_rows=[
@@ -193,7 +199,7 @@ class TestExpiryRiskAlertMerged:
         ], spot_prices={"NIFTY": 22200.0},
                    segment_flags={"nse_open": True, "minutes_until_nse_close": 360})
         matches = evaluate(_agent_cond("expiry-nfo-risk-alert"), ctx)
-        assert matches != [], "must still fire well outside the 30-min pre-close window"
+        assert matches != [], "must still fire well outside the 65-min pre-close window"
 
     def test_fires_on_non_expiry_day_regardless_of_clock(self):
         """No NFO position is expiring today at all — `is_nse_expiry_
@@ -211,16 +217,16 @@ class TestExpiryRiskAlertMerged:
     # ── MCX branch ──────────────────────────────────────────────────
 
     def test_suppressed_inside_mcx_preclose_window(self):
-        """A lone unhedged GOLDM leg, within 30 min of MCX close on an
+        """A lone unhedged GOLDM leg, within 65 min of MCX close on an
         MCX expiry day — must go quiet (expiry-day-preclose-alert
         already covers it). No NFO position exists, so the NFO branch
         contributes nothing either way."""
-        today_dt = datetime(2025, 5, 29, 17, 30, tzinfo=timezone.utc)  # ~23:00 IST, 30 min to 23:30 close
+        today_dt = datetime(2025, 5, 29, 17, 30, tzinfo=timezone.utc)  # ~23:00 IST, 65 min to 23:30 close (approx)
         ctx = _ctx(now=today_dt, position_rows=[
             {"tradingsymbol": "GOLDM25MAY75000CE", "exchange": "MCX", "account": "A1",
              "quantity": 1, "last_price": 500.0},
         ], spot_prices={"GOLDM": 76000.0},
-                   segment_flags={"mcx_open": True, "minutes_until_mcx_close": 30})
+                   segment_flags={"mcx_open": True, "minutes_until_mcx_close": 65})
         matches = evaluate(_agent_cond("expiry-nfo-risk-alert"), ctx)
         assert matches == [], "must be suppressed inside MCX's own pre-close window"
 
@@ -236,12 +242,12 @@ class TestExpiryRiskAlertMerged:
         ], spot_prices={"GOLDM": 76000.0},
                    segment_flags={"mcx_open": True, "minutes_until_mcx_close": 360})
         matches = evaluate(_agent_cond("expiry-nfo-risk-alert"), ctx)
-        assert matches != [], "must still fire well outside the 30-min pre-close window"
+        assert matches != [], "must still fire well outside the 65-min pre-close window"
 
     # ── Cross-exchange independence — the actual risk of this merge ──
 
     def test_nse_preclose_window_does_not_suppress_mcx_breach(self):
-        """Inside NSE's own 30-min pre-close window (no NFO position
+        """Inside NSE's own 65-min pre-close window (no NFO position
         held at all, so the NFO branch contributes nothing), a lone
         unhedged MCX leg that is NOT inside ITS OWN pre-close window
         must still fire — NSE's suppression leaf must never reach
@@ -249,12 +255,12 @@ class TestExpiryRiskAlertMerged:
         within `_scope_positions_expiring_today`'s <=1.5-day window of
         this same 2025-04-24 "today", matching the NFO-side fixtures'
         own April expiry date above."""
-        now = datetime(2025, 4, 24, 9, 30, tzinfo=timezone.utc)  # ~15:00 IST — NSE 30 min to close
+        now = datetime(2025, 4, 24, 9, 30, tzinfo=timezone.utc)  # ~15:00 IST — NSE 65 min to close (approx)
         ctx = _ctx(now=now, position_rows=[
             {"tradingsymbol": "GOLDM25APR75000CE", "exchange": "MCX", "account": "A1",
              "quantity": 1, "last_price": 500.0},
         ], spot_prices={"GOLDM": 76000.0},
-                   segment_flags={"nse_open": True, "minutes_until_nse_close": 30,
+                   segment_flags={"nse_open": True, "minutes_until_nse_close": 65,
                                   "mcx_open": True, "minutes_until_mcx_close": 360})
         matches = evaluate(_agent_cond("expiry-nfo-risk-alert"), ctx)
         assert matches != [], (
@@ -262,17 +268,17 @@ class TestExpiryRiskAlertMerged:
         )
 
     def test_mcx_preclose_window_does_not_suppress_nfo_breach(self):
-        """Inside MCX's own 30-min pre-close window (no MCX position
+        """Inside MCX's own 65-min pre-close window (no MCX position
         held at all, so the MCX branch contributes nothing), an ITM NFO
         position that is NOT inside ITS OWN pre-close window must still
         fire — MCX's suppression leaf must never reach across to the
         NFO branch."""
-        today_dt = datetime(2025, 4, 24, 17, 0, tzinfo=timezone.utc)  # ~22:30 IST — MCX 30 min to close, NSE long closed
+        today_dt = datetime(2025, 4, 24, 17, 0, tzinfo=timezone.utc)  # ~22:30 IST — MCX 65 min to close (approx), NSE long closed
         ctx = _ctx(now=today_dt, position_rows=[
             {"tradingsymbol": "NIFTY25APR22000CE", "exchange": "NFO", "quantity": 50},
         ], spot_prices={"NIFTY": 22200.0},
                    segment_flags={"nse_open": False, "minutes_until_nse_close": 360,
-                                  "mcx_open": True, "minutes_until_mcx_close": 30})
+                                  "mcx_open": True, "minutes_until_mcx_close": 65})
         matches = evaluate(_agent_cond("expiry-nfo-risk-alert"), ctx)
         assert matches != [], (
             "NFO branch must fire even while MCX's own pre-close window is active"

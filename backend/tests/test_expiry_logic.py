@@ -602,3 +602,133 @@ def test_scan_positions_and_classify_from_context_agree_on_genuine_hedge():
 
     assert scan_needs_close == set()
     assert ctx_needs_close == set()
+
+
+# ---------------------------------------------------------------------------
+# 2026-11-22 retime (operator: "unnetted in the money positions closed by
+# the agents one hour before market close... order will be held until I
+# release them") — end-to-end through the REAL action + REAL
+# ExpiryEngine.scan_positions()/close_positions(). Only the broker-touching
+# fetch methods are mocked; the real 4-rule classification, the real hold
+# gate (expiry_close_held()), and the real per-leg dedup guard inside
+# record_held_order() all run unmocked. Confirms the operator's explicit
+# requirement end to end: a genuinely unnetted ITM MCX position gets HELD,
+# never chased straight to the broker, while hold.expiry_close_released
+# stays False (the live prod/dev default).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_expiry_auto_close_holds_not_chases_real_path_at_60min_window():
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from datetime import date, datetime, timezone
+    from backend.api.algo.expiry import ExpiryEngine, OptionPosition
+    from backend.api.algo.actions_live import _action_live_expiry_auto_close
+
+    today = date(2026, 11, 26)
+    frozen_now = datetime(2026, 11, 26, 16, 0, 0, tzinfo=timezone.utc)  # ~21:30 IST
+    lone_itm_call = OptionPosition(
+        account="ZG0790",
+        tradingsymbol="CRUDEOIL26NOV5500CE",
+        exchange="MCX",
+        instrument_type="CE",
+        underlying="CRUDEOIL",
+        strike=5500.0,
+        expiry=today,
+        quantity=1,
+        product="NRML",
+        ltp=120.0,
+    )
+
+    agent = MagicMock()
+    agent.slug = "expiry-day-itm-auto-close"
+    agent.id = 42
+
+    with patch("backend.api.algo.expiry.timestamp_indian", return_value=frozen_now), \
+         patch("backend.api.algo.expiry.ExpiryEngine._fetch_option_positions",
+               return_value=[lone_itm_call]), \
+         patch("backend.api.algo.expiry.ExpiryEngine._fetch_future_positions",
+               return_value=[]), \
+         patch("backend.api.algo.expiry.ExpiryEngine._fetch_underlying_ltps",
+               return_value={"CRUDEOIL": 6200.0}), \
+         patch("backend.api.algo.expiry.expiry_close_held", return_value=True) as held_gate, \
+         patch("backend.api.algo.expiry.record_held_order",
+               new=AsyncMock(return_value=101)) as held_mock, \
+         patch("backend.api.algo.expiry.chase_order",
+               new=AsyncMock()) as chase_mock, \
+         patch(
+             "backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window."
+             "_expiry_preclose_exchanges",
+             return_value={"MCX"},
+         ):
+        await _action_live_expiry_auto_close(agent, {}, {})
+
+    held_gate.assert_called()
+    held_mock.assert_awaited_once()
+    kwargs = held_mock.await_args.kwargs
+    assert kwargs["account"] == "ZG0790"
+    assert kwargs["symbol"] == "CRUDEOIL26NOV5500CE"
+    assert kwargs["exchange"] == "MCX"
+    assert kwargs["side"] == "SELL"  # closing a long CALL means selling it
+    assert kwargs["qty"] == 1
+    chase_mock.assert_not_awaited(), \
+        "hold.expiry_close_released=False (hold.expiry_close_held()->True) " \
+        "must stage a HELD row, never place a real chase/broker order"
+
+
+@pytest.mark.asyncio
+async def test_expiry_auto_close_chases_when_operator_releases_the_hold():
+    """Sanity check for the OTHER side of the same real path: once the
+    operator flips hold.expiry_close_released=True (expiry_close_held()
+    returns False), the identical unnetted-ITM leg must route to the real
+    chase_order() path instead of record_held_order() — proves the test
+    above is actually exercising the branch it claims to, not a tautology."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from datetime import date, datetime, timezone
+    from backend.api.algo.expiry import ExpiryEngine, OptionPosition, ChaseResult, ChaseStatus
+    from backend.api.algo.actions_live import _action_live_expiry_auto_close
+
+    today = date(2026, 11, 26)
+    frozen_now = datetime(2026, 11, 26, 16, 0, 0, tzinfo=timezone.utc)  # ~21:30 IST
+    lone_itm_call = OptionPosition(
+        account="ZG0790",
+        tradingsymbol="CRUDEOIL26NOV5500CE",
+        exchange="MCX",
+        instrument_type="CE",
+        underlying="CRUDEOIL",
+        strike=5500.0,
+        expiry=today,
+        quantity=1,
+        product="NRML",
+        ltp=120.0,
+    )
+
+    agent = MagicMock()
+    agent.slug = "expiry-day-itm-auto-close"
+    agent.id = 42
+
+    fake_result = ChaseResult(
+        account="ZG0790", symbol="CRUDEOIL26NOV5500CE",
+        transaction_type="SELL", quantity=1, status=ChaseStatus.FILLED,
+    )
+
+    with patch("backend.api.algo.expiry.timestamp_indian", return_value=frozen_now), \
+         patch("backend.api.algo.expiry.ExpiryEngine._fetch_option_positions",
+               return_value=[lone_itm_call]), \
+         patch("backend.api.algo.expiry.ExpiryEngine._fetch_future_positions",
+               return_value=[]), \
+         patch("backend.api.algo.expiry.ExpiryEngine._fetch_underlying_ltps",
+               return_value={"CRUDEOIL": 6200.0}), \
+         patch("backend.api.algo.expiry.expiry_close_held", return_value=False), \
+         patch("backend.api.algo.expiry.record_held_order",
+               new=AsyncMock()) as held_mock, \
+         patch("backend.api.algo.expiry.chase_order",
+               new=AsyncMock(return_value=fake_result)) as chase_mock, \
+         patch(
+             "backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window."
+             "_expiry_preclose_exchanges",
+             return_value={"MCX"},
+         ):
+        await _action_live_expiry_auto_close(agent, {}, {})
+
+    chase_mock.assert_awaited_once()
+    held_mock.assert_not_awaited()
