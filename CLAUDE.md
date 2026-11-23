@@ -4922,20 +4922,23 @@ one agent for alert instead of two", "why can't you have one agent for nfo and m
 function that you register identify the positions, 30 mins before market close, etc.", "alert
 agent 30 mins before expiry market closure, close agents 25 mins before". Final shape:
 - **`expiry-day-preclose-alert`** (high tier) and **`expiry-day-itm-auto-close`** (critical
-  tier), both `schedule="always"`, no `fire_at_time`, `cooldown_minutes=1320` → **180**, each a
-  single flat leaf condition (`is_expiry_preclose_alert_window==1` / `is_expiry_preclose_close_
-  window==1`). The exchange-loop and lead-time check live inside the metric resolver
+  tier), both `schedule="always"`, no `fire_at_time`, `cooldown_minutes=1320` → 180 → **30 (as of
+  2026-11-22, see the amendment below)**, each a single flat leaf condition
+  (`is_expiry_preclose_alert_window==1` / `is_expiry_preclose_close_window==1`). The exchange-loop
+  and lead-time check live inside the metric resolver
   ([grammar_tokens/metric_is_expiry_preclose_alert_window.py](backend/api/algo/grammar_tokens/metric_is_expiry_preclose_alert_window.py)
-  + its `_close_window` sibling, threshold 25 not 30), not a DSL compound tree — each reads the
-  already-computed cheap tokens (`is_{mcx,nse}_expiry_today`, `minutes_until_{mcx,nse}_close`, no
-  broker call) for BOTH exchanges and returns one boolean.
-- **180-min cooldown, not 22h — deliberate, not an oversight.** Both agents share ONE metric name
-  across MCX and NFO, and the per-fire latch key is `(agent_slug, metric, scope, account)` with
-  no exchange dimension (`funds.total`-scoped, no account/underlying to key on). A 22h cooldown
-  would let NFO's ~15:00 fire suppress MCX's own ~23:00 fire the SAME day — NFO structurally
-  always precedes MCX (15:30 vs 23:30 close), so this is a real bug class, not hypothetical. 180
-  min covers one ~30-min firing window (no same-exchange double-fire) while clearing hours before
-  the ~7.5h gap to the other exchange's window. Pinned by
+  + its `_close_window` sibling, threshold 25 → **60 (as of 2026-11-22)**, not 30 → **65**), not a
+  DSL compound tree — each reads the already-computed cheap tokens (`is_{mcx,nse}_expiry_today`,
+  `minutes_until_{mcx,nse}_close`, no broker call) for BOTH exchanges and returns one boolean.
+- **180-min cooldown, not 22h — deliberate, not an oversight (superseded 2026-11-22 — see the
+  amendment below; the "not 22h" reasoning below still holds, only the exact minute value
+  changed).** Both agents share ONE metric name across MCX and NFO, and the per-fire latch key is
+  `(agent_slug, metric, scope, account)` with no exchange dimension (`funds.total`-scoped, no
+  account/underlying to key on). A 22h cooldown would let NFO's ~15:00 fire suppress MCX's own
+  ~23:00 fire the SAME day — NFO structurally always precedes MCX (15:30 vs 23:30 close), so this
+  is a real bug class, not hypothetical. 180 min covers one ~30-min firing window (no
+  same-exchange double-fire) while clearing hours before the ~7.5h gap to the other exchange's
+  window. Pinned by
   `test_expiry_day_and_preclose_agents.py::TestExpiryDayAgentsSameDayNoSuppression`.
 - **Identification is shared, not duplicated.** Both the alert's render helper
   (`_v2_expiry_position_breakdown()`, agent_engine.py, called from `_v2_send_rich_alert`'s
@@ -4992,11 +4995,62 @@ agent 30 mins before expiry market closure, close agents 25 mins before". Final 
   same-day no-suppression regression), `test_expiry_position_breakdown.py` (wording rules, masked
   accounts, lot-size fallback, multi-account never pooled, degraded-scan note).
 - **Known coupling with the pre-existing background 09:20 IST task** (`background.py`,
-  prod-only, `ExpiryEngine.run()`, `_start_offset_h`=2h before close) — intentionally left
-  running side-by-side, unchanged. It also routes through `close_positions()`'s same hold check,
-  so the two mechanisms cannot double-place a live order even though they can both independently
-  attempt the same close on the same day; whichever runs first stages (or places, once released)
-  the HELD row, and the second finds nothing new to close.
+  prod-only, `ExpiryEngine.run()`, `_start_offset_h` = `algo.expiry_start_offset_hours` setting,
+  code default 2h but overridden to 0.5h on prod — see the 2026-11-22 amendment below for the
+  current live value and the agent retime it needs to track) — intentionally left running
+  side-by-side, unchanged. It also routes through `close_positions()`'s same hold check, so the
+  two mechanisms cannot double-place a live order even though they can both independently attempt
+  the same close on the same day; whichever runs first stages (or places, once released) the HELD
+  row, and the second finds nothing new to close.
+- *Amended 2026-11-22 (operator: "I want the unnetted in the money positions to be closed by the
+  agents one hour before market close").* Lead times retimed:
+  `expiry-day-preclose-alert` 30→**65** minutes, `expiry-day-itm-auto-close` 25→**60** minutes
+  (applies to BOTH MCX and NFO — one shared resolver, not per-exchange). The lead time is now a
+  genuine factory PARAMETER (operator: "the time should be a parameter in the function in the DSL
+  grammar to make it generic") — `_metric_factory_is_expiry_preclose_window(lead_minutes)`
+  ([metric_is_expiry_preclose_alert_window.py](backend/api/algo/grammar_tokens/metric_is_expiry_preclose_alert_window.py)),
+  mirroring the pre-existing `metric_max_drawdown_pnl.py` factory precedent — `ALERT_LEAD_MINUTES`
+  (65) and `CLOSE_LEAD_MINUTES` (60, in the `_close_window` sibling file) are both produced by
+  calling this one factory, never a second copy of the exchange-loop logic.
+  - **Cooldown dropped 180→30 min on both agents, closing a real coverage gap the wider window
+    opened.** At the old 25/30-min windows, a single scan close to close was an acceptable
+    approximation. At 60/65 min, MCX had no periodic re-scan of its own between that one scan and
+    close — unlike NFO, which already re-scans every `algo.expiry_rescan_minutes` (default 30)
+    inside the legacy `ExpiryEngine.run()` loop. A leg that turned genuinely unnetted-ITM in that
+    last hour would have gone unflagged until next-day review. 30 min — the SAME default cadence
+    NFO's own loop already uses — lets `expiry-day-itm-auto-close` re-fire ~2× inside its own
+    window (T-60, T-30), re-running `scan_positions()` each time. Safe to repeat: the pre-existing
+    per-leg dedup guard inside `record_held_order()` (`order_hold_gate.py`, see the 2026-10-29
+    dedup-guard entry) returns the existing HELD row's id for an already-staged leg instead of
+    duplicating it, so a re-fire only ever stages a genuinely NEW leg. `expiry-day-preclose-alert`
+    gets the identical cooldown so the operator is re-notified of a newly-staged leg too, not left
+    to notice only from the Held Orders card. The shorter cooldown also removes the
+    cross-exchange-suppression risk a long cooldown would otherwise create at a short gap (it was
+    already proven safe at 180 min for the much larger NFO-to-MCX gap; 30 min is safe a fortiori).
+  - `expiry-day-itm-auto-close` gained `ntfy(high)` alongside its existing telegram+email+log — a
+    real-money staging alert needs an urgent mobile push, matching the sibling alert agent's own
+    channel set. Added via the pre-existing additive-sync in `_ae_sync_existing_builtin()`, so an
+    already-seeded prod/dev row picks it up on next restart with no migration needed.
+  - `expiry-nfo-risk-alert`'s own pre-close suppression leaves (both the NFO and MCX branches)
+    retimed 30→65 too, so the risk alert stays quiet for the whole widened window the preclose
+    alert now covers, not just the last 30 of 65 minutes. The one-time
+    `_AE_CONTENT_MATCHED_COND_MIGRATIONS["expiry-nfo-risk-alert"]` trigger shape was replaced with
+    the exact byte-for-byte 30-min merged `any[]` shape — confirmed live via a direct `psql` read
+    on BOTH `ramboq` (prod) and `ramboq_dev` before the edit — so the already-seeded row
+    force-upgrades to the 65-min shape on next restart.
+  - **Follow-up still pending at commit time, tracked outside code**: `algo.expiry_start_offset_
+    hours` needs to move from its current live value (0.5h) to 1.0h on both dev and prod settings
+    tables — a runtime config value, not code — so the legacy background task's own close pass
+    targets the same T-60 moment instead of a stale T-30 second pass (which would otherwise risk a
+    second HELD row for a leg already released and mid-chase from the first pass — dedup only
+    matches `status='HELD'` rows, not an in-flight chase).
+  - Tests: `test_expiry_day_and_preclose_agents.py` (lead times, cooldown, ntfy, a new case proving
+    a >30-min-later re-fire inside the same window is now ALLOWED — the periodic re-scan this
+    retime exists for), `test_expiry_same_window_consolidation.py` (suppression-window literals),
+    `test_expiry_logic.py` (two new end-to-end tests driving the REAL action + REAL
+    `ExpiryEngine.scan_positions()`/`close_positions()` — only broker fetch calls mocked — proving
+    a genuinely unnetted-ITM MCX leg is staged via `record_held_order()` and never reaches
+    `chase_order()` while `hold.expiry_close_released=False`, and the reverse once released).
 - Invariant (*scope amended 2026-11-12* — holds for the two original agents, not the two risk-alert
   condition resolvers; see the correction bullet above and the 2026-11-12 entry): alert and auto-close
   identification can never disagree — they call the identical `ExpiryEngine.scan_positions()`. A root's "unnetted"/"ITM" classification is never duplicated
