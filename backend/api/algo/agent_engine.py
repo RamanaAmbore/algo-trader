@@ -2779,12 +2779,17 @@ BUILTIN_AGENTS.extend(_EXPIRY_RISK_AGENTS)
 # default cadence NFO's own re-scan loop already uses, not a new
 # arbitrary number — lets `expiry-day-itm-auto-close` re-fire ~2 times
 # inside its own 60-min window (T-60, T-30), re-running
-# `ExpiryEngine.scan_positions()` each time. This is SAFE to repeat: the
-# per-leg dedup guard inside `record_held_order()` (order_hold_gate.py)
-# returns the existing HELD row's id instead of creating a duplicate
-# for an already-held leg, so a re-fire is a no-op for everything
-# already staged and only stages a genuinely NEW unnetted-ITM leg.
-# `expiry-day-preclose-alert` gets the same 30-min cooldown so the
+# `ExpiryEngine.scan_positions()` each time. A re-fire is safe for an
+# already-HELD leg (the per-leg dedup guard inside `record_held_order()`,
+# order_hold_gate.py, returns the existing HELD row's id instead of
+# duplicating it) AND for a leg the operator already released and is
+# still chasing (`_exp_leg_in_flight_this_session()`, expiry.py, skips
+# any leg with an unresolved order — HELD, OPEN, or CANCEL_FAILED —
+# already open this session, closing a real double-close risk the
+# first version of this comment did not account for: a released row
+# still mid-chase is no longer HELD, so the dedup guard alone could not
+# see it). So a re-fire only ever stages a genuinely NEW unnetted-ITM
+# leg. `expiry-day-preclose-alert` gets the same 30-min cooldown so the
 # operator is re-notified of a newly-staged leg too, not left to notice
 # only from the Held Orders card.
 #
@@ -2846,11 +2851,12 @@ _EXPIRY_DAY_AWARENESS_AGENTS = [
             "Chase-closes MCX's unnetted ITM/NTM residual and every NFO "
             "ITM/NTM leg via ExpiryEngine.scan_positions()+"
             "close_positions(), covering both exchanges in one scan. Each "
-            "re-fire is safe to repeat — the per-leg dedup guard inside "
-            "record_held_order() returns the existing HELD row's id for "
-            "an already-staged leg instead of duplicating it, so only a "
-            "genuinely NEW unnetted-ITM leg gets a fresh HELD row. Every "
-            "close is HELD by default (HoldCategory.EXPIRY_CLOSE, "
+            "re-fire only ever acts on a genuinely NEW unnetted-ITM leg — "
+            "close_positions() skips any leg that already has an "
+            "unresolved order this session (HELD, OPEN from an operator "
+            "release still chasing, or CANCEL_FAILED), never just an "
+            "already-HELD one. Every close is HELD by default "
+            "(HoldCategory.EXPIRY_CLOSE, "
             "hold.expiry_close_released=False) — this agent stages orders "
             "for review, it does not place live trades unless the operator "
             "explicitly releases that category from /admin/settings."

@@ -5019,14 +5019,34 @@ agent 30 mins before expiry market closure, close agents 25 mins before". Final 
     inside the legacy `ExpiryEngine.run()` loop. A leg that turned genuinely unnetted-ITM in that
     last hour would have gone unflagged until next-day review. 30 min — the SAME default cadence
     NFO's own loop already uses — lets `expiry-day-itm-auto-close` re-fire ~2× inside its own
-    window (T-60, T-30), re-running `scan_positions()` each time. Safe to repeat: the pre-existing
-    per-leg dedup guard inside `record_held_order()` (`order_hold_gate.py`, see the 2026-10-29
-    dedup-guard entry) returns the existing HELD row's id for an already-staged leg instead of
-    duplicating it, so a re-fire only ever stages a genuinely NEW leg. `expiry-day-preclose-alert`
-    gets the identical cooldown so the operator is re-notified of a newly-staged leg too, not left
-    to notice only from the Held Orders card. The shorter cooldown also removes the
-    cross-exchange-suppression risk a long cooldown would otherwise create at a short gap (it was
-    already proven safe at 180 min for the much larger NFO-to-MCX gap; 30 min is safe a fortiori).
+    window (T-60, T-30), re-running `scan_positions()` each time. A re-fire only ever stages a
+    genuinely NEW leg — see the dedicated double-close fix immediately below, which closes a gap
+    this paragraph's first version got wrong (it claimed the pre-existing per-leg dedup guard alone
+    made this safe; it does not). `expiry-day-preclose-alert` gets the identical cooldown so the
+    operator is re-notified of a newly-staged leg too, not left to notice only from the Held Orders
+    card. The shorter cooldown also removes the cross-exchange-suppression risk a long cooldown
+    would otherwise create at a short gap (it was already proven safe at 180 min for the much
+    larger NFO-to-MCX gap; 30 min is safe a fortiori).
+  - **Double-close fix (2026-11-22, found before this ever reached a real expiry day).** A
+    released-and-still-chasing leg could get a SECOND HELD row from the next re-scan, because
+    `record_held_order()`'s dedup guard matches `status == 'HELD'` only —
+    `release_held_order()` sets a released row to `status='OPEN'` while it chases, so a re-scan
+    mid-chase saw the position still open, `needs_close` still True, and no HELD row to match
+    against. Releasing that second row too would place a second real close and flip the position.
+    Fixed in `close_positions()` ([expiry.py](backend/api/algo/expiry.py)) via
+    `_exp_leg_in_flight_this_session(account, symbol, exchange, side)`, which skips a leg — for
+    BOTH the held-staging branch and the live-chase branch — when any `AlgoOrder` for that exact
+    identity from the CURRENT trading session (`expiry_freeze.session_date_of`) is still `HELD`,
+    `OPEN`, or `CANCEL_FAILED`. Fails toward SKIPPING on a lookup error (the opposite direction
+    from the sibling `_al_agent_close_recently_cancelled_this_session` check in
+    `actions_live.py`, which fails open because it only gates a re-ALERT, not a second real
+    order). This also closes the identical, pre-existing gap in the legacy NFO re-scan loop inside
+    `ExpiryEngine.run()`, which shares `close_positions()`. **Known, accepted residual**: if the
+    operator CANCELS (not releases) a T-60 HELD row outright, `HoldCategory.EXPIRY_CLOSE` has no
+    cancel-suppression (unlike `AGENT_CLOSE`'s own session-scoped cancel-suppression check), so
+    the row reappears at the next re-scan — still only ever staged as a new HELD row, never a
+    live order, so this residual is a UX annoyance (seeing the same leg come back), not a
+    double-close risk. Not fixed here; an explicit operator decision if it needs to be.
   - `expiry-day-itm-auto-close` gained `ntfy(high)` alongside its existing telegram+email+log — a
     real-money staging alert needs an urgent mobile push, matching the sibling alert agent's own
     channel set. Added via the pre-existing additive-sync in `_ae_sync_existing_builtin()`, so an

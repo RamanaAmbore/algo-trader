@@ -199,6 +199,74 @@ def _exp_net_one_pair(
     return remaining_opt[id(A)]
 
 
+_EXP_IN_FLIGHT_STATUSES = ("HELD", "OPEN", "CANCEL_FAILED")
+
+
+async def _exp_leg_in_flight_this_session(
+    account: str, symbol: str, exchange: str, side: str,
+) -> bool:
+    """True when this exact (account, symbol, exchange, side) already
+    has an unresolved `AlgoOrder` from the CURRENT trading session (see
+    `expiry_freeze.session_date_of`) — status `HELD` (staged, awaiting
+    operator release), `OPEN` (released and actively chasing, or a
+    live chase placed directly when hold is off), or `CANCEL_FAILED`
+    (a cancel attempt that may still leave the broker order resting).
+
+    2026-11-22 fix (see `close_positions()`'s own docstring for the
+    full incident this closes): `record_held_order()`'s own dedup
+    guard only matches `status == 'HELD'`, so it alone cannot see a
+    row the operator already released and is still chasing. This check
+    runs BEFORE that guard, for BOTH the held-staging branch and the
+    live-chase branch, so a re-scan (the agent's own 30-min periodic
+    re-fire, or this engine's legacy NFO re-scan loop) can never stage
+    or place a second order for a leg that already has one outstanding
+    this session — regardless of which branch created the first one.
+
+    Deliberately existence-based across EVERY row from today's session
+    for this identity, not just the most recent one — an account could
+    in principle have more than one row for the same leg this session
+    (e.g. a CANCEL_FAILED row followed by a fresh attempt), and any one
+    of them being unresolved is reason enough to skip.
+
+    On any lookup failure, fails TOWARD SKIPPING (returns True) — the
+    opposite failure direction from the sibling cancel-suppression
+    check in `actions_live.py`, and deliberately so: that check guards
+    an alert-only re-stage (failing open just means "the operator sees
+    the reminder again", harmless), while this one guards whether a
+    SECOND REAL ORDER gets placed or staged (failing open there risks
+    exactly the double-close incident this function exists to prevent).
+    A transient DB error here costs one skipped re-scan tick, which the
+    next tick (or the operator's own manual review) recovers from.
+    """
+    from datetime import timezone
+    from sqlalchemy import select
+    from backend.api.database import async_session
+    from backend.api.models import AlgoOrder
+    from backend.api.algo.expiry_freeze import session_date_of
+    try:
+        async with async_session() as s:
+            rows = (await s.execute(
+                select(AlgoOrder).where(
+                    AlgoOrder.account == account,
+                    AlgoOrder.symbol == symbol,
+                    AlgoOrder.exchange == exchange,
+                    AlgoOrder.transaction_type == side,
+                    AlgoOrder.status.in_(_EXP_IN_FLIGHT_STATUSES),
+                )
+            )).scalars().all()
+        if not rows:
+            return False
+        now = datetime.now(timezone.utc)
+        today_session = session_date_of(now)
+        return any(session_date_of(r.created_at) == today_session for r in rows)
+    except Exception as e:
+        logger.warning(
+            f"Expiry: in-flight check failed for {symbol} ({account}), "
+            f"skipping this leg rather than risking a duplicate order: {e}"
+        )
+        return True
+
+
 class ExpiryEngine:
     def __init__(self, on_event: Callable | None = None, agent_id: "int | None" = None):
         self.state = ExpiryState()
@@ -735,7 +803,25 @@ class ExpiryEngine:
         RESIDUAL qty so an MCX leg that paired against a partner only
         gets its un-netted remainder closed. residual_qty defaults to
         the gross quantity in scan_positions, so NFO equity rows
-        (which skip the netting pass) close their full position."""
+        (which skip the netting pass) close their full position.
+
+        2026-11-22 fix — a re-fire (expiry-day-itm-auto-close's own
+        30-min periodic re-scan, or this same engine's legacy NFO
+        re-scan loop) used to be "safe to repeat" ONLY while the
+        leg's HELD row was still HELD — `record_held_order()`'s dedup
+        guard matches on `status == 'HELD'` alone. Once the operator
+        releases a hold, `release_held_order()` sets the row to
+        `status='OPEN'` and starts chasing it. If that chase is still
+        working (a real risk for an illiquid deep-ITM leg on expiry
+        day) when the next re-scan runs, the position is still open,
+        `needs_close` is still True, the row is no longer HELD, and
+        the dedup guard found nothing — so a SECOND HELD row got
+        staged for the exact same leg. Releasing that one too placed a
+        second real close and flipped the position. `_exp_leg_in_
+        flight_this_session()` closes this for both the held-staging
+        branch below AND the live-chase branch, so neither path can
+        ever act on a leg that already has an unresolved order this
+        session."""
         self.state.status = "closing"
 
         tasks = []
@@ -746,6 +832,14 @@ class ExpiryEngine:
             # Determine transaction type: close long → SELL, close short → BUY
             txn = "SELL" if effective > 0 else "BUY"
             qty = abs(effective)
+            if await _exp_leg_in_flight_this_session(pos.account, pos.tradingsymbol,
+                                                      pos.exchange, txn):
+                logger.info(
+                    f"Expiry: {pos.tradingsymbol} ({pos.account}) already has an "
+                    f"unresolved order this session (HELD/OPEN/CANCEL_FAILED) — "
+                    f"skipping re-stage/re-chase"
+                )
+                continue
             if expiry_close_held():
                 await record_held_order(
                     HoldCategory.EXPIRY_CLOSE,

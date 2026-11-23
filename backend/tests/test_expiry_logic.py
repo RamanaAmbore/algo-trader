@@ -6,6 +6,7 @@ Stale: ExpiryEngine has an idle/scanning/closing state machine.
 Reuse: pair validation logic shared between option and futures paths.
 UX: opposite-sign CE+PE pair on same underlying → valid netting pair.
 """
+import asyncio
 from pathlib import Path
 import pytest
 
@@ -487,7 +488,11 @@ async def test_close_positions_records_held_order_with_expiry_close_category():
 
     mock_record = AsyncMock(return_value=123)
 
-    with patch("backend.api.algo.expiry.expiry_close_held", return_value=True), \
+    async def _not_in_flight(account, symbol, exchange, side):
+        return False
+
+    with patch("backend.api.algo.expiry._exp_leg_in_flight_this_session", new=_not_in_flight), \
+         patch("backend.api.algo.expiry.expiry_close_held", return_value=True), \
          patch("backend.api.algo.expiry.record_held_order", mock_record):
         await engine.close_positions([pos])
 
@@ -643,6 +648,9 @@ async def test_expiry_auto_close_holds_not_chases_real_path_at_60min_window():
     agent.slug = "expiry-day-itm-auto-close"
     agent.id = 42
 
+    async def _not_in_flight(account, symbol, exchange, side):
+        return False
+
     with patch("backend.api.algo.expiry.timestamp_indian", return_value=frozen_now), \
          patch("backend.api.algo.expiry.ExpiryEngine._fetch_option_positions",
                return_value=[lone_itm_call]), \
@@ -650,6 +658,7 @@ async def test_expiry_auto_close_holds_not_chases_real_path_at_60min_window():
                return_value=[]), \
          patch("backend.api.algo.expiry.ExpiryEngine._fetch_underlying_ltps",
                return_value={"CRUDEOIL": 6200.0}), \
+         patch("backend.api.algo.expiry._exp_leg_in_flight_this_session", new=_not_in_flight), \
          patch("backend.api.algo.expiry.expiry_close_held", return_value=True) as held_gate, \
          patch("backend.api.algo.expiry.record_held_order",
                new=AsyncMock(return_value=101)) as held_mock, \
@@ -711,6 +720,9 @@ async def test_expiry_auto_close_chases_when_operator_releases_the_hold():
         transaction_type="SELL", quantity=1, status=ChaseStatus.FILLED,
     )
 
+    async def _not_in_flight(account, symbol, exchange, side):
+        return False
+
     with patch("backend.api.algo.expiry.timestamp_indian", return_value=frozen_now), \
          patch("backend.api.algo.expiry.ExpiryEngine._fetch_option_positions",
                return_value=[lone_itm_call]), \
@@ -718,6 +730,7 @@ async def test_expiry_auto_close_chases_when_operator_releases_the_hold():
                return_value=[]), \
          patch("backend.api.algo.expiry.ExpiryEngine._fetch_underlying_ltps",
                return_value={"CRUDEOIL": 6200.0}), \
+         patch("backend.api.algo.expiry._exp_leg_in_flight_this_session", new=_not_in_flight), \
          patch("backend.api.algo.expiry.expiry_close_held", return_value=False), \
          patch("backend.api.algo.expiry.record_held_order",
                new=AsyncMock()) as held_mock, \
@@ -732,3 +745,199 @@ async def test_expiry_auto_close_chases_when_operator_releases_the_hold():
 
     chase_mock.assert_awaited_once()
     held_mock.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# 2026-11-22 double-close fix — a leg released from HELD and still chasing
+# could get a SECOND HELD row from the next re-scan (expiry-day-itm-auto-
+# close's own 30-min periodic re-fire, or the legacy NFO re-scan loop),
+# because record_held_order()'s dedup guard matches status=='HELD' only.
+# release_held_order() sets a released row to status='OPEN' while it
+# chases, so the dedup guard alone could not see it. Releasing the second
+# row too would place a second real close and flip the position.
+# _exp_leg_in_flight_this_session() closes this; these tests pin it both
+# directly and through the real close_positions() method.
+# ---------------------------------------------------------------------------
+
+def _mock_db_session_with_rows(rows):
+    from unittest.mock import AsyncMock, MagicMock
+    mock_session = MagicMock()
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+    scalars = MagicMock()
+    scalars.all.return_value = rows
+    result = MagicMock()
+    result.scalars.return_value = scalars
+    mock_session.execute = AsyncMock(return_value=result)
+    return mock_session
+
+
+class TestExpLegInFlightThisSession:
+    def test_no_rows_returns_false(self, monkeypatch):
+        from backend.api.algo.expiry import _exp_leg_in_flight_this_session
+
+        mock_session = _mock_db_session_with_rows([])
+        monkeypatch.setattr("backend.api.database.async_session", lambda: mock_session)
+
+        result = asyncio.run(_exp_leg_in_flight_this_session(
+            "ZG0790", "CRUDEOIL26NOV5500CE", "MCX", "SELL",
+        ))
+        assert result is False
+
+    def test_held_row_from_today_returns_true(self, monkeypatch):
+        from types import SimpleNamespace
+        from datetime import datetime, timezone
+        from backend.api.algo.expiry import _exp_leg_in_flight_this_session
+
+        row = SimpleNamespace(status="HELD", created_at=datetime.now(timezone.utc))
+        mock_session = _mock_db_session_with_rows([row])
+        monkeypatch.setattr("backend.api.database.async_session", lambda: mock_session)
+
+        result = asyncio.run(_exp_leg_in_flight_this_session(
+            "ZG0790", "CRUDEOIL26NOV5500CE", "MCX", "SELL",
+        ))
+        assert result is True
+
+    def test_open_row_from_today_returns_true(self, monkeypatch):
+        """THE release-and-still-chasing scenario — release_held_order()
+        sets status='OPEN'. This is the exact gap record_held_order()'s
+        own dedup guard (status=='HELD' only) could never see."""
+        from types import SimpleNamespace
+        from datetime import datetime, timezone
+        from backend.api.algo.expiry import _exp_leg_in_flight_this_session
+
+        row = SimpleNamespace(status="OPEN", created_at=datetime.now(timezone.utc))
+        mock_session = _mock_db_session_with_rows([row])
+        monkeypatch.setattr("backend.api.database.async_session", lambda: mock_session)
+
+        result = asyncio.run(_exp_leg_in_flight_this_session(
+            "ZG0790", "CRUDEOIL26NOV5500CE", "MCX", "SELL",
+        ))
+        assert result is True
+
+    def test_cancel_failed_row_from_today_returns_true(self, monkeypatch):
+        from types import SimpleNamespace
+        from datetime import datetime, timezone
+        from backend.api.algo.expiry import _exp_leg_in_flight_this_session
+
+        row = SimpleNamespace(status="CANCEL_FAILED", created_at=datetime.now(timezone.utc))
+        mock_session = _mock_db_session_with_rows([row])
+        monkeypatch.setattr("backend.api.database.async_session", lambda: mock_session)
+
+        result = asyncio.run(_exp_leg_in_flight_this_session(
+            "ZG0790", "CRUDEOIL26NOV5500CE", "MCX", "SELL",
+        ))
+        assert result is True
+
+    def test_row_from_a_prior_session_returns_false(self, monkeypatch):
+        """A HELD/OPEN/CANCEL_FAILED row from a DIFFERENT trading session
+        (e.g. a stale row that was never cleaned up) must not block a
+        genuinely new close this session."""
+        from types import SimpleNamespace
+        from datetime import datetime, timedelta, timezone
+        from backend.api.algo.expiry import _exp_leg_in_flight_this_session
+
+        stale = datetime.now(timezone.utc) - timedelta(days=5)
+        row = SimpleNamespace(status="OPEN", created_at=stale)
+        mock_session = _mock_db_session_with_rows([row])
+        monkeypatch.setattr("backend.api.database.async_session", lambda: mock_session)
+
+        result = asyncio.run(_exp_leg_in_flight_this_session(
+            "ZG0790", "CRUDEOIL26NOV5500CE", "MCX", "SELL",
+        ))
+        assert result is False
+
+    def test_db_error_fails_toward_skipping_true(self, monkeypatch):
+        """Opposite failure direction from the sibling cancel-suppression
+        check in actions_live.py (which fails open/False, since it only
+        gates a re-ALERT) — this one guards a second REAL order, so a
+        lookup failure must skip (True), not risk a duplicate."""
+        from backend.api.algo.expiry import _exp_leg_in_flight_this_session
+
+        def _boom():
+            raise RuntimeError("db unreachable")
+        monkeypatch.setattr("backend.api.database.async_session", _boom)
+
+        result = asyncio.run(_exp_leg_in_flight_this_session(
+            "ZG0790", "CRUDEOIL26NOV5500CE", "MCX", "SELL",
+        ))
+        assert result is True
+
+
+class TestClosePositionsSkipsInFlightLegs:
+    @pytest.mark.asyncio
+    async def test_in_flight_leg_is_never_restaged_or_rechased(self, monkeypatch):
+        """End-to-end through the real close_positions(): one leg is
+        already in-flight this session (simulating a released-and-
+        still-chasing row), a second leg genuinely needs a fresh close.
+        Only the second leg may reach record_held_order()."""
+        from unittest.mock import AsyncMock, patch
+        from datetime import date
+        from backend.api.algo.expiry import ExpiryEngine, OptionPosition
+
+        in_flight_leg = OptionPosition(
+            account="ZG0790", tradingsymbol="CRUDEOIL26NOV5500CE",
+            exchange="MCX", instrument_type="CE", underlying="CRUDEOIL",
+            strike=5500.0, expiry=date.today(), quantity=1, product="NRML",
+            ltp=120.0, residual_qty=1,
+        )
+        fresh_leg = OptionPosition(
+            account="ZG0790", tradingsymbol="CRUDEOIL26NOV5600CE",
+            exchange="MCX", instrument_type="CE", underlying="CRUDEOIL",
+            strike=5600.0, expiry=date.today(), quantity=1, product="NRML",
+            ltp=80.0, residual_qty=1,
+        )
+
+        async def _fake_in_flight(account, symbol, exchange, side):
+            return symbol == "CRUDEOIL26NOV5500CE"
+
+        engine = ExpiryEngine()
+        with patch("backend.api.algo.expiry._exp_leg_in_flight_this_session",
+                   new=_fake_in_flight), \
+             patch("backend.api.algo.expiry.expiry_close_held", return_value=True), \
+             patch("backend.api.algo.expiry.record_held_order",
+                   new=AsyncMock(return_value=101)) as held_mock, \
+             patch("backend.api.algo.expiry.chase_order",
+                   new=AsyncMock()) as chase_mock:
+            await engine.close_positions([in_flight_leg, fresh_leg])
+
+        held_mock.assert_awaited_once()
+        kwargs = held_mock.await_args.kwargs
+        assert kwargs["symbol"] == "CRUDEOIL26NOV5600CE", (
+            "only the leg with no in-flight order this session may be "
+            "staged — the in-flight leg must be skipped entirely"
+        )
+        chase_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_in_flight_leg_is_skipped_even_when_hold_is_released(self, monkeypatch):
+        """The in-flight check runs BEFORE the expiry_close_held() branch
+        — an in-flight leg must be skipped regardless of whether hold is
+        currently on or off, because a live chase for it may already be
+        running from an earlier release."""
+        from unittest.mock import AsyncMock, patch
+        from datetime import date
+        from backend.api.algo.expiry import ExpiryEngine, OptionPosition
+
+        leg = OptionPosition(
+            account="ZG0790", tradingsymbol="CRUDEOIL26NOV5500CE",
+            exchange="MCX", instrument_type="CE", underlying="CRUDEOIL",
+            strike=5500.0, expiry=date.today(), quantity=1, product="NRML",
+            ltp=120.0, residual_qty=1,
+        )
+
+        async def _always_in_flight(account, symbol, exchange, side):
+            return True
+
+        engine = ExpiryEngine()
+        with patch("backend.api.algo.expiry._exp_leg_in_flight_this_session",
+                   new=_always_in_flight), \
+             patch("backend.api.algo.expiry.expiry_close_held", return_value=False), \
+             patch("backend.api.algo.expiry.record_held_order",
+                   new=AsyncMock()) as held_mock, \
+             patch("backend.api.algo.expiry.chase_order",
+                   new=AsyncMock()) as chase_mock:
+            await engine.close_positions([leg])
+
+        held_mock.assert_not_awaited()
+        chase_mock.assert_not_awaited()

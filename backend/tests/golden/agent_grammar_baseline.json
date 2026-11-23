@@ -604,7 +604,7 @@
       "token": "is_expiry_preclose_alert_window",
       "value_type": "number",
       "units": "binary",
-      "description": "1.0 when MCX or NSE is expiring today and within 30 minutes of its own close, else 0.0. Never None.",
+      "description": "1.0 when MCX or NSE is expiring today and within 65 minutes of its own close, else 0.0. Never None.",
       "resolver": "backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window._metric_is_expiry_preclose_alert_window"
     },
     {
@@ -613,7 +613,7 @@
       "token": "is_expiry_preclose_close_window",
       "value_type": "number",
       "units": "binary",
-      "description": "1.0 when MCX or NSE is expiring today and within 25 minutes of its own close, else 0.0. Never None.",
+      "description": "1.0 when MCX or NSE is expiring today and within 60 minutes of its own close, else 0.0. Never None.",
       "resolver": "backend.api.algo.grammar_tokens.metric_is_expiry_preclose_close_window._metric_is_expiry_preclose_close_window"
     },
     {
