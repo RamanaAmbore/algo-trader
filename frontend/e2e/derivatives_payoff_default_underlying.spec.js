@@ -320,7 +320,11 @@ test.describe('Stale sessionStorage fallback behaviour', () => {
     // We'll use COPPER which is MCX (may not always have positions).
     const staleUnderlying = 'COPPER';
 
-    // Inject stale sessionStorage BEFORE navigation.
+    // Inject stale sessionStorage BEFORE navigation. Key fixed (2026-11):
+    // the page's own `_SESSION_CACHE_KEY` is 'rbq.cache.' + the raw key
+    // (see the "Stale-while-revalidate cache" migration in the page's own
+    // comments) — this test used the pre-migration unprefixed key, so it
+    // never actually seeded a cache hit and was silently a no-op.
     await page.context().addInitScript((stale) => {
       try {
         const payload = {
@@ -329,7 +333,7 @@ test.describe('Stale sessionStorage fallback behaviour', () => {
           selectedAccounts: [], selectedUnderlying: stale, selectedExpiries: [],
           _includeHoldings: false,
         };
-        sessionStorage.setItem('ramboq:options-state', JSON.stringify(payload));
+        sessionStorage.setItem('rbq.cache.ramboq:options-state', JSON.stringify(payload));
       } catch (_) {}
     }, staleUnderlying);
 
@@ -339,12 +343,32 @@ test.describe('Stale sessionStorage fallback behaviour', () => {
     const trigger = page.locator('#opt-und');
     await expect(trigger).toBeVisible({ timeout: 8_000 });
 
+    // Poll until the picker SETTLES — the same non-placeholder value held
+    // for a full 3 s window (10 consecutive 300ms reads) — not merely
+    // until it first shows ANY non-placeholder value. A once-cached
+    // POPULAR_UNDERLYINGS entry like COPPER is itself a valid, non-
+    // placeholder provisional value the instant it's restored — breaking
+    // on the first such sighting missed the auto-select effect's own
+    // later promote-to-active-position step (COPPER → the real held
+    // root), which — confirmed live, via a request/response trace on the
+    // real /api/positions round trip — can land close to 2-3 s after
+    // navigation (login redirect + positions fetch + reactive settle),
+    // not within the first ~1 s. Found 2026-11, in the same investigation
+    // as the cache-key fix above: this test's own early-break masked that
+    // later promotion from ever being observed.
     const label = trigger.locator('.rbq-select-label');
     let displayed = '';
+    let stableCount = 0;
     const deadline = Date.now() + 20_000;
     while (Date.now() < deadline) {
-      displayed = (await label.textContent() || '').trim().toUpperCase();
-      if (displayed && !PLACEHOLDER_TEXTS.has(displayed)) break;
+      const text = (await label.textContent() || '').trim().toUpperCase();
+      if (text && !PLACEHOLDER_TEXTS.has(text) && text === displayed) {
+        stableCount++;
+        if (stableCount >= 10) break;
+      } else {
+        displayed = text;
+        stableCount = text && !PLACEHOLDER_TEXTS.has(text) ? 1 : 0;
+      }
       await page.waitForTimeout(300);
     }
 
@@ -363,13 +387,27 @@ test.describe('Stale sessionStorage fallback behaviour', () => {
       ).not.toBe(staleUnderlying);
     }
 
-    // The displayed value must be a real available option (if any).
-    if (availableRoots.length > 0) {
-      expect(
-        availableRoots.some(r => displayed.includes(r)),
-        `Displayed underlying "${displayed}" must match one of available roots: [${availableRoots.join(', ')}]`,
-      ).toBe(true);
-    }
+    // The displayed value must be a real option the picker itself offers —
+    // checked against the dropdown's own LIVE option list, not the
+    // separately-timed `availableRoots` snapshot fetched before
+    // navigation. Comparing against that earlier snapshot is inherently
+    // racy against a live, actively-trading account (a position can
+    // open/close in the seconds between the two reads) — found 2026-11
+    // while fixing the sessionStorage-key bug above: the external
+    // snapshot and the in-page settle can legitimately disagree on
+    // which root ends up "largest," and that disagreement is not this
+    // test's concern. This test's own job is narrower: the stale pick
+    // must not survive, and whatever it resolves to must be a real
+    // member of the dropdown — not that it matches an earlier poll.
+    await trigger.click();
+    await page.waitForTimeout(500);
+    const options = await getDropdownOptions(page);
+    expect(options.length, 'Dropdown must have at least one option').toBeGreaterThan(0);
+    expect(
+      options.some((o) => o.includes(displayed)),
+      `Displayed underlying "${displayed}" must be a real dropdown option: [${options.join(', ')}]`,
+    ).toBe(true);
+    await page.keyboard.press('Escape');
   });
 });
 
@@ -432,5 +470,154 @@ test.describe('Dimension 5b: UX — desktop viewport', () => {
 
     // Close it.
     await page.keyboard.press('Escape');
+  });
+});
+
+// ── Regression: intermittent "blank" default on a delayed positions load
+//    (2026-11 fix) ────────────────────────────────────────────────────────
+//
+// Root cause: the real tiers of `underlyingOptionsForPicker` (options /
+// futures / holdings) are built from `positions`, a $state seeded
+// SYNCHRONOUSLY from the app-wide `portfolioStore` at component
+// construction — cold on a page that mounts before that global store has
+// warmed (fresh tab, first navigation, a lapsed TTL), warm otherwise
+// ("most of the time it works"). Before the fix, a cached/URL-restored
+// underlying NOT in the static POPULAR_UNDERLYINGS whitelist (e.g. a
+// less-common MCX GOLD variant) was judged "stale" by the auto-select
+// $effect the instant its first flush ran against that still-cold list,
+// resetting to NIFTY/opts[0] before `loadPositions()` had any chance to
+// confirm the pick — and, independently, the <Select> itself rendered its
+// "Pick underlying…" placeholder for the whole pending window because the
+// cached value wasn't yet a member of `options`. Both symptoms are what
+// the operator reported as "shows blank".
+//
+// Fix: a provisional entry keeps the pending pick visible in `opts` (and
+// so in the <Select>'s label) while `!_positionsLoaded`; the stale-reset
+// branch is gated on `_positionsLoaded` so it never fires before a real
+// load attempt has actually completed.
+test.describe('Regression: delayed positions load never shows blank/placeholder', () => {
+  test.setTimeout(35_000);
+
+  /** Same shape as fetchAvailableRoots() above — duplicated locally so
+   *  this describe block has no cross-test ordering dependency. */
+  async function _fetchHeldRoots(request) {
+    const r = await request.get(`${BASE}/api/positions/`, {
+      headers: _token ? { Authorization: `Bearer ${_token}` } : {},
+    });
+    if (!r.ok()) return [];
+    const data = await r.json();
+    const roots = new Set();
+    for (const p of (data.rows || [])) {
+      const sym = String(p.tradingsymbol || p.symbol || '').toUpperCase();
+      if (!sym) continue;
+      const root = sym.replace(/\d.*$/, '');
+      if (root && root !== sym) roots.add(root);
+    }
+    return [...roots];
+  }
+
+  /** Seed sessionStorage with a cached `selectedUnderlying`, delay
+   *  `/api/positions*` by `delayMs`, navigate, and sample the picker's
+   *  label on a tight interval for the first `delayMs - 200` ms. Returns
+   *  { samples: Set<string>, finalLabel: string } once the delay window
+   *  has elapsed and a settled (non-transiently-changing) read is taken. */
+  async function _runDelayedLoadProbe(page, cachedUnderlying, delayMs) {
+    await page.context().addInitScript((stale) => {
+      try {
+        const payload = {
+          ts: Date.now(),
+          positions: [], strategy: null, drafts: [],
+          selectedAccounts: [], selectedUnderlying: stale, selectedExpiries: [],
+        };
+        // The real cache key is prefixed ('rbq.cache.' + the raw key) per
+        // the page's own `_SESSION_CACHE_KEY` — NOT the bare key some
+        // older specs in this file/derivatives_auto_default.spec.js still
+        // use (a pre-existing, independent test-rot bug: the "Stale-
+        // while-revalidate cache" migration moved sessionStorage onto
+        // this prefixed scheme and those tests were never updated, so
+        // they've silently never exercised a real cache hit since).
+        sessionStorage.setItem('rbq.cache.ramboq:options-state', JSON.stringify(payload));
+      } catch (_) {}
+    }, cachedUnderlying);
+
+    await page.route('**/api/positions*', async (route) => {
+      await new Promise((r) => setTimeout(r, delayMs));
+      await route.continue();
+    });
+
+    const navStart = Date.now();
+    await page.goto(DERIV_URL, { waitUntil: 'domcontentloaded' });
+
+    const trigger = page.locator('#opt-und');
+    await expect(trigger).toBeVisible({ timeout: 8_000 });
+    const label = trigger.locator('.rbq-select-label');
+
+    const samples = new Set();
+    while (Date.now() - navStart < delayMs - 200) {
+      samples.add(((await label.textContent()) || '').trim().toUpperCase());
+      await page.waitForTimeout(100);
+    }
+    return { samples, label };
+  }
+
+  test('a cached pick outside POPULAR_UNDERLYINGS that is NOT currently held settles to a real default, never blank/placeholder while pending', async ({ page }) => {
+    await loginAsAdmin(page);
+    const FAKE_CACHED = 'ZZZFAKEROOT'; // never a real F&O root — exercises the "genuinely stale" path
+    const DELAY_MS = 2000;
+
+    const { samples, label } = await _runDelayedLoadProbe(page, FAKE_CACHED, DELAY_MS);
+
+    // While positions are loading, the picker must show the cached pick
+    // itself (provisional entry) — never the <Select> placeholder, and
+    // never a premature wrong-default bounce (e.g. NIFTY).
+    for (const text of samples) {
+      expect(PLACEHOLDER_TEXTS.has(text), `Must never show placeholder while pending. Saw: "${text}"`).toBe(false);
+      expect(text, `Must show the pending cached pick, not bounce early. Saw: "${text}"`).toBe(FAKE_CACHED);
+    }
+    expect(samples.size, 'Must have sampled at least one value during the delay window').toBeGreaterThan(0);
+
+    // Once positions genuinely resolve and confirm the root is not held,
+    // the picker must settle on a REAL value — never stuck on the fake
+    // root, never blank.
+    const deadline = Date.now() + 15_000;
+    let finalText = '';
+    while (Date.now() < deadline) {
+      finalText = ((await label.textContent()) || '').trim().toUpperCase();
+      if (finalText && finalText !== FAKE_CACHED) break;
+      await page.waitForTimeout(200);
+    }
+    expect(PLACEHOLDER_TEXTS.has(finalText), `Must resolve to a real value, not blank. Got: "${finalText}"`).toBe(false);
+    expect(finalText, 'A root that is genuinely not held must not stay selected forever').not.toBe(FAKE_CACHED);
+  });
+
+  test('a cached pick outside POPULAR_UNDERLYINGS that IS currently held stays selected throughout a delayed load — never blank', async ({ page, request }) => {
+    await loginAsAdmin(page);
+
+    const heldRoots = await _fetchHeldRoots(request);
+    // Pick a held root that is NOT in POPULAR_UNDERLYINGS so the test
+    // actually exercises the race (a popular root like NIFTY/GOLD is
+    // already in Tier 6 and would never have reproduced the bug).
+    const { POPULAR_UNDERLYINGS } = await import('../src/lib/data/popularUnderlyings.js');
+    const popularSet = new Set(POPULAR_UNDERLYINGS.map((s) => s.toUpperCase()));
+    const target = heldRoots.find((r) => !popularSet.has(r));
+
+    if (!target) {
+      console.warn('No currently-held root outside POPULAR_UNDERLYINGS — skipping (environment has no such position).');
+      return;
+    }
+
+    const DELAY_MS = 2000;
+    const { samples, label } = await _runDelayedLoadProbe(page, target, DELAY_MS);
+
+    for (const text of samples) {
+      expect(PLACEHOLDER_TEXTS.has(text), `Must never show placeholder while pending. Saw: "${text}"`).toBe(false);
+      expect(text, `A genuinely-held root must stay selected throughout the load, never bounce. Saw: "${text}"`).toBe(target);
+    }
+    expect(samples.size, 'Must have sampled at least one value during the delay window').toBeGreaterThan(0);
+
+    // After positions resolve, it must still be the same (now confirmed) root.
+    await page.waitForTimeout(500);
+    const finalText = ((await label.textContent()) || '').trim().toUpperCase();
+    expect(finalText).toBe(target);
   });
 });

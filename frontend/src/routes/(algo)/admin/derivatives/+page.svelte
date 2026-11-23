@@ -1759,6 +1759,37 @@
       seen.add(u);
       out.push({ value: u, label: u, hint: 'popular', qtySum: 0 });
     }
+    // Tier 7 — provisional entry for a cached/URL-restored pick that isn't
+    // in POPULAR_UNDERLYINGS and whose real tier (options/futures/holdings)
+    // can't be known yet because `positions` hasn't had a confirmed load
+    // attempt (`_positionsLoaded`). `positions` is seeded SYNCHRONOUSLY at
+    // mount from the global `portfolioStore.positions.rows` (line ~4043),
+    // which may already be warm (most visits) or cold (first page of the
+    // tab / session, or a TTL lapse) — purely a timing accident unrelated
+    // to whether the operator genuinely holds this root. Without this
+    // tier, a cold mount makes `underlyingOptionsForPicker` momentarily
+    // miss the operator's actual holding (e.g. a less-common MCX GOLD
+    // variant not in the static whitelist), which (a) makes the <Select>
+    // render its placeholder — "Pick underlying…" — instead of the real
+    // symbol (the operator-reported "shows blank" race), and (b) makes the
+    // auto-select $effect's own "not in opts → stale, reset" branch treat
+    // a perfectly valid pick as stale before positions have even had a
+    // chance to confirm it, bouncing the page to NIFTY/opts[0]. Gated
+    // strictly on `!_positionsLoaded` — once a real load attempt completes,
+    // this tier stops contributing so a GENUINELY stale pick (no longer
+    // held, never a real tier-1/2/3 entry) is still correctly treated as
+    // stale by that same effect. `qtySum: 0` + a dedicated 'pending' hint
+    // (distinct from 'popular') keep it out of both the "best active"
+    // computation and the popular-provisional promote logic. See the
+    // auto-select $effect's own comment just below for the companion half
+    // of this fix.
+    if (!_positionsLoaded) {
+      const pending = String(selectedUnderlying || '').toUpperCase();
+      if (pending && !seen.has(pending)) {
+        seen.add(pending);
+        out.push({ value: pending, label: pending, hint: 'pending', qtySum: 0 });
+      }
+    }
     return out;
   });
 
@@ -1797,10 +1828,25 @@
     }
 
     const curInOpts = opts.find(o => o.value === cur);
-    if (!curInOpts && opts[0]?.value) {
-      // Stale cache: previously-selected underlying is no longer in options — reset to first.
-      // Covered by Playwright spec derivatives-payoff-default.
-      untrack(() => { selectedUnderlying = opts[0].value; });
+    // Defensive gate (belt + suspenders on top of Tier 7 above, which
+    // already keeps `cur` present in `opts` while `!_positionsLoaded`):
+    // never judge a cached/URL-restored pick "stale" before a real
+    // `loadPositions()` round-trip has actually completed. Without this,
+    // a cold mount (positions not yet confirmed one way or the other)
+    // could bounce a genuinely-held underlying to NIFTY/opts[0] on the
+    // very first effect flush — the root cause of the intermittent
+    // "shows blank" default (2026-11 fix). Once `_positionsLoaded` is
+    // true, a pick that's STILL absent from every real tier is genuinely
+    // stale and resets as before — covered by Playwright spec
+    // derivatives-payoff-default.
+    if (!curInOpts && opts[0]?.value && _positionsLoaded) {
+      untrack(() => {
+        selectedUnderlying = opts[0].value;
+        // The pick this flag was protecting just got discarded as stale —
+        // clear it so a later genuine promote (branch below / a
+        // subsequent late-arriving account's position) isn't blocked.
+        _autoSelectDone = false;
+      });
       return;
     }
 
