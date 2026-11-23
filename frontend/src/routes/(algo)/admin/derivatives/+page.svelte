@@ -881,29 +881,48 @@
       _toggleCandSort(key);
     }
   }
-  const displayedCandidates = $derived.by(() => {
-    let rows;
-    if (legsTab !== 'expiry') {
-      rows = candidatePositions;
-    } else {
-      rows = [];
-      for (const r of expiryCloseAnalysis.equity)
-        rows.push({ ...r, _expiryStatus: `equity-${r._band}` });
-      for (const r of expiryCloseAnalysis.commodity)
-        rows.push({ ...r, _expiryStatus: `commodity-${r._band}` });
-    }
-    // Holdings toggle — when OFF, hide every equity-holding row from
-    // the panel + drop them from the TOTAL row sums. Operator:
-    // "when it is off, legs should not show holdings rows. the totals
-    // should reflect that." The chart-side gate is already in
-    // `_equityLegs`; this gate keeps the visible Candidates panel +
-    // its TOTAL row in lockstep with the payoff.
+  // Holdings toggle — when OFF, hide every equity-holding row from the
+  // panel + drop them from the TOTAL row sums. Operator: "when it is
+  // off, legs should not show holdings rows. the totals should reflect
+  // that." The chart-side gate is already in `_equityLegs`; this gate
+  // keeps the visible Candidates panel + its TOTAL row in lockstep with
+  // the payoff. Factored into a plain function (not its own `$derived`)
+  // so `displayedCandidates`, `_filteredLegCandidateRows` and the Exp
+  // Close branch all apply the EXACT SAME filter steps in the EXACT SAME
+  // order — one definition, never a hand-mirrored copy that could drift.
+  /** @param {any[]} rows @returns {any[]} */
+  function _applyLegFilters(rows) {
     if (!_includeHoldings) {
       rows = rows.filter(c => c.kind !== 'eq');
     }
     if (_filterLegs) {
       const q = _filterLegs.toUpperCase();
       rows = rows.filter(c => String(c.symbol || '').toUpperCase().includes(q));
+    }
+    return rows;
+  }
+
+  /** Filtered (holdings-toggle + search-text) candidatePositions — the
+   *  shared base for BOTH the 'legs' and 'paired' modes (never 'expiry',
+   *  which builds its own row set from `expiryCloseAnalysis`). Reused by
+   *  `displayedCandidates` itself and by `_legsViewCount`/
+   *  `_pairedViewCount` below, so the dropdown's own row-count labels can
+   *  never disagree with what each mode would actually render. */
+  const _filteredLegCandidateRows = $derived.by(() => _applyLegFilters(candidatePositions));
+
+  const displayedCandidates = $derived.by(() => {
+    if (legsTab === 'expiry') {
+      let rows = [];
+      for (const r of expiryCloseAnalysis.equity)
+        rows.push({ ...r, _expiryStatus: `equity-${r._band}` });
+      for (const r of expiryCloseAnalysis.commodity)
+        rows.push({ ...r, _expiryStatus: `commodity-${r._band}` });
+      rows = _applyLegFilters(rows);
+      return composeDisplayedCandidates(rows, {
+        mode: 'expiry',
+        sortState: { column: candSort.column, direction: candSort.direction },
+        columnSpecs: CAND_COLUMN_SPECS,
+      });
     }
     // Composition (column-sort plan, Section E; widened 2026-11 to the
     // 3-mode Legs/Paired/Exp Close contract) — pulled into
@@ -916,12 +935,31 @@
     // BYTE-IDENTICAL to their own respective pre-column-sort sort
     // function — CLAUDE.md documents two prior live incidents from
     // corrupting this exact pair-group block ordering.
-    return composeDisplayedCandidates(rows, {
+    return composeDisplayedCandidates(_filteredLegCandidateRows, {
       mode: legsTab,
       sortState: { column: candSort.column, direction: candSort.direction },
       columnSpecs: CAND_COLUMN_SPECS,
     });
   });
+
+  /** Each dropdown option's OWN row count, independent of which mode is
+   *  currently active (2026-11 fix — before `consolidateLotSplitPieces`
+   *  existed, 'legs' and 'paired' always produced the SAME row count, so
+   *  sharing `displayedCandidates.length` between both labels was safe;
+   *  now that 'legs' can genuinely consolidate rows, the inactive
+   *  option's label would otherwise show the wrong count). Always
+   *  computed with a null sortState — row COUNT never depends on sort
+   *  order, so this never needs to read `candSort`/`CAND_COLUMN_SPECS`. */
+  const _legsViewCount = $derived.by(() =>
+    composeDisplayedCandidates(_filteredLegCandidateRows, {
+      mode: 'legs', sortState: { column: null, direction: null }, columnSpecs: {},
+    }).length
+  );
+  const _pairedViewCount = $derived.by(() =>
+    composeDisplayedCandidates(_filteredLegCandidateRows, {
+      mode: 'paired', sortState: { column: null, direction: null }, columnSpecs: {},
+    }).length
+  );
 
   /** Underlying-anchor row for the Legs grid — shows the selected
    *  underlying's own spot/LTP even though it isn't itself a held
@@ -5780,20 +5818,21 @@
              its own label text (operator-confirmed) rather than a
              separate badge, since a closed dropdown can only show one
              label at a time.
-             NOTE: `displayedCandidates.length` (used for both 'legs'
-             and 'paired' labels below) depends on the CURRENTLY
-             selected `legsTab` — it is the Exp Close rows' count while
-             'expiry' is active, not the Legs/Paired rows' count. This
-             reuses the exact expression the pre-existing AlgoTabs
-             badge computed (same quirk carried forward, not
-             introduced here) rather than adding a second, independent
-             row-count derivation. -->
+             Each label reads its OWN independently-computed count
+             (`_legsViewCount` / `_pairedViewCount` / `expiryCloseTotal`)
+             — never `displayedCandidates.length` for Legs/Paired, which
+             depends on whichever mode is CURRENTLY active. Before
+             `consolidateLotSplitPieces` existed, 'legs' and 'paired'
+             always produced the same row count, so sharing that one
+             expression between both labels was harmless; now that
+             'legs' can genuinely consolidate rows, the inactive
+             option's label would otherwise show the wrong count. -->
         <div class="cand-view-select">
           <Select id="opt-legs-view"
             bind:value={legsTab}
             options={[
-              { value: 'legs',   label: `Legs (${displayedCandidates.length})` },
-              { value: 'paired', label: `Paired (${displayedCandidates.length})` },
+              { value: 'legs',   label: `Legs (${_legsViewCount})` },
+              { value: 'paired', label: `Paired (${_pairedViewCount})` },
               { value: 'expiry', label: `Exp Close (${expiryCloseTotal})` },
             ]} />
         </div>
