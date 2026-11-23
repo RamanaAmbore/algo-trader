@@ -57,6 +57,7 @@
   import { legIsClosed, legLiveLtp, legChgPct, legDisplayQty, legCost, legPnlDisplay, legPnlPct, legCaptPct } from '$lib/data/derivativesMath.js';
   import { createColumnSort } from '$lib/data/columnSort.svelte.js';
   import { composeDisplayedCandidates } from '$lib/data/candidateRowComposition.js';
+  import { mergedLegPieces } from '$lib/data/lotPairSplit.js';
   import {
     loadHedgeProxies, proxiesForTarget, targetsForProxy, getProxyRow,
   } from '$lib/data/hedgeProxies';
@@ -633,10 +634,20 @@
    *  weeks. Session enabledSymbols state takes precedence so an explicit
    *  toggle inside the page reflects immediately.
    *
-   * @param {{kind?:string, account?:string, symbol?:string}} c
+   * @param {{kind?:string, account?:string, symbol?:string, _mergedPieceKeys?: string[]}} c
    * @returns {boolean}
    */
   function _isLegChecked(c) {
+    // Merged Legs-view row (consolidateLotSplitPieces, lotPairSplit.js) —
+    // checked only when EVERY constituent lot-split piece this row
+    // represents is itself checked. `mergedLegPieces` rebuilds each
+    // constituent's own row shape (same enKey() shape the piece had
+    // before consolidation), so this recurses into the ordinary
+    // non-merged branch below for each one — no second, independently
+    // maintained key-building logic.
+    const parts = mergedLegPieces(c);
+    if (parts.length) return parts.every((p) => _isLegChecked(p));
+
     const v = enabledSymbols[enKey(c)];
     if (c?.kind === 'eq') {
       if (v === true) return true;
@@ -6105,7 +6116,17 @@
               {flash}
               onToggleEnabled={(candidate, checked) => {
                 const next = { ...enabledSymbols };
-                next[enKey(candidate)] = checked;
+                // Merged Legs-view row — write EVERY constituent
+                // lot-split piece's own key, so toggling the one
+                // rendered row actually changes what the payoff/EV
+                // aggregates compute from the unsplit candidatePositions
+                // pieces (see `_isLegChecked` above for the read side).
+                const parts = mergedLegPieces(candidate);
+                if (parts.length) {
+                  for (const p of parts) next[enKey(p)] = checked;
+                } else {
+                  next[enKey(candidate)] = checked;
+                }
                 enabledSymbols = next;
                 if (candidate.kind === 'eq') _persistEqMemory(candidate, checked);
               }}

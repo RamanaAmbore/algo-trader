@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { splitPairedLots } from '../../data/lotPairSplit.js';
+import { splitPairedLots, consolidateLotSplitPieces, mergedLegPieces } from '../../data/lotPairSplit.js';
 
 /** @param {Partial<any>} overrides */
 function row(overrides) {
@@ -275,6 +275,176 @@ describe('splitPairedLots — order independence (stability)', () => {
     const labelsFwd = Object.fromEntries(outFwd.map(r => [keyFn(r), r.pair_group_key]));
     const labelsRev = Object.fromEntries(outRev.map(r => [keyFn(r), r.pair_group_key]));
     expect(labelsRev).toEqual(labelsFwd);
+  });
+});
+
+describe('consolidateLotSplitPieces — the exact inverse of splitPairedLots (Legs-view consolidation)', () => {
+  it('round-trips splitPairedLots output back to one row per original position (qty + every _PRORATE_FIELDS entry sums exactly)', () => {
+    const longRow = row({
+      tradingsymbol: 'CRUDEOIL26OCTFUT', quantity: 300, account: 'ACC1', source: 'live',
+      pnl: 1234.56, realised: 500.11, unrealised: 734.45, day_change_val: 999.99,
+      prev_settlement_pnl: 222.22, overnight_quantity: 300, day_pnl: 111.11, lots: 3,
+    });
+    const shortA = row({ tradingsymbol: 'CRUDEOIL26NOVFUT', quantity: -200, account: 'ACC1', source: 'live' });
+    const shortB = row({ tradingsymbol: 'CRUDEOIL26DECFUT', quantity: -100, account: 'ACC1', source: 'live' });
+
+    const split = splitPairedLots([longRow, shortA, shortB]);
+    const out = consolidateLotSplitPieces(split);
+
+    // The long row produced 2 pieces in `split`; consolidation must
+    // collapse them back to exactly 1 — total row count: 1 (merged long)
+    // + 2 (unsplit shorts) = 3, down from `split`'s 4.
+    expect(split).toHaveLength(4);
+    expect(out).toHaveLength(3);
+
+    const merged = out.find((r) => r.tradingsymbol === 'CRUDEOIL26OCTFUT');
+    expect(merged).toBeTruthy();
+    expect(merged.quantity).toBe(300);
+    for (const f of ['pnl', 'realised', 'unrealised', 'day_change_val', 'prev_settlement_pnl', 'overnight_quantity', 'day_pnl', 'lots']) {
+      expect(merged[f]).toBeCloseTo(longRow[f], 6);
+    }
+
+    // Shorts pass through unmerged (each only ever had ONE piece).
+    const shortAOut = out.find((r) => r.tradingsymbol === 'CRUDEOIL26NOVFUT');
+    const shortBOut = out.find((r) => r.tradingsymbol === 'CRUDEOIL26DECFUT');
+    expect(shortAOut.quantity).toBe(-200);
+    expect(shortBOut.quantity).toBe(-100);
+  });
+
+  it('a never-split row passes through unchanged (same reference), at its original position', () => {
+    const a = row({ tradingsymbol: 'A', quantity: 10 });
+    const b = row({ tradingsymbol: 'B', quantity: -10 });
+    const out = consolidateLotSplitPieces([a, b]);
+    expect(out).toHaveLength(2);
+    expect(out[0]).toBe(a);
+    expect(out[1]).toBe(b);
+  });
+
+  it('a mixed array of split + unsplit rows only merges the split ones', () => {
+    const longRow = row({ tradingsymbol: 'NIFTY26JUN24000CE', quantity: 150, account: 'ACC1', source: 'live' });
+    const shortRow = row({ tradingsymbol: 'NIFTY26JUN24500CE', quantity: -100, account: 'ACC1', source: 'live' });
+    const untouched = row({ tradingsymbol: 'BANKNIFTY26JUN45000PE', quantity: 50, account: 'ACC2', source: 'live' });
+
+    const split = splitPairedLots([longRow, shortRow, untouched]);
+    const out = consolidateLotSplitPieces(split);
+
+    // longRow (150) vs shortRow (100) -> matched piece + orphan piece (2
+    // pieces for the long); the ACC2 row never participates in matching
+    // (different account), so it's merely a lone, unmatched single-piece
+    // row — splitPairedLots' OWN single-piece branch still corrects its
+    // is_orphan/orphan_qty fields via a copy (it's alone in its group,
+    // so it's a 100% orphan), but never sets `_isLotSplit` on it.
+    expect(split.filter((r) => r.tradingsymbol === 'NIFTY26JUN24000CE')).toHaveLength(2);
+    const mergedLong = out.find((r) => r.tradingsymbol === 'NIFTY26JUN24000CE');
+    expect(mergedLong.quantity).toBe(150);
+    const shortOut = out.find((r) => r.tradingsymbol === 'NIFTY26JUN24500CE');
+    expect(shortOut.quantity).toBe(-100);
+    const splitUntouched = split.find((r) => r.tradingsymbol === 'BANKNIFTY26JUN45000PE');
+    expect(splitUntouched._isLotSplit).toBeUndefined();
+    const untouchedOut = out.find((r) => r.tradingsymbol === 'BANKNIFTY26JUN45000PE');
+    expect(untouchedOut).toBe(splitUntouched); // genuinely unmerged — same reference as splitPairedLots' own output
+  });
+
+  it('pairing-only fields are absent on the merged row', () => {
+    const longRow = row({ tradingsymbol: 'CRUDEOIL26OCTFUT', quantity: 300, account: 'ACC1', source: 'live' });
+    const shortA = row({ tradingsymbol: 'CRUDEOIL26NOVFUT', quantity: -200, account: 'ACC1', source: 'live' });
+    const shortB = row({ tradingsymbol: 'CRUDEOIL26DECFUT', quantity: -100, account: 'ACC1', source: 'live' });
+
+    const out = consolidateLotSplitPieces(splitPairedLots([longRow, shortA, shortB]));
+    const merged = out.find((r) => r.tradingsymbol === 'CRUDEOIL26OCTFUT');
+
+    for (const f of ['pair_group_key', 'paired_qty', 'orphan_qty', 'is_orphan', '_isLotSplit', 'lot_piece_label', '_lotFraction']) {
+      expect(f in merged).toBe(false);
+    }
+    expect(Array.isArray(merged._mergedPieceKeys)).toBe(true);
+    expect(merged._mergedPieceKeys.sort()).toEqual(['P1', 'P2']);
+  });
+
+  it('restores the pre-split `key` by stripping the `::<label>` suffix', () => {
+    const longRow = row({ tradingsymbol: 'CRUDEOIL26OCTFUT', quantity: 300, account: 'ACC1', source: 'live' });
+    const shortA = row({ tradingsymbol: 'CRUDEOIL26NOVFUT', quantity: -200, account: 'ACC1', source: 'live' });
+    const shortB = row({ tradingsymbol: 'CRUDEOIL26DECFUT', quantity: -100, account: 'ACC1', source: 'live' });
+
+    const split = splitPairedLots([longRow, shortA, shortB]);
+    const piece = split.find((r) => r.tradingsymbol === 'CRUDEOIL26OCTFUT' && r.pair_group_key === 'P1');
+    expect(piece.key).toBe('CRUDEOIL26OCTFUT::P1'); // sanity on splitPairedLots' own shape
+
+    const merged = consolidateLotSplitPieces(split).find((r) => r.tradingsymbol === 'CRUDEOIL26OCTFUT');
+    expect(merged.key).toBe('CRUDEOIL26OCTFUT');
+  });
+
+  // The next two tests construct already-split pieces BY HAND (bypassing
+  // `splitPairedLots`'s real matching, which groups purely by (account,
+  // root, optType) with no `_splitTag`/`_storeKey` dimension and would
+  // make a realistic multi-row fixture for these two cases needlessly
+  // hard to control) — valid since `consolidateLotSplitPieces` is a
+  // standalone pure function whose only input contract is "a row with
+  // `_isLotSplit === true`", regardless of how it got that way.
+  it('a different _splitTag ("closed" vs "open") on otherwise-identical pieces never merges across them', () => {
+    const closedP1 = row({ tradingsymbol: 'SYM1', quantity: 60, account: 'ACC1', source: 'live', _splitTag: 'closed', _isLotSplit: true, lot_piece_label: 'P1', pair_group_key: 'P1' });
+    const closedP2 = row({ tradingsymbol: 'SYM1', quantity: 40, account: 'ACC1', source: 'live', _splitTag: 'closed', _isLotSplit: true, lot_piece_label: 'P2', pair_group_key: 'P2' });
+    const openP1   = row({ tradingsymbol: 'SYM1', quantity: 60, account: 'ACC1', source: 'live', _splitTag: 'open',   _isLotSplit: true, lot_piece_label: 'P1', pair_group_key: 'P1' });
+    const openP2   = row({ tradingsymbol: 'SYM1', quantity: 40, account: 'ACC1', source: 'live', _splitTag: 'open',   _isLotSplit: true, lot_piece_label: 'P2', pair_group_key: 'P2' });
+
+    const out = consolidateLotSplitPieces([closedP1, closedP2, openP1, openP2]);
+
+    const sym1Rows = out.filter((r) => r.tradingsymbol === 'SYM1');
+    expect(sym1Rows).toHaveLength(2); // one merged row per _splitTag, never collapsed into one
+    expect(sym1Rows.every((r) => r.quantity === 100)).toBe(true);
+    expect(new Set(sym1Rows.map((r) => r._splitTag))).toEqual(new Set(['closed', 'open']));
+  });
+
+  it('a different _storeKey (e.g. NRML vs MIS on the same account+symbol) never merges across them (deliberate deviation from the literal grouping key — see the module-level docstring)', () => {
+    const nrmlP1 = row({ tradingsymbol: 'SYM1', quantity: 60, account: 'ACC1', source: 'live', _storeKey: 'ACC1|NFO|SYM1|NRML', _isLotSplit: true, lot_piece_label: 'P1', pair_group_key: 'P1' });
+    const nrmlP2 = row({ tradingsymbol: 'SYM1', quantity: 40, account: 'ACC1', source: 'live', _storeKey: 'ACC1|NFO|SYM1|NRML', _isLotSplit: true, lot_piece_label: 'P2', pair_group_key: 'P2' });
+    const misP1  = row({ tradingsymbol: 'SYM1', quantity: 60, account: 'ACC1', source: 'live', _storeKey: 'ACC1|NFO|SYM1|MIS',  _isLotSplit: true, lot_piece_label: 'P3', pair_group_key: 'P3' });
+    const misP2  = row({ tradingsymbol: 'SYM1', quantity: 40, account: 'ACC1', source: 'live', _storeKey: 'ACC1|NFO|SYM1|MIS',  _isLotSplit: true, lot_piece_label: 'P4', pair_group_key: 'P4' });
+
+    const out = consolidateLotSplitPieces([nrmlP1, nrmlP2, misP1, misP2]);
+
+    const sym1Rows = out.filter((r) => r.tradingsymbol === 'SYM1');
+    expect(sym1Rows).toHaveLength(2); // NRML's merged SYM1 and MIS's merged SYM1 stay distinct rows
+    expect(sym1Rows.find((r) => r._storeKey === 'ACC1|NFO|SYM1|NRML').quantity).toBe(100);
+    expect(sym1Rows.find((r) => r._storeKey === 'ACC1|NFO|SYM1|MIS').quantity).toBe(100);
+  });
+});
+
+describe('mergedLegPieces — rebuild constituent pieces for checkbox-key purposes', () => {
+  it('returns [] for an unmerged row', () => {
+    const plain = row({ tradingsymbol: 'A', quantity: 10 });
+    expect(mergedLegPieces(/** @type {any} */ (plain))).toEqual([]);
+  });
+
+  it('rebuilds each constituent piece with the merged row\'s own account/symbol/_splitTag, and each original piece\'s own lot_piece_label — tuples matching the pre-merge split pieces', () => {
+    const longRow = row({ tradingsymbol: 'CRUDEOIL26OCTFUT', quantity: 300, account: 'ACC1', source: 'live' });
+    const shortA = row({ tradingsymbol: 'CRUDEOIL26NOVFUT', quantity: -200, account: 'ACC1', source: 'live' });
+    const shortB = row({ tradingsymbol: 'CRUDEOIL26DECFUT', quantity: -100, account: 'ACC1', source: 'live' });
+
+    const split = splitPairedLots([longRow, shortA, shortB]);
+    const originalPieces = split.filter((r) => r.tradingsymbol === 'CRUDEOIL26OCTFUT');
+    const merged = consolidateLotSplitPieces(split).find((r) => r.tradingsymbol === 'CRUDEOIL26OCTFUT');
+
+    const rebuilt = mergedLegPieces(merged);
+    expect(rebuilt).toHaveLength(2);
+
+    const tupleOf = (r) => `${r.account}|${r.symbol ?? r.tradingsymbol}|${r._splitTag ?? ''}|${r.lot_piece_label ?? ''}`;
+    const originalTuples = new Set(originalPieces.map(tupleOf));
+    const rebuiltTuples = new Set(rebuilt.map(tupleOf));
+    expect(rebuiltTuples).toEqual(originalTuples);
+  });
+
+  it('rebuilt pieces never carry _mergedPieceKeys (no infinite-recursion risk for a caller that recurses through its own per-piece checked-state function)', () => {
+    const longRow = row({ tradingsymbol: 'CRUDEOIL26OCTFUT', quantity: 300, account: 'ACC1', source: 'live' });
+    const shortA = row({ tradingsymbol: 'CRUDEOIL26NOVFUT', quantity: -200, account: 'ACC1', source: 'live' });
+    const shortB = row({ tradingsymbol: 'CRUDEOIL26DECFUT', quantity: -100, account: 'ACC1', source: 'live' });
+
+    const merged = consolidateLotSplitPieces(splitPairedLots([longRow, shortA, shortB]))
+      .find((r) => r.tradingsymbol === 'CRUDEOIL26OCTFUT');
+
+    for (const piece of mergedLegPieces(merged)) {
+      expect('_mergedPieceKeys' in piece).toBe(false);
+      expect(mergedLegPieces(piece)).toEqual([]); // recursing one level further terminates
+    }
   });
 });
 

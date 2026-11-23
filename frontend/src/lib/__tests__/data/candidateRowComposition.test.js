@@ -36,6 +36,7 @@
 import { describe, it, expect } from 'vitest';
 import { composeDisplayedCandidates } from '$lib/data/candidateRowComposition.js';
 import { sortRowsByPairGroup, sortRowsByAccountOnly } from '$lib/data/pairGroupSort.js';
+import { splitPairedLots } from '$lib/data/lotPairSplit.js';
 
 function row(symbol, account, extra = {}) {
   return { symbol, account, source: 'live', ...extra };
@@ -201,6 +202,65 @@ describe("composeDisplayedCandidates — null-sort path, mode: 'legs' (new unpai
     const realSymbols = out.filter((r) => r.source !== 'draft').map((r) => r.symbol);
     expect(realSymbols).toEqual([...realSymbols].sort());
     expect(out.slice(-2).every((r) => r.source === 'draft')).toBe(true);
+  });
+});
+
+describe("composeDisplayedCandidates — mode: 'legs' consolidates lot-split pieces, mode: 'paired' never does", () => {
+  // Raw pre-split rows: a 300-lot CRUDEOIL future that waterfall-matches
+  // against two different counterparties (200 + 100) — the exact
+  // reported bug scenario (lotPairSplit.test.js's own fixture for this).
+  // `symbol`/`account` (not `tradingsymbol`) is what `composeDisplayedCandidates`
+  // and its sort helpers read — `splitPairedLots` accepts either shape.
+  function rawRows() {
+    return [
+      { symbol: 'CRUDEOIL26OCTFUT', account: 'ACC1', source: 'live', quantity: 300 },
+      { symbol: 'CRUDEOIL26NOVFUT', account: 'ACC1', source: 'live', quantity: -200 },
+      { symbol: 'CRUDEOIL26DECFUT', account: 'ACC1', source: 'live', quantity: -100 },
+    ];
+  }
+
+  it("mode: 'legs' collapses the 2 lot-split pieces of one account+symbol into exactly one displayed row", () => {
+    const split = splitPairedLots(rawRows());
+    // Sanity: splitPairedLots really did split the 300-lot row into 2
+    // pieces before composition ever runs.
+    expect(split.filter((r) => r.symbol === 'CRUDEOIL26OCTFUT')).toHaveLength(2);
+
+    const out = composeDisplayedCandidates(split, {
+      mode: 'legs',
+      sortState: { column: null, direction: null },
+      columnSpecs: {},
+    });
+
+    const octRows = out.filter((r) => r.symbol === 'CRUDEOIL26OCTFUT');
+    expect(octRows).toHaveLength(1);
+    expect(octRows[0].quantity).toBe(300);
+    expect(out).toHaveLength(3); // 1 merged OCT row + 2 unsplit (NOV, DEC) shorts
+  });
+
+  it("mode: 'paired' leaves the same lot-split pieces UNMERGED (never consolidates)", () => {
+    const split = splitPairedLots(rawRows());
+
+    const out = composeDisplayedCandidates(split, {
+      mode: 'paired',
+      sortState: { column: null, direction: null },
+      columnSpecs: {},
+    });
+
+    const octRows = out.filter((r) => r.symbol === 'CRUDEOIL26OCTFUT');
+    expect(octRows).toHaveLength(2); // still 2 separate pieces — P1 and P2
+    expect(out).toHaveLength(4); // unchanged from splitPairedLots' own output count
+  });
+
+  it("mode: 'expiry' also leaves lot-split pieces UNMERGED (early-return bypass, never reaches consolidation)", () => {
+    const split = splitPairedLots(rawRows());
+
+    const out = composeDisplayedCandidates(split, {
+      mode: 'expiry',
+      sortState: { column: null, direction: null },
+      columnSpecs: {},
+    });
+
+    expect(out.filter((r) => r.symbol === 'CRUDEOIL26OCTFUT')).toHaveLength(2);
   });
 });
 

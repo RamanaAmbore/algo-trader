@@ -307,3 +307,169 @@ export function splitPairedLots(rows) {
     });
   }).flat();
 }
+
+/**
+ * consolidateLotSplitPieces(rows) — the exact inverse of `splitPairedLots`:
+ * collapses every lot-waterfall-split DISPLAY piece
+ * (`row._isLotSplit === true`) belonging to the same original source row
+ * back into ONE row carrying the full quantity + every `_PRORATE_FIELDS`
+ * entry summed back together (a plain sum is exact here — these pieces
+ * were produced by exact remainder-based pro-rating on the way out).
+ *
+ * Used ONLY by the derivatives page's 'legs' (unpaired, account-grouped)
+ * view — `candidateRowComposition.js`'s `composeDisplayedCandidates()` —
+ * where showing each lot-waterfall piece as its own row is wrong: the
+ * operator expects "one row per account+symbol", not one row per
+ * counterparty-matched slice. The 'paired'/'expiry' views are UNCHANGED —
+ * they are the surfaces that actually need the split pieces, to show each
+ * piece's own `pair_group_key`.
+ *
+ * Grouping key is `(source, account, symbol, _splitTag, _storeKey)` — NOT
+ * `lot_piece_label` (exactly what must collapse) and NOT `pair_group_key`
+ * (same reason). `_splitTag` ('closed'/'open', see expiryPnl.js's
+ * `splitClosedReopened`) is included so a position's CLOSED piece and its
+ * OPEN (reopened) piece — each independently lot-split against different
+ * counterparties — never merge into each other.
+ *
+ * `_storeKey` (`storeRowKey()` in `derivatives/pageLoad.js`, includes
+ * `product` — NRML vs MIS) is a DELIBERATE DEVIATION from the originally
+ * approved grouping key, which named only `(source, account, symbol,
+ * _splitTag)`. Every lot-split piece from the live pipeline
+ * (`buildPagePositionRows`) already carries the SAME `_storeKey` as every
+ * other piece of its own group (copied verbatim, never pro-rated) — so
+ * adding it here is a no-op for the overwhelmingly common case and only
+ * changes behaviour in the rare case where the SAME account+symbol holds
+ * two different broker positions (e.g. NRML and MIS) that both happen to
+ * land in a multi-counterparty lot split. Without this extra dimension,
+ * such a case would silently merge two DIFFERENT broker positions into one
+ * display row and — worse — `liveStoreExpPnl()` (pageLoad.js) would then
+ * report only ONE product's live Exp P&L for the merged row, since
+ * `_storeKey`/`_pieceIndex`/`_pieceCount` (carried from the first piece)
+ * would point at only one of the two source rows.
+ *
+ * A row with no `row._isLotSplit` flag (never lot-split at all — the
+ * common case, or a draft/proxy/provisional row that didn't go through
+ * `splitPairedLots`) passes through COMPLETELY UNCHANGED, at its original
+ * position in the array.
+ *
+ * A merged row carries a new `_mergedPieceKeys: string[]` — the
+ * `lot_piece_label` of every constituent piece it represents — consumed
+ * by `mergedLegPieces()` below so the page's checkbox state (keyed by
+ * `lot_piece_label` via the page's own `enKey`) can still be read/written
+ * per constituent piece even though only one row is rendered.
+ *
+ * Pure, synchronous, no mutation of the input array or its row objects.
+ *
+ * @param {any[]} rows
+ * @returns {any[]}
+ */
+export function consolidateLotSplitPieces(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return rows || [];
+
+  /** @param {any} r @returns {string} */
+  const groupKeyOf = (r) =>
+    `${r.source ?? ''}|${r.account ?? ''}|${_symOf(r)}|${r._splitTag ?? ''}|${r._storeKey ?? ''}`;
+
+  /** @type {Map<string, any[]>} groupKey -> constituent pieces, in array order */
+  const groups = new Map();
+  /** @type {Map<string, number>} groupKey -> index of the FIRST piece seen (merge point) */
+  const firstIndexByKey = new Map();
+  /** @type {Map<number, string>} row index -> its own groupKey (split pieces only) */
+  const keyByIndex = new Map();
+
+  rows.forEach((r, i) => {
+    if (!r || r._isLotSplit !== true) return;
+    const key = groupKeyOf(r);
+    keyByIndex.set(i, key);
+    if (!groups.has(key)) {
+      groups.set(key, []);
+      firstIndexByKey.set(key, i);
+    }
+    groups.get(key).push(r);
+  });
+
+  /** @type {Map<string, any>} groupKey -> merged row */
+  const mergedByKey = new Map();
+  for (const [key, pieces] of groups) mergedByKey.set(key, _mergeLotSplitGroup(pieces));
+
+  const out = [];
+  rows.forEach((r, i) => {
+    const key = keyByIndex.get(i);
+    if (key == null) {
+      out.push(r); // never lot-split — pass through unchanged, original position
+      return;
+    }
+    if (firstIndexByKey.get(key) === i) out.push(mergedByKey.get(key));
+    // else: a later piece of an already-merged group — omit (folded into
+    // the merged row emitted at the group's first position).
+  });
+  return out;
+}
+
+/**
+ * @param {any[]} pieces - 2+ lot-split display pieces of ONE original row
+ * @returns {any} the merged row
+ */
+function _mergeLotSplitGroup(pieces) {
+  const merged = { ...pieces[0] };
+
+  const qtyField = _qtyField(pieces[0]);
+  merged[qtyField] = pieces.reduce((s, p) => s + (Number(p[qtyField]) || 0), 0);
+
+  for (const f of _PRORATE_FIELDS) {
+    if (pieces[0][f] == null) continue;
+    merged[f] = pieces.reduce((s, p) => s + (Number(p[f]) || 0), 0);
+  }
+
+  // Restore the pre-split `key` by stripping the `::<label>` suffix
+  // `splitPairedLots` appended (`${row.key || sym}::${label}`) — the
+  // label itself never contains '::', so the LAST occurrence is always
+  // the one the split added.
+  if (typeof merged.key === 'string') {
+    const i = merged.key.lastIndexOf('::');
+    if (i >= 0) merged.key = merged.key.slice(0, i);
+  }
+
+  delete merged.pair_group_key;
+  delete merged.paired_qty;
+  delete merged.orphan_qty;
+  delete merged.is_orphan;
+  delete merged._isLotSplit;
+  delete merged.lot_piece_label;
+  delete merged._lotFraction;
+
+  merged._mergedPieceKeys = pieces.map((p) => p.lot_piece_label);
+
+  return merged;
+}
+
+/**
+ * For a merged Legs-view row produced by `consolidateLotSplitPieces`
+ * (carrying `_mergedPieceKeys`), rebuilds each constituent piece's own row
+ * shape — same `account`/`symbol`/`_splitTag` as the merged row (spread
+ * straight through), with `lot_piece_label` swapped back to each
+ * constituent's own label — so a caller's EXISTING `enKey(row)` function
+ * computes the exact same composite key the original un-merged piece had.
+ * No second, independently-typed key-building logic to drift out of sync
+ * with `enKey`'s own `[row._splitTag, row.lot_piece_label].filter(Boolean)
+ * .join('|')` shape.
+ *
+ * `_mergedPieceKeys` itself is stripped from each rebuilt piece — a
+ * caller that recurses through its own checked-state function on a
+ * rebuilt piece must see a genuinely unmerged row, not loop forever.
+ *
+ * Returns `[]` for a row that isn't merged (no `_mergedPieceKeys`), so a
+ * caller can write `const parts = mergedLegPieces(c); if (parts.length) …`
+ * uniformly for both the merged and unmerged case.
+ *
+ * @param {{_mergedPieceKeys?: string[]}} c
+ * @returns {any[]}
+ */
+export function mergedLegPieces(c) {
+  if (!Array.isArray(c?._mergedPieceKeys) || c._mergedPieceKeys.length === 0) return [];
+  return c._mergedPieceKeys.map((label) => {
+    const piece = { ...c, lot_piece_label: label };
+    delete piece._mergedPieceKeys;
+    return piece;
+  });
+}

@@ -30,12 +30,20 @@
  *     the identical structural point `sortRowsByPairGroup` occupies for
  *     'paired'. An active column sort replaces it the same way.
  *
+ *     'legs' ALSO runs `consolidateLotSplitPieces` (lotPairSplit.js)
+ *     BEFORE either sort path — collapsing lot-waterfall-split display
+ *     pieces back to one row per account+symbol, the shape the 'legs'
+ *     view is meant to show. 'paired'/'expiry' never consolidate — those
+ *     surfaces exist specifically to show each split piece's own
+ *     `pair_group_key`.
+ *
  * In EVERY mode except 'expiry', the draft-rows-last reshuffle still
  * runs unconditionally afterward, regardless of which sort ran.
  */
 
 import { sortRowsByPairGroup, sortRowsByAccountOnly } from './pairGroupSort.js';
 import { applyColumnSort } from './columnSort.js';
+import { consolidateLotSplitPieces } from './lotPairSplit.js';
 
 /**
  * @param {any[]} rows - already filtered (holdings toggle, text filter)
@@ -53,6 +61,14 @@ export function composeDisplayedCandidates(rows, { mode, sortState, columnSpecs 
   rows = rows.map((r, i) => ({ ...r, _ord: i }));
 
   if (mode === 'expiry') return rows;
+
+  if (mode === 'legs') {
+    // Collapse lot-waterfall-split pieces back to one row per
+    // account+symbol — BEFORE either sort path, so both the null-sort
+    // and column-sort branches below operate on the already-merged row
+    // set. Never applied to 'paired' (gated by the outer `if`).
+    rows = consolidateLotSplitPieces(rows);
+  }
 
   if (!sortState || sortState.direction == null) {
     rows = mode === 'legs' ? sortRowsByAccountOnly(rows) : sortRowsByPairGroup(rows);
