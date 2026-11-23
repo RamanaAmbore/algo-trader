@@ -3520,6 +3520,26 @@ def _ae_sync_existing_builtin(existing, agent_def: dict) -> None:
     # 2026-11 same-window consolidation — see
     # `_AE_CONTENT_MATCHED_COND_MIGRATIONS`'s own docstring.
     _ae_apply_content_matched_cond_migration(existing, agent_def)
+    _ae_sync_expiry_awareness_cooldown(existing, agent_def)
+
+
+def _ae_sync_expiry_awareness_cooldown(existing, agent_def: dict) -> None:
+    """One-time cooldown migration (2026-11-22 retime), extracted to
+    keep `_ae_sync_existing_builtin` under the CC gate. `cooldown_
+    minutes` is an operator-editable field and is NEVER force-synced on
+    an ordinary restart (see `_ae_sync_existing_builtin`'s own
+    docstring), so shipping the new 30-min value in code alone left an
+    already-seeded row stuck at its old 180-min value — confirmed live
+    on dev right after this exact deploy (the conditions migration for
+    the sibling `expiry-nfo-risk-alert` correctly ran; cooldown
+    silently did not, because nothing touched it). Value-gated to the
+    EXACT old stock value, same safety contract as every other
+    migration in this file: an operator who already customized this
+    agent's cooldown to something else is left alone."""
+    if (agent_def.get("slug") in ("expiry-day-preclose-alert", "expiry-day-itm-auto-close")
+            and existing.cooldown_minutes == 180):
+        existing.cooldown_minutes = agent_def.get(
+            "cooldown_minutes", existing.cooldown_minutes)
 
 
 def _ae_build_agent_row(agent_def: dict) -> 'Agent':

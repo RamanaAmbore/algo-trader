@@ -395,3 +395,76 @@ class TestReminderOnlyLine:
             name = "whatever"
 
         assert _v2_reminder_only_line(_Agent(), []) is None
+
+
+class TestCooldownMigrationOnSync:
+    """2026-11-22 retime regression: `cooldown_minutes` is an
+    operator-editable field and is NEVER force-synced on an ordinary
+    restart (see `_ae_sync_existing_builtin`'s own docstring) — so
+    shipping the new 30-min value in BUILTIN_AGENTS alone left an
+    already-seeded prod/dev row stuck at its old 180-min value,
+    confirmed live on dev right after deploying the lead-time retime
+    (the conditions migration for the sibling expiry-nfo-risk-alert
+    correctly ran; cooldown silently did not, because nothing in
+    `_ae_sync_existing_builtin` touched it for these two slugs). This
+    pins the dedicated, value-gated migration added to fix that gap."""
+
+    @pytest.mark.parametrize("slug", [
+        "expiry-day-preclose-alert", "expiry-day-itm-auto-close",
+    ])
+    def test_stale_180_row_migrates_to_30(self, slug):
+        from types import SimpleNamespace
+        from backend.api.algo.agent_engine import _ae_sync_existing_builtin
+
+        agent_def = _by_slug(slug)
+        existing = SimpleNamespace(
+            conditions=agent_def["conditions"], long_name=None,
+            schedule="always", tier=agent_def["tier"], topic="expiry_warning",
+            status="active", events=list(agent_def["events"]), actions=[],
+            cooldown_minutes=180, fire_at_time=None, last_fired=None,
+        )
+        _ae_sync_existing_builtin(existing, agent_def)
+        assert existing.cooldown_minutes == 30, (
+            f"{slug}: a stock row still at the old 180-min cooldown must "
+            f"migrate to 30 on restart, got {existing.cooldown_minutes}"
+        )
+
+    @pytest.mark.parametrize("slug", [
+        "expiry-day-preclose-alert", "expiry-day-itm-auto-close",
+    ])
+    def test_operator_customized_cooldown_is_left_alone(self, slug):
+        """Value-gated, not slug-only — an operator who already set a
+        different cooldown (not the exact old stock 180) must never be
+        silently overwritten."""
+        from types import SimpleNamespace
+        from backend.api.algo.agent_engine import _ae_sync_existing_builtin
+
+        agent_def = _by_slug(slug)
+        existing = SimpleNamespace(
+            conditions=agent_def["conditions"], long_name=None,
+            schedule="always", tier=agent_def["tier"], topic="expiry_warning",
+            status="active", events=list(agent_def["events"]), actions=[],
+            cooldown_minutes=45, fire_at_time=None, last_fired=None,
+        )
+        _ae_sync_existing_builtin(existing, agent_def)
+        assert existing.cooldown_minutes == 45, (
+            "an operator-customized cooldown (not the exact old stock "
+            "180 value) must never be overwritten by this migration"
+        )
+
+    @pytest.mark.parametrize("slug", [
+        "expiry-day-preclose-alert", "expiry-day-itm-auto-close",
+    ])
+    def test_already_migrated_row_is_a_noop(self, slug):
+        from types import SimpleNamespace
+        from backend.api.algo.agent_engine import _ae_sync_existing_builtin
+
+        agent_def = _by_slug(slug)
+        existing = SimpleNamespace(
+            conditions=agent_def["conditions"], long_name=None,
+            schedule="always", tier=agent_def["tier"], topic="expiry_warning",
+            status="active", events=list(agent_def["events"]), actions=[],
+            cooldown_minutes=30, fire_at_time=None, last_fired=None,
+        )
+        _ae_sync_existing_builtin(existing, agent_def)
+        assert existing.cooldown_minutes == 30
