@@ -5047,6 +5047,46 @@ agent 30 mins before expiry market closure, close agents 25 mins before". Final 
     the row reappears at the next re-scan — still only ever staged as a new HELD row, never a
     live order, so this residual is a UX annoyance (seeing the same leg come back), not a
     double-close risk. Not fixed here; an explicit operator decision if it needs to be.
+  - **Morning preview — two new agents (2026-11-22; operator: "the morning mcx or nfo message,
+    instead of just showing it is market close day, it should show the positions that need to be
+    closed at that time").** `expiry-day-mcx-morning-preview` and `expiry-day-nse-morning-preview`
+    (both tier `high`, `cooldown_minutes=1320`, `actions=[]`, tg+email+ntfy(high)+log) fire once in
+    the morning on an expiry day, once that exchange's own session has been open at least 5
+    minutes (so a real LTP tick has landed) — via `_v2_expiry_morning_preview(context, exchange)`
+    ([agent_engine.py](backend/api/algo/agent_engine.py)), the SAME `ExpiryEngine.scan_positions()`
+    + `_v2_expiry_exchange_section()` identification the pre-close sibling uses, explicitly framed
+    as "Tentative — priced at today's opening LTP, not a final determination" (final staging still
+    happens later, 1 hour before close, via `expiry-day-itm-auto-close`).
+    - **Deliberately TWO separate agents, not one shared agent like the pre-close pair.** MCX opens
+      09:00, NSE 09:15 — only ~15 min apart, far too close for a shared-metric design to be safe.
+      Worse: `_cycle_in_cooldown` ([agent_engine.py](backend/api/algo/agent_engine.py)) gates at the
+      AGENT level, not per-leaf/per-metric — once ANY leaf of a single agent's condition fires
+      (whether a shared flat boolean or a compound `any[]` of two per-exchange leaves makes no
+      difference), `_ae_cycle_eval_and_buffer` skips evaluating that agent at all until its own
+      cooldown clears. On a day both exchanges expire, one shared agent firing for MCX at ~09:05
+      would silence that same agent's own evaluation of NSE's branch at ~09:20 too. Two independent
+      agents, each with its own `cooldown_minutes` and `last_fired`, is the only shape that is safe
+      — the exact same reasoning `market-preclose-mcx-v2`/`market-preclose-nonmcx` already use as
+      two separate agents instead of one merged one.
+    - **Token: `_metric_factory_is_expiry_morning_preview_window(exchange, open_buffer_minutes)`**
+      ([metric_is_expiry_morning_preview_window.py](backend/api/algo/grammar_tokens/metric_is_expiry_morning_preview_window.py)),
+      bound twice (`is_mcx_expiry_morning_preview_window`, `is_nse_expiry_morning_preview_window`,
+      both `OPEN_BUFFER_MINUTES=5`) — same factory-parameterization pattern as the pre-close pair's
+      own `_metric_factory_is_expiry_preclose_window(lead_minutes)` (operator: "the time should be
+      a parameter in the function... to make it generic").
+    - **Renderer takes an explicit single `exchange`, never a re-derived set.** Unlike
+      `_v2_expiry_position_breakdown()` (the pre-close sibling, which re-derives "which exchange(s)
+      currently qualify" because its one shared agent's match carries no exchange identity),
+      `_v2_expiry_morning_preview()` is always called with the CALLER's own exchange, so it can
+      never render the wrong exchange's section even if both happen to qualify at the same instant.
+    - `_v2_send_rich_alert`'s slug-gated breakdown injection was extracted into
+      `_v2_reminder_line_with_expiry_breakdown()` to keep `_v2_send_rich_alert` under the CC gate
+      once the second slug branch was added.
+    - Status quo, left alone: `expiry-day-positions-alert` (a pre-existing, inactive, differently-
+      scoped `days_until_expiry<=1.5` reminder agent) was considered as a candidate to repurpose for
+      this feature, but left untouched — a different scope/schedule shape, and retiring it would
+      have required updating four unrelated test files that use its slug only as a convenience
+      stand-in example, for no behavioral benefit.
   - `expiry-day-itm-auto-close` gained `ntfy(high)` alongside its existing telegram+email+log — a
     real-money staging alert needs an urgent mobile push, matching the sibling alert agent's own
     channel set. Added via the pre-existing additive-sync in `_ae_sync_existing_builtin()`, so an
@@ -5383,6 +5423,8 @@ now caches + returns a `stale` flag; `/api/nav/by-account` masks `errors` for no
 | Order-entry grammar | `backend/config/grammars/orders.yaml` |
 | Toggle agent default status | `backend/api/algo/agent_engine.py` |
 | Expiry pre-close alert + auto-close (one agent each, both exchanges) | `backend/api/algo/agent_engine.py` (`expiry-day-preclose-alert`/`expiry-day-itm-auto-close`, `_v2_expiry_position_breakdown`) + `backend/api/algo/actions_live.py:_action_live_expiry_auto_close` + `backend/api/algo/grammar_tokens/metric_is_expiry_preclose_{alert,close}_window.py` |
+| Expiry morning preview (two agents, one per exchange) | `backend/api/algo/agent_engine.py` (`expiry-day-mcx-morning-preview`/`expiry-day-nse-morning-preview`, `_v2_expiry_morning_preview`) + `backend/api/algo/grammar_tokens/metric_is_expiry_morning_preview_window.py` (`_metric_factory_is_expiry_morning_preview_window`) |
+| Double-close-prevention guard for expiry closes | `backend/api/algo/expiry.py:_exp_leg_in_flight_this_session` (called from `close_positions()`) |
 | Expiry risk alert (`expiry-nfo-risk-alert`, since 2026-11-19 covers NFO+MCX in one `any[]` — `expiry-mcx-risk-alert` is retired) — classifier and pre-close window suppression | `backend/api/algo/grammar_tokens/scope_positions_expiring_today_mcx_unhedged.py` (`classify_from_context`) + `backend/api/algo/grammar_tokens/scope_positions_expiring_today_nfo.py` (`qty != 0` filter) + `backend/api/algo/agent_engine.py` (`_EXPIRY_RISK_AGENTS`, `_AE_CONTENT_MATCHED_COND_MIGRATIONS`) + `backend/api/algo/expiry.py` (`classify_prepared`) |
 | Expiry close hold/release | `/admin/settings` → `expiry_close_hold_enabled` (inverted: `true`=held, default) |
 | Auto-close short option at 90% profit (`exit-tp-short-option-90`) | `backend/api/algo/agent_engine.py` (seed spec + `_v2_exit_tp_short_option_enrichment`) + `backend/api/algo/grammar_tokens/metric_short_option_gain_from_entry_pct.py` + `backend/api/algo/actions_live.py:_al_maybe_stage_agent_close_hold` |

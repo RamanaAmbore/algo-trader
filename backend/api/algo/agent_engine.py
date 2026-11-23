@@ -1296,6 +1296,17 @@ _V2_REMINDER_METRIC_LABELS = {
     # for any pre-existing row shape.
     "is_expiry_preclose_alert_window": "a held MCX or NFO position expires today, within 65 minutes of that exchange's close",
     "is_expiry_preclose_close_window": "a held MCX or NFO position expires today, within 60 minutes of that exchange's close",
+    # Deliberately NOT in `_V2_EXPIRY_DAY_METRICS` below — that set drives
+    # the "Expiry pre-close" PREFIX, which would be misleading on a
+    # morning snapshot (implies close is imminent). Omitting both means
+    # `_v2_reminder_only_line` falls back to each agent's own `name`
+    # ("MCX morning preview" / "NSE morning preview") as the prefix
+    # instead. Two separate keys, not one shared label — these are two
+    # separate per-exchange agents/tokens (see
+    # `metric_is_expiry_morning_preview_window.py`'s own module
+    # docstring for why a shared metric is unsafe here).
+    "is_mcx_expiry_morning_preview_window": "a held MCX position expires today",
+    "is_nse_expiry_morning_preview_window": "a held NSE/NFO position expires today",
 }
 
 # Metrics whose firing means "today is an expiry day" — drives the
@@ -1523,6 +1534,60 @@ async def _v2_expiry_position_breakdown(context: dict | None) -> str | None:
         and (section := await _v2_expiry_exchange_section(exch, label, all_expiring)) is not None
     ]
     return "\n\n".join(sections) if sections else None
+
+
+async def _v2_expiry_morning_preview(context: dict | None, exchange: str) -> str | None:
+    """Render ONE exchange's expiry morning preview for
+    `expiry-day-mcx-morning-preview` / `expiry-day-nse-morning-preview`
+    — same identification as the pre-close sibling
+    (`_v2_expiry_position_breakdown`, reused section-by-section via
+    `_v2_expiry_exchange_section`), framed as TENTATIVE: priced at
+    today's opening LTP, not a final determination. Final staging for
+    operator review happens later via `expiry-day-itm-auto-close`'s own
+    60-minute-before-close window.
+
+    Operator: "the morning mcx or nfo message, instead of just showing
+    it is market close day, it should show the positions that need to
+    be closed at that time" — "at that time" means at THIS message's own
+    firing time/price, not a promise about what will still be true by
+    close. The tentative framing line makes that explicit so the
+    operator never mistakes a morning snapshot for a final determination.
+
+    Takes an explicit single `exchange` ("MCX" or "NFO"), NOT a
+    re-derived set like the pre-close sibling — this is deliberately
+    per-exchange (see `metric_is_expiry_morning_preview_window.py`'s own
+    module docstring for why: two independent agents, one per exchange,
+    because `_cycle_in_cooldown` gates at the agent level, so a shared
+    agent firing for one exchange would block it from ever evaluating
+    the other on a dual-expiry day). Rendering only the CALLER's own
+    named exchange — never re-deriving "which exchange(s) currently
+    qualify" from scratch — means this function can never render the
+    wrong exchange's section even if both happen to qualify at the
+    same instant.
+    """
+    from backend.api.algo.expiry import ExpiryEngine
+
+    engine = ExpiryEngine()
+    try:
+        await asyncio.to_thread(engine.scan_positions)
+    except Exception as e:
+        logger.warning(f"_v2_expiry_morning_preview: scan failed: {e}")
+        return "(position detail unavailable this cycle — check the Positions grid or Exp-close tab)"
+
+    all_expiring = engine.state.positions or []
+    if not all_expiring:
+        return None
+
+    label = "MCX" if exchange == "MCX" else "NSE/NFO"
+    section = await _v2_expiry_exchange_section(exchange, label, all_expiring)
+    if section is None:
+        return None
+    tentative = (
+        "Tentative — priced at today's opening LTP, not a final "
+        "determination. Final staging for review happens 1 hour before "
+        f"{exchange}'s own close."
+    )
+    return tentative + "\n\n" + section
 
 
 def _v2_derive_kind(metric: str, op: str = '') -> str:
@@ -1952,6 +2017,36 @@ def _v2_exit_tp_short_option_enrichment(agent, matches: list, context: dict | No
     return "\n".join(parts)
 
 
+async def _v2_reminder_line_with_expiry_breakdown(
+    agent, reminder_line: str, context: dict | None,
+) -> tuple[str, str]:
+    """Returns (tg_body, email_html) for a reminder-only match.
+    Extracted from `_v2_send_rich_alert` to keep it under the CC gate.
+
+    Expiry pre-close alert / morning preview only — the two reminder
+    agents with real per-position data to add. Never for the plain
+    pre-close reminders (market-preclose-mcx-v2/market-preclose-nonmcx),
+    which carry no position breakdown."""
+    tg_body = reminder_line
+    email_html = f"<p>{html.escape(reminder_line)}</p>"
+    slug = getattr(agent, 'slug', None)
+    if slug == 'expiry-day-preclose-alert':
+        breakdown = await _v2_expiry_position_breakdown(context)
+    elif slug == 'expiry-day-mcx-morning-preview':
+        breakdown = await _v2_expiry_morning_preview(context, "MCX")
+    elif slug == 'expiry-day-nse-morning-preview':
+        breakdown = await _v2_expiry_morning_preview(context, "NFO")
+    else:
+        breakdown = None
+    if breakdown:
+        tg_body = f"{reminder_line}\n\n{breakdown}"
+        email_html = (
+            f"<p>{html.escape(reminder_line)}</p>"
+            + "".join(f"<p>{html.escape(line)}</p>" for line in breakdown.split("\n"))
+        )
+    return tg_body, email_html
+
+
 async def _v2_send_rich_alert(agent, matches, now, sim_mode: bool = False,
                               context: dict | None = None, eval_result=None,
                               replay_mode: bool = False):
@@ -2045,20 +2140,9 @@ async def _v2_send_rich_alert(agent, matches, now, sim_mode: bool = False,
         tg_body    = scheduled_line
         email_html = f"<p>{html.escape(scheduled_line)}</p>"
     elif (reminder_line := _v2_reminder_only_line(agent, matches)):
-        tg_body    = reminder_line
-        email_html = f"<p>{html.escape(reminder_line)}</p>"
-        # Expiry pre-close alert only — the one reminder agent with real
-        # per-position data to add. Never for the plain pre-close
-        # reminders (market-preclose-mcx-v2/market-preclose-nonmcx),
-        # which carry no position breakdown.
-        if getattr(agent, 'slug', None) == 'expiry-day-preclose-alert':
-            breakdown = await _v2_expiry_position_breakdown(context)
-            if breakdown:
-                tg_body = f"{reminder_line}\n\n{breakdown}"
-                email_html = (
-                    f"<p>{html.escape(reminder_line)}</p>"
-                    + "".join(f"<p>{html.escape(line)}</p>" for line in breakdown.split("\n"))
-                )
+        tg_body, email_html = await _v2_reminder_line_with_expiry_breakdown(
+            agent, reminder_line, context,
+        )
     else:
         tg_body    = _tg_alert_body(rows)
         email_html = _email_alert_body(rows)
@@ -2888,6 +2972,87 @@ _EXPIRY_DAY_AWARENESS_AGENTS = [
         # this to an already-seeded prod/dev row on next restart with
         # no migration needed; it never removes an operator-added
         # channel.
+        "events": [
+            {"channel": "telegram", "enabled": True},
+            {"channel": "email",    "enabled": True},
+            {"channel": "log",      "enabled": True},
+            {"channel": "ntfy",     "enabled": True, "priority": "high"},
+        ],
+    },
+    # Morning preview — TWO separate agents, one per exchange, added
+    # 2026-11-22 (operator: "the morning mcx or nfo message, instead of
+    # just showing it is market close day, it should show the positions
+    # that need to be closed at that time"). Deliberately NOT one shared
+    # agent like the pre-close pair above — see
+    # `metric_is_expiry_morning_preview_window.py`'s own module
+    # docstring for why a shared metric/agent is unsafe here (MCX opens
+    # 09:00, NSE 09:15 — only ~15 min apart, and `_cycle_in_cooldown`
+    # gates at the AGENT level, so one agent firing for MCX would block
+    # it from ever evaluating NSE's own branch on a dual-expiry day).
+    # Each token is produced by `_metric_factory_is_expiry_morning_
+    # preview_window(exchange, open_buffer_minutes)` — the SAME factory
+    # bound twice, not two hand-duplicated copies — so "the time should
+    # be a parameter in the function... to make it generic" applies
+    # here too, same as the pre-close pair's own factory.
+    # cooldown_minutes=1320 (22h, "once per day") is SAFE here because
+    # each agent's own metric/latch is exchange-specific — unlike the
+    # pre-close pair's shared metric, there is no cross-exchange
+    # collision risk to design around, matching the exact precedent
+    # `market-preclose-mcx-v2`/`market-preclose-nonmcx` already use
+    # (two separate agents, each cooldown=1320) for the identical reason.
+    {
+        "slug": "expiry-day-mcx-morning-preview",
+        "name": "MCX morning preview",
+        "long_name": "when:is_mcx_expiry_morning_preview_window==1   schedule:always/cooldown:1320   alert:high/tg+email+ntfy(high)+log   do:notify-only",
+        "description": (
+            "Fires once in the morning on an MCX expiry day, once MCX's "
+            "own session has been open at least 5 minutes (so a real LTP "
+            "tick has landed). Lists the affected underlying roots and "
+            "which positions are tentatively unnetted after the real "
+            "4-rule netting pass, priced at today's opening LTP — via "
+            "ExpiryEngine.scan_positions(), the same read-only "
+            "identification the pre-close/close-action siblings use. "
+            "Explicitly framed as tentative: final staging for review "
+            "happens later, 1 hour before MCX's own close."
+        ),
+        "schedule": "always",
+        "cooldown_minutes": 1320,
+        "tier": "high",
+        "topic": "expiry_warning",
+        "status": "active",
+        "actions": [],
+        "conditions": {"op": "==", "scope": "funds.total",
+                        "metric": "is_mcx_expiry_morning_preview_window", "value": 1.0},
+        "events": [
+            {"channel": "telegram", "enabled": True},
+            {"channel": "email",    "enabled": True},
+            {"channel": "log",      "enabled": True},
+            {"channel": "ntfy",     "enabled": True, "priority": "high"},
+        ],
+    },
+    {
+        "slug": "expiry-day-nse-morning-preview",
+        "name": "NSE morning preview",
+        "long_name": "when:is_nse_expiry_morning_preview_window==1   schedule:always/cooldown:1320   alert:high/tg+email+ntfy(high)+log   do:notify-only",
+        "description": (
+            "Fires once in the morning on an NSE/NFO expiry day, once "
+            "NSE's own session has been open at least 5 minutes (so a "
+            "real LTP tick has landed). Lists the affected underlying "
+            "roots and which NFO positions are ITM/NTM (no netting "
+            "exception), priced at today's opening LTP — via "
+            "ExpiryEngine.scan_positions(), the same read-only "
+            "identification the pre-close/close-action siblings use. "
+            "Explicitly framed as tentative: final staging for review "
+            "happens later, 1 hour before NSE's own close."
+        ),
+        "schedule": "always",
+        "cooldown_minutes": 1320,
+        "tier": "high",
+        "topic": "expiry_warning",
+        "status": "active",
+        "actions": [],
+        "conditions": {"op": "==", "scope": "funds.total",
+                        "metric": "is_nse_expiry_morning_preview_window", "value": 1.0},
         "events": [
             {"channel": "telegram", "enabled": True},
             {"channel": "email",    "enabled": True},

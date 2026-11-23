@@ -619,6 +619,24 @@
     {
       "grammar_kind": "condition",
       "token_kind": "metric",
+      "token": "is_mcx_expiry_morning_preview_window",
+      "value_type": "number",
+      "units": "binary",
+      "description": "1.0 when MCX is expiring today and its own session has been open at least 5 minutes, else 0.0. Never None.",
+      "resolver": "backend.api.algo.grammar_tokens.metric_is_expiry_morning_preview_window._metric_is_mcx_expiry_morning_preview_window"
+    },
+    {
+      "grammar_kind": "condition",
+      "token_kind": "metric",
+      "token": "is_nse_expiry_morning_preview_window",
+      "value_type": "number",
+      "units": "binary",
+      "description": "1.0 when NSE is expiring today and its own session has been open at least 5 minutes, else 0.0. Never None.",
+      "resolver": "backend.api.algo.grammar_tokens.metric_is_expiry_morning_preview_window._metric_is_nse_expiry_morning_preview_window"
+    },
+    {
+      "grammar_kind": "condition",
+      "token_kind": "metric",
       "token": "underlying_market_loss",
       "value_type": "number",
       "units": "₹",

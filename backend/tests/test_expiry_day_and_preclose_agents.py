@@ -468,3 +468,117 @@ class TestCooldownMigrationOnSync:
         )
         _ae_sync_existing_builtin(existing, agent_def)
         assert existing.cooldown_minutes == 30
+
+
+class TestExpiryMorningPreviewAgents:
+    """expiry-day-mcx-morning-preview / expiry-day-nse-morning-preview —
+    TWO separate per-exchange agents added 2026-11-22 (operator: "the
+    morning mcx or nfo message, instead of just showing it is market
+    close day, it should show the positions that need to be closed at
+    that time"). Deliberately NOT one shared agent like the pre-close
+    pair — see `metric_is_expiry_morning_preview_window.py`'s own
+    module docstring: MCX opens 09:00, NSE 09:15 (only ~15 min apart),
+    and `_cycle_in_cooldown` gates at the AGENT level, so a single
+    shared agent firing for one exchange would block it from ever
+    evaluating the other exchange's own branch on a dual-expiry day."""
+
+    @pytest.mark.parametrize("slug,metric,name", [
+        ("expiry-day-mcx-morning-preview", "is_mcx_expiry_morning_preview_window", "MCX morning preview"),
+        ("expiry-day-nse-morning-preview", "is_nse_expiry_morning_preview_window", "NSE morning preview"),
+    ])
+    def test_exists_with_flat_condition(self, slug, metric, name):
+        agent = _by_slug(slug)
+        assert agent is not None, f"{slug} not found in BUILTIN_AGENTS"
+        assert agent.get('name') == name
+        assert agent.get('conditions') == {
+            "op": "==", "scope": "funds.total", "metric": metric, "value": 1.0,
+        }, f"unexpected conditions {agent.get('conditions')}"
+        assert agent.get('fire_at_time') is None
+
+    @pytest.mark.parametrize("slug", [
+        "expiry-day-mcx-morning-preview", "expiry-day-nse-morning-preview",
+    ])
+    def test_cooldown_is_1320_minutes_once_per_day(self, slug):
+        """1320 min (22h) is SAFE here, unlike the pre-close pair's
+        180/30-min designs — each agent's own metric is exchange-
+        specific, so there is no cross-exchange collision to design
+        around. Matches the exact market-preclose-mcx-v2/
+        market-preclose-nonmcx precedent (two agents, each 1320)."""
+        agent = _by_slug(slug)
+        assert agent is not None
+        assert agent.get('cooldown_minutes') == 1320
+
+    @pytest.mark.parametrize("slug", [
+        "expiry-day-mcx-morning-preview", "expiry-day-nse-morning-preview",
+    ])
+    def test_is_high_tier_no_action(self, slug):
+        agent = _by_slug(slug)
+        assert agent is not None
+        assert agent.get('tier') == "high"
+        assert agent.get('actions') == []
+
+    @pytest.mark.parametrize("slug", [
+        "expiry-day-mcx-morning-preview", "expiry-day-nse-morning-preview",
+    ])
+    def test_events_cover_all_four_channels_with_high_ntfy(self, slug):
+        agent = _by_slug(slug)
+        assert agent is not None
+        assert _channels(agent) == {"telegram", "email", "log", "ntfy"}
+        ntfy = next(e for e in agent["events"] if e["channel"] == "ntfy")
+        assert ntfy.get("priority") == "high"
+
+    def test_the_two_metrics_are_distinct_strings(self):
+        """The whole point of the per-exchange design: different metric
+        names mean different latch keys, so the two agents' cooldowns
+        can never collide with each other regardless of how close
+        MCX's and NSE's own open times are."""
+        mcx_agent = _by_slug("expiry-day-mcx-morning-preview")
+        nse_agent = _by_slug("expiry-day-nse-morning-preview")
+        assert mcx_agent["conditions"]["metric"] != nse_agent["conditions"]["metric"]
+
+
+class TestExpiryMorningPreviewFactory:
+    """`_metric_factory_is_expiry_morning_preview_window` — the shared
+    factory both agents' tokens are bound from (operator: "the time
+    should be a parameter in the function in the DSL grammar to make
+    it generic")."""
+
+    def test_factory_boundary_logic_with_fake_resolvers(self, monkeypatch):
+        """Tests the factory's own gating logic directly — not expiring
+        today AND open long enough, independent of the real symbol-
+        parsing/calendar machinery `is_mcx_expiry_today`/`minutes_since_
+        mcx_open` depend on (which would make a test depend on today's
+        real date). Monkeypatches the factory's own resolver-lookup
+        dicts so a FRESH factory call (made here, after patching) binds
+        fake resolvers, leaving the two real module-level bindings
+        (`_metric_is_mcx_expiry_morning_preview_window` etc., already
+        bound at import time against the real resolvers) untouched."""
+        import backend.api.algo.grammar_tokens.metric_is_expiry_morning_preview_window as mod
+
+        cases = [
+            # (expiry_today, minutes_since_open, expected)
+            (0.0, 10, 0.0),    # not expiring today -> never fires regardless of open time
+            (1.0, 2, 0.0),     # expiring today, but open <5 min -> too early
+            (1.0, None, 0.0),  # expiring today, but segment closed (None) -> not in window
+            (1.0, 5, 1.0),     # expiring today, open exactly at the buffer -> fires
+            (1.0, 30, 1.0),    # expiring today, well past the buffer -> fires
+        ]
+        for expiry_today, minutes_since_open, expected in cases:
+            monkeypatch.setitem(mod._EXPIRY_TODAY_RESOLVERS, "MCX", lambda ctx, row: expiry_today)
+            monkeypatch.setitem(mod._MINUTES_SINCE_OPEN_RESOLVERS, "MCX", lambda ctx, row: minutes_since_open)
+            resolver = mod._metric_factory_is_expiry_morning_preview_window("MCX", 5)
+            result = resolver(None, None)
+            assert result == expected, (
+                f"expiry_today={expiry_today}, minutes_since_open={minutes_since_open}: "
+                f"expected {expected}, got {result}"
+            )
+
+    def test_two_bindings_are_independent_closures(self):
+        """Confirms the factory genuinely produces two distinct resolver
+        functions (not one shared mutable closure state) — calling the
+        MCX binding must never affect the NSE binding's own result."""
+        from backend.api.algo.grammar_tokens.metric_is_expiry_morning_preview_window import (
+            _metric_is_mcx_expiry_morning_preview_window,
+            _metric_is_nse_expiry_morning_preview_window,
+        )
+        assert _metric_is_mcx_expiry_morning_preview_window is not _metric_is_nse_expiry_morning_preview_window

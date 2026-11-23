@@ -233,3 +233,96 @@ async def test_lot_size_resolution_failure_falls_back_to_raw_contracts():
     assert text is not None
     assert "200 (contracts)" in text, \
         f"lot_size=0 (unknown sentinel) must fall back to raw contracts with an explicit label, got: {text}"
+
+
+# ---------------------------------------------------------------------------
+# `_v2_expiry_morning_preview()` — morning-side sibling, 2026-11-22. Takes
+# an explicit single `exchange` (not a re-derived set like the pre-close
+# function above), so these tests confirm it renders ONLY the requested
+# exchange even when both have positions, and carries the "Tentative"
+# framing line the pre-close breakdown deliberately does not have.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_morning_preview_renders_only_the_requested_exchange():
+    from backend.api.algo.agent_engine import _v2_expiry_morning_preview
+
+    positions = [
+        _pos(account="ZG0790", tradingsymbol="GOLD26NOV75000CE", underlying="GOLD",
+             exchange="MCX", quantity=1, residual_qty=1, needs_close=True,
+             close_reason="MCX unhedged ITM"),
+        _pos(account="ZJ6294", tradingsymbol="NIFTY26NOV25000CE", underlying="NIFTY",
+             exchange="NFO", quantity=50, residual_qty=50, needs_close=True,
+             close_reason="Equity ITM — must close before expiry"),
+    ]
+    with patch("backend.api.algo.expiry.ExpiryEngine", return_value=_mock_engine(positions)):
+        mcx_text = await _v2_expiry_morning_preview({}, "MCX")
+        nfo_text = await _v2_expiry_morning_preview({}, "NFO")
+
+    assert mcx_text is not None and "GOLD" in mcx_text and "NIFTY" not in mcx_text, (
+        f"MCX call must render only the MCX section, got: {mcx_text}"
+    )
+    assert nfo_text is not None and "NIFTY" in nfo_text and "GOLD" not in nfo_text, (
+        f"NFO call must render only the NFO section, got: {nfo_text}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_morning_preview_carries_tentative_framing():
+    from backend.api.algo.agent_engine import _v2_expiry_morning_preview
+
+    positions = [
+        _pos(account="ZG0790", tradingsymbol="GOLD26NOV75000CE", underlying="GOLD",
+             exchange="MCX", quantity=1, residual_qty=1, needs_close=True,
+             close_reason="MCX unhedged ITM"),
+    ]
+    with patch("backend.api.algo.expiry.ExpiryEngine", return_value=_mock_engine(positions)):
+        text = await _v2_expiry_morning_preview({}, "MCX")
+
+    assert text is not None
+    assert text.lower().startswith("tentative"), (
+        f"morning preview must lead with an explicit tentative framing so the "
+        f"operator never mistakes it for a final determination, got: {text!r}"
+    )
+    assert "1 hour before" in text
+
+
+@pytest.mark.asyncio
+async def test_morning_preview_returns_none_when_no_positions_expiring():
+    from backend.api.algo.agent_engine import _v2_expiry_morning_preview
+
+    with patch("backend.api.algo.expiry.ExpiryEngine", return_value=_mock_engine([])):
+        text = await _v2_expiry_morning_preview({}, "MCX")
+    assert text is None
+
+
+@pytest.mark.asyncio
+async def test_morning_preview_scan_failure_renders_degraded_note():
+    from backend.api.algo.agent_engine import _v2_expiry_morning_preview
+
+    engine = MagicMock()
+    engine.scan_positions.side_effect = RuntimeError("broker unreachable")
+    with patch("backend.api.algo.expiry.ExpiryEngine", return_value=engine):
+        text = await _v2_expiry_morning_preview({}, "MCX")
+    assert text is not None and "unavailable" in text.lower(), (
+        "a scan failure must render an explicit degraded note, never a "
+        "silent blank (which would read as a false 'all clear')"
+    )
+
+
+@pytest.mark.asyncio
+async def test_morning_preview_returns_none_when_only_other_exchange_has_positions():
+    from backend.api.algo.agent_engine import _v2_expiry_morning_preview
+
+    positions = [
+        _pos(account="ZG0790", tradingsymbol="GOLD26NOV75000CE", underlying="GOLD",
+             exchange="MCX", quantity=1, residual_qty=1, needs_close=True,
+             close_reason="MCX unhedged ITM"),
+    ]
+    with patch("backend.api.algo.expiry.ExpiryEngine", return_value=_mock_engine(positions)):
+        text = await _v2_expiry_morning_preview({}, "NFO")
+    assert text is None, (
+        "the NFO agent's own render call must not surface MCX's section, "
+        "and must return None (not an empty-but-truthy string) when its "
+        "own exchange has nothing expiring"
+    )
