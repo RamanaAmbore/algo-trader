@@ -17,7 +17,8 @@
     fetchAccounts,
     checkOrderSpread,
   } from '$lib/api';
-  import { createSpreadGate } from '$lib/data/spreadGate.js';
+  import { createSpreadGate, buildSpreadGatePlan } from '$lib/data/spreadGate.js';
+  import { portfolioStore } from '$lib/data/portfolioStore.svelte.js';
   import { executionMode } from '$lib/stores';
   import { toast } from '$lib/data/toastStore.svelte.js';
   import Select from '$lib/Select.svelte';
@@ -930,20 +931,25 @@
 
   /**
    * Build the list of check targets — one per CE/PE leg currently
-   * staged in the basket. Empty list = gate doesn't apply (no option
-   * leg staged) — recomputed on every check (including every recheck),
-   * so a Spread% edit or a basket-leg add/remove is reflected on the
-   * very next tick/recheck.
+   * staged in the basket that is NOT genuinely closing/reducing an
+   * existing position (`isCloseIntentLeg`, spreadGate.js — near-expiry
+   * ITM/OTM spreads routinely exceed the threshold, and a close must
+   * never be blocked by a liquidity sanity check meant for new entries).
+   * Empty list = gate doesn't apply (no open/entry option leg staged) —
+   * recomputed on every check (including every recheck), so a Spread%
+   * edit or a basket-leg add/remove is reflected on the very next
+   * tick/recheck.
+   *
+   * `portfolioStore.positions.rows` is read via `untrack()` — this is
+   * called from inside the `$effect` below (already wrapped in its own
+   * `untrack`) as well as from plain async callers outside any reactive
+   * context; the explicit `untrack` here is defense-in-depth so a
+   * future caller can never accidentally turn the live positions store
+   * into a tracked dependency of a spread-gate recheck loop.
    */
   function _buildGatePlan() {
-    /** @type {Array<{tradingsymbol: string, exchange: string, maxSpreadPct: number, label: string}>} */
-    const items = [];
-    const maxSpreadPct = _effMaxSpreadPct();
-    for (const leg of chainBasket) {
-      if (leg?.optType !== 'CE' && leg?.optType !== 'PE') continue; // futures legs out of scope
-      items.push({ tradingsymbol: leg.sym, exchange: leg.exchange || 'NFO', maxSpreadPct, label: leg.sym });
-    }
-    return items;
+    const positionRows = untrack(() => portfolioStore.positions.rows);
+    return buildSpreadGatePlan(chainBasket, _account, positionRows, _effMaxSpreadPct());
   }
 
   /** `checkLegs` callback handed to createSpreadGate — rebuilds the plan

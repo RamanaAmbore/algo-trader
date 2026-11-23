@@ -119,6 +119,100 @@ export function resolveWingTradingsymbol(parentSymbol, offset) {
 }
 
 /**
+ * Is `leg` genuinely CLOSING/reducing an existing live position, rather
+ * than opening or adding to one?
+ *
+ * A close must never be blocked by the pre-submit spread gate — near-
+ * expiry ITM/OTM option spreads routinely exceed the 0.5% default
+ * threshold, and the gate is a liquidity sanity check meant to protect
+ * NEW entries, not to trap an operator trying to exit a flagged position
+ * (operator report: closing a flagged expiry position via the Chain tab
+ * almost always tripped "⚠ Wide spread" + the "Place anyway" double
+ * confirmation).
+ *
+ * "Close-intent" requires BOTH: the leg's side is opposite the held
+ * position's sign, AND the leg's own contract quantity
+ * (`leg.lots * leg.lotSize` — this file's own established contracts
+ * derivation for an F&O leg, see `_placeOneLeg`'s `_requestQty`) is <=
+ * the held position's absolute quantity. A leg that would flip PAST flat
+ * into a new position on the other side (contracts > held qty) is NOT
+ * close-intent — the "new position" portion of a flip must still be
+ * gated, so the whole leg stays gated rather than being partially
+ * exempted.
+ *
+ * No held position for this symbol+account (including `positionRows`
+ * not yet loaded) → not close-intent → gate it exactly as today (fails
+ * toward the existing, safer behavior).
+ *
+ * `positionRows` is `portfolioStore.positions.rows` — passed in rather
+ * than imported here so this stays a plain, framework-agnostic function
+ * `portfolioStore.svelte.js` (top-level `$derived.by`, can't be imported
+ * under this project's Vitest config) never needs to be imported by this
+ * module.
+ *
+ * @param {{sym?: string, side?: string, lots?: number, lotSize?: number}} leg
+ * @param {string} account
+ * @param {any[]} positionRows - {account, tradingsymbol|symbol, quantity|qty} rows
+ * @returns {boolean}
+ */
+export function isCloseIntentLeg(leg, account, positionRows) {
+  const sym = String(leg?.sym || '').toUpperCase();
+  const acct = String(account || '');
+  if (!sym || !acct || !Array.isArray(positionRows) || positionRows.length === 0) return false;
+
+  // Sum every matching row's qty (not just the first) — a symbol+account
+  // can legitimately carry two broker-side rows (e.g. NRML + MIS) that
+  // together make up "the held position" for close-intent purposes.
+  let heldQty = 0;
+  let found = false;
+  for (const p of positionRows) {
+    if (String(p?.account || '') !== acct) continue;
+    const psym = String(p?.tradingsymbol || p?.symbol || '').toUpperCase();
+    if (psym !== sym) continue;
+    found = true;
+    heldQty += Number(p?.quantity ?? p?.qty ?? 0) || 0;
+  }
+  if (!found || heldQty === 0) return false;
+
+  const contracts = (Number(leg?.lots) || 0) * (Number(leg?.lotSize) || 0);
+  if (!(contracts > 0)) return false;
+
+  const legSign = leg?.side === 'SELL' ? -1 : 1;
+  const heldSign = heldQty > 0 ? 1 : -1;
+  if (legSign === heldSign) return false; // same direction — opening/adding, never exempt
+
+  return contracts <= Math.abs(heldQty);
+}
+
+/**
+ * Build the Chain tab's pre-submit spread-check plan — one check item per
+ * CE/PE leg staged in the basket, EXCLUDING any leg that `isCloseIntentLeg`
+ * identifies as genuinely closing/reducing an existing position. Futures
+ * legs stay out of scope (unchanged from before this exemption existed).
+ *
+ * Extracted out of `OptionChainTab.svelte`'s `_buildGatePlan` so the
+ * exemption — and the "a basket mixing one open and one close leg still
+ * gates on the open leg" guarantee — is directly Vitest-testable without
+ * mounting the component.
+ *
+ * @param {any[]} basket - chainBasket legs: {sym, side, exchange, optType, lots, lotSize, account}
+ * @param {string} account - the Chain tab's resolved submit account (fallback when a leg carries none)
+ * @param {any[]} positionRows - portfolioStore.positions.rows shape
+ * @param {number} maxSpreadPct
+ * @returns {Array<{tradingsymbol: string, exchange: string, maxSpreadPct: number, label: string}>}
+ */
+export function buildSpreadGatePlan(basket, account, positionRows, maxSpreadPct) {
+  /** @type {Array<{tradingsymbol: string, exchange: string, maxSpreadPct: number, label: string}>} */
+  const items = [];
+  for (const leg of basket || []) {
+    if (leg?.optType !== 'CE' && leg?.optType !== 'PE') continue; // futures legs out of scope
+    if (isCloseIntentLeg(leg, leg?.account || account, positionRows)) continue;
+    items.push({ tradingsymbol: leg.sym, exchange: leg.exchange || 'NFO', maxSpreadPct, label: leg.sym });
+  }
+  return items;
+}
+
+/**
  * @typedef {Object} SpreadGateLegResult
  * @property {string} label
  * @property {string} tradingsymbol

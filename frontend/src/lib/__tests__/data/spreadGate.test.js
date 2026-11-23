@@ -4,6 +4,8 @@ import {
   resolveWingTradingsymbol,
   createSpreadGate,
   SPREAD_GATE_MAX_ERRORS,
+  isCloseIntentLeg,
+  buildSpreadGatePlan,
 } from '../../data/spreadGate.js';
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -254,5 +256,138 @@ describe('createSpreadGate', () => {
     const calls = checkLegs.mock.calls.length;
     await vi.advanceTimersByTimeAsync(10_000);
     expect(checkLegs).toHaveBeenCalledTimes(calls);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// isCloseIntentLeg / buildSpreadGatePlan — Chain tab's pre-submit spread
+// gate close/reduce exemption (a close must never be blocked by a
+// liquidity sanity check meant to protect new entries).
+// ─────────────────────────────────────────────────────────────────────────
+describe('isCloseIntentLeg', () => {
+  const positionRows = [
+    { account: 'ACC1', tradingsymbol: 'NIFTY26JUN24000CE', quantity: 10 }, // held LONG 10
+    { account: 'ACC1', tradingsymbol: 'NIFTY26JUN24500PE', quantity: -5 }, // held SHORT 5
+  ];
+
+  it('a SELL leg that exactly flattens a held LONG position is close-intent', () => {
+    const leg = { sym: 'NIFTY26JUN24000CE', side: 'SELL', lots: 2, lotSize: 5 }; // 10 contracts
+    expect(isCloseIntentLeg(leg, 'ACC1', positionRows)).toBe(true);
+  });
+
+  it('a SELL leg that REDUCES (not flattens) a held LONG position is still close-intent', () => {
+    const leg = { sym: 'NIFTY26JUN24000CE', side: 'SELL', lots: 1, lotSize: 5 }; // 5 contracts <= 10 held
+    expect(isCloseIntentLeg(leg, 'ACC1', positionRows)).toBe(true);
+  });
+
+  it('a BUY leg that exactly flattens a held SHORT position is close-intent', () => {
+    const leg = { sym: 'NIFTY26JUN24500PE', side: 'BUY', lots: 1, lotSize: 5 }; // 5 contracts
+    expect(isCloseIntentLeg(leg, 'ACC1', positionRows)).toBe(true);
+  });
+
+  it('a SELL leg adding to an existing SHORT (same direction) is NOT close-intent', () => {
+    const leg = { sym: 'NIFTY26JUN24500PE', side: 'SELL', lots: 1, lotSize: 5 };
+    expect(isCloseIntentLeg(leg, 'ACC1', positionRows)).toBe(false);
+  });
+
+  it('a BUY leg adding to an existing LONG (same direction) is NOT close-intent', () => {
+    const leg = { sym: 'NIFTY26JUN24000CE', side: 'BUY', lots: 1, lotSize: 5 };
+    expect(isCloseIntentLeg(leg, 'ACC1', positionRows)).toBe(false);
+  });
+
+  it('a SELL leg that OVERSHOOTS a held LONG (a flip past flat) is NOT close-intent — the whole leg stays gated', () => {
+    const leg = { sym: 'NIFTY26JUN24000CE', side: 'SELL', lots: 3, lotSize: 5 }; // 15 contracts > 10 held
+    expect(isCloseIntentLeg(leg, 'ACC1', positionRows)).toBe(false);
+  });
+
+  it('no held position for that symbol+account → NOT close-intent (fails toward the existing, safer behavior)', () => {
+    const leg = { sym: 'BANKNIFTY26JUN45000PE', side: 'SELL', lots: 1, lotSize: 5 };
+    expect(isCloseIntentLeg(leg, 'ACC1', positionRows)).toBe(false);
+  });
+
+  it('positionRows not yet loaded (empty/undefined) → NOT close-intent', () => {
+    const leg = { sym: 'NIFTY26JUN24000CE', side: 'SELL', lots: 1, lotSize: 5 };
+    expect(isCloseIntentLeg(leg, 'ACC1', [])).toBe(false);
+    expect(isCloseIntentLeg(leg, 'ACC1', undefined)).toBe(false);
+  });
+
+  it('a different account holding the same symbol does not make a leg close-intent (account-scoped)', () => {
+    const leg = { sym: 'NIFTY26JUN24000CE', side: 'SELL', lots: 1, lotSize: 5 };
+    expect(isCloseIntentLeg(leg, 'ACC2', positionRows)).toBe(false);
+  });
+
+  it('sums quantity across multiple matching rows for the same symbol+account (e.g. NRML + MIS)', () => {
+    const multiProductRows = [
+      { account: 'ACC1', tradingsymbol: 'NIFTY26JUN24000CE', quantity: 6 },
+      { account: 'ACC1', tradingsymbol: 'NIFTY26JUN24000CE', quantity: 4 },
+    ];
+    const leg = { sym: 'NIFTY26JUN24000CE', side: 'SELL', lots: 2, lotSize: 5 }; // 10 contracts == 6+4 held
+    expect(isCloseIntentLeg(leg, 'ACC1', multiProductRows)).toBe(true);
+  });
+
+  it('MCX lotSize (e.g. 100) close-intent reduce — the operator\'s own reported expiry-close scenario', () => {
+    const mcxRows = [{ account: 'ACC1', tradingsymbol: 'CRUDEOIL26NOVFUT', quantity: -200 }]; // short 2 lots
+    const leg = { sym: 'CRUDEOIL26NOVFUT', side: 'BUY', lots: 2, lotSize: 100 }; // 200 contracts <= 200 held
+    expect(isCloseIntentLeg(leg, 'ACC1', mcxRows)).toBe(true);
+  });
+
+  it('falls back to a `symbol`/`qty` shaped row (not only `tradingsymbol`/`quantity`)', () => {
+    const rows = [{ account: 'ACC1', symbol: 'NIFTY26JUN24000CE', qty: 10 }];
+    const leg = { sym: 'NIFTY26JUN24000CE', side: 'SELL', lots: 1, lotSize: 5 };
+    expect(isCloseIntentLeg(leg, 'ACC1', rows)).toBe(true);
+  });
+
+  it('a zero-contracts leg (missing lots/lotSize) is never close-intent', () => {
+    const leg = { sym: 'NIFTY26JUN24000CE', side: 'SELL' };
+    expect(isCloseIntentLeg(leg, 'ACC1', positionRows)).toBe(false);
+  });
+});
+
+describe('buildSpreadGatePlan', () => {
+  const positionRows = [
+    { account: 'ACC1', tradingsymbol: 'NIFTY26JUN24000CE', quantity: 10 }, // held LONG 10
+  ];
+
+  it('a close-intent leg is excluded from the check plan', () => {
+    const basket = [{ sym: 'NIFTY26JUN24000CE', optType: 'CE', side: 'SELL', lots: 2, lotSize: 5, exchange: 'NFO' }];
+    const items = buildSpreadGatePlan(basket, 'ACC1', positionRows, 0.5);
+    expect(items).toEqual([]);
+  });
+
+  it('an open/entry leg for the same symbol is still included', () => {
+    const basket = [{ sym: 'NIFTY26JUN24000CE', optType: 'CE', side: 'BUY', lots: 1, lotSize: 5, exchange: 'NFO' }];
+    const items = buildSpreadGatePlan(basket, 'ACC1', positionRows, 0.5);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toEqual({ tradingsymbol: 'NIFTY26JUN24000CE', exchange: 'NFO', maxSpreadPct: 0.5, label: 'NIFTY26JUN24000CE' });
+  });
+
+  it('a basket mixing one open and one close leg still gates — on the open leg only', () => {
+    const basket = [
+      { sym: 'NIFTY26JUN24000CE', optType: 'CE', side: 'SELL', lots: 2, lotSize: 5, exchange: 'NFO' }, // close (10 held)
+      { sym: 'BANKNIFTY26JUN45000PE', optType: 'PE', side: 'BUY', lots: 1, lotSize: 25, exchange: 'NFO' }, // open (no held position)
+    ];
+    const items = buildSpreadGatePlan(basket, 'ACC1', positionRows, 0.5);
+    expect(items).toHaveLength(1);
+    expect(items[0].tradingsymbol).toBe('BANKNIFTY26JUN45000PE');
+  });
+
+  it('futures legs stay out of scope regardless of close/open intent (unchanged pre-existing behavior)', () => {
+    const basket = [{ sym: 'CRUDEOIL26NOVFUT', side: 'BUY', lots: 1, lotSize: 100, exchange: 'MCX' }]; // no optType
+    const items = buildSpreadGatePlan(basket, 'ACC1', positionRows, 0.5);
+    expect(items).toEqual([]);
+  });
+
+  it('falls back to the plan-level account when a leg carries no account field of its own', () => {
+    const basket = [{ sym: 'NIFTY26JUN24000CE', optType: 'CE', side: 'SELL', lots: 2, lotSize: 5, exchange: 'NFO' }];
+    const items = buildSpreadGatePlan(basket, 'ACC1', positionRows, 0.5);
+    expect(items).toEqual([]); // still exempted via the fallback account
+  });
+
+  it('prefers a leg\'s own account over the plan-level fallback', () => {
+    const basket = [{ sym: 'NIFTY26JUN24000CE', optType: 'CE', side: 'SELL', lots: 2, lotSize: 5, exchange: 'NFO', account: 'ACC2' }];
+    // ACC2 holds nothing, so despite the plan-level account (ACC1) holding
+    // this symbol, the leg's OWN account must be the one actually checked.
+    const items = buildSpreadGatePlan(basket, 'ACC1', positionRows, 0.5);
+    expect(items).toHaveLength(1);
   });
 });
