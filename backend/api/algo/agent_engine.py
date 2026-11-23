@@ -1501,6 +1501,17 @@ async def _v2_expiry_position_breakdown(context: dict | None) -> str | None:
     makes real (cached, read-only) broker calls, so this must never run
     on every cycle tick, only once the cheap calendar/clock condition
     has already matched.
+
+    2026-11-22 fix (operator: "if no positions to close, mention that
+    clearly") — the agent's own condition fires on a <=1.5-day buffer
+    (`_scope_positions_expiring_today`), one day wider than
+    `scan_positions()`'s own `expiry == today` filter, so a real first
+    fire can land a day before anything is actually closeable. Both
+    "nothing found at all" and "something's expiring but not for the
+    in-window exchange(s)" now return an explicit statement instead of
+    `None` — `None` here used to make the caller fall back to the bare
+    one-line reminder with no detail, reading as an uninformative
+    non-answer rather than a confirmed "nothing to close."
     """
     from backend.api.algo.expiry import ExpiryEngine
     from backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window import (
@@ -1524,16 +1535,19 @@ async def _v2_expiry_position_breakdown(context: dict | None) -> str | None:
         logger.warning(f"_v2_expiry_position_breakdown: scan failed: {e}")
         return "(position detail unavailable this cycle — check the Positions grid or Exp-close tab)"
 
+    exch_label = " and ".join(sorted(exchanges_in_window))
     all_expiring = engine.state.positions or []
     if not all_expiring:
-        return None
+        return f"No {exch_label} F&O positions are expiring today — nothing to close."
 
     sections = [
         section for exch, label in (("MCX", "MCX"), ("NFO", "NSE/NFO"))
         if exch in exchanges_in_window
         and (section := await _v2_expiry_exchange_section(exch, label, all_expiring)) is not None
     ]
-    return "\n\n".join(sections) if sections else None
+    if not sections:
+        return f"No {exch_label} F&O positions are expiring today — nothing to close."
+    return "\n\n".join(sections)
 
 
 async def _v2_expiry_morning_preview(context: dict | None, exchange: str) -> str | None:
@@ -1564,6 +1578,19 @@ async def _v2_expiry_morning_preview(context: dict | None, exchange: str) -> str
     qualify" from scratch — means this function can never render the
     wrong exchange's section even if both happen to qualify at the
     same instant.
+
+    2026-11-22 fix (operator: "if no positions to close, mention that
+    clearly") — this agent's own condition only requires the session to
+    have been open 5 minutes; it says nothing about whether
+    `scan_positions()` (which filters to `expiry == today` exactly)
+    will find anything at all. A position within the <=1.5-day scope
+    token's own buffer but expiring TOMORROW, not today, is a real,
+    expected case on the day before expiry. Both "nothing found at
+    all" and "this exchange's own section has nothing" now return an
+    explicit "no positions" statement instead of `None` — `None` used
+    to make the caller fall back to the bare one-line reminder with no
+    detail, which reads as an uninformative non-answer, not a
+    confirmed "nothing to close."
     """
     from backend.api.algo.expiry import ExpiryEngine
 
@@ -1576,12 +1603,12 @@ async def _v2_expiry_morning_preview(context: dict | None, exchange: str) -> str
 
     all_expiring = engine.state.positions or []
     if not all_expiring:
-        return None
+        return f"No {exchange} F&O positions are expiring today — nothing to close."
 
     label = "MCX" if exchange == "MCX" else "NSE/NFO"
     section = await _v2_expiry_exchange_section(exchange, label, all_expiring)
     if section is None:
-        return None
+        return f"No {exchange} F&O positions are expiring today — nothing to close."
     tentative = (
         "Tentative — priced at today's opening LTP, not a final "
         "determination. Final staging for review happens 1 hour before "

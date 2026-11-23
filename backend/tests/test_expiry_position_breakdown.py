@@ -211,11 +211,16 @@ async def test_scan_failure_renders_explicit_degraded_note_never_blank():
 
 
 @pytest.mark.asyncio
-async def test_no_expiring_positions_returns_none():
+async def test_no_expiring_positions_states_nothing_to_close_explicitly():
+    """2026-11-22 fix (operator: "if no positions to close, mention that
+    clearly") — a scan finding nothing must say so explicitly, never
+    return None (which used to make the caller fall back to the bare
+    one-line reminder with no real information)."""
     with patch("backend.api.algo.expiry.ExpiryEngine", return_value=_mock_engine([])), \
          patch(_WINDOW_PATCH_TARGET, return_value={"MCX", "NFO"}):
         text = await _v2_expiry_position_breakdown({})
-    assert text is None
+    assert text is not None
+    assert "nothing to close" in text.lower()
 
 
 @pytest.mark.asyncio
@@ -288,12 +293,17 @@ async def test_morning_preview_carries_tentative_framing():
 
 
 @pytest.mark.asyncio
-async def test_morning_preview_returns_none_when_no_positions_expiring():
+async def test_morning_preview_states_nothing_to_close_explicitly():
+    """2026-11-22 fix (operator: "if no positions to close, mention that
+    clearly") -- a scan finding nothing must say so explicitly, never
+    return None."""
     from backend.api.algo.agent_engine import _v2_expiry_morning_preview
 
     with patch("backend.api.algo.expiry.ExpiryEngine", return_value=_mock_engine([])):
         text = await _v2_expiry_morning_preview({}, "MCX")
-    assert text is None
+    assert text is not None
+    assert "nothing to close" in text.lower()
+    assert "MCX" in text
 
 
 @pytest.mark.asyncio
@@ -311,7 +321,7 @@ async def test_morning_preview_scan_failure_renders_degraded_note():
 
 
 @pytest.mark.asyncio
-async def test_morning_preview_returns_none_when_only_other_exchange_has_positions():
+async def test_morning_preview_states_nothing_to_close_when_only_other_exchange_has_positions():
     from backend.api.algo.agent_engine import _v2_expiry_morning_preview
 
     positions = [
@@ -321,8 +331,8 @@ async def test_morning_preview_returns_none_when_only_other_exchange_has_positio
     ]
     with patch("backend.api.algo.expiry.ExpiryEngine", return_value=_mock_engine(positions)):
         text = await _v2_expiry_morning_preview({}, "NFO")
-    assert text is None, (
+    assert text is not None and "nothing to close" in text.lower() and "GOLD" not in text, (
         "the NFO agent's own render call must not surface MCX's section, "
-        "and must return None (not an empty-but-truthy string) when its "
-        "own exchange has nothing expiring"
+        "and must state explicitly (not return None) that its own "
+        "exchange has nothing expiring"
     )
