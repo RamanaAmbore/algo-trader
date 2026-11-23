@@ -8,6 +8,14 @@ exception is re-raised, so callers behave as before.
 An ERROR from this decorator is marked ``alert_now`` (it has already been
 escalated), so the alert handler sends it without waiting for more repeats.
 
+A provider gateway/HTML error (see `_is_provider_gateway_html_error` — the
+`kiteconnect` SDK's own "Unknown Content-Type" message, meaning the
+broker's edge returned an HTML error page instead of JSON) is the one
+exception to all of the above: every attempt logs at INFO, it never
+escalates to ERROR, and it never counts toward ESCALATE_AFTER's window —
+it's a known, non-actionable, provider-side infrastructure hiccup, not a
+failure the operator can do anything about.
+
 Use it on operations that can recover on retry, such as broker REST calls,
 feed fetches, and database writes::
 
@@ -45,7 +53,51 @@ def _reset_for_tests() -> None:
         _failed_calls.clear()
 
 
-def _log_failed_call(logger, name: str, attempts: int, exc: Exception, count: int) -> None:
+def _is_provider_gateway_html_error(exc: BaseException) -> bool:
+    """True when the broker's own infrastructure returned an HTML error
+    page (a gateway/CDN/maintenance response) instead of the real JSON
+    API response — never something caused by the request itself.
+
+    Operator (2026-11-23, live-reported): "unknown content type messages
+    can be info with no alerts." The `kiteconnect` SDK raises its own
+    "Unknown Content-Type (text/html) with response: ..." message when
+    Zerodha's edge returns an HTML page instead of JSON — confirmed live
+    (`backend.brokers.adapters.kite`, `kite.orders`/`kite.margins`) with
+    the response body embedding a literal "502 Bad Gateway" page. This
+    is a transient, provider-side infrastructure hiccup — the existing
+    retry/backoff in `recoverable()` is what actually recovers from it;
+    an alert adds nothing actionable the operator could do about
+    Zerodha's own edge returning a gateway error page."""
+    return "Unknown Content-Type" in str(exc)
+
+
+def _log_retry_attempt(logger, name: str, attempt: int, attempts: int, exc: Exception) -> None:
+    """Per-attempt (not-yet-final) failure log — INFO and no escalation
+    tracking for a provider gateway/HTML error (see
+    `_is_provider_gateway_html_error`'s own docstring), WARNING
+    otherwise (unchanged prior behaviour)."""
+    if _is_provider_gateway_html_error(exc):
+        logger.info(f"{name}: attempt {attempt}/{attempts} failed (provider gateway error, non-actionable): {exc}")
+    else:
+        logger.warning(f"{name}: attempt {attempt}/{attempts} failed, retrying: {exc}")
+
+
+def _log_failed_call(logger, name: str, attempts: int, exc: Exception, count: "int | None") -> None:
+    if _is_provider_gateway_html_error(exc):
+        # INFO, never escalated — `count` (the ESCALATE_AFTER circuit-
+        # breaker window) is for genuine, actionable repeated failures;
+        # counting a transient gateway blip toward it would let enough
+        # of them accumulate to spuriously escalate an UNRELATED later
+        # failure within the same WINDOW_S.
+        logger.info(
+            f"{name}: failed after {attempts} attempts (provider gateway error, "
+            f"non-actionable — Zerodha-side, not escalated): {exc}"
+        )
+        try:
+            exc._recovery_logged = True
+        except Exception:
+            pass
+        return
     if count > ESCALATE_AFTER:
         # 2026-10-31 live incident: once `count` crosses ESCALATE_AFTER this
         # branch ran on EVERY SUBSEQUENT failed call, not just the first —
@@ -154,10 +206,11 @@ def recoverable(name: str, attempts: int = 3, backoff_s: float = 1.0,
                         return await fn(*args, **kwargs)
                     except retry_on as exc:
                         if attempt < attempts:
-                            logger.warning(f"{name}: attempt {attempt}/{attempts} failed, retrying: {exc}")
+                            _log_retry_attempt(logger, name, attempt, attempts, exc)
                             await asyncio.sleep(backoff_s * attempt)
                         else:
-                            count = _record_failed_call(name, time.monotonic())
+                            count = (None if _is_provider_gateway_html_error(exc)
+                                     else _record_failed_call(name, time.monotonic()))
                             _log_failed_call(logger, name, attempts, exc, count)
                             raise
             return async_wrapper
@@ -169,10 +222,11 @@ def recoverable(name: str, attempts: int = 3, backoff_s: float = 1.0,
                     return fn(*args, **kwargs)
                 except retry_on as exc:
                     if attempt < attempts:
-                        logger.warning(f"{name}: attempt {attempt}/{attempts} failed, retrying: {exc}")
+                        _log_retry_attempt(logger, name, attempt, attempts, exc)
                         time.sleep(backoff_s * attempt)
                     else:
-                        count = _record_failed_call(name, time.monotonic())
+                        count = (None if _is_provider_gateway_html_error(exc)
+                                 else _record_failed_call(name, time.monotonic()))
                         _log_failed_call(logger, name, attempts, exc, count)
                         raise
         return wrapper
