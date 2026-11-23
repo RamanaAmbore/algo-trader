@@ -20,6 +20,17 @@ from backend.brokers.errors import (
 )
 from backend.brokers.rate_limiter import TokenBucketLimiter
 from backend.shared.helpers.ramboq_logger import get_logger
+# `recoverable()`'s retry/escalate decorator wraps every @recoverable call
+# below (kite.orders, kite.margins, etc.). 2026-11-23 fix, live-reported:
+# a provider gateway/HTML error (Zerodha's own edge returning a 502 page —
+# the SDK's "Unknown Content-Type" message) now logs at INFO and never
+# escalates to ERROR_AGENT, regardless of repeat count — see
+# recovery.py:_is_provider_gateway_html_error for the full rationale. This
+# module runs inside ramboq_conn, so a deploy that changes recovery.py's
+# classification (a file outside backend/brokers/) still needs this one
+# module's own CHANGED-file entry to trip deploy.sh's CONN_TOUCHED check
+# and actually restart the running process — a shared-helper edit alone
+# does not.
 from backend.shared.helpers.recovery import recoverable
 from kiteconnect.exceptions import DataException, NetworkException
 from backend.shared.helpers.ssot_fetch import ssot_fetch
