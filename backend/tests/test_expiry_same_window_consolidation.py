@@ -348,3 +348,27 @@ class TestContentMatchedCondMigration:
         agent_def = {"slug": "market-open-nse", "conditions": {"other": "shape"}}
         _ae_apply_content_matched_cond_migration(existing, agent_def)
         assert existing.conditions == {"anything": "goes"}
+
+    def test_nfo_risk_alert_migrates_from_is_itm_shape_to_tautological_sentinel(self):
+        """Audit finding #14 (2026-11-24): an already-seeded row still at
+        the generic is_itm/is_future leaf shape must force-upgrade to the
+        new scope-owned tautological-sentinel shape — shipping the new
+        condition in code alone is inert against a live DB row otherwise."""
+        from backend.api.algo.agent_engine import (
+            _ae_apply_content_matched_cond_migration,
+            _AE_CONTENT_MATCHED_COND_MIGRATIONS,
+        )
+
+        class _Row:
+            pass
+
+        existing = _Row()
+        existing.conditions = _AE_CONTENT_MATCHED_COND_MIGRATIONS["expiry-nfo-risk-alert"]
+        agent_def = next(a for a in BUILTIN_AGENTS if a["slug"] == "expiry-nfo-risk-alert")
+        _ae_apply_content_matched_cond_migration(existing, agent_def)
+
+        nfo_branch = existing.conditions["any"][0]["all"][0]
+        assert nfo_branch == {
+            "op": ">=", "scope": "positions.expiring_today.nfo",
+            "metric": "pnl", "value": -999999999,
+        }, "the NFO leaf must migrate to the tautological pnl sentinel"

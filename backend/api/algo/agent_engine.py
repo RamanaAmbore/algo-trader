@@ -2809,14 +2809,22 @@ _EXPIRY_RISK_AGENTS = [
     {
         "slug": "expiry-nfo-risk-alert",
         "name": "NFO or MCX expiry risk — ITM/unhedged options or open futures",
-        "long_name": "when:(positions.expiring_today.nfo.(is_itm==1 OR is_future==1) AND NOT(nse_preclose_window)) OR (positions.expiring_today.mcx_unhedged.pnl>=-inf AND NOT(mcx_preclose_window))   alert:high/tg+email+ntfy(high)+log   do:notify-only",
+        "long_name": "when:(positions.expiring_today.nfo.pnl>=-inf AND NOT(nse_preclose_window)) OR (positions.expiring_today.mcx_unhedged.pnl>=-inf AND NOT(mcx_preclose_window))   alert:high/tg+email+ntfy(high)+log   do:notify-only",
         "description": "Fires on expiry day when any NFO position is ITM (option) or is an open future, OR any MCX option position is unhedged after the real engine's 4-rule netting (or UNKNOWN-moneyness) — all three require active management, and MCX additionally risks an unfavourable broker auto-settlement. A lone expiring MCX future with no option leg is never itself flagged (futures are netting partners only, never a needs_close candidate in their own right). Each exchange's own branch is suppressed during that exchange's own 65-min pre-close window (retimed 2026-11-22, was 30), where expiry-day-preclose-alert already reports the same thing — the other exchange's branch keeps firing normally.",
         "conditions": {"any": [
             {"all": [
-                {"any": [
-                    {"op": "==", "scope": "positions.expiring_today.nfo", "metric": "is_itm",    "value": 1.0},
-                    {"op": "==", "scope": "positions.expiring_today.nfo", "metric": "is_future", "value": 1.0},
-                ]},
+                # 2026-11-24 fix (audit finding #14): the NFO leaf used to
+                # be `any[is_itm==1, is_future==1]`, evaluated by the
+                # GENERIC is_itm metric per row — which silently drops a
+                # row with an unresolvable spot price (no match, no log),
+                # unlike the MCX branch below. The scope itself
+                # (`positions.expiring_today.nfo`) now owns that
+                # membership test AND fails loud on an unresolved spot
+                # (see that module's own docstring) — this leaf is now a
+                # tautological sentinel, mirroring the MCX branch's own
+                # `pnl >= -999999999` pattern: the scope's own
+                # classification fully decides membership.
+                {"op": ">=", "scope": "positions.expiring_today.nfo", "metric": "pnl", "value": -999999999},
                 {"not": {"all": [
                     {"op": "==", "scope": "funds.total", "metric": "is_nse_expiry_today",        "value": 1.0},
                     {"op": "<=", "scope": "funds.total", "metric": "minutes_until_nse_close",     "value": 65},
@@ -3673,6 +3681,14 @@ _AE_CONTENT_MATCHED_COND_MIGRATIONS: dict[str, dict] = {
     # `expiry-mcx-risk-alert`'s own entry is removed — its slug no
     # longer exists in `BUILTIN_AGENTS`, so it is pruned (deleted) by
     # `_ae_prune_retired_builtins()` instead of migrated.
+    # 2026-11-24 — updated AGAIN (audit finding #14) from the 65-min,
+    # generic-is_itm/is_future shape (BYTE-FOR-BYTE what the 2026-11-22
+    # retime above shipped) to the CURRENT tautological-sentinel shape
+    # (see `_EXPIRY_RISK_AGENTS`'s own conditions dict above). The
+    # 30-min pre-retime shape this replaced is moot — that migration
+    # already ran against any live row by the time this one ships
+    # (only one trigger shape per slug is kept, same convention as the
+    # 2026-11-22 entry's own comment).
     "expiry-nfo-risk-alert": {"any": [
         {"all": [
             {"any": [
@@ -3681,14 +3697,14 @@ _AE_CONTENT_MATCHED_COND_MIGRATIONS: dict[str, dict] = {
             ]},
             {"not": {"all": [
                 {"op": "==", "scope": "funds.total", "metric": "is_nse_expiry_today",        "value": 1.0},
-                {"op": "<=", "scope": "funds.total", "metric": "minutes_until_nse_close",     "value": 30},
+                {"op": "<=", "scope": "funds.total", "metric": "minutes_until_nse_close",     "value": 65},
             ]}},
         ]},
         {"all": [
             {"op": ">=", "scope": "positions.expiring_today.mcx_unhedged", "metric": "pnl", "value": -999999999},
             {"not": {"all": [
                 {"op": "==", "scope": "funds.total", "metric": "is_mcx_expiry_today",        "value": 1.0},
-                {"op": "<=", "scope": "funds.total", "metric": "minutes_until_mcx_close",     "value": 30},
+                {"op": "<=", "scope": "funds.total", "metric": "minutes_until_mcx_close",     "value": 65},
             ]}},
         ]},
     ]},
