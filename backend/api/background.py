@@ -6053,115 +6053,138 @@ async def _agent_close_auto_release_sweep_once(now: "datetime | None" = None) ->
     from backend.api.algo.order_hold import parse_hold_record
     from backend.api.algo.order_release import get_release_handler
 
+    # 2026-11-24 fix (audit finding #13): a SQL-level category
+    # pre-filter alongside the existing `LIMIT 500`, and an `ORDER BY`
+    # so the oldest-staged rows are processed first. Without this, a
+    # flood of `AGENT_ORDER` HELD rows (chase's own repeated-rejection
+    # hold, never auto-released — see `_AUTO_RELEASE_CATEGORIES`'s own
+    # comment) could crowd out genuinely due `AGENT_CLOSE`/
+    # `EXPIRY_CLOSE` rows within the 500-row window; the Python-level
+    # category check below still runs too (defense in depth — this is
+    # a substring match on `hold_record()`'s own `json.dumps(...,
+    # sort_keys=True)` output, not a guaranteed-exact parse).
     async with async_session() as s:
         rows = (await s.execute(
-            _sel(AlgoOrder).where(AlgoOrder.status == "HELD").limit(500)
+            _sel(AlgoOrder).where(
+                AlgoOrder.status == "HELD",
+                (AlgoOrder.hold_json.like('%"category": "agent_close"%')
+                 | AlgoOrder.hold_json.like('%"category": "expiry_close"%')),
+            ).order_by(AlgoOrder.created_at.asc()).limit(500)
         )).scalars().all()
     if not rows:
         return 0
     now = now or _dt.now(_tz.utc)
     released = 0
     for row in rows:
-        rec = parse_hold_record(row.hold_json) or {}
-        category = rec.get("category")
-        if category not in _AUTO_RELEASE_CATEGORIES:
-            continue
-        raw_deadline = rec.get("auto_release_at")
-        if not raw_deadline:
-            continue
+        # 2026-11-24 fix (audit finding #13): one row's exception must
+        # never abort the rest of this tick — including a genuinely
+        # urgent due row that happens to sort after a malformed one.
         try:
-            deadline = _dt.fromisoformat(raw_deadline)
-        except (TypeError, ValueError):
-            continue
-        if deadline.tzinfo is None:
-            deadline = deadline.replace(tzinfo=_tz.utc)
-        if now < deadline:
-            continue
+            rec = parse_hold_record(row.hold_json) or {}
+            category = rec.get("category")
+            if category not in _AUTO_RELEASE_CATEGORIES:
+                continue
+            raw_deadline = rec.get("auto_release_at")
+            if not raw_deadline:
+                continue
+            try:
+                deadline = _dt.fromisoformat(raw_deadline)
+            except (TypeError, ValueError):
+                continue
+            if deadline.tzinfo is None:
+                deadline = deadline.replace(tzinfo=_tz.utc)
+            if now < deadline:
+                continue
 
-        agent_id = getattr(row, "agent_id", None)
-        if agent_id is None:
-            logger.warning(
-                "[AUTO-RELEASE] HELD order %s has no agent_id — "
-                "skipping (kill switch needs a real agent to check)",
-                row.id,
-            )
-            continue
-        async with async_session() as s2:
-            agent = (await s2.execute(
-                _sel(Agent).where(Agent.id == agent_id)
-            )).scalar_one_or_none()
-        if agent is None:
-            logger.warning(
-                "[AUTO-RELEASE] HELD order %s: agent %s not found — "
-                "skipping auto-release", row.id, agent_id,
-            )
-            continue
-        if agent.status == "inactive":
-            logger.info(
-                "[AUTO-RELEASE] HELD order %s: agent %s is inactive — "
-                "kill switch blocks auto-release", row.id, agent_id,
-            )
-            continue
-
-        handler = get_release_handler(category)
-        result = await handler(row.id, actor="auto-release")
-
-        # 2026-11-23 fix (confirmed before shipping: this loop used to
-        # increment `released` and log "released" on ANY result dict,
-        # including `{"ok": False, ...}` — e.g. a stale position/price
-        # check failure, or the row genuinely not found. The row stays
-        # HELD, gets retried every poll interval with no operator
-        # alert, while the log line and this function's own return
-        # value both claimed success. `ok` is the one field every
-        # release handler's own docstring promises to set honestly.
-        if not result.get("ok"):
-            status_after = result.get("status")
-            if status_after not in ("HELD", "", None):
-                # Benign race: the row is no longer HELD at all — an
-                # operator (or a concurrent manual click) already acted
-                # on it between this scan's deadline check and the
-                # handler call. Not a failure; nothing to alert.
-                logger.info(
-                    "[AUTO-RELEASE] HELD order %s: no longer HELD by the "
-                    "time the handler ran (status=%s) — someone else "
-                    "already acted on it, not counted as a release",
-                    row.id, status_after,
+            agent_id = getattr(row, "agent_id", None)
+            if agent_id is None:
+                logger.warning(
+                    "[AUTO-RELEASE] HELD order %s has no agent_id — "
+                    "skipping (kill switch needs a real agent to check)",
+                    row.id,
                 )
                 continue
-            logger.warning(
-                "[AUTO-RELEASE] HELD order %s: auto-release FAILED "
-                "(agent=%s, category=%s): %s — still HELD, will retry "
-                "next sweep", row.id, agent_id, category, result,
-            )
-            if row.id not in _AUTO_RELEASE_FAILED_ALERTED:
-                _AUTO_RELEASE_FAILED_ALERTED.add(row.id)
-                try:
-                    from backend.shared.helpers.alert_utils import send_order_failure_alert
-                    send_order_failure_alert(
-                        account=row.account, symbol=row.symbol, exchange=row.exchange,
-                        side=row.transaction_type, qty=int(row.quantity), mode="live",
-                        source="auto-release",
-                        error=(
-                            f"auto-release could not act on HELD order {row.id} "
-                            f"({category}): {result.get('reason', result)!r}. The "
-                            f"position is NOT closed and remains HELD — requires "
-                            f"manual review."
-                        ),
-                        agent_id=agent_id,
-                        bypass_gates=True,
-                    )
-                except Exception as alert_exc:
-                    logger.warning(
-                        "[AUTO-RELEASE] failure alert itself failed for order %s: %s",
-                        row.id, alert_exc,
-                    )
-            continue
+            async with async_session() as s2:
+                agent = (await s2.execute(
+                    _sel(Agent).where(Agent.id == agent_id)
+                )).scalar_one_or_none()
+            if agent is None:
+                logger.warning(
+                    "[AUTO-RELEASE] HELD order %s: agent %s not found — "
+                    "skipping auto-release", row.id, agent_id,
+                )
+                continue
+            if agent.status == "inactive":
+                logger.info(
+                    "[AUTO-RELEASE] HELD order %s: agent %s is inactive — "
+                    "kill switch blocks auto-release", row.id, agent_id,
+                )
+                continue
 
-        released += 1
-        logger.info(
-            "[AUTO-RELEASE] HELD order %s released by auto-release "
-            "(agent=%s, category=%s): %s", row.id, agent_id, category, result,
-        )
+            handler = get_release_handler(category)
+            result = await handler(row.id, actor="auto-release")
+
+            # 2026-11-23 fix (confirmed before shipping: this loop used to
+            # increment `released` and log "released" on ANY result dict,
+            # including `{"ok": False, ...}` — e.g. a stale position/price
+            # check failure, or the row genuinely not found. The row stays
+            # HELD, gets retried every poll interval with no operator
+            # alert, while the log line and this function's own return
+            # value both claimed success. `ok` is the one field every
+            # release handler's own docstring promises to set honestly.
+            if not result.get("ok"):
+                status_after = result.get("status")
+                if status_after not in ("HELD", "", None):
+                    # Benign race: the row is no longer HELD at all — an
+                    # operator (or a concurrent manual click) already acted
+                    # on it between this scan's deadline check and the
+                    # handler call. Not a failure; nothing to alert.
+                    logger.info(
+                        "[AUTO-RELEASE] HELD order %s: no longer HELD by the "
+                        "time the handler ran (status=%s) — someone else "
+                        "already acted on it, not counted as a release",
+                        row.id, status_after,
+                    )
+                    continue
+                logger.warning(
+                    "[AUTO-RELEASE] HELD order %s: auto-release FAILED "
+                    "(agent=%s, category=%s): %s — still HELD, will retry "
+                    "next sweep", row.id, agent_id, category, result,
+                )
+                if row.id not in _AUTO_RELEASE_FAILED_ALERTED:
+                    _AUTO_RELEASE_FAILED_ALERTED.add(row.id)
+                    try:
+                        from backend.shared.helpers.alert_utils import send_order_failure_alert
+                        send_order_failure_alert(
+                            account=row.account, symbol=row.symbol, exchange=row.exchange,
+                            side=row.transaction_type, qty=int(row.quantity), mode="live",
+                            source="auto-release",
+                            error=(
+                                f"auto-release could not act on HELD order {row.id} "
+                                f"({category}): {result.get('reason', result)!r}. The "
+                                f"position is NOT closed and remains HELD — requires "
+                                f"manual review."
+                            ),
+                            agent_id=agent_id,
+                            bypass_gates=True,
+                        )
+                    except Exception as alert_exc:
+                        logger.warning(
+                            "[AUTO-RELEASE] failure alert itself failed for order %s: %s",
+                            row.id, alert_exc,
+                        )
+                continue
+
+            released += 1
+            logger.info(
+                "[AUTO-RELEASE] HELD order %s released by auto-release "
+                "(agent=%s, category=%s): %s", row.id, agent_id, category, result,
+            )
+        except Exception as e:
+            logger.error(
+                "[AUTO-RELEASE] sweep processing failed for HELD order %s: %s",
+                getattr(row, "id", "?"), e,
+            )
     if released:
         logger.info("[AUTO-RELEASE] sweep released=%s", released)
     return released

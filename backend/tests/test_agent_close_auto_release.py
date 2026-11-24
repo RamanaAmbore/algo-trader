@@ -243,6 +243,60 @@ class TestKillSwitch:
         mock_handler.assert_not_called()
 
 
+class TestSweepPerRowIsolation:
+    """Audit finding #13 (2026-11-24): one row's exception must never
+    abort the rest of the sweep tick."""
+
+    @pytest.mark.asyncio
+    async def test_one_bad_row_does_not_block_a_later_due_row(self):
+        from backend.api import background as bg
+
+        past = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        bad_row = _held_row(id=1, hold_json="not even json")
+        good_row = _held_row(id=2, hold_json=_agent_close_hold_json(past))
+
+        mock_handler = AsyncMock(return_value={"ok": True, "reason": "released"})
+
+        session = _queued_session([
+            _held_rows_result([bad_row, good_row]),
+            _agent_result(SimpleNamespace(status="active")),
+        ])
+        with patch("backend.api.database.async_session", return_value=session), \
+             patch("backend.api.algo.order_release.get_release_handler",
+                   MagicMock(return_value=mock_handler)):
+            released = await bg._agent_close_auto_release_sweep_once(
+                now=datetime.now(timezone.utc))
+
+        assert released == 1
+        mock_handler.assert_called_once_with(2, actor="auto-release")
+
+    @pytest.mark.asyncio
+    async def test_handler_exception_on_one_row_does_not_block_another(self):
+        from backend.api import background as bg
+
+        past = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        row_a = _held_row(id=1, hold_json=_agent_close_hold_json(past))
+        row_b = _held_row(id=2, hold_json=_agent_close_hold_json(past))
+
+        async def _handler(order_id, actor):
+            if order_id == 1:
+                raise RuntimeError("boom")
+            return {"ok": True, "reason": "released"}
+
+        session = _queued_session([
+            _held_rows_result([row_a, row_b]),
+            _agent_result(SimpleNamespace(status="active")),
+            _agent_result(SimpleNamespace(status="active")),
+        ])
+        with patch("backend.api.database.async_session", return_value=session), \
+             patch("backend.api.algo.order_release.get_release_handler",
+                   MagicMock(return_value=_handler)):
+            released = await bg._agent_close_auto_release_sweep_once(
+                now=datetime.now(timezone.utc))
+
+        assert released == 1, "row 2 must still release despite row 1's exception"
+
+
 @pytest.mark.asyncio
 async def test_no_held_rows_is_a_clean_noop():
     session = _queued_session([_held_rows_result([])])
