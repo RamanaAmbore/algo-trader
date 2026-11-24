@@ -276,6 +276,87 @@ class TestSnapPositionEodValsBothNone:
         )
 
 
+class TestSnapPositionEodValsExpiredContractLtpFallback:
+    """Live incident, 2026-11-25: a GOLD MCX option that had just
+    expired (purged from Kite's instrument master) came back from
+    broker.positions() with no last_price at all, even though pnl was
+    still reported. The EOD settlement write then left ltp=NULL,
+    which made the closed-hours latest_batch selector
+    (`ltp IS NOT NULL AND ltp > 0`) skip the whole account's batch and
+    serve the PRIOR day's snapshot instead. Mirrors the fallback
+    `_snap_holding_eod_vals` already has for the same reason."""
+
+    def test_missing_last_price_falls_back_to_close_price(self):
+        from backend.api.algo.daily_snapshot import _snap_position_eod_vals
+
+        r = {
+            "unrealised": 1000.0, "realised": None,
+            "last_price": None,  # confirmed live: Kite omits this for an expired contract
+            "close_price": 2098.0,
+            "overnight_quantity": -1, "day_buy_quantity": 0, "day_sell_quantity": 0,
+            "day_buy_value": 0, "day_sell_value": 0,
+        }
+        ltp_val, day_pnl, total_pnl_v, skip = _snap_position_eod_vals(
+            r, mid_session=False, qty=-1,
+        )
+        assert ltp_val == 2098.0, "ltp must fall back to close_price, never stay None"
+        assert total_pnl_v == 1000.0, "pnl is unaffected — it never depended on last_price"
+        assert skip is False
+
+    def test_missing_last_price_falls_back_to_close_ref_over_close_price(self):
+        """`close_ref` (the prior-session close, when known) takes
+        priority over the broker row's own `close_price` — same
+        precedence `effective_close` already uses elsewhere in this
+        function; the fallback must use the SAME resolved value, not
+        re-derive a different one."""
+        from backend.api.algo.daily_snapshot import _snap_position_eod_vals
+
+        r = {
+            "unrealised": 500.0, "realised": None,
+            "last_price": None, "close_price": 2098.0,
+            "overnight_quantity": -1, "day_buy_quantity": 0, "day_sell_quantity": 0,
+            "day_buy_value": 0, "day_sell_value": 0,
+        }
+        ltp_val, day_pnl, total_pnl_v, skip = _snap_position_eod_vals(
+            r, mid_session=False, qty=-1, close_ref=2050.0,
+        )
+        assert ltp_val == 2050.0
+
+    def test_missing_last_price_and_no_close_reference_stays_none(self):
+        """No fallback value exists at all (first-day row, broker gave
+        neither last_price nor close_price) — ltp_val must stay None,
+        never a fabricated number."""
+        from backend.api.algo.daily_snapshot import _snap_position_eod_vals
+
+        r = {
+            "unrealised": 500.0, "realised": None,
+            "last_price": None, "close_price": None, "prev_close": None,
+            "overnight_quantity": -1, "day_buy_quantity": 0, "day_sell_quantity": 0,
+            "day_buy_value": 0, "day_sell_value": 0,
+        }
+        ltp_val, day_pnl, total_pnl_v, skip = _snap_position_eod_vals(
+            r, mid_session=False, qty=-1,
+        )
+        assert ltp_val is None
+
+    def test_real_last_price_is_never_overridden_by_the_fallback(self):
+        """A genuinely-quoted position must keep using its real
+        last_price — the fallback only ever engages when last_price is
+        falsy."""
+        from backend.api.algo.daily_snapshot import _snap_position_eod_vals
+
+        r = {
+            "unrealised": 500.0, "realised": None,
+            "last_price": 2200.0, "close_price": 2098.0,
+            "overnight_quantity": -1, "day_buy_quantity": 0, "day_sell_quantity": 0,
+            "day_buy_value": 0, "day_sell_value": 0,
+        }
+        ltp_val, day_pnl, total_pnl_v, skip = _snap_position_eod_vals(
+            r, mid_session=False, qty=-1,
+        )
+        assert ltp_val == 2200.0
+
+
 class TestHoldingsWriterNeutralisesZeroLtpNoFallback:
     """Holdings writer must neutralise ltp=0 to None when there is no close_price fallback."""
 
