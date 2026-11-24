@@ -571,6 +571,20 @@ def _snap_position_eod_vals(
     ltp_val = r.get("last_price")
     ltp_val = float(ltp_val) if ltp_val is not None else None
     effective_close = close_ref if close_ref is not None else (r.get("close_price") or r.get("prev_close"))
+    # 2026-11-25 fix (live incident) — Kite's positions() for a contract
+    # already purged from the instrument master (an expired option —
+    # see CLAUDE.md's "Kite purges expired contracts" note) returns no
+    # last_price at all, even though the position's own pnl is still
+    # reported (confirmed live: GOLD26NOV option legs, last_price
+    # missing, pnl populated, the morning after their own expiry).
+    # Without a fallback, the EOD settlement write leaves `ltp=NULL`,
+    # and the closed-hours `latest_batch` selector (`ltp IS NOT NULL
+    # AND ltp > 0`) then skips this account's ENTIRE batch and serves
+    # a stale PRIOR day's snapshot instead of today's. Same fallback
+    # `_snap_holding_eod_vals` already has for the identical reason
+    # (Dhan/some brokers returning last_price=0 on a non-trading day).
+    if not ltp_val and effective_close:
+        ltp_val = float(effective_close)
     day_pnl = _snap_compute_day_pnl(r, ltp_val, effective_close, qty, multiplier)
     # SSOT: current_total_profit(realised, unrealised) — NOT pnl + realised
     # (double-counts; Kite's raw `pnl` already equals realised + unrealised).
