@@ -4,6 +4,9 @@ whose F&O contract is expiring today (or already past expiry)."""
 from __future__ import annotations
 
 from backend.api.algo.grammar import _parsed_or_none
+from backend.shared.helpers.ramboq_logger import get_logger
+
+logger = get_logger(__name__)
 
 
 def _scope_positions_expiring_today(ctx):
@@ -32,7 +35,17 @@ def _scope_positions_expiring_today(ctx):
             from backend.api.algo.derivatives import days_to_expiry
             close_time = (23, 30) if (r.get('exchange') or '').upper() == 'MCX' else (15, 30)
             d = float(days_to_expiry(parsed['expiry'], ref=ctx.now, close_time=close_time))
-        except Exception:
+        except Exception as e:
+            # 2026-11-24 fix (audit finding #14): was a bare
+            # `except Exception: continue` — a systemic parsing/import
+            # issue affecting every row was previously invisible. Still
+            # skips this one row (a days-to-expiry failure for a single
+            # malformed row is not a reason to abort every OTHER row's
+            # classification), but now at least leaves a trace.
+            logger.warning(
+                "positions.expiring_today: days_to_expiry failed for %r: %s",
+                sym, e,
+            )
             continue
         if d <= 1.5:
             out.append(r)

@@ -1756,37 +1756,18 @@ async def _action_live_chase_close_positions(agent, context: dict, params: dict)
 
 
 def _al_expiry_context_shim(context: dict | None):
-    """Minimal attribute-accessible shim over the dispatch `context`
-    dict, so the grammar-token metric resolvers (which read `ctx.
-    segment_flags`/`ctx.position_rows` via `getattr`, matching the
-    `Context` class condition-evaluation shape) can be reused here. Same
-    pattern as `agent_engine.py:_v2_expiry_context_shim` — duplicated
-    rather than imported to avoid a circular import between this module
-    and agent_engine.py.
-
-    2026-11-23 fix (Part C, confirmed-live P0): this shim omitted `.now`
-    entirely. `_scope_positions_expiring_today()` reads `ctx.now` inside
-    a bare `except Exception: continue`, so every position row silently
-    failed to parse and the scope ALWAYS returned `[]` — meaning
-    `_expiry_preclose_exchanges()` ALWAYS returned an empty set for this
-    shim, in production, not only in a test. `_action_live_expiry_auto_
-    close` has therefore never actually closed anything: it always hit
-    its own "no exchange is currently within its own pre-close window"
-    branch and returned, every single time it fired. Confirmed directly
-    (not assumed) via a scratchpad call against the real, unpatched
-    functions before this fix. `now` is read from the dispatch
-    context's own `"now"` key (the exact value `_build_context()` sets,
-    see `agent_engine.py:4250`) and falls back to `timestamp_indian()`
-    only when that key is absent (e.g. a hand-built test context),
-    never silently defaulting to a wrong clock."""
-    from types import SimpleNamespace
-    from backend.shared.helpers.date_time_utils import timestamp_indian
-    context = context or {}
-    return SimpleNamespace(
-        segment_flags=context.get("segment_flags") or {},
-        position_rows=context.get("position_rows") or [],
-        now=context.get("now") or timestamp_indian(),
-    )
+    """Thin delegator to the shared `expiry_context_shim()`
+    (2026-11-24, audit finding #18) — kept as its own name/module
+    location purely so existing callers/imports/tests in this module
+    are unaffected. Previously a byte-identical duplicate of
+    `agent_engine.py:_v2_expiry_context_shim`, deliberately copy-pasted
+    instead of imported to avoid a circular import between this module
+    and `agent_engine.py`. The real body now lives in
+    `expiry_context_shim.py`, which neither module needs to import the
+    other to reach — see that module's own docstring for the 2026-11-23
+    `.now`-omission incident this duplication once let slip through."""
+    from backend.api.algo.expiry_context_shim import expiry_context_shim
+    return expiry_context_shim(context)
 
 
 async def _action_live_expiry_auto_close(agent, context: dict, params: dict):
@@ -1843,9 +1824,15 @@ async def _action_live_expiry_auto_close(agent, context: dict, params: dict):
     its duration, matching the alert sibling's own `_v2_expiry_
     position_breakdown()`.
 
-    `params` is accepted for action-dispatch signature compatibility
-    but intentionally empty/unused — which exchange(s) get processed is
-    decided by the live window check above, not a static param.
+    `params.exchange` (2026-11-24 fix, audit finding #4): when a custom
+    agent sets it explicitly, the live path now intersects it with the
+    real pre-close window check above — never bypassing that check, only
+    narrowing it — so `expiry_auto_close(exchange='NFO')` behaves the
+    same way across live/paper/sim, instead of live silently closing
+    whatever OTHER exchange happens to be in-window too. Omitted
+    (the common case, including the default `expiry-day-itm-auto-close`
+    agent), it processes every exchange currently in-window, unchanged
+    from before this fix.
 
     2026-11-23 fix (Part C — the expiry-close hold/auto-release
     mechanism): every HELD row this action's `close_positions()` call
@@ -1867,6 +1854,9 @@ async def _action_live_expiry_auto_close(agent, context: dict, params: dict):
 
     shim = _al_expiry_context_shim(context)
     exchanges_in_window = _expiry_preclose_exchanges(shim, None, CLOSE_LEAD_MINUTES)
+    requested_exchange = (params or {}).get("exchange")
+    if requested_exchange:
+        exchanges_in_window = exchanges_in_window & {requested_exchange.upper()}
     if not exchanges_in_window:
         logger.info(
             f"[LIVE] expiry_auto_close: agent {agent.slug} fired but no "
@@ -1884,8 +1874,34 @@ async def _action_live_expiry_auto_close(agent, context: dict, params: dict):
 
     to_close = [p for p in to_close if (p.exchange or "").upper() in exchanges_in_window]
     if not to_close:
-        logger.info(f"[LIVE] expiry_auto_close: no positions need closing in "
-                    f"{sorted(exchanges_in_window)} (agent={agent.slug})")
+        # 2026-11-24 fix (audit finding #11): an UNKNOWN-moneyness leg
+        # (underlying_ltp <= 0 — a failed LTP fetch, or no brokers
+        # configured, see `_fetch_underlying_ltps`) is never flagged
+        # `needs_close` by `classify_prepared()`, so `to_close` reads
+        # identically empty whether the book is genuinely clean OR the
+        # spot-price fetch just failed. The alert-renderer sibling
+        # (`_v2_expiry_position_breakdown`) surfaces UNKNOWN lines
+        # loudly on this same data gap — this action must not stay
+        # silent on it ("never a false all-clear"). It still does NOT
+        # close anything on unresolved data; it only stops claiming
+        # "nothing to close" when the real answer is "don't know".
+        unresolved = [
+            p for p in (engine.state.positions or [])
+            if (p.exchange or "").upper() in exchanges_in_window
+            and p.moneyness == "UNKNOWN"
+        ]
+        if unresolved:
+            logger.critical(
+                f"[LIVE] expiry_auto_close: agent {agent.slug} — "
+                f"{len(unresolved)} expiring position(s) in "
+                f"{sorted(exchanges_in_window)} have UNKNOWN moneyness "
+                f"(underlying LTP unresolved) and were skipped; this is "
+                f"NOT a confirmed clean scan — needs manual review: "
+                f"{[p.tradingsymbol for p in unresolved]}"
+            )
+        else:
+            logger.info(f"[LIVE] expiry_auto_close: no positions need closing in "
+                        f"{sorted(exchanges_in_window)} (agent={agent.slug})")
         return
 
     by_exch: dict[str, int] = {}
@@ -2036,13 +2052,12 @@ def _al_agent_close_hold_message(
 
 async def _al_send_agent_close_hold_alert(
     agent, held_order_id: int, account: str, symbol: str, exchange: str,
-    side: str, qty: int, reason: str,
+    side: str, qty: int, reason: str, *, title_prefix: str = "Agent close held",
 ) -> None:
-    """Fire one action-required alert for a newly-staged AGENT_CLOSE
-    hold. Writes ONE log record via `_DISPATCH_LOGGER`, tagged
-    `alert_event="agent_close_hold"` — a dedicated seeded agent
-    (`event_agents.AGENT_CLOSE_HOLD_ALERT_AGENT` + its
-    `_render_agent_close_hold` renderer) picks this up. Channel
+    """Fire one action-required alert for a newly-staged hold. Writes ONE
+    log record via `_DISPATCH_LOGGER`, tagged `alert_event="agent_close_hold"`
+    — a dedicated seeded agent (`event_agents.AGENT_CLOSE_HOLD_ALERT_AGENT` +
+    its `_render_agent_close_hold` renderer) picks this up. Channel
     selection is resolved by `alert_routing.py`'s per-slug override for
     that agent's slug, not a per-record `channels` literal here (2026-11
     channel-authoring retirement — this used to embed its own hardcoded
@@ -2054,7 +2069,14 @@ async def _al_send_agent_close_hold_alert(
     required_email_gate`), forcing urgent ntfy plus a forced email
     entry regardless of the per-slug channel list. Never raises — a
     failed alert must not prevent the hold itself from having been
-    staged."""
+    staged.
+
+    `title_prefix` (2026-11-24, audit finding #6): defaults to the exact
+    original "Agent close held" text, so every pre-existing AGENT_CLOSE
+    caller is byte-identical to before. `close_positions()` (expiry.py)
+    is the one other caller, passing "Expiry close held" — same
+    mechanism, same renderer (`_render_agent_close_hold` already reads
+    `extra["title"]` verbatim), no new alert agent/renderer needed."""
     try:
         from backend.shared.helpers.alert_utils import _DISPATCH_LOGGER
         agent_key = getattr(agent, "slug", None) or getattr(agent, "id", None) or "unknown"
@@ -2065,7 +2087,7 @@ async def _al_send_agent_close_hold_alert(
             f"[AGENT-CLOSE-HOLD] {message}",
             extra={
                 "tags": ["agent", "alert"], "alert_event": "agent_close_hold",
-                "title": f"Agent close held — {agent_key}", "body": message,
+                "title": f"{title_prefix} — {agent_key}", "body": message,
                 "action_required": True,
                 "agent_id": getattr(agent, "id", None),
                 "agent_name": getattr(agent, "name", None),
@@ -2123,6 +2145,23 @@ async def _al_maybe_stage_agent_close_hold(agent, params: dict, context: dict) -
         return
     side, qty, product = resolved
     agent_id = getattr(agent, "id", None)
+
+    # 2026-11-24 fix (audit finding #3): generalized from expiry.py's
+    # own in-flight guard — without this, a released AGENT_CLOSE or
+    # EXPIRY_CLOSE hold that is `OPEN` and still chasing was invisible
+    # to this function's dedup below (which only sees `status=='HELD'`
+    # rows), so a second HELD row could stage and auto-release while
+    # the first chase was still live, flipping the leg. Identity-only
+    # (no HoldCategory filter), so it also blocks against a hold the
+    # OTHER category is already working for this exact leg.
+    from backend.api.algo.order_inflight import _exp_leg_in_flight_this_session
+    if await _exp_leg_in_flight_this_session(account, symbol, exchange, side):
+        logger.info(
+            f"[AGENT-CLOSE-HOLD] agent {getattr(agent, 'slug', '?')}: "
+            f"{side} {symbol} ({exchange}) already has an unresolved order "
+            f"this session (HELD/OPEN/CANCEL_FAILED) — skipping re-stage"
+        )
+        return
 
     if await _al_agent_close_recently_cancelled_this_session(
         agent_id, account, symbol, exchange, side,

@@ -1868,16 +1868,22 @@ write an `order_events` record:
 
 **Amended 2026-10 (`c7ddcb56`)**: The hold gate for the `expiry_close` category is
 tunable via the Global Switches panel on `/admin/settings`, without requiring code
-changes or redeploy. Fields on `GlobalSwitchesRequest`/`Response` in
-`backend/api/routes/admin.py`: `expiry_close_hold_enabled` (bool toggle, with
+changes or redeploy. The one field still live on `GlobalSwitchesRequest`/`Response`
+in `backend/api/routes/admin.py` is `expiry_close_hold_enabled` (bool toggle, with
 bool-field inversion — the underlying storage key `hold.expiry_close_released` is
 the inverse: `expiry_close_hold_enabled=True` means closes ARE held, which maps to
-`hold.expiry_close_released=False`), plus `expiry_close_lead_minutes_mcx` and
-`expiry_close_lead_minutes_nfo` (int minute fields, 0–180 and 0–120 respectively).
-See [SETTINGS_SPEC.md](SETTINGS_SPEC.md#hold) for the underlying storage keys,
-defaults, and validation bounds. `set_int()` setter function in
-`backend/shared/helpers/settings.py` alongside existing `set_bool`/`set_string`
-helpers.
+`hold.expiry_close_released=False`). See [SETTINGS_SPEC.md](SETTINGS_SPEC.md#hold)
+for the underlying storage key, default, and validation bounds.
+
+> **REMOVED — audit finding #17, 2026-11-24.** `expiry_close_lead_minutes_mcx`/
+> `expiry_close_lead_minutes_nfo` (int minute fields, 0–180 and 0–120 respectively)
+> are gone from both the request/response Struct and the `/admin/settings` panel.
+> Their one reader, `order_hold_gate.py:cutoff_for()`/`before_cutoff()`, had zero
+> live callers — the real pre-close lead time for `expiry-day-itm-auto-close` is
+> the hardcoded `CLOSE_LEAD_MINUTES` constant in
+> `grammar_tokens/metric_is_expiry_preclose_close_window.py`, unrelated to these
+> fields. The underlying `hold.lead_minutes_mcx`/`hold.lead_minutes_nfo` settings
+> were retired from SEEDS in the same commit.
 
 > **REMOVED — Bracket/Template/GTT (T3.6, 2026-11).** `template_exit_hold_enabled`
 > (the fourth field this section used to document, under the heading "Expiry-Close

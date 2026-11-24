@@ -391,6 +391,8 @@ class TestHoldCheckStagesHoldWithZeroBrokerCalls:
 
         with patch("backend.api.algo.actions_live._al_close_resolve_position",
                    new=AsyncMock(return_value=("BUY", 50, "NRML"))), \
+             patch("backend.api.algo.order_inflight._exp_leg_in_flight_this_session",
+                   new=AsyncMock(return_value=False)), \
              patch("backend.api.algo.actions_live._al_agent_close_recently_cancelled_this_session",
                    new=AsyncMock(return_value=False)), \
              patch("backend.api.algo.actions_live._al_find_held_agent_close",
@@ -425,6 +427,8 @@ class TestHoldCheckStagesHoldWithZeroBrokerCalls:
 
         with patch("backend.api.algo.actions_live._al_close_resolve_position",
                    new=AsyncMock(return_value=("BUY", 50, "NRML"))), \
+             patch("backend.api.algo.order_inflight._exp_leg_in_flight_this_session",
+                   new=AsyncMock(return_value=False)), \
              patch("backend.api.algo.actions_live._al_agent_close_recently_cancelled_this_session",
                    new=AsyncMock(return_value=False)), \
              patch("backend.api.algo.actions_live._al_find_held_agent_close",
@@ -469,6 +473,8 @@ class TestHoldCheckStagesHoldWithZeroBrokerCalls:
         mock_alert = AsyncMock()
         with patch("backend.api.algo.actions_live._al_close_resolve_position",
                    new=AsyncMock(return_value=("BUY", 50, "NRML"))), \
+             patch("backend.api.algo.order_inflight._exp_leg_in_flight_this_session",
+                   new=AsyncMock(return_value=False)), \
              patch("backend.api.algo.actions_live._al_agent_close_recently_cancelled_this_session",
                    new=AsyncMock(return_value=False)), \
              patch("backend.api.algo.actions_live._al_find_held_agent_close",
@@ -585,6 +591,8 @@ class TestCancelSuppressionWithinSameSession:
         mock_alert = AsyncMock()
         with patch("backend.api.algo.actions_live._al_close_resolve_position",
                    new=AsyncMock(return_value=("BUY", 50, "NRML"))), \
+             patch("backend.api.algo.order_inflight._exp_leg_in_flight_this_session",
+                   new=AsyncMock(return_value=False)), \
              patch("backend.api.algo.actions_live._al_agent_close_recently_cancelled_this_session",
                    new=AsyncMock(return_value=True)), \
              patch("backend.api.algo.order_hold_gate.record_held_order", mock_record_held), \
@@ -597,3 +605,63 @@ class TestCancelSuppressionWithinSameSession:
 # Remaining piece (6 — auto-release scan) is appended by a later commit in
 # its own test file (test_agent_close_auto_release.py), since it lives in
 # background.py rather than actions_live.py.
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  Audit finding #3 (2026-11-24) — shared in-flight guard, generalized
+#  from expiry.py so AGENT_CLOSE sees a still-chasing released row too.
+# ═══════════════════════════════════════════════════════════════════════
+
+class TestAgentCloseSharedInFlightGuard:
+    @pytest.mark.asyncio
+    async def test_in_flight_leg_skips_stage_before_cancel_check(self):
+        """A leg already OPEN/HELD/CANCEL_FAILED this session (e.g. a
+        released hold still chasing) must never get a second HELD row
+        — and the in-flight check must run BEFORE the cancel-suppression
+        check, so it can't be bypassed by a stale 'not cancelled' result."""
+        from backend.api.algo.actions_live import _al_maybe_stage_agent_close_hold
+
+        agent = _make_agent(id=42)
+        mock_record_held = AsyncMock()
+        mock_alert = AsyncMock()
+        in_flight_check = AsyncMock(return_value=True)
+        cancel_check = AsyncMock(return_value=False)
+        with patch("backend.api.algo.actions_live._al_close_resolve_position",
+                   new=AsyncMock(return_value=("BUY", 50, "NRML"))), \
+             patch("backend.api.algo.order_inflight._exp_leg_in_flight_this_session",
+                   new=in_flight_check), \
+             patch("backend.api.algo.actions_live._al_agent_close_recently_cancelled_this_session",
+                   new=cancel_check), \
+             patch("backend.api.algo.order_hold_gate.record_held_order", mock_record_held), \
+             patch("backend.api.algo.actions_live._al_send_agent_close_hold_alert", mock_alert):
+            await _al_maybe_stage_agent_close_hold(agent, dict(_CLOSE_PARAMS), {})
+
+        in_flight_check.assert_awaited_once_with(
+            _CLOSE_PARAMS["account"], _CLOSE_PARAMS["symbol"],
+            _CLOSE_PARAMS["exchange"], "BUY",
+        )
+        cancel_check.assert_not_awaited()
+        mock_record_held.assert_not_called()
+        mock_alert.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_not_in_flight_proceeds_to_cancel_check_and_stage(self):
+        from backend.api.algo.actions_live import _al_maybe_stage_agent_close_hold
+
+        agent = _make_agent(id=42, release_timeout_minutes=None)
+        mock_record_held = AsyncMock(return_value=910)
+        mock_alert = AsyncMock()
+        with patch("backend.api.algo.actions_live._al_close_resolve_position",
+                   new=AsyncMock(return_value=("BUY", 50, "NRML"))), \
+             patch("backend.api.algo.order_inflight._exp_leg_in_flight_this_session",
+                   new=AsyncMock(return_value=False)), \
+             patch("backend.api.algo.actions_live._al_agent_close_recently_cancelled_this_session",
+                   new=AsyncMock(return_value=False)), \
+             patch("backend.api.algo.actions_live._al_find_held_agent_close",
+                   new=AsyncMock(return_value=None)), \
+             patch("backend.api.algo.order_hold_gate.record_held_order", mock_record_held), \
+             patch("backend.api.algo.actions_live._al_send_agent_close_hold_alert", mock_alert):
+            await _al_maybe_stage_agent_close_hold(agent, dict(_CLOSE_PARAMS), {})
+
+        mock_record_held.assert_called_once()
+        mock_alert.assert_called_once()

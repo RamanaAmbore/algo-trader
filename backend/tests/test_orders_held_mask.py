@@ -100,3 +100,69 @@ async def test_list_held_fn_direct_masks_for_non_admin():
 
     assert resp["held"][0]["account"] != "ZG0790"
     assert resp["held"][0]["account"].endswith("####")
+
+
+# ---------------------------------------------------------------------------
+# Audit finding #6 (frontend half, 2026-11-24): `status` and
+# `auto_release_at` surfaced as first-class response fields, instead of
+# requiring the frontend to parse the raw `hold` string itself.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_list_held_surfaces_status_and_auto_release_at():
+    from backend.api.routes.orders_held import HeldOrdersController
+
+    row = _held_row(
+        status="HELD",
+        hold_json=(
+            '{"category": "agent_close", "reason": "profit target",'
+            ' "auto_release_at": "2026-11-24T12:00:00+05:30"}'
+        ),
+    )
+    mock_request = MagicMock()
+    ctrl = HeldOrdersController(owner=None)
+
+    with patch("backend.api.database.async_session", return_value=_mock_session([row])), \
+         patch("backend.api.routes.orders_held.is_admin_request", return_value=True):
+        resp = await HeldOrdersController.list_held.fn(ctrl, request=mock_request)
+
+    held = resp["held"][0]
+    assert held["status"] == "HELD"
+    assert held["auto_release_at"] == "2026-11-24T12:00:00+05:30"
+
+
+@pytest.mark.asyncio
+async def test_list_held_auto_release_at_is_none_when_absent_from_hold_json():
+    """A hold category that never sets auto_release_at (e.g. agent_order,
+    the repeated-rejection hold) must surface `None`, not KeyError/500."""
+    from backend.api.routes.orders_held import HeldOrdersController
+
+    row = _held_row(
+        status="HELD",
+        hold_json='{"category": "agent_order", "reason": "repeated rejection"}',
+    )
+    mock_request = MagicMock()
+    ctrl = HeldOrdersController(owner=None)
+
+    with patch("backend.api.database.async_session", return_value=_mock_session([row])), \
+         patch("backend.api.routes.orders_held.is_admin_request", return_value=True):
+        resp = await HeldOrdersController.list_held.fn(ctrl, request=mock_request)
+
+    assert resp["held"][0]["auto_release_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_list_held_auto_release_at_none_on_malformed_hold_json():
+    """A malformed hold_json string must not raise — fails open to
+    auto_release_at=None, matching parse_hold_record()'s own convention."""
+    from backend.api.routes.orders_held import HeldOrdersController
+
+    row = _held_row(status="HELD", hold_json="not valid json {{{")
+    mock_request = MagicMock()
+    ctrl = HeldOrdersController(owner=None)
+
+    with patch("backend.api.database.async_session", return_value=_mock_session([row])), \
+         patch("backend.api.routes.orders_held.is_admin_request", return_value=True):
+        resp = await HeldOrdersController.list_held.fn(ctrl, request=mock_request)
+
+    assert resp["held"][0]["auto_release_at"] is None

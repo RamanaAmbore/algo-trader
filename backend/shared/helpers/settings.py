@@ -493,13 +493,15 @@ SEEDS: list[tuple] = [
      "interval. Bump higher to avoid hammering Kite on structural "
      "rejections (margin, tick, permission).",
      "s", {"min": 0, "max": 300, "step": 1}),
-    ("algo",        "algo.expiry_start_offset_hours","float", 0.5,
-     "Hours before market close to begin expiry-day auto-close scan. "
-     "Default 0.5h = T-30min (Indian retail-algo convention; matches "
-     "Sensibull / Streak auto-square-off windows). NFO triggers at "
-     "15:00 IST, MCX at 23:00 IST. Bg task does the equity (close all "
-     "ITM/NTM) vs commodity (close unhedged ITM only) split internally.",
-     "h", {"min": 0, "max": 6, "step": 0.25}),
+    # `algo.expiry_start_offset_hours` removed (2026-11-24, audit finding
+    # #15) — its one reader, `ExpiryEngine.run()`/`_run_nfo_close()`/
+    # `_run_mcx_close()`, was fully dead code (Part C already removed the
+    # only production caller). Removing it from SEEDS is enough: the
+    # already-seeded row is auto-dropped by `_prune_retired_keys()` on
+    # the next boot, same precedent as `hold.template_exit_released`
+    # above. Real expiry-close timing is now owned by
+    # `expiry-day-itm-auto-close`'s own condition window, not this
+    # setting.
     ("algo",        "algo.default_target_pct",      "float", 0.30,
      "Default auto take-profit % of fill price for every ticket / basket "
      "order.  E.g. 0.30 = +30% above entry for a BUY; -30% below for a "
@@ -517,21 +519,25 @@ SEEDS: list[tuple] = [
     # already-seeded `settings` row is auto-dropped by this function's
     # own `_prune_retired_keys()` call on the next boot, no dedicated
     # migration needed.
-    ("hold",        "hold.lead_minutes_nfo",        "int", 15,
-     "Minutes before the NFO close at which expiry closes are created.",
-     "min", {"min": 0, "max": 120, "step": 1}),
-    ("hold",        "hold.lead_minutes_mcx",        "int", 30,
-     "Minutes before the MCX close at which expiry closes are created.",
-     "min", {"min": 0, "max": 180, "step": 1}),
+    #
+    # `hold.lead_minutes_nfo`/`hold.lead_minutes_mcx` removed (2026-11-24,
+    # audit finding #17) — their one reader, `order_hold_gate.py`'s
+    # `cutoff_for()`/`before_cutoff()`, had zero live callers (confirmed
+    # via grep) and was removed in the same commit. The admin API
+    # fields and frontend controls that edited these two settings are
+    # removed too (admin.py, admin/settings/+page.svelte) — they moved
+    # a value nothing downstream ever read.
     ("log",         "log.db_min_level",             "int", 20,
      "Lowest log level stored in log_events (10 DEBUG, 20 INFO, 30 WARNING, 40 ERROR).",
      "level", {"min": 10, "max": 40, "step": 10}),
     ("log",         "log.retention_days",           "int", 7,
      "Days of log_events rows kept; older rows are pruned daily.",
      "days", {"min": 1, "max": 90, "step": 1}),
-    ("algo",        "algo.expiry_rescan_minutes",   "int", 30,
-     "Re-scan interval (min) on expiry day for new ITM positions.",
-     "min", {"min": 1, "max": 120, "step": 1}),
+    # `algo.expiry_rescan_minutes` removed (2026-11-24, audit finding
+    # #15) — same reason as `algo.expiry_start_offset_hours` above: its
+    # one reader was the now-fully-dead legacy `ExpiryEngine.run()`
+    # loop. `_prune_retired_keys()` drops the already-seeded row on the
+    # next boot.
     ("algo",        "algo.expiry_check_time",       "string", "09:20",
      "Wall-clock IST time-of-day (HH:MM) when the bg-expiry task "
      "wakes to scan for expiring positions. Default 09:20 = market "

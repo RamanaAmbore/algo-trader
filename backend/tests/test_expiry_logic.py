@@ -65,82 +65,13 @@ def test_expiry_engine_state_machine_in_source():
     )
 
 
-@pytest.mark.asyncio
-async def test_rescan_loop_picks_up_newly_itm_positions():
-    """Positions that go ITM after morning scan are caught by the re-scan loop.
-
-    Verifies that _run_mcx_close calls scan_positions() and that
-    newly-ITM positions are passed to close_positions() for closing.
-    """
-    from unittest.mock import AsyncMock, patch
-    from backend.api.algo.expiry import ExpiryEngine, OptionPosition
-    from datetime import date, time as dtime
-
-    engine = ExpiryEngine()
-
-    # Position that is ITM and needs closing
-    pos_itm = OptionPosition(
-        account="test_account",
-        tradingsymbol="CRUDEOILJAN25C7200",
-        exchange="MCX",
-        instrument_type="CE",
-        underlying="CRUDEOIL",
-        strike=7200.0,
-        expiry=date.today(),
-        quantity=1,
-        product="NRML",
-        ltp=0.25,
-        underlying_ltp=7250.0,  # 0.7% ITM (inside default 2% NTM buffer)
-        moneyness="ITM",
-        needs_close=True,
-        close_reason="MCX unhedged ITM after 4-rule netting (residual qty +1; theta=0.010)",
-        theta=0.01,
-        residual_qty=1,
-    )
-
-    # Mock scan_positions to return the ITM position
-    scan_positions_called = []
-    def mock_scan_positions():
-        scan_positions_called.append(True)
-        return [pos_itm]
-
-    # Mock close_positions to track calls
-    close_positions_calls = []
-    async def mock_close_positions(positions):
-        close_positions_calls.append(positions)
-
-    with patch.object(engine, 'scan_positions', side_effect=mock_scan_positions):
-        with patch.object(engine, 'close_positions', side_effect=mock_close_positions):
-            # Mock _run_nfo_close to do nothing
-            with patch.object(engine, '_run_nfo_close', new_callable=AsyncMock):
-                # Run the MCX close phase which includes re-scanning
-                today = date.today()
-                mcx_close = dtime(23, 30)
-
-                # Mock time so we skip the wait
-                with patch('backend.api.algo.expiry.timestamp_indian') as mock_ts:
-                    # Make it so we're well past the start time
-                    mock_ts.return_value.time.return_value = dtime(22, 0)
-                    await engine._run_mcx_close(today, mcx_close)
-
-    # Verify scan_positions was called during MCX close phase
-    assert len(scan_positions_called) >= 1, (
-        "scan_positions must be called during MCX close phase"
-    )
-
-    # Verify close_positions was called with the ITM position
-    assert len(close_positions_calls) > 0, (
-        "close_positions must be called when ITM positions are found"
-    )
-
-    # The close call should have the ITM position
-    close_call_positions = close_positions_calls[-1]
-    assert len(close_call_positions) >= 1, (
-        "Close should include at least the ITM position"
-    )
-    assert close_call_positions[0].tradingsymbol == "CRUDEOILJAN25C7200", (
-        "Close must include the ITM position detected in re-scan"
-    )
+# `test_rescan_loop_picks_up_newly_itm_positions` removed (2026-11-24,
+# audit finding #15) — exercised the now-deleted `_run_mcx_close()`
+# directly. The real re-scan coverage lives in
+# test_expiry_day_and_preclose_agents.py (`expiry-day-itm-auto-close`'s
+# own periodic re-fire) and the end-to-end tests below that drive the
+# real `_action_live_expiry_auto_close` → `scan_positions()` →
+# `close_positions()` chain.
 
 
 def test_index_ltp_key_maps_nifty():
@@ -250,102 +181,82 @@ async def test_expiry_auto_close_action_scans_unconditionally_no_cutoff_gate():
 
 
 @pytest.mark.asyncio
-async def test_nfo_rescan_loop_catches_newly_itm_in_run():
-    """run() re-scan loop must detect NFO positions that cross ITM after morning scan.
+async def test_expiry_auto_close_honors_explicit_exchange_param():
+    """Audit finding #4 (2026-11-24): an explicit params['exchange']
+    must narrow which exchange(s) get closed, even when the OTHER
+    exchange is also genuinely within its own pre-close window right
+    now -- closing the live/paper/sim divergence (paper/sim already
+    honored this param)."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from backend.api.algo.actions_live import _action_live_expiry_auto_close
 
-    Scenario: morning scan finds one MCX position (keeps run() alive past the
-    early-return guard). The re-scan loop then finds a newly-ITM NFO position
-    that was OTM at open and _run_nfo_close is called for it.
-    """
-    from unittest.mock import AsyncMock, patch, MagicMock
-    from backend.api.algo.expiry import ExpiryEngine, OptionPosition
-    from datetime import date, time as dtime, datetime, timezone, timedelta
+    agent = MagicMock()
+    agent.slug = "expiry-day-itm-auto-close"
+    agent.id = 42
 
-    engine = ExpiryEngine()
+    mock_engine = MagicMock()
+    mock_engine.scan_positions.return_value = [
+        MagicMock(exchange="MCX"), MagicMock(exchange="NFO"),
+    ]
+    mock_engine.close_positions = AsyncMock()
+    mock_engine.state.closed = []
+    mock_engine.state.failed = []
+    mock_engine.state.total_slippage = 0.0
 
-    expiry_date = date.today()
+    with patch("backend.api.algo.expiry.ExpiryEngine", return_value=mock_engine), \
+         patch(
+             "backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window."
+             "_expiry_preclose_exchanges",
+             return_value={"MCX", "NFO"},
+         ):
+        await _action_live_expiry_auto_close(agent, {}, {"exchange": "NFO"})
 
-    # MCX position found in morning scan — keeps run() from early-returning
-    pos_mcx = OptionPosition(
-        account="acc1",
-        tradingsymbol="CRUDEOILJAN25C7200",
-        exchange="MCX",
-        instrument_type="CE",
-        underlying="CRUDEOIL",
-        strike=7200.0,
-        expiry=expiry_date,
-        quantity=1,
-        product="NRML",
-        ltp=50.0,
-        underlying_ltp=7300.0,
-        moneyness="ITM",
-        needs_close=True,
-        close_reason="MCX unhedged ITM",
-        residual_qty=1,
-    )
+    mock_engine.close_positions.assert_awaited_once()
+    closed_positions = mock_engine.close_positions.await_args.args[0]
+    assert len(closed_positions) == 1
+    assert closed_positions[0].exchange == "NFO"
 
-    # NFO position that goes ITM during the day — caught by re-scan loop
-    pos_itm_nfo = OptionPosition(
-        account="acc1",
-        tradingsymbol="NIFTY24JUL25000CE",
-        exchange="NFO",
-        instrument_type="CE",
-        underlying="NIFTY",
-        strike=25000.0,
-        expiry=expiry_date,
-        quantity=50,
-        product="NRML",
-        ltp=10.0,
-        underlying_ltp=25100.0,
-        moneyness="ITM",
-        needs_close=True,
-        close_reason="Equity ITM — must close before expiry",
-        residual_qty=50,
-    )
 
-    scan_calls: list[int] = []
-    def mock_scan():
-        scan_calls.append(1)
-        if len(scan_calls) == 1:
-            return [pos_mcx]  # morning scan: only MCX, no NFO yet
-        return [pos_itm_nfo]  # re-scan: newly-ITM NFO position
+@pytest.mark.asyncio
+async def test_expiry_auto_close_no_exchange_param_keeps_every_in_window_exchange():
+    """No `exchange` param (the default agent's own shape) -- behaviour
+    unchanged from before this fix: every exchange currently in-window
+    is processed together."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from backend.api.algo.actions_live import _action_live_expiry_auto_close
 
-    nfo_close_calls: list = []
-    async def mock_run_nfo_close(today, equity_close, positions):
-        nfo_close_calls.append(list(positions))
+    agent = MagicMock()
+    agent.slug = "expiry-day-itm-auto-close"
+    agent.id = 42
 
-    async def mock_run_mcx_close(today, mcx_close):
-        pass
+    mock_engine = MagicMock()
+    mock_engine.scan_positions.return_value = [
+        MagicMock(exchange="MCX"), MagicMock(exchange="NFO"),
+    ]
+    mock_engine.close_positions = AsyncMock()
+    mock_engine.state.closed = []
+    mock_engine.state.failed = []
+    mock_engine.state.total_slippage = 0.0
 
-    ist_offset = timezone(timedelta(hours=5, minutes=30))
-    fake_now = datetime(expiry_date.year, expiry_date.month, expiry_date.day,
-                        9, 25, 0, tzinfo=ist_offset)
+    with patch("backend.api.algo.expiry.ExpiryEngine", return_value=mock_engine), \
+         patch(
+             "backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window."
+             "_expiry_preclose_exchanges",
+             return_value={"MCX", "NFO"},
+         ):
+        await _action_live_expiry_auto_close(agent, {}, {})
 
-    call_count = 0
-    def mock_timestamp_indian():
-        nonlocal call_count
-        call_count += 1
-        # First 2 calls (now_ist at top of run(), _nfo_deadline): return 09:25
-        # Call 3 = while-loop guard — return 09:25 (enters loop)
-        # Call 4 = while-loop guard after sleep — return 15:30 (exits loop)
-        if call_count <= 3:
-            return fake_now
-        return fake_now.replace(hour=15, minute=30)
+    closed_positions = mock_engine.close_positions.await_args.args[0]
+    assert {p.exchange for p in closed_positions} == {"MCX", "NFO"}
 
-    with patch("backend.api.algo.expiry.timestamp_indian", side_effect=mock_timestamp_indian):
-        with patch.object(engine, "scan_positions", side_effect=mock_scan):
-            with patch.object(engine, "_run_nfo_close", side_effect=mock_run_nfo_close):
-                with patch.object(engine, "_run_mcx_close", side_effect=mock_run_mcx_close):
-                    with patch("asyncio.sleep", new_callable=AsyncMock):
-                        await engine.run()
 
-    assert len(nfo_close_calls) >= 1, (
-        "run() must call _run_nfo_close for newly-ITM NFO positions found in re-scan"
-    )
-    last_call_syms = [p.tradingsymbol for p in nfo_close_calls[-1]]
-    assert "NIFTY24JUL25000CE" in last_call_syms, (
-        "Re-scan _run_nfo_close call must include the newly-ITM NFO position"
-    )
+# `test_nfo_rescan_loop_catches_newly_itm_in_run` removed (2026-11-24,
+# audit finding #15) — exercised the now-deleted `run()` directly (and
+# its `_run_nfo_close()`/`_run_mcx_close()` helpers). Real re-scan
+# coverage for a leg that turns ITM intraday now lives in
+# test_expiry_day_and_preclose_agents.py, via `expiry-day-itm-auto-
+# close`'s own periodic re-fire (see the cooldown-retime entry in
+# agent_engine.py for why 30 min covers this gap).
 
 
 def test_nse_index_quote_keys_mapping():
@@ -497,6 +408,8 @@ async def test_close_positions_records_held_order_with_expiry_close_category():
 
     with patch("backend.api.algo.expiry._exp_leg_in_flight_this_session", new=_not_in_flight), \
          patch("backend.api.algo.expiry.expiry_close_held", return_value=True), \
+         patch("backend.api.algo.actions_live._al_agent_close_recently_cancelled_this_session",
+               new=AsyncMock(return_value=False)), \
          patch("backend.api.algo.expiry.record_held_order", mock_record):
         await engine.close_positions([pos])
 
@@ -751,6 +664,84 @@ async def test_expiry_auto_close_chases_when_operator_releases_the_hold():
     held_mock.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_expiry_auto_close_fails_loud_on_unresolved_spot_instead_of_false_all_clear():
+    """Audit finding #11 (2026-11-24): a failed underlying-LTP fetch
+    leaves every expiring leg's moneyness UNKNOWN (never flagged
+    needs_close), so `to_close` reads empty identically whether the
+    book is genuinely clean or the fetch just failed. The action must
+    log CRITICAL, not a routine INFO "nothing to close", when that
+    empty result is explained by an unresolved spot price."""
+    from unittest.mock import MagicMock, patch
+    from datetime import date, datetime, timezone
+    from backend.api.algo.expiry import OptionPosition
+    from backend.api.algo.actions_live import _action_live_expiry_auto_close
+
+    today = date(2026, 11, 26)
+    frozen_now = datetime(2026, 11, 26, 16, 0, 0, tzinfo=timezone.utc)
+    lone_leg = OptionPosition(
+        account="ZG0790", tradingsymbol="CRUDEOIL26NOV5500CE", exchange="MCX",
+        instrument_type="CE", underlying="CRUDEOIL", strike=5500.0,
+        expiry=today, quantity=1, product="NRML", ltp=120.0,
+    )
+
+    agent = MagicMock()
+    agent.slug = "expiry-day-itm-auto-close"
+    agent.id = 42
+
+    with patch("backend.api.algo.expiry.timestamp_indian", return_value=frozen_now), \
+         patch("backend.api.algo.expiry.ExpiryEngine._fetch_option_positions",
+               return_value=[lone_leg]), \
+         patch("backend.api.algo.expiry.ExpiryEngine._fetch_future_positions",
+               return_value=[]), \
+         patch("backend.api.algo.expiry.ExpiryEngine._fetch_underlying_ltps",
+               return_value={}), \
+         patch("backend.api.algo.actions_live.logger") as mock_logger, \
+         patch(
+             "backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window."
+             "_expiry_preclose_exchanges",
+             return_value={"MCX"},
+         ):
+        await _action_live_expiry_auto_close(agent, {}, {})
+
+    assert mock_logger.critical.called, \
+        "an unresolved-spot-price empty result must log CRITICAL, not a silent all-clear"
+    assert not mock_logger.info.called or all(
+        "no positions need closing" not in str(c) for c in mock_logger.info.call_args_list
+    )
+
+
+@pytest.mark.asyncio
+async def test_expiry_auto_close_genuinely_clean_scan_stays_info_level():
+    """Sanity check for the other side: a genuinely empty expiry day
+    (nothing expiring at all, real LTP fetch untouched) must NOT
+    escalate to CRITICAL — only an UNKNOWN-moneyness leg should."""
+    from unittest.mock import MagicMock, patch
+    from datetime import datetime, timezone
+    from backend.api.algo.actions_live import _action_live_expiry_auto_close
+
+    frozen_now = datetime(2026, 11, 26, 16, 0, 0, tzinfo=timezone.utc)
+
+    agent = MagicMock()
+    agent.slug = "expiry-day-itm-auto-close"
+    agent.id = 42
+
+    with patch("backend.api.algo.expiry.timestamp_indian", return_value=frozen_now), \
+         patch("backend.api.algo.expiry.ExpiryEngine._fetch_option_positions",
+               return_value=[]), \
+         patch("backend.api.algo.expiry.ExpiryEngine._fetch_future_positions",
+               return_value=[]), \
+         patch("backend.api.algo.actions_live.logger") as mock_logger, \
+         patch(
+             "backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window."
+             "_expiry_preclose_exchanges",
+             return_value={"MCX"},
+         ):
+        await _action_live_expiry_auto_close(agent, {}, {})
+
+    mock_logger.critical.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # 2026-11-22 double-close fix — a leg released from HELD and still chasing
 # could get a SECOND HELD row from the next re-scan (expiry-day-itm-auto-
@@ -902,6 +893,8 @@ class TestClosePositionsSkipsInFlightLegs:
         with patch("backend.api.algo.expiry._exp_leg_in_flight_this_session",
                    new=_fake_in_flight), \
              patch("backend.api.algo.expiry.expiry_close_held", return_value=True), \
+             patch("backend.api.algo.actions_live._al_agent_close_recently_cancelled_this_session",
+                   new=AsyncMock(return_value=False)), \
              patch("backend.api.algo.expiry.record_held_order",
                    new=AsyncMock(return_value=101)) as held_mock, \
              patch("backend.api.algo.expiry.chase_order",

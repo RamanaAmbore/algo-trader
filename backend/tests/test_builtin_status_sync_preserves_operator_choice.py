@@ -221,3 +221,70 @@ class TestBuildAgentRowReadsTradeModeFromSpec:
             f"entirely (letting SQLAlchemy's column default apply only "
             f"on insert) — got {row.trade_mode!r}"
         )
+
+
+class TestTradeModeRestartFailSafe:
+    """Audit finding #7 (2026-11-24; operator decision: apply uniformly
+    to every builtin spec, not scoped to any specific agent). Mirrors
+    the pre-existing `require_release` fail-safe's own test shape."""
+
+    def test_mismatched_trade_mode_is_restored_to_the_specs_value(self):
+        from types import SimpleNamespace
+        from backend.api.algo.agent_engine import _ae_sync_existing_builtin
+
+        agent_def = _by_slug("expiry-day-itm-auto-close")
+        existing = SimpleNamespace(
+            conditions=agent_def["conditions"], long_name=None,
+            schedule=agent_def.get("schedule", "always"),
+            tier=agent_def["tier"], topic=agent_def.get("topic", "general"),
+            status="active", events=list(agent_def["events"]), actions=[],
+            cooldown_minutes=agent_def.get("cooldown_minutes", 30),
+            fire_at_time=agent_def.get("fire_at_time"), last_fired=None,
+            trade_mode="paper",  # a manual edit, bad migration, or seed regression
+        )
+        _ae_sync_existing_builtin(existing, agent_def)
+        assert existing.trade_mode == "live", (
+            "a builtin whose spec declares trade_mode must have that "
+            "value restored on restart when the stored row diverges"
+        )
+
+    def test_matching_trade_mode_is_left_alone(self):
+        from types import SimpleNamespace
+        from backend.api.algo.agent_engine import _ae_sync_existing_builtin
+
+        agent_def = _by_slug("expiry-day-itm-auto-close")
+        existing = SimpleNamespace(
+            conditions=agent_def["conditions"], long_name=None,
+            schedule=agent_def.get("schedule", "always"),
+            tier=agent_def["tier"], topic=agent_def.get("topic", "general"),
+            status="active", events=list(agent_def["events"]), actions=[],
+            cooldown_minutes=agent_def.get("cooldown_minutes", 30),
+            fire_at_time=agent_def.get("fire_at_time"), last_fired=None,
+            trade_mode="live",
+        )
+        _ae_sync_existing_builtin(existing, agent_def)
+        assert existing.trade_mode == "live"
+
+    def test_builtin_with_no_trade_mode_in_spec_is_unaffected(self):
+        """A builtin that never specifies trade_mode must not have this
+        sync invent one — the row's own value is left exactly as-is,
+        same guard pattern _ae_build_agent_row already uses."""
+        from types import SimpleNamespace
+        from backend.api.algo.agent_engine import _ae_sync_existing_builtin
+
+        agent_def = _by_slug("loss-funds-negative")
+        assert "trade_mode" not in agent_def  # test premise
+        existing = SimpleNamespace(
+            conditions=agent_def["conditions"], long_name=None,
+            schedule=agent_def.get("schedule", "market_hours"),
+            tier=agent_def["tier"], topic=agent_def.get("topic", "general"),
+            status="active", events=list(agent_def["events"]), actions=[],
+            cooldown_minutes=agent_def.get("cooldown_minutes", 30),
+            fire_at_time=agent_def.get("fire_at_time"), last_fired=None,
+            trade_mode="paper",
+        )
+        _ae_sync_existing_builtin(existing, agent_def)
+        assert existing.trade_mode == "paper", (
+            "a builtin with no trade_mode key in its spec must never "
+            "have its stored value touched"
+        )

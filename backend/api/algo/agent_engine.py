@@ -1455,31 +1455,18 @@ async def _v2_expiry_exchange_section(exch: str, label: str, all_expiring: list)
 
 
 def _v2_expiry_context_shim(context: dict | None):
-    """Minimal attribute-accessible shim over the dispatch `context`
-    dict, so the grammar-token metric resolvers (which read `ctx.
-    segment_flags`/`ctx.position_rows` via `getattr`) can be reused
-    outside the condition-evaluation path. Same pattern used by
-    `actions_live.py:_al_expiry_context_shim` — kept as one shape so
-    the two never drift into different attribute sets.
-
-    2026-11-23 fix (Part C, confirmed-live P0, same bug as the sibling
-    shim in `actions_live.py` — see that function's own docstring for
-    the full incident): this shim omitted `.now`, so `_expiry_preclose_
-    exchanges()` ALWAYS returned an empty set here too, meaning
-    `_v2_expiry_position_breakdown()` (the `expiry-day-preclose-alert`
-    render helper) has never actually rendered a position breakdown —
-    it always hit its own "fired but no exchange is currently within
-    its own pre-close window" branch and rendered nothing, every time
-    the alert fired. `now` comes from the SAME `context["now"]` key
-    `_build_context()` sets (line ~4250 above)."""
-    from types import SimpleNamespace
-    from backend.shared.helpers.date_time_utils import timestamp_indian
-    context = context or {}
-    return SimpleNamespace(
-        segment_flags=context.get("segment_flags") or {},
-        position_rows=context.get("position_rows") or [],
-        now=context.get("now") or timestamp_indian(),
-    )
+    """Thin delegator to the shared `expiry_context_shim()`
+    (2026-11-24, audit finding #18) — kept as its own name/module
+    location purely so existing callers/imports/tests in this module
+    are unaffected. Previously a byte-identical duplicate of
+    `actions_live.py:_al_expiry_context_shim`, deliberately copy-pasted
+    instead of imported to avoid a circular import between this module
+    and `actions_live.py`. The real body now lives in
+    `expiry_context_shim.py`, which neither module needs to import the
+    other to reach — see that module's own docstring for the 2026-11-23
+    `.now`-omission incident this duplication once let slip through."""
+    from backend.api.algo.expiry_context_shim import expiry_context_shim
+    return expiry_context_shim(context)
 
 
 async def _v2_expiry_position_breakdown(context: dict | None) -> str | None:
@@ -2822,14 +2809,22 @@ _EXPIRY_RISK_AGENTS = [
     {
         "slug": "expiry-nfo-risk-alert",
         "name": "NFO or MCX expiry risk — ITM/unhedged options or open futures",
-        "long_name": "when:(positions.expiring_today.nfo.(is_itm==1 OR is_future==1) AND NOT(nse_preclose_window)) OR (positions.expiring_today.mcx_unhedged.pnl>=-inf AND NOT(mcx_preclose_window))   alert:high/tg+email+ntfy(high)+log   do:notify-only",
+        "long_name": "when:(positions.expiring_today.nfo.pnl>=-inf AND NOT(nse_preclose_window)) OR (positions.expiring_today.mcx_unhedged.pnl>=-inf AND NOT(mcx_preclose_window))   alert:high/tg+email+ntfy(high)+log   do:notify-only",
         "description": "Fires on expiry day when any NFO position is ITM (option) or is an open future, OR any MCX option position is unhedged after the real engine's 4-rule netting (or UNKNOWN-moneyness) — all three require active management, and MCX additionally risks an unfavourable broker auto-settlement. A lone expiring MCX future with no option leg is never itself flagged (futures are netting partners only, never a needs_close candidate in their own right). Each exchange's own branch is suppressed during that exchange's own 65-min pre-close window (retimed 2026-11-22, was 30), where expiry-day-preclose-alert already reports the same thing — the other exchange's branch keeps firing normally.",
         "conditions": {"any": [
             {"all": [
-                {"any": [
-                    {"op": "==", "scope": "positions.expiring_today.nfo", "metric": "is_itm",    "value": 1.0},
-                    {"op": "==", "scope": "positions.expiring_today.nfo", "metric": "is_future", "value": 1.0},
-                ]},
+                # 2026-11-24 fix (audit finding #14): the NFO leaf used to
+                # be `any[is_itm==1, is_future==1]`, evaluated by the
+                # GENERIC is_itm metric per row — which silently drops a
+                # row with an unresolvable spot price (no match, no log),
+                # unlike the MCX branch below. The scope itself
+                # (`positions.expiring_today.nfo`) now owns that
+                # membership test AND fails loud on an unresolved spot
+                # (see that module's own docstring) — this leaf is now a
+                # tautological sentinel, mirroring the MCX branch's own
+                # `pnl >= -999999999` pattern: the scope's own
+                # classification fully decides membership.
+                {"op": ">=", "scope": "positions.expiring_today.nfo", "metric": "pnl", "value": -999999999},
                 {"not": {"all": [
                     {"op": "==", "scope": "funds.total", "metric": "is_nse_expiry_today",        "value": 1.0},
                     {"op": "<=", "scope": "funds.total", "metric": "minutes_until_nse_close",     "value": 65},
@@ -2894,17 +2889,19 @@ BUILTIN_AGENTS.extend(_EXPIRY_RISK_AGENTS)
 # account) with NO exchange dimension (this `funds.total`-scoped leaf
 # carries no account/underlying to key on) — but a SHORT cooldown here
 # is deliberate, not a leftover: at 65/60-minute windows (was 30/25),
-# MCX had no periodic re-scan of its own between the single scan at
-# T-60 and close — unlike NFO, which already re-scans every
-# `algo.expiry_rescan_minutes` (default 30) inside the legacy
-# ExpiryEngine.run() loop. A leg that turns genuinely unnetted-ITM in
-# that last hour (price moves against it after the T-60 scan) would
-# have gone unflagged until next-day review. 30 min — reusing the SAME
-# default cadence NFO's own re-scan loop already uses, not a new
-# arbitrary number — lets `expiry-day-itm-auto-close` re-fire ~2 times
-# inside its own 60-min window (T-60, T-30), re-running
-# `ExpiryEngine.scan_positions()` each time. A re-fire is safe for an
-# already-HELD leg (the per-leg dedup guard inside `record_held_order()`,
+# a single scan at T-60 has no periodic re-scan of its own before
+# close for EITHER exchange (2026-11-24 fix, audit finding #15: the
+# OLD rationale here cited a "legacy ExpiryEngine.run() loop" that
+# re-scanned NFO every `algo.expiry_rescan_minutes` — that loop and
+# both settings are now fully dead code, removed; neither exchange has
+# had a standalone re-scan mechanism since Part C). A leg that turns
+# genuinely unnetted-ITM in that last hour (price moves against it
+# after the T-60 scan) would go unflagged until next-day review
+# without this agent's OWN periodic re-fire covering the gap. 30 min
+# lets `expiry-day-itm-auto-close` re-fire ~2 times inside its own
+# 60-min window (T-60, T-30), re-running `ExpiryEngine.scan_positions()`
+# each time. A re-fire is safe for an already-HELD leg (the per-leg
+# dedup guard inside `record_held_order()`,
 # order_hold_gate.py, returns the existing HELD row's id instead of
 # duplicating it) AND for a leg the operator already released and is
 # still chasing (`_exp_leg_in_flight_this_session()`, expiry.py, skips
@@ -3536,6 +3533,70 @@ def _ae_sync_require_release_fail_safe(existing, agent_def: dict) -> None:
     existing.require_release = True
 
 
+def _ae_sync_trade_mode_fail_safe(existing, agent_def: dict) -> None:
+    """`trade_mode` restart fail-safe (audit finding #7, 2026-11-24;
+    operator decision: apply uniformly to every builtin spec, not
+    scoped to any specific agent). Mirrors `_ae_sync_require_release_
+    fail_safe`'s own extraction/placement — same `_ae_sync_existing_
+    builtin` caller.
+
+    This is the exact bug class behind the 2026-10-31 incident where
+    `expiry-day-itm-auto-close` silently ran in paper mode on its first
+    live trading day because `_ae_build_agent_row` never read
+    `trade_mode` from the spec at all — `require_release` already got
+    a one-way restart fail-safe for the identical reason; `trade_mode`
+    never did.
+
+    Unlike `require_release`, there is no single universally-"safer"
+    direction across every builtin — a spec that declares `trade_mode:
+    "live"` is a deliberate per-agent design choice (e.g. a safety
+    action that must reach its own real hold-gate path), not a
+    generically-safer value than "paper". So this restores the row to
+    whatever value its OWN spec declares, in whichever direction that
+    requires, for ANY builtin that sets `trade_mode` explicitly — a
+    builtin with no `trade_mode` key in its spec is completely
+    unaffected, same guard pattern `_ae_build_agent_row` already uses
+    for the same key."""
+    if "trade_mode" not in agent_def:
+        return
+    spec_value = agent_def["trade_mode"]
+    # getattr, not direct attribute access — a hand-built test double
+    # (SimpleNamespace/MagicMock) may not set this field at all; a real
+    # Agent row always has it (non-null column default "paper").
+    current_value = getattr(existing, "trade_mode", None)
+    if current_value == spec_value:
+        return
+    logger.warning(
+        "Agent engine: seed '%s' declares trade_mode=%r but the "
+        "existing row has %r — restoring the spec's own value.",
+        agent_def.get("slug", "<unknown>"), spec_value, current_value,
+    )
+    existing.trade_mode = spec_value
+
+
+def _ae_sync_events_additive(existing, agent_def: dict) -> None:
+    """Additive-sync events: add any default channel missing from the
+    stored events. Never removes channels the operator may have added
+    manually. Extracted from `_ae_sync_existing_builtin` to keep it
+    under the CC gate, mirroring `_ae_sync_require_release_fail_safe`'s
+    own extraction above.
+
+    2026-11-24 fix (audit finding #8): skipped entirely once
+    `events_operator_edited` is True — before this, re-adding a missing
+    default channel silently reverted an operator's deliberate removal
+    of that channel (e.g. ntfy) on every restart. `getattr(..., False)`
+    — a hand-built test double may not set this new field at all;
+    absence means "never edited by an operator", the same as a fresh
+    row's real column default."""
+    if getattr(existing, "events_operator_edited", False):
+        return
+    code_events = agent_def.get("events", [])
+    stored_channels = {e["channel"] for e in (existing.events or [])}
+    missing = [e for e in code_events if e["channel"] not in stored_channels]
+    if missing:
+        existing.events = list(existing.events or []) + missing
+
+
 def _ae_has_pnl_leaf(cond: dict | None) -> bool:
     """True when the condition tree contains any leaf with metric in ('pnl', 'pnl_pct')."""
     if not isinstance(cond, dict):
@@ -3622,6 +3683,14 @@ _AE_CONTENT_MATCHED_COND_MIGRATIONS: dict[str, dict] = {
     # `expiry-mcx-risk-alert`'s own entry is removed — its slug no
     # longer exists in `BUILTIN_AGENTS`, so it is pruned (deleted) by
     # `_ae_prune_retired_builtins()` instead of migrated.
+    # 2026-11-24 — updated AGAIN (audit finding #14) from the 65-min,
+    # generic-is_itm/is_future shape (BYTE-FOR-BYTE what the 2026-11-22
+    # retime above shipped) to the CURRENT tautological-sentinel shape
+    # (see `_EXPIRY_RISK_AGENTS`'s own conditions dict above). The
+    # 30-min pre-retime shape this replaced is moot — that migration
+    # already ran against any live row by the time this one ships
+    # (only one trigger shape per slug is kept, same convention as the
+    # 2026-11-22 entry's own comment).
     "expiry-nfo-risk-alert": {"any": [
         {"all": [
             {"any": [
@@ -3630,14 +3699,14 @@ _AE_CONTENT_MATCHED_COND_MIGRATIONS: dict[str, dict] = {
             ]},
             {"not": {"all": [
                 {"op": "==", "scope": "funds.total", "metric": "is_nse_expiry_today",        "value": 1.0},
-                {"op": "<=", "scope": "funds.total", "metric": "minutes_until_nse_close",     "value": 30},
+                {"op": "<=", "scope": "funds.total", "metric": "minutes_until_nse_close",     "value": 65},
             ]}},
         ]},
         {"all": [
             {"op": ">=", "scope": "positions.expiring_today.mcx_unhedged", "metric": "pnl", "value": -999999999},
             {"not": {"all": [
                 {"op": "==", "scope": "funds.total", "metric": "is_mcx_expiry_today",        "value": 1.0},
-                {"op": "<=", "scope": "funds.total", "metric": "minutes_until_mcx_close",     "value": 30},
+                {"op": "<=", "scope": "funds.total", "metric": "minutes_until_mcx_close",     "value": 65},
             ]}},
         ]},
     ]},
@@ -3695,13 +3764,8 @@ def _ae_sync_existing_builtin(existing, agent_def: dict) -> None:
     if _ae_seed_ships_inactive(agent_def):
         _ae_sync_builtin_status(existing, _ae_guard_seed_status(agent_def, default=None))
     _ae_sync_require_release_fail_safe(existing, agent_def)
-    # Additive-sync events: add any default channel missing from the stored events.
-    # Never removes channels the operator may have added manually.
-    code_events = agent_def.get("events", [])
-    stored_channels = {e["channel"] for e in (existing.events or [])}
-    missing = [e for e in code_events if e["channel"] not in stored_channels]
-    if missing:
-        existing.events = list(existing.events or []) + missing
+    _ae_sync_trade_mode_fail_safe(existing, agent_def)
+    _ae_sync_events_additive(existing, agent_def)
     new_fire_at_time = agent_def.get("fire_at_time")
     if existing.fire_at_time != new_fire_at_time:
         existing.fire_at_time = new_fire_at_time
@@ -3835,6 +3899,7 @@ async def _ae_prune_retired_builtins(session, builtin_slugs: set) -> None:
     `bracket_registry.migrate_order_templates_to_bracket_agents()`) are
     likewise never in BUILTIN_AGENTS — same exclusion, same reason."""
     from sqlalchemy import delete as sa_delete
+    from backend.api.models import AlgoOrder
     retired = await session.execute(
         select(Agent).where(
             Agent.is_system.is_(True),
@@ -3844,6 +3909,31 @@ async def _ae_prune_retired_builtins(session, builtin_slugs: set) -> None:
     )
     for row in retired.scalars().all():
         if row.slug not in builtin_slugs:
+            # 2026-11-24 fix (audit finding #9): `Agent.id`'s FK is
+            # `ondelete="SET NULL"` — deleting a retired agent row out
+            # from under a pending hold orphans that hold's `agent_id`
+            # to NULL, which the auto-release kill switch can never
+            # resolve (it needs a real agent to check `status !=
+            # 'inactive'`). Refuse the delete this pass when any
+            # AlgoOrder still references this agent in an unresolved
+            # state; retry on a later boot once they clear. Never
+            # delete out from under a live hold.
+            pending = await session.execute(
+                select(AlgoOrder.id).where(
+                    AlgoOrder.agent_id == row.id,
+                    AlgoOrder.status.in_(("HELD", "OPEN", "CANCEL_FAILED")),
+                ).limit(1)
+            )
+            if pending.scalars().first() is not None:
+                logger.warning(
+                    f"Agent engine: NOT pruning retired built-in "
+                    f"'{row.slug}' (id={row.id}) — it has pending HELD/"
+                    f"OPEN/CANCEL_FAILED order(s) referencing it; "
+                    f"pruning would orphan agent_id to NULL and make "
+                    f"them unreleasable. Will retry on a later boot "
+                    f"once they clear."
+                )
+                continue
             logger.info(f"Agent engine: pruning retired built-in '{row.slug}'")
             await session.execute(sa_delete(Agent).where(Agent.id == row.id))
 
@@ -5814,8 +5904,52 @@ async def run_cycle(context: dict, broadcast_fn=None,
         await _cycle_dispatch_survivors(pending_dispatches, now, context, broadcast_fn)
 
 
+# Audit finding #5 (2026-11-24): a same-cycle topic tie-break could
+# silence the loser for its FULL standing cooldown (e.g. 1320 min for
+# the expiry agents sharing topic='expiry_warning') with no near-term
+# retry. 5 minutes, not immediate — avoids hammering the same tie
+# every engine tick while still recovering far faster than the full
+# cooldown.
+_TOPIC_LOSS_RETRY_MINUTES = 5.0
+
+
+def _ae_shrink_topic_loser_cooldown(agent, entry: dict, now) -> None:
+    """Rewind this agent's own just-written per-leaf latch timestamps
+    (`_V2_LATCH`, written moments ago by `_v2_apply_escalation_gate`
+    during THIS SAME tick's evaluation, before topic suppression was
+    even computed) so its effective remaining cooldown becomes
+    `_TOPIC_LOSS_RETRY_MINUTES` instead of the agent's full
+    `cooldown_minutes` — the loser gets a near-term retry rather than
+    going silent for the rest of the day.
+
+    Live-only: sim/replay ticks use an isolated per-run latch store
+    (`alert_state['_sim_latch']`, not reachable here) and are
+    deliberately skipped — never touch the shared `_V2_LATCH` from a
+    sim/replay tick.
+
+    Only rewinds a key whose `ts` is still THIS tick's `now` (the
+    defensive check `prev['ts'] == now`) — i.e. genuinely just written
+    by this same evaluation, never an older, unrelated latch entry
+    that happens to share a key by coincidence.
+    """
+    if entry.get('sim_mode') or entry.get('replay_mode'):
+        return
+    cooldown_min = getattr(agent, 'cooldown_minutes', None) or 30
+    if cooldown_min <= _TOPIC_LOSS_RETRY_MINUTES:
+        return  # already shorter than the retry floor — nothing to shrink
+    rewound_ts = now - timedelta(minutes=(cooldown_min - _TOPIC_LOSS_RETRY_MINUTES))
+    latched = entry.get('latched_matches')
+    if latched is None:
+        latched = entry.get('matches') or []
+    for m in latched:
+        key = _latch_key(agent.slug, m)
+        prev = _V2_LATCH.get(key)
+        if prev is not None and prev.get('ts') == now:
+            prev['ts'] = rewound_ts
+
+
 async def _ae_dispatch_suppressed_entry(entry: dict, suppressed_ids: dict,
-                                       broadcast_fn) -> None:
+                                       broadcast_fn, now=None) -> None:
     """Emit an audit-log event for a suppressed fire and broadcast state.
 
     No push notification or action execution. Extracted from
@@ -5825,6 +5959,8 @@ async def _ae_dispatch_suppressed_entry(entry: dict, suppressed_ids: dict,
     sim_mode_p   = entry['sim_mode']
     replay_mode_p = entry.get('replay_mode', False)
     matches_     = entry.get('matches') or []
+    if now is not None:
+        _ae_shrink_topic_loser_cooldown(agent, entry, now)
     # Fix (2026-10): hydration must latch only the escalation-gated subset,
     # not every raw breaching match — see _v2_build_evalresult's docstring.
     # Falls back to matches_ when the caller (e.g. a test building this
@@ -5836,6 +5972,15 @@ async def _ae_dispatch_suppressed_entry(entry: dict, suppressed_ids: dict,
     topic        = getattr(agent, 'topic', 'general')
     detail_text = (
         f"Suppressed by higher-tier agent '{supp_by}' in topic '{topic}'."
+    )
+    # Audit finding #5 (2026-11-24): cheap, always-on visibility — the
+    # loser's loss used to be observable only via the audit-log
+    # 'triggered_suppressed' event below, with no plain-text trace. A
+    # same-topic tie is otherwise easy to miss entirely.
+    logger.info(
+        "Agent engine: topic tie-break — '%s' suppressed by '%s' in "
+        "topic '%s' (retry in ~%.0f min instead of the full cooldown)",
+        agent.slug, supp_by, topic, _TOPIC_LOSS_RETRY_MINUTES,
     )
     detail: dict = {'matches': matches_,
                     'latched_matches': latched_,
@@ -6258,7 +6403,7 @@ async def _cycle_dispatch_survivors(
     for entry in pending_dispatches:
         agent = entry['agent']
         if agent.id in suppressed_ids:
-            await _ae_dispatch_suppressed_entry(entry, suppressed_ids, broadcast_fn)
+            await _ae_dispatch_suppressed_entry(entry, suppressed_ids, broadcast_fn, now=now)
             continue
         extra = merge_map.get(agent.id)
         if extra:

@@ -243,6 +243,60 @@ class TestKillSwitch:
         mock_handler.assert_not_called()
 
 
+class TestSweepPerRowIsolation:
+    """Audit finding #13 (2026-11-24): one row's exception must never
+    abort the rest of the sweep tick."""
+
+    @pytest.mark.asyncio
+    async def test_one_bad_row_does_not_block_a_later_due_row(self):
+        from backend.api import background as bg
+
+        past = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        bad_row = _held_row(id=1, hold_json="not even json")
+        good_row = _held_row(id=2, hold_json=_agent_close_hold_json(past))
+
+        mock_handler = AsyncMock(return_value={"ok": True, "reason": "released"})
+
+        session = _queued_session([
+            _held_rows_result([bad_row, good_row]),
+            _agent_result(SimpleNamespace(status="active")),
+        ])
+        with patch("backend.api.database.async_session", return_value=session), \
+             patch("backend.api.algo.order_release.get_release_handler",
+                   MagicMock(return_value=mock_handler)):
+            released = await bg._agent_close_auto_release_sweep_once(
+                now=datetime.now(timezone.utc))
+
+        assert released == 1
+        mock_handler.assert_called_once_with(2, actor="auto-release")
+
+    @pytest.mark.asyncio
+    async def test_handler_exception_on_one_row_does_not_block_another(self):
+        from backend.api import background as bg
+
+        past = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        row_a = _held_row(id=1, hold_json=_agent_close_hold_json(past))
+        row_b = _held_row(id=2, hold_json=_agent_close_hold_json(past))
+
+        async def _handler(order_id, actor):
+            if order_id == 1:
+                raise RuntimeError("boom")
+            return {"ok": True, "reason": "released"}
+
+        session = _queued_session([
+            _held_rows_result([row_a, row_b]),
+            _agent_result(SimpleNamespace(status="active")),
+            _agent_result(SimpleNamespace(status="active")),
+        ])
+        with patch("backend.api.database.async_session", return_value=session), \
+             patch("backend.api.algo.order_release.get_release_handler",
+                   MagicMock(return_value=_handler)):
+            released = await bg._agent_close_auto_release_sweep_once(
+                now=datetime.now(timezone.utc))
+
+        assert released == 1, "row 2 must still release despite row 1's exception"
+
+
 @pytest.mark.asyncio
 async def test_no_held_rows_is_a_clean_noop():
     session = _queued_session([_held_rows_result([])])
@@ -263,3 +317,131 @@ async def test_bad_sweep_iteration_is_caught_and_logged_not_raised():
     with patch("backend.api.database.async_session", _Boom()):
         await _run_one_iteration()
     # No exception == pass.
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Audit finding #2 (2026-11-24) — stuck-OPEN recovery
+# ═══════════════════════════════════════════════════════════════════════
+
+def _stuck_open_row(**kw) -> SimpleNamespace:
+    base = dict(
+        id=201, status="OPEN", broker_order_id="", mode="live", agent_id=42,
+        account="ZG0790", symbol="CRUDEOIL26NOV5500CE", exchange="MCX",
+        transaction_type="SELL", quantity=1, product="NRML",
+        detail="Pending: expiry close · released by auto-release at 2026-11-24T10:00:00+00:00",
+    )
+    base.update(kw)
+    return SimpleNamespace(**base)
+
+
+def _rows_session(rows: list):
+    session = AsyncMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = rows
+    session.execute = AsyncMock(return_value=result)
+    return session
+
+
+class TestRecoverStuckOpenAgentCloseRows:
+    def setup_method(self):
+        from backend.api import background as bg
+        bg._STUCK_OPEN_RETRIED.clear()
+        bg._STUCK_OPEN_ALERTED.clear()
+
+    @pytest.mark.asyncio
+    async def test_active_chase_is_never_raced(self):
+        """A real chase genuinely still working this row must never be
+        retried a second time — the one trap this fix must avoid."""
+        from backend.api import background as bg
+        row = _stuck_open_row()
+        session = _rows_session([row])
+
+        with patch("backend.api.database.async_session", return_value=session), \
+             patch("backend.api.algo.chase.is_chase_active", return_value=True), \
+             patch("asyncio.create_task") as mock_create_task:
+            retried = await bg._recover_stuck_open_agent_close_rows()
+
+        assert retried == 0
+        mock_create_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_first_detection_retries_the_chase_once(self):
+        from backend.api import background as bg
+        row = _stuck_open_row()
+        session = _rows_session([row])
+
+        with patch("backend.api.database.async_session", return_value=session), \
+             patch("backend.api.algo.chase.is_chase_active", return_value=False), \
+             patch("asyncio.create_task") as mock_create_task, \
+             patch("backend.shared.helpers.alert_utils.send_order_failure_alert") as mock_alert:
+            retried = await bg._recover_stuck_open_agent_close_rows()
+
+        assert retried == 1
+        mock_create_task.assert_called_once()
+        mock_create_task.call_args[0][0].close()  # avoid "never awaited" noise
+        mock_alert.assert_not_called(), "no alert on the first, un-retried detection"
+        assert row.id in bg._STUCK_OPEN_RETRIED
+
+    @pytest.mark.asyncio
+    async def test_still_stuck_after_retry_alerts_instead_of_retrying_again(self):
+        from backend.api import background as bg
+        row = _stuck_open_row()
+        bg._STUCK_OPEN_RETRIED.add(row.id)  # already retried on a prior sweep
+        session = _rows_session([row])
+
+        with patch("backend.api.database.async_session", return_value=session), \
+             patch("backend.api.algo.chase.is_chase_active", return_value=False), \
+             patch("asyncio.create_task") as mock_create_task, \
+             patch("backend.shared.helpers.alert_utils.send_order_failure_alert") as mock_alert:
+            retried = await bg._recover_stuck_open_agent_close_rows()
+
+        assert retried == 0, "must not retry a second time — escalate instead"
+        mock_create_task.assert_not_called()
+        mock_alert.assert_called_once()
+        assert row.id in bg._STUCK_OPEN_ALERTED
+
+    @pytest.mark.asyncio
+    async def test_alert_fires_only_once_per_row_for_process_lifetime(self):
+        from backend.api import background as bg
+        row = _stuck_open_row()
+        bg._STUCK_OPEN_RETRIED.add(row.id)
+        bg._STUCK_OPEN_ALERTED.add(row.id)  # already alerted on a prior sweep
+        session = _rows_session([row])
+
+        with patch("backend.api.database.async_session", return_value=session), \
+             patch("backend.api.algo.chase.is_chase_active", return_value=False), \
+             patch("backend.shared.helpers.alert_utils.send_order_failure_alert") as mock_alert:
+            await bg._recover_stuck_open_agent_close_rows()
+
+        mock_alert.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_matching_rows_is_a_clean_noop(self):
+        from backend.api import background as bg
+        session = _rows_session([])
+        with patch("backend.api.database.async_session", return_value=session):
+            retried = await bg._recover_stuck_open_agent_close_rows()
+        assert retried == 0
+
+    @pytest.mark.asyncio
+    async def test_one_bad_row_does_not_block_the_rest(self):
+        from backend.api import background as bg
+        bad_row = _stuck_open_row(id=301)
+        good_row = _stuck_open_row(id=302)
+        session = _rows_session([bad_row, good_row])
+
+        def _is_active(row_id):
+            if row_id == 301:
+                raise RuntimeError("boom")
+            return False
+
+        with patch("backend.api.database.async_session", return_value=session), \
+             patch("backend.api.algo.chase.is_chase_active", side_effect=_is_active), \
+             patch("asyncio.create_task") as mock_create_task:
+            retried = await bg._recover_stuck_open_agent_close_rows()
+
+        assert retried == 1
+        mock_create_task.assert_called_once()
+        mock_create_task.call_args[0][0].close()

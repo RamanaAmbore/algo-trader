@@ -1178,6 +1178,21 @@ class Agent(Base):
     release_timeout_minutes: Mapped[Optional[int]] = mapped_column(
         Integer, nullable=True)
 
+    # events_operator_edited (audit finding #8, 2026-11-24) — set True
+    # the first time an operator PUTs a non-None `events` value for
+    # this agent via `update_agent` (routes/agents.py). Read by
+    # `_ae_sync_existing_builtin`'s additive events-channel sync
+    # (agent_engine.py): that sync used to unconditionally re-add any
+    # default channel missing from the stored row, which silently
+    # reverted an operator's deliberate channel removal on the next
+    # restart. Once this flag is set, the additive sync stops touching
+    # this row's `events` at all — same "operator edit wins" principle
+    # `conditions`/`cooldown_minutes` already get, applied to `events`.
+    # `server_default='false'` for the same reason `has_explicit_alert`
+    # has one.
+    events_operator_edited: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default='false')
+
     # Runtime state. `status` ∈ active / inactive / cooldown / completed.
     # `completed` is the terminal state for lifespan-bounded agents
     # (one_shot, n_fires, until_date). Engine skips `completed` rows

@@ -17,10 +17,12 @@ Covers:
      both GET and PATCH, in both directions. (`template_exit_hold_enabled`
      was the sibling switch here; removed Bracket/Template-GTT removal,
      T3.6, 2026-11.)
-  7. expiry_close_lead_minutes_mcx / _nfo surface `hold.lead_minutes_mcx`
-     / `hold.lead_minutes_nfo`; negative values are rejected; a PATCH to
-     one hold field does not touch the other existing switches; the
-     write path and order_hold_gate.cutoff_for()'s read path agree.
+  7. `expiry_close_lead_minutes_mcx`/`_nfo` and `order_hold_gate.cutoff_for()`/
+     `before_cutoff()` were removed (2026-11-24, audit finding #17) — their
+     one reader had zero live callers. A PATCH carrying either (now-unknown)
+     field is a silent no-op, never a 500/422 — protects an operator with a
+     stale browser tab open; see
+     test_patch_unknown_removed_fields_is_silent_noop below.
 """
 from __future__ import annotations
 
@@ -222,13 +224,12 @@ async def test_get_global_switches_hold_fields_inverted_correctly():
         return default
 
     with patch("backend.shared.helpers.settings.get_bool", side_effect=_get_bool), \
-         patch("backend.shared.helpers.settings.get_string", return_value="paper"), \
-         patch("backend.shared.helpers.settings.get_int", side_effect=lambda k, d=0: d):
+         patch("backend.shared.helpers.settings.get_string", return_value="paper"):
         result = await _handler_fn(AdminController.get_global_switches)(controller)
 
     assert result.expiry_close_hold_enabled is False
-    assert result.expiry_close_lead_minutes_mcx == 30
-    assert result.expiry_close_lead_minutes_nfo == 15
+    assert not hasattr(result, "expiry_close_lead_minutes_mcx")
+    assert not hasattr(result, "expiry_close_lead_minutes_nfo")
 
 
 @pytest.mark.asyncio
@@ -327,137 +328,52 @@ async def test_patch_expiry_close_hold_enabled_noop_when_already_matching():
 # `template_exit_hold_enabled` no longer exists on `GlobalSwitchesRequest`.
 
 
-# ---------------------------------------------------------------------------
-# expiry_close_lead_minutes_mcx / _nfo
-# ---------------------------------------------------------------------------
+# `test_patch_lead_minutes_mcx_only_does_not_affect_other_fields` /
+# `test_patch_lead_minutes_negative_rejected` /
+# `test_patch_lead_minutes_mcx_integration_with_cutoff_for` /
+# `test_patch_lead_minutes_nfo_integration_with_cutoff_for` removed
+# (2026-11-24, audit finding #17) — `expiry_close_lead_minutes_mcx`/`_nfo`
+# and `order_hold_gate.cutoff_for()`/`before_cutoff()` no longer exist.
+# Their one reader had zero live callers.
+
 
 @pytest.mark.asyncio
-async def test_patch_lead_minutes_mcx_only_does_not_affect_other_fields():
-    """PATCH touching only a hold-lead field must leave paper_trading_mode
-    and default_agent_trade_mode untouched — regression against cross-
-    field interference."""
+async def test_patch_unknown_removed_fields_is_silent_noop():
+    """A PATCH body still carrying the removed `expiry_close_lead_minutes_
+    mcx`/`_nfo` keys (an operator with a stale browser tab open) must not
+    raise — msgspec silently drops unknown fields on decode, and the
+    handler must still process any OTHER real field in the same request
+    (here, the hold toggle) exactly as if the removed keys were absent."""
+    import msgspec
+
     session_factory, session = _mock_session({})
     controller = AdminController.__new__(AdminController)
-    data = GlobalSwitchesRequest(expiry_close_lead_minutes_mcx=45)
+    body = msgspec.json.encode({
+        "expiry_close_hold_enabled": True,
+        "expiry_close_lead_minutes_mcx": 45,
+        "expiry_close_lead_minutes_nfo": 20,
+    })
+    data = msgspec.json.decode(body, type=GlobalSwitchesRequest)
+    assert not hasattr(data, "expiry_close_lead_minutes_mcx")
     request = _fake_request()
 
+    def _get_bool(key, default=False):
+        if key == EXPIRY_CLOSE_RELEASED_KEY:
+            return True    # currently released (not held)
+        return default
+
     with patch("backend.api.routes.admin.async_session", session_factory), \
-         patch("backend.shared.helpers.settings.get_bool", return_value=False), \
+         patch("backend.shared.helpers.settings.get_bool", side_effect=_get_bool), \
          patch("backend.shared.helpers.settings.get_string", return_value="paper"), \
-         patch("backend.shared.helpers.settings.get_int",
-               side_effect=lambda k, d=0: 30 if k == "hold.lead_minutes_mcx" else d), \
          patch("backend.shared.helpers.settings.upsert_setting", new=AsyncMock()) as _up, \
          patch("backend.shared.helpers.settings.reload_cache", new=AsyncMock()):
-        await _handler_fn(AdminController.update_global_switches)(controller, data, request)
+        result = await _handler_fn(AdminController.update_global_switches)(controller, data, request)
 
-    # Exactly one change, for the MCX lead-minutes key only.
-    assert session.add.call_count == 1
-    audit_row = session.add.call_args_list[0][0][0]
-    assert audit_row.target_id == "hold.lead_minutes_mcx"
-    assert audit_row.summary == "hold.lead_minutes_mcx: '30' -> '45'"
+    # The real field (hold toggle) still processed exactly as if the
+    # removed keys were absent from the request entirely.
     _up.assert_awaited_once()
-    args, kwargs = _up.call_args
-    assert args[0] == "hold.lead_minutes_mcx"
-    assert args[1] == "45"
-    assert args[2] == "int"
-    assert kwargs.get("category") == "hold"
-
-
-@pytest.mark.asyncio
-async def test_patch_lead_minutes_negative_rejected():
-    from litestar.exceptions import HTTPException
-    session_factory, session = _mock_session({})
-    controller = AdminController.__new__(AdminController)
-    data = GlobalSwitchesRequest(expiry_close_lead_minutes_nfo=-5)
-    request = _fake_request()
-
-    with patch("backend.api.routes.admin.async_session", session_factory), \
-         patch("backend.shared.helpers.settings.get_bool", return_value=False), \
-         patch("backend.shared.helpers.settings.get_string", return_value="paper"), \
-         patch("backend.shared.helpers.settings.get_int", side_effect=lambda k, d=0: d):
-        with pytest.raises(HTTPException) as exc_info:
-            await _handler_fn(AdminController.update_global_switches)(controller, data, request)
-
-    assert exc_info.value.status_code == 400
-    session.commit.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_patch_lead_minutes_mcx_integration_with_cutoff_for():
-    """The write path (this route, via upsert_setting) and the read path
-    (order_hold_gate.cutoff_for, via a module-level `get_int` bound at
-    gate-module import time) agree on the post-PATCH value — proving the
-    PATCH actually reaches the gate's own cache read, not just the
-    mocked settings surface."""
-    from backend.shared.helpers import settings as settings_mod
-    from backend.api.algo import order_hold_gate as gate
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
-
-    session_factory, session = _mock_session({})
-    controller = AdminController.__new__(AdminController)
-    data = GlobalSwitchesRequest(expiry_close_lead_minutes_mcx=45)
-    request = _fake_request()
-
-    async def _fake_upsert(key, value_str, value_type, *, category=None,
-                            description=None, session=None):
-        settings_mod._CACHE[key] = value_str
-        return None
-
-    had_key = "hold.lead_minutes_mcx" in settings_mod._CACHE
-    prev_val = settings_mod._CACHE.get("hold.lead_minutes_mcx")
-    try:
-        with patch("backend.api.routes.admin.async_session", session_factory), \
-             patch("backend.shared.helpers.settings.get_bool", return_value=False), \
-             patch("backend.shared.helpers.settings.get_string", return_value="paper"), \
-             patch("backend.shared.helpers.settings.upsert_setting",
-                   new=AsyncMock(side_effect=_fake_upsert)), \
-             patch("backend.shared.helpers.settings.reload_cache", new=AsyncMock()):
-            await _handler_fn(AdminController.update_global_switches)(controller, data, request)
-
-        now = datetime(2026, 10, 15, 20, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
-        # MCX close 23:30, lead 45 min -> cutoff 22:45.
-        assert gate.cutoff_for("MCX", now).strftime("%H:%M") == "22:45"
-    finally:
-        if had_key:
-            settings_mod._CACHE["hold.lead_minutes_mcx"] = prev_val
-        else:
-            settings_mod._CACHE.pop("hold.lead_minutes_mcx", None)
-
-
-@pytest.mark.asyncio
-async def test_patch_lead_minutes_nfo_integration_with_cutoff_for():
-    from backend.shared.helpers import settings as settings_mod
-    from backend.api.algo import order_hold_gate as gate
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
-
-    session_factory, session = _mock_session({})
-    controller = AdminController.__new__(AdminController)
-    data = GlobalSwitchesRequest(expiry_close_lead_minutes_nfo=20)
-    request = _fake_request()
-
-    async def _fake_upsert(key, value_str, value_type, *, category=None,
-                            description=None, session=None):
-        settings_mod._CACHE[key] = value_str
-        return None
-
-    had_key = "hold.lead_minutes_nfo" in settings_mod._CACHE
-    prev_val = settings_mod._CACHE.get("hold.lead_minutes_nfo")
-    try:
-        with patch("backend.api.routes.admin.async_session", session_factory), \
-             patch("backend.shared.helpers.settings.get_bool", return_value=False), \
-             patch("backend.shared.helpers.settings.get_string", return_value="paper"), \
-             patch("backend.shared.helpers.settings.upsert_setting",
-                   new=AsyncMock(side_effect=_fake_upsert)), \
-             patch("backend.shared.helpers.settings.reload_cache", new=AsyncMock()):
-            await _handler_fn(AdminController.update_global_switches)(controller, data, request)
-
-        now = datetime(2026, 10, 15, 14, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
-        # NFO close 15:30, lead 20 min -> cutoff 15:10.
-        assert gate.cutoff_for("NFO", now).strftime("%H:%M") == "15:10"
-    finally:
-        if had_key:
-            settings_mod._CACHE["hold.lead_minutes_nfo"] = prev_val
-        else:
-            settings_mod._CACHE.pop("hold.lead_minutes_nfo", None)
+    args, _kwargs = _up.call_args
+    assert args[0] == EXPIRY_CLOSE_RELEASED_KEY
+    assert args[1] == "false"
+    assert not hasattr(result, "expiry_close_lead_minutes_mcx")
+    assert not hasattr(result, "expiry_close_lead_minutes_nfo")

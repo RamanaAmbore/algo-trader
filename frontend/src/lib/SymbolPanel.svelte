@@ -2339,28 +2339,38 @@
     {#if _activeTab !== 'cli' && _activeTab !== 'chart'}
       <div class="oes-chase-row">
         <!-- CHASE — moved verbatim from .oes-tabs (unchanged markup).
-             2026-10-23 fix: hidden entirely (not just greyed) while
-             Draft is on — operator report: "when submitting draft
-             order, chase is getting invoked and chase status is
-             shown." Investigated: no backend invocation ever occurs
-             (both OrderTicket's single-leg draft path and
-             SymbolPanel's own `submitBasket()` return before any
-             chase/broker call; confirmed live — zero mode='draft' rows
-             exist on prod or dev, and every recent real chase has
-             mode='live'). The confusion was this cluster staying
-             visually present (greyed, non-interactive) during Draft
-             mode instead of disappearing — a draft has zero chase
-             semantics, so there is nothing for it to show here. -->
-        {#if _chaseEnabled && !_sharedDraftMode && _activeTab !== 'chain'}
-          <span class="oes-chase-cluster">
-            <span class="oes-common-chase-label on" bind:this={_chaseInfoAnchor}
-                  role="button" tabindex={0} aria-expanded={_chaseInfoOpen}
-                  title="Chase is active — click for details"
-                  onclick={() => { _chaseInfoOpen = !_chaseInfoOpen; }}
-                  onkeydown={_chaseInfoKeydown}>CHASE</span>
-            <InfoHint popup hideButton id="chase-info-hint" anchor={_chaseInfoAnchor} bind:open={_chaseInfoOpen}
-              panel title="Chase"
-              text="Chase is automatic for every limit order (on for LIMIT/SL order types) — re-quotes the price each interval until filled or max attempts is reached. Wait time between re-quotes depends on the aggressiveness picker beside it: <b>Low</b> — 30s, patient, eases into the spread (30 attempts max). <b>Med</b> — 20s, balanced (20 attempts max). <b>High</b> — 10s, crosses the spread fast (10 attempts max)." />
+             2026-10-23 fix: hidden entirely while Draft was on, to stop
+             a confusing greyed-but-present cluster (chase has zero
+             semantics for a draft — confirmed, zero mode='draft' rows
+             ever invoke chase). 2026-11-24 fix (operator: "keep chase
+             protected without hiding it completely... so draft does
+             not shift to left when chase is hidden") — fully removing
+             this cluster let DRAFT (and everything after it in this
+             row) shift left/reflow every time Draft was toggled. Now
+             the cluster always renders when chase would otherwise
+             apply (so the row's width never changes), but while Draft
+             is on it is "protected": shown with every option
+             deselected/greyed and non-interactive (no click-to-open
+             info panel, no aggressiveness picker interaction) — the
+             same deselected-but-present treatment the now-removed
+             BRACKET toggle used while a mutually-exclusive mode was
+             active. -->
+        {#if _chaseEnabled && _activeTab !== 'chain'}
+          <span class="oes-chase-cluster" class:oes-chase-protected={_sharedDraftMode}>
+            <span class="oes-common-chase-label" class:on={!_sharedDraftMode}
+                  bind:this={_chaseInfoAnchor}
+                  role="button" tabindex={_sharedDraftMode ? -1 : 0}
+                  aria-expanded={_chaseInfoOpen} aria-disabled={_sharedDraftMode}
+                  title={_sharedDraftMode
+                    ? 'Chase is inert while Draft is on — a draft never places a real order'
+                    : 'Chase is active — click for details'}
+                  onclick={() => { if (!_sharedDraftMode) _chaseInfoOpen = !_chaseInfoOpen; }}
+                  onkeydown={(e) => { if (!_sharedDraftMode) _chaseInfoKeydown(e); }}>CHASE</span>
+            {#if !_sharedDraftMode}
+              <InfoHint popup hideButton id="chase-info-hint" anchor={_chaseInfoAnchor} bind:open={_chaseInfoOpen}
+                panel title="Chase"
+                text="Chase is automatic for every limit order (on for LIMIT/SL order types) — re-quotes the price each interval until filled or max attempts is reached. Wait time between re-quotes depends on the aggressiveness picker beside it: <b>Low</b> — 30s, patient, eases into the spread (30 attempts max). <b>Med</b> — 20s, balanced (20 attempts max). <b>High</b> — 10s, crosses the spread fast (10 attempts max)." />
+            {/if}
             <span class="oes-chase-agg-gap">
               <ChaseAggPicker value={_sharedChaseAgg} onChange={_setSharedChaseAgg} variant="panel" />
             </span>
@@ -4192,6 +4202,15 @@
      label had none, so the L/M/H picker sat flush against it. Operator
      (2026-09-29): "there should be space between chase and l/m/h". */
   .oes-chase-agg-gap { margin-left: 0.4rem; display: inline-flex; }
+  /* 2026-11-24 — "protected" state while Draft is on: the cluster keeps
+     its layout space (no row reflow when toggling Draft) but every
+     control inside is deselected/greyed and inert. pointer-events:none
+     on the whole cluster covers the ChaseAggPicker's own buttons too,
+     without needing a disabled prop on that shared component. */
+  .oes-chase-protected {
+    opacity: 0.4;
+    pointer-events: none;
+  }
 
   /* Shared CHASE/DRAFT row (2026-10-21 consolidation; BRACKET removed
      T3.3 — bracket-removal). */
