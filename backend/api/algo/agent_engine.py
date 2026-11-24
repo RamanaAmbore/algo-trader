@@ -1455,31 +1455,18 @@ async def _v2_expiry_exchange_section(exch: str, label: str, all_expiring: list)
 
 
 def _v2_expiry_context_shim(context: dict | None):
-    """Minimal attribute-accessible shim over the dispatch `context`
-    dict, so the grammar-token metric resolvers (which read `ctx.
-    segment_flags`/`ctx.position_rows` via `getattr`) can be reused
-    outside the condition-evaluation path. Same pattern used by
-    `actions_live.py:_al_expiry_context_shim` — kept as one shape so
-    the two never drift into different attribute sets.
-
-    2026-11-23 fix (Part C, confirmed-live P0, same bug as the sibling
-    shim in `actions_live.py` — see that function's own docstring for
-    the full incident): this shim omitted `.now`, so `_expiry_preclose_
-    exchanges()` ALWAYS returned an empty set here too, meaning
-    `_v2_expiry_position_breakdown()` (the `expiry-day-preclose-alert`
-    render helper) has never actually rendered a position breakdown —
-    it always hit its own "fired but no exchange is currently within
-    its own pre-close window" branch and rendered nothing, every time
-    the alert fired. `now` comes from the SAME `context["now"]` key
-    `_build_context()` sets (line ~4250 above)."""
-    from types import SimpleNamespace
-    from backend.shared.helpers.date_time_utils import timestamp_indian
-    context = context or {}
-    return SimpleNamespace(
-        segment_flags=context.get("segment_flags") or {},
-        position_rows=context.get("position_rows") or [],
-        now=context.get("now") or timestamp_indian(),
-    )
+    """Thin delegator to the shared `expiry_context_shim()`
+    (2026-11-24, audit finding #18) — kept as its own name/module
+    location purely so existing callers/imports/tests in this module
+    are unaffected. Previously a byte-identical duplicate of
+    `actions_live.py:_al_expiry_context_shim`, deliberately copy-pasted
+    instead of imported to avoid a circular import between this module
+    and `actions_live.py`. The real body now lives in
+    `expiry_context_shim.py`, which neither module needs to import the
+    other to reach — see that module's own docstring for the 2026-11-23
+    `.now`-omission incident this duplication once let slip through."""
+    from backend.api.algo.expiry_context_shim import expiry_context_shim
+    return expiry_context_shim(context)
 
 
 async def _v2_expiry_position_breakdown(context: dict | None) -> str | None:

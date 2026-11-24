@@ -1383,6 +1383,25 @@ class TestExpiryContextShimsCarryNow:
         shim = _v2_expiry_context_shim(context)
         assert shim.now is not None
 
+    def test_both_shims_delegate_to_one_shared_implementation(self):
+        """Audit finding #18 (2026-11-24): the two shims were a
+        byte-identical copy-paste, which is exactly the duplication-
+        drift class that let one copy's `.now` omission go unnoticed
+        while the other was fixed. Both must now delegate to the SAME
+        underlying function, not merely produce the same output."""
+        from backend.api.algo import actions_live, agent_engine
+        from backend.api.algo.expiry_context_shim import expiry_context_shim
+        from unittest.mock import patch
+
+        context = self._representative_context("CRUDEOIL26NOV5500CE")
+        with patch(
+            "backend.api.algo.expiry_context_shim.expiry_context_shim",
+            wraps=expiry_context_shim,
+        ) as shared:
+            actions_live._al_expiry_context_shim(context)
+            agent_engine._v2_expiry_context_shim(context)
+        assert shared.call_count == 2
+
 
 class TestTaskExpiryCheckRetiresEngineRun:
     def test_source_has_no_engine_run_call(self):

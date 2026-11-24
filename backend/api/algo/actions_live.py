@@ -1756,37 +1756,18 @@ async def _action_live_chase_close_positions(agent, context: dict, params: dict)
 
 
 def _al_expiry_context_shim(context: dict | None):
-    """Minimal attribute-accessible shim over the dispatch `context`
-    dict, so the grammar-token metric resolvers (which read `ctx.
-    segment_flags`/`ctx.position_rows` via `getattr`, matching the
-    `Context` class condition-evaluation shape) can be reused here. Same
-    pattern as `agent_engine.py:_v2_expiry_context_shim` — duplicated
-    rather than imported to avoid a circular import between this module
-    and agent_engine.py.
-
-    2026-11-23 fix (Part C, confirmed-live P0): this shim omitted `.now`
-    entirely. `_scope_positions_expiring_today()` reads `ctx.now` inside
-    a bare `except Exception: continue`, so every position row silently
-    failed to parse and the scope ALWAYS returned `[]` — meaning
-    `_expiry_preclose_exchanges()` ALWAYS returned an empty set for this
-    shim, in production, not only in a test. `_action_live_expiry_auto_
-    close` has therefore never actually closed anything: it always hit
-    its own "no exchange is currently within its own pre-close window"
-    branch and returned, every single time it fired. Confirmed directly
-    (not assumed) via a scratchpad call against the real, unpatched
-    functions before this fix. `now` is read from the dispatch
-    context's own `"now"` key (the exact value `_build_context()` sets,
-    see `agent_engine.py:4250`) and falls back to `timestamp_indian()`
-    only when that key is absent (e.g. a hand-built test context),
-    never silently defaulting to a wrong clock."""
-    from types import SimpleNamespace
-    from backend.shared.helpers.date_time_utils import timestamp_indian
-    context = context or {}
-    return SimpleNamespace(
-        segment_flags=context.get("segment_flags") or {},
-        position_rows=context.get("position_rows") or [],
-        now=context.get("now") or timestamp_indian(),
-    )
+    """Thin delegator to the shared `expiry_context_shim()`
+    (2026-11-24, audit finding #18) — kept as its own name/module
+    location purely so existing callers/imports/tests in this module
+    are unaffected. Previously a byte-identical duplicate of
+    `agent_engine.py:_v2_expiry_context_shim`, deliberately copy-pasted
+    instead of imported to avoid a circular import between this module
+    and `agent_engine.py`. The real body now lives in
+    `expiry_context_shim.py`, which neither module needs to import the
+    other to reach — see that module's own docstring for the 2026-11-23
+    `.now`-omission incident this duplication once let slip through."""
+    from backend.api.algo.expiry_context_shim import expiry_context_shim
+    return expiry_context_shim(context)
 
 
 async def _action_live_expiry_auto_close(agent, context: dict, params: dict):
