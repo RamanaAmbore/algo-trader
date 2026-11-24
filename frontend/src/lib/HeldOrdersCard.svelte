@@ -34,17 +34,23 @@
       // the 'Expiry close' default below — a real, live category, not a
       // removed one. Give it its own label instead of misreporting it.
       if (h.category === 'agent_close') return 'Profit-target close';
-      return 'Expiry close';
-    } catch {
-      // Item 3 (2026-11-02, PLAN.md) — "Held" → "Pending": a malformed/
-      // unparseable hold record is the one case here with no real
-      // category to label, but it's still a release-pending row, not a
-      // genuine failure — same "Pending" vocabulary as every other
-      // template-exit-hold surface. Distinct from the unrelated
-      // covered-call feature's own "Held" usage, which this does not
-      // touch.
-      return 'Pending';
-    }
+      if (h.category === 'expiry_close') return 'Expiry close';
+      // 2026-11-24 fix (audit finding #19): any OTHER category (missing,
+      // malformed, or a genuinely unrecognized value — e.g. a future
+      // category this card hasn't been taught yet) used to silently fall
+      // through to 'Expiry close', which actively mislabels it as a real,
+      // known kind. Falls through to the neutral 'Pending' below instead
+      // — the same genuinely-unknown label the parse-failure catch branch
+      // already uses, so a category this card doesn't recognize is never
+      // misreported as one it does.
+    } catch { /* fall through to the neutral default below */ }
+    // Item 3 (2026-11-02, PLAN.md) — "Held" → "Pending": a malformed/
+    // unparseable hold record, or any unrecognized category, is still a
+    // release-pending row, not a genuine failure — same "Pending"
+    // vocabulary as every other template-exit-hold surface. Distinct from
+    // the unrelated covered-call feature's own "Held" usage, which this
+    // does not touch.
+    return 'Pending';
   }
 
   // 2026-10 fix: the hold categories previously all rendered with the
@@ -56,7 +62,11 @@
     const kind = kindOf(row);
     if (kind === 'Repeated rejection') return 'held-kind-rejection';
     if (kind === 'Profit-target close') return 'held-kind-agent-close';
-    return 'held-kind-expiry';
+    if (kind === 'Expiry close') return 'held-kind-expiry';
+    // 2026-11-24 fix (audit finding #19): a genuinely unrecognized
+    // category gets the neutral muted styling, not the amber "Expiry
+    // close" treatment — matching kindOf()'s own fallback above.
+    return 'held-kind-pending';
   }
 
   async function load() {
@@ -199,6 +209,12 @@
   .held-kind-expiry    { color: var(--algo-amber); background: var(--algo-amber-bg-strong); padding: 1px 5px; border-radius: 3px; }
   .held-kind-rejection { color: var(--algo-orange); background: color-mix(in srgb, var(--algo-orange) 22%, transparent); padding: 1px 5px; border-radius: 3px; }
   .held-kind-agent-close { color: var(--algo-green); background: var(--algo-green-bg-strong); padding: 1px 5px; border-radius: 3px; }
+  /* 2026-11-24 fix (audit finding #19) — neutral styling for a row this
+     card genuinely doesn't recognize, instead of misreporting it as
+     Expiry close's own amber. The pre-2026-10 undifferentiated color
+     every category used to share, before the per-category tint fix
+     above. */
+  .held-kind-pending   { color: var(--algo-muted); background: color-mix(in srgb, var(--algo-muted) 18%, transparent); padding: 1px 5px; border-radius: 3px; }
   .held-desc { flex: 1; color: var(--algo-slate); }
   .held-side { font-weight: 700; }
   .held-side-buy  { color: var(--btn-buy); }
