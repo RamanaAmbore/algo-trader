@@ -217,3 +217,112 @@ def test_record_held_order_dedup_returns_existing_row_id_without_inserting(monke
     mock_write.assert_not_called()
 
 
+def _dedup_session(existing_row):
+    mock_session = AsyncMock()
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+    mock_session.add = MagicMock()
+    mock_session.commit = AsyncMock()
+    _scalars = MagicMock()
+    _scalars.first.return_value = existing_row
+    _result = MagicMock()
+    _result.scalars.return_value = _scalars
+    mock_session.execute = AsyncMock(return_value=_result)
+    return mock_session
+
+
+def test_record_held_order_tightens_a_looser_existing_deadline(monkeypatch):
+    """Audit finding #10 (2026-11-24): a second category's close for the
+    SAME leg must never be silently absorbed with the wrong (looser)
+    deadline — dedup stays identity-only (no HoldCategory filter, per
+    the function's own docstring), but a tighter incoming deadline must
+    win."""
+    from datetime import datetime, timedelta, timezone
+    import json as _json
+    held_at = datetime.now(timezone.utc)
+    looser_deadline = held_at + timedelta(minutes=30)
+    existing_hold_json = _json.dumps({
+        "category": "expiry_close", "reason": "expiry close",
+        "price_policy": "CHASE_HIGH", "override": None,
+        "held_at": held_at.isoformat(),
+        "auto_release_at": looser_deadline.isoformat(),
+    }, sort_keys=True)
+    existing_row = MagicMock(id=777, detail="HELD: expiry close", hold_json=existing_hold_json)
+    mock_session = _dedup_session(existing_row)
+
+    tighter_deadline = held_at + timedelta(minutes=5)
+    monkeypatch.setattr("backend.api.database.async_session", lambda: mock_session)
+    with patch("backend.api.algo.order_events.write_event", new_callable=AsyncMock) as mock_write:
+        row_id = asyncio.run(gate.record_held_order(
+            HoldCategory.AGENT_CLOSE, account="ZG0790", symbol="CRUDEOIL26OCT8600CE",
+            exchange="MCX", side="SELL", qty=200, product="NRML", reason="exit-tp-90 close",
+            auto_release_at=tighter_deadline,
+        ))
+
+    assert row_id == 777
+    mock_session.add.assert_not_called()
+    rec = parse_hold_record(existing_row.hold_json)
+    assert rec["auto_release_at"] == tighter_deadline.isoformat()
+    assert rec["category"] == "expiry_close", "the ORIGINAL row's own category is never changed"
+    mock_write.assert_called_once()
+
+
+def test_record_held_order_never_widens_an_existing_tighter_deadline(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    import json as _json
+    held_at = datetime.now(timezone.utc)
+    tighter_deadline = held_at + timedelta(minutes=5)
+    existing_hold_json = _json.dumps({
+        "category": "agent_close", "reason": "exit-tp-90 close",
+        "price_policy": "CHASE_MED", "override": None,
+        "held_at": held_at.isoformat(),
+        "auto_release_at": tighter_deadline.isoformat(),
+    }, sort_keys=True)
+    existing_row = MagicMock(id=778, detail="HELD: exit-tp-90", hold_json=existing_hold_json)
+    mock_session = _dedup_session(existing_row)
+
+    looser_deadline = held_at + timedelta(minutes=30)
+    monkeypatch.setattr("backend.api.database.async_session", lambda: mock_session)
+    with patch("backend.api.algo.order_events.write_event", new_callable=AsyncMock) as mock_write:
+        row_id = asyncio.run(gate.record_held_order(
+            HoldCategory.EXPIRY_CLOSE, account="ZG0790", symbol="CRUDEOIL26OCT8600CE",
+            exchange="MCX", side="SELL", qty=200, product="NRML", reason="expiry close",
+            auto_release_at=looser_deadline,
+        ))
+
+    assert row_id == 778
+    rec = parse_hold_record(existing_row.hold_json)
+    assert rec["auto_release_at"] == tighter_deadline.isoformat(), \
+        "a looser incoming deadline must never widen an existing tighter one"
+    mock_write.assert_not_called()
+
+
+def test_record_held_order_same_category_dedup_is_unaffected(monkeypatch):
+    """The ordinary same-category re-fire case (the original 2026-10-29
+    fix this dedup exists for) must stay a pure no-op — no tightening
+    logic runs when the absorbing call is the SAME category."""
+    from datetime import datetime, timedelta, timezone
+    import json as _json
+    held_at = datetime.now(timezone.utc)
+    deadline = held_at + timedelta(minutes=30)
+    existing_hold_json = _json.dumps({
+        "category": "expiry_close", "reason": "expiry close",
+        "price_policy": "CHASE_HIGH", "override": None,
+        "held_at": held_at.isoformat(), "auto_release_at": deadline.isoformat(),
+    }, sort_keys=True)
+    existing_row = MagicMock(id=779, detail="HELD: expiry close", hold_json=existing_hold_json)
+    mock_session = _dedup_session(existing_row)
+
+    monkeypatch.setattr("backend.api.database.async_session", lambda: mock_session)
+    with patch("backend.api.algo.order_events.write_event", new_callable=AsyncMock) as mock_write:
+        row_id = asyncio.run(gate.record_held_order(
+            HoldCategory.EXPIRY_CLOSE, account="ZG0790", symbol="CRUDEOIL26OCT8600CE",
+            exchange="MCX", side="SELL", qty=200, product="NRML", reason="expiry close",
+            auto_release_at=held_at + timedelta(minutes=1),
+        ))
+
+    assert row_id == 779
+    mock_write.assert_not_called()
+    mock_session.commit.assert_not_called()
+
+

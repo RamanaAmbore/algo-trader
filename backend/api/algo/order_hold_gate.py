@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from backend.shared.helpers.ramboq_logger import get_logger
 from backend.shared.helpers.settings import get_bool, get_int
 
-from backend.api.algo.order_hold import HoldCategory, effective_hold, hold_record
+from backend.api.algo.order_hold import HoldCategory, effective_hold, hold_record, parse_hold_record
 
 logger = get_logger(__name__)
 
@@ -108,6 +108,51 @@ async def record_held_order(category: HoldCategory, *, account: str, symbol: str
                     f"acct={account} already has a HELD row id={existing.id} "
                     f"({existing.detail!r}) — not creating a duplicate"
                 )
+                # 2026-11-24 fix (audit finding #10): the dedup above is
+                # deliberately identity-only (no HoldCategory filter —
+                # see this function's own docstring). That means a
+                # SECOND category's close for the same leg is silently
+                # absorbed into the FIRST category's existing row,
+                # inheriting its deadline. Left as-is, a tighter
+                # auto_release_at from the absorbing call (e.g. a 5-min
+                # exit-tp deadline landing on a 30-min expiry-close row)
+                # would be silently lost. Never WIDEN the window, only
+                # ever tighten it — and always surface the cross-
+                # category absorption, since the operator reviewing the
+                # row has no other way to know a second category's
+                # close landed on it too.
+                existing_rec = parse_hold_record(existing.hold_json) or {}
+                existing_category = existing_rec.get("category")
+                if existing_category != category.value and auto_release_at is not None:
+                    from datetime import datetime as _dt
+                    existing_deadline_raw = existing_rec.get("auto_release_at")
+                    existing_deadline = None
+                    if existing_deadline_raw:
+                        try:
+                            existing_deadline = _dt.fromisoformat(existing_deadline_raw)
+                            if existing_deadline.tzinfo is None:
+                                existing_deadline = existing_deadline.replace(tzinfo=timezone.utc)
+                        except (TypeError, ValueError):
+                            existing_deadline = None
+                    if existing_deadline is None or auto_release_at < existing_deadline:
+                        existing_rec["auto_release_at"] = auto_release_at.isoformat()
+                        import json as _json
+                        existing.hold_json = _json.dumps(existing_rec, sort_keys=True)
+                        logger.warning(
+                            f"[HOLD] {symbol} acct={account}: row id={existing.id} "
+                            f"(category={existing_category}) deadline tightened to "
+                            f"{auto_release_at.isoformat()} by a {category.value} "
+                            f"close for the same leg"
+                        )
+                        await s.commit()
+                        from backend.api.algo.order_events import write_event
+                        await write_event(
+                            existing.id, "held",
+                            f"Pending: {category.value} close for the same leg "
+                            f"tightened the auto-release deadline to "
+                            f"{auto_release_at.isoformat()}",
+                            {"absorbed_category": category.value},
+                        )
                 return existing.id
             row = AlgoOrder(
                 account=account, symbol=symbol, exchange=exchange,
