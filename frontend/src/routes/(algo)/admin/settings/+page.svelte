@@ -96,9 +96,13 @@
   // admin-settings toggle itself is frontend/admin cleanup"). The
   // response may still carry the key; this panel no longer reads or
   // renders it.
+  // `expiry_close_lead_minutes_mcx`/`expiry_close_lead_minutes_nfo` removed
+  // from this type/panel 2026-11-24 (audit finding #17) — their one
+  // backend reader, order_hold_gate.py:cutoff_for()/before_cutoff(), had
+  // zero live callers and was removed in the same commit. These two
+  // fields moved a value nothing downstream ever read.
   /** @type {{paper_trading_mode:boolean, default_agent_trade_mode:string,
-   *          expiry_close_hold_enabled:boolean,
-   *          expiry_close_lead_minutes_mcx:number, expiry_close_lead_minutes_nfo:number}|null} */
+   *          expiry_close_hold_enabled:boolean}|null} */
   let globalSwitches = $state(null);
   async function loadGlobalSwitches() {
     try { globalSwitches = await fetchGlobalSwitches(); } catch (_) { /* keep last-known */ }
@@ -170,52 +174,9 @@
     } catch (e) { toast.error(`Update failed: ${e.message}`); }
   }
 
-  /** Clamps + validates a lead-time field, resetting the DOM input back to
-   *  the last-known-good value on any rejection (empty string, non-integer,
-   *  or out-of-range) — `Number('')` is 0, which would otherwise silently
-   *  PATCH a zero lead time on this real-money hold gate. */
-  function _validLeadMinutes(/** @type {string} */ raw, /** @type {number} */ max) {
-    if (raw === '' || raw == null) return null;
-    const n = Number(raw);
-    if (!Number.isInteger(n) || n < 0 || n > max) return null;
-    return n;
-  }
-
-  async function saveExpiryCloseLeadMcx(/** @type {HTMLInputElement} */ el) {
-    const n = _validLeadMinutes(el.value, 180);
-    if (n == null) {
-      toast.error('Lead must be 0–180 min');
-      el.value = String(globalSwitches?.expiry_close_lead_minutes_mcx ?? 30);
-      return;
-    }
-    try {
-      const updated = await updateGlobalSwitches({ expiry_close_lead_minutes_mcx: n });
-      globalSwitches = updated;
-      toast.success(`expiry_close_lead_minutes_mcx → ${n}`);
-      await load();
-    } catch (e) {
-      toast.error(`Update failed: ${e.message}`);
-      el.value = String(globalSwitches?.expiry_close_lead_minutes_mcx ?? 30);
-    }
-  }
-
-  async function saveExpiryCloseLeadNfo(/** @type {HTMLInputElement} */ el) {
-    const n = _validLeadMinutes(el.value, 120);
-    if (n == null) {
-      toast.error('Lead must be 0–120 min');
-      el.value = String(globalSwitches?.expiry_close_lead_minutes_nfo ?? 15);
-      return;
-    }
-    try {
-      const updated = await updateGlobalSwitches({ expiry_close_lead_minutes_nfo: n });
-      globalSwitches = updated;
-      toast.success(`expiry_close_lead_minutes_nfo → ${n}`);
-      await load();
-    } catch (e) {
-      toast.error(`Update failed: ${e.message}`);
-      el.value = String(globalSwitches?.expiry_close_lead_minutes_nfo ?? 15);
-    }
-  }
+  // `_validLeadMinutes`/`saveExpiryCloseLeadMcx`/`saveExpiryCloseLeadNfo`
+  // removed (2026-11-24, audit finding #17) — their only backend reader
+  // was removed in the same commit (see the comment above globalSwitches).
 
   // ── Hedge proxy CRUD (pair-only) ───────────────────────────────────
   /** @type {Array<{id:number,proxy_symbol:string,target_root:string,
@@ -608,42 +569,11 @@
       </div>
     </div>
   </div>
-  <div class="settings-row py-1.5">
-    <div class="flex items-center justify-between gap-2 flex-wrap">
-      <div class="flex items-baseline gap-2 flex-wrap">
-        <span>MCX expiry-close lead time (minutes)</span>
-        <InfoHint popup panel title="expiry_close_lead_minutes_mcx" text="Minutes before MCX close that an expiry-close hold is created. Range 0–180, default 30." />
-        <span class="font-mono text-[length:var(--fs-2xs)] opacity-50">expiry_close_lead_minutes_mcx</span>
-      </div>
-      <div class="flex items-center gap-2">
-        <input type="number" aria-label="MCX expiry-close lead time (minutes)"
-               class="field-input w-20 py-0.5"
-               value={globalSwitches?.expiry_close_lead_minutes_mcx ?? 30}
-               min={0} max={180} step={1}
-               disabled={globalSwitches == null}
-               onchange={(e) => saveExpiryCloseLeadMcx(e.currentTarget)} />
-        <span class="text-[length:var(--fs-xs)] text-[var(--c-muted)]">min</span>
-      </div>
-    </div>
-  </div>
-  <div class="settings-row py-1.5">
-    <div class="flex items-center justify-between gap-2 flex-wrap">
-      <div class="flex items-baseline gap-2 flex-wrap">
-        <span>NFO expiry-close lead time (minutes)</span>
-        <InfoHint popup panel title="expiry_close_lead_minutes_nfo" text="Minutes before NFO close that an expiry-close hold is created. Range 0–120, default 15." />
-        <span class="font-mono text-[length:var(--fs-2xs)] opacity-50">expiry_close_lead_minutes_nfo</span>
-      </div>
-      <div class="flex items-center gap-2">
-        <input type="number" aria-label="NFO expiry-close lead time (minutes)"
-               class="field-input w-20 py-0.5"
-               value={globalSwitches?.expiry_close_lead_minutes_nfo ?? 15}
-               min={0} max={120} step={1}
-               disabled={globalSwitches == null}
-               onchange={(e) => saveExpiryCloseLeadNfo(e.currentTarget)} />
-        <span class="text-[length:var(--fs-xs)] text-[var(--c-muted)]">min</span>
-      </div>
-    </div>
-  </div>
+  <!-- MCX/NFO expiry-close lead-time number inputs removed (2026-11-24,
+       audit finding #17) — their one backend reader,
+       order_hold_gate.py:cutoff_for()/before_cutoff(), had zero live
+       callers and was removed in the same commit. These two controls
+       moved a value nothing downstream ever read. -->
 </section>
 
 {#if execRows.length}

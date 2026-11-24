@@ -519,12 +519,14 @@ SEEDS: list[tuple] = [
     # already-seeded `settings` row is auto-dropped by this function's
     # own `_prune_retired_keys()` call on the next boot, no dedicated
     # migration needed.
-    ("hold",        "hold.lead_minutes_nfo",        "int", 15,
-     "Minutes before the NFO close at which expiry closes are created.",
-     "min", {"min": 0, "max": 120, "step": 1}),
-    ("hold",        "hold.lead_minutes_mcx",        "int", 30,
-     "Minutes before the MCX close at which expiry closes are created.",
-     "min", {"min": 0, "max": 180, "step": 1}),
+    #
+    # `hold.lead_minutes_nfo`/`hold.lead_minutes_mcx` removed (2026-11-24,
+    # audit finding #17) — their one reader, `order_hold_gate.py`'s
+    # `cutoff_for()`/`before_cutoff()`, had zero live callers (confirmed
+    # via grep) and was removed in the same commit. The admin API
+    # fields and frontend controls that edited these two settings are
+    # removed too (admin.py, admin/settings/+page.svelte) — they moved
+    # a value nothing downstream ever read.
     ("log",         "log.db_min_level",             "int", 20,
      "Lowest log level stored in log_events (10 DEBUG, 20 INFO, 30 WARNING, 40 ERROR).",
      "level", {"min": 10, "max": 40, "step": 10}),

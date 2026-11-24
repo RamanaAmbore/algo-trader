@@ -2,7 +2,7 @@
 from datetime import datetime, timezone
 
 from backend.shared.helpers.ramboq_logger import get_logger
-from backend.shared.helpers.settings import get_bool, get_int
+from backend.shared.helpers.settings import get_bool
 
 from backend.api.algo.order_hold import HoldCategory, effective_hold, hold_record, parse_hold_record
 
@@ -182,24 +182,13 @@ async def record_held_order(category: HoldCategory, *, account: str, symbol: str
 # stays in the DB schema (schema drop is a later sub-sprint).
 
 
-_CLOSE_HM = {"NFO": (15, 30), "BFO": (15, 30), "NSE": (15, 30), "MCX": (23, 30), "NCO": (23, 30)}
-
-
-def cutoff_for(exchange: str, now_ist: datetime | None = None) -> datetime:
-    """Cut-off for today's expiry close: session close minus the lead time (IST)."""
-    from datetime import timedelta
-    from zoneinfo import ZoneInfo
-    ex = (exchange or "").upper()
-    now = now_ist or datetime.now(ZoneInfo("Asia/Kolkata"))
-    hh, mm = _CLOSE_HM.get(ex, (15, 30))
-    default_lead = 30 if ex in ("MCX", "NCO") else 15
-    lead = get_int(f"hold.lead_minutes_{ex.lower()}", default_lead)
-    close = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
-    return close - timedelta(minutes=lead)
-
-
-def before_cutoff(exchange: str, now_ist: datetime | None = None) -> bool:
-    """True while the expiry scan must wait for the cut-off."""
-    from zoneinfo import ZoneInfo
-    now = now_ist or datetime.now(ZoneInfo("Asia/Kolkata"))
-    return now < cutoff_for(exchange, now)
+# `_CLOSE_HM`/`cutoff_for()`/`before_cutoff()` removed (2026-11-24,
+# audit finding #17) — confirmed via grep to have zero live callers.
+# The real pre-close lead time is the hardcoded `CLOSE_LEAD_MINUTES`
+# constant in `grammar_tokens/metric_is_expiry_preclose_close_window.py`;
+# `expiry-day-itm-auto-close`'s own condition gates timing, not a
+# second, independently-configured gate inside the action (see that
+# action's own docstring, actions_live.py, for why `before_cutoff()`
+# was deliberately removed from its call path on 2026-10-29). The
+# `hold.lead_minutes_mcx`/`hold.lead_minutes_nfo` settings these
+# functions read are retired alongside them (settings.py, admin.py).

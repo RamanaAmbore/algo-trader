@@ -257,18 +257,15 @@ pre/post-patch binding issues. `swallow_errors=False` (send_summary, chase_close
 preserves their existing un-wrapped behavior (exceptions propagate); `swallow_errors=True` 
 wraps individually (logs + silently swallows, handler returns False, caller continues).
 
-**`expiry_auto_close` fire_at_time invariant** (Fixed 2026-10-08, commit `692e852c`): The 
-seeded `expiry-day-equity-itm-auto-close` (NFO) agent's `before_cutoff()` gate defers the 
-entire action cycle (scan + close) every time it evaluates outside the cutoff window. 
-`cutoff_for(exchange)` computes `session_close − lead_minutes`, and `fire_at_time` must 
-be at or after that computed cutoff, or the action never runs. Example: NFO closes at 
-15:30 IST with default 15-minute lead, so cutoff = 15:15; an agent with `fire_at_time: 
-"15:00"` defers in the 15:00-15:06 firing window and never completes. MCX (23:30 close, 
-30-minute lead, cutoff 23:00) only happened to work by coincidence with its own schedule. 
-Fixed by seeding NFO agent at `fire_at_time: "15:15"`. Agent remains seeded 
-`status='inactive'`, so no production behavior changed — but the feature is now functional 
-when activated. Operator must ensure custom expiry_auto_close agents also respect this 
-invariant: `fire_at_time >= cutoff_for(exchange)`.
+**`expiry_auto_close` fire_at_time invariant** (Fixed 2026-10-08, commit `692e852c`;
+HISTORICAL — superseded 2026-10-29 and 2026-11-24). The seeded `expiry-day-equity-itm-auto-close`
+(NFO) agent this entry described was retired in the 2026-10-29 consolidation into the single
+`expiry-day-itm-auto-close` (covers both exchanges), which has no `fire_at_time` at all — it
+fires on a flat `is_expiry_preclose_close_window` condition instead. `order_hold_gate.py:
+cutoff_for()`/`before_cutoff()`, the mechanism this entry's invariant depended on, were
+confirmed to have zero live callers and removed entirely (2026-11-24, audit finding #17),
+along with the `hold.lead_minutes_mcx`/`hold.lead_minutes_nfo` settings that fed them. This
+entry is kept for history only — do not cite `cutoff_for`/`before_cutoff` as live mechanisms.
 
 **Agent Grammar Metadata** (Amended 2026-10 (`a938340c`)):
 SYSTEM_TOKENS and LOG_TAG_TOKENS (condition metrics, notification tokens, action-event tokens) 

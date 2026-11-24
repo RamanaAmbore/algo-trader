@@ -1097,33 +1097,23 @@ class GlobalSwitchesRequest(msgspec.Struct):
     # expiry_close_hold_enabled=True means closes ARE held, which maps to
     # hold.expiry_close_released=False. See _gs_collect_hold_changes().
     expiry_close_hold_enabled: bool | None = None
-    # Per-exchange lead time (minutes before close) at which an expiry
-    # close is created — order_hold_gate.py:cutoff_for(). Only MCX/NCO
-    # (lead 30) and NFO/BFO/NSE (lead 15) are seeded; MCX and NFO are the
-    # two exchanges builtin expiry-close agents actually target.
-    expiry_close_lead_minutes_mcx: int | None = None
-    expiry_close_lead_minutes_nfo: int | None = None
     # `template_exit_hold_enabled` removed (Bracket/Template-GTT
     # removal, T3.6, 2026-11) — `order_hold_gate.py:template_exit_held()`,
     # the one function that ever read the underlying
     # `hold.template_exit_released` setting, was removed in T3.1.
+    #
+    # `expiry_close_lead_minutes_mcx`/`expiry_close_lead_minutes_nfo`
+    # removed (2026-11-24, audit finding #17) — their one reader,
+    # `order_hold_gate.py:cutoff_for()`, had zero live callers and was
+    # removed in the same commit. These two fields moved a value
+    # nothing downstream ever read — a misleading control surface,
+    # exactly during the moment an operator would reach for it.
 
 
 class GlobalSwitchesResponse(msgspec.Struct):
     paper_trading_mode: bool
     default_agent_trade_mode: str
     expiry_close_hold_enabled: bool
-    expiry_close_lead_minutes_mcx: int
-    expiry_close_lead_minutes_nfo: int
-
-
-# Defaults mirrored from order_hold_gate.py's own in-code defaults
-# (cutoff_for: 30 for MCX/NCO, 15 for everything else). Kept here too
-# so GET/PATCH never drift from the gate's own fallback if the DB row
-# is somehow missing (it's seeded in settings.py, so this is belt-and-
-# suspenders, not the primary source).
-_HOLD_LEAD_DEFAULT_MCX = 30
-_HOLD_LEAD_DEFAULT_NFO = 15
 
 
 def _gs_collect_bool_hold_changes(
@@ -1159,49 +1149,37 @@ def _gs_collect_bool_hold_changes(
 def _gs_collect_hold_changes(
     data: "GlobalSwitchesRequest",
 ) -> list[tuple[str, str, str, str]]:
-    """Expiry-close hold-gate changes (hold switch + per-exchange lead
-    minutes) for PATCH /api/admin/global-switches.
+    """Expiry-close hold-gate changes for PATCH /api/admin/global-switches.
     Factored out of update_global_switches to keep that handler's
     cyclomatic complexity under the push-gate D threshold.
 
-    Local import of get_bool/get_int (not module-level) matches the
-    existing pattern in update_global_switches — tests patch
-    `backend.shared.helpers.settings.get_bool`/`get_int`, which only
-    takes effect on a fresh `from ... import` at call time.
+    Per-exchange lead-minutes handling (`expiry_close_lead_minutes_mcx`/
+    `_nfo`) removed (2026-11-24, audit finding #17) — their one reader,
+    `order_hold_gate.py:cutoff_for()`, had zero live callers and was
+    removed in the same commit. This function now only collects the
+    hold switch itself.
+
+    Local import of get_bool (not module-level) matches the existing
+    pattern in update_global_switches — tests patch
+    `backend.shared.helpers.settings.get_bool`, which only takes effect
+    on a fresh `from ... import` at call time.
     """
-    from backend.shared.helpers.settings import get_bool, get_int
+    from backend.shared.helpers.settings import get_bool
 
-    out = _gs_collect_bool_hold_changes(data, get_bool)
-
-    for field_val, key, default in (
-        (data.expiry_close_lead_minutes_mcx, "hold.lead_minutes_mcx", _HOLD_LEAD_DEFAULT_MCX),
-        (data.expiry_close_lead_minutes_nfo, "hold.lead_minutes_nfo", _HOLD_LEAD_DEFAULT_NFO),
-    ):
-        if field_val is None:
-            continue
-        new_int = int(field_val)
-        if new_int < 0:
-            raise HTTPException(status_code=400, detail=f"{key} must be >= 0")
-        old_int = get_int(key, default)
-        if new_int != old_int:
-            out.append((key, str(old_int), str(new_int), "int"))
-
-    return out
+    return _gs_collect_bool_hold_changes(data, get_bool)
 
 
 def _gs_snapshot() -> "GlobalSwitchesResponse":
-    """Current effective values for all five global switches. Single
+    """Current effective values for all three global switches. Single
     source for both GET and the PATCH response so the two paths can't
     drift apart."""
-    from backend.shared.helpers.settings import get_bool, get_int, get_string
+    from backend.shared.helpers.settings import get_bool, get_string
     from backend.api.algo.order_hold_gate import EXPIRY_CLOSE_RELEASED_KEY
     return GlobalSwitchesResponse(
         paper_trading_mode=get_bool("execution.paper_trading_mode", False),
         default_agent_trade_mode=get_string("execution.default_agent_trade_mode", "paper"),
         # INVERSION: see _gs_collect_bool_hold_changes's docstring.
         expiry_close_hold_enabled=not get_bool(EXPIRY_CLOSE_RELEASED_KEY, False),
-        expiry_close_lead_minutes_mcx=get_int("hold.lead_minutes_mcx", _HOLD_LEAD_DEFAULT_MCX),
-        expiry_close_lead_minutes_nfo=get_int("hold.lead_minutes_nfo", _HOLD_LEAD_DEFAULT_NFO),
     )
 
 

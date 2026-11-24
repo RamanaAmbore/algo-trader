@@ -534,17 +534,21 @@ SHADOW and REPLAY are separate opt-ins on top.
 ### Global Switches — master controls via PATCH
 
 The **Global Switches** panel sits at the top of `/admin/settings` and handles
-five global switches via `PATCH /api/admin/global-switches` (audit-logged,
+three global switches via `PATCH /api/admin/global-switches` (audit-logged,
 transactional with rollback on audit failure). Guards: `view_settings_readonly`
-(read-only access to all five), `manage_settings` (write access).
+(read-only access to all three), `manage_settings` (write access).
 
 | Switch | Type | Purpose | Warn |
 |---|---|---|---|
 | `paper_trading_mode` | BOOL | When True, every broker action (across all accounts) goes to paper instead of live. Identical to the navbar PAPER/LIVE toggle; this is just an alternate UI for the same setting. | Yes — danger-confirm modal with "⚠ Affects every account, prod-wide" |
 | `default_agent_trade_mode` | SELECT (paper / live) | Default trade mode for newly-created agents: when an agent is created with no explicit `trade_mode`, this value is applied once at creation time and frozen. Changing this does NOT retroactively change existing agents. | No |
 | `expiry_close_hold_enabled` | BOOL chip + button | Hold expiry-close orders for review (ON/HELD) or let them fire automatically (OFF/AUTO). ON = safe default. | Yes — only when flipping to AUTO; "Disable expiry-close hold?" dialog with "⚠ Expiry closes will fire automatically with no review" |
-| `expiry_close_lead_minutes_mcx` | INT (0–180) | Minutes before MCX close at which an expiry-close hold is created. Default: 30. Client validates integers only; invalid/empty reverts with toast. | No |
-| `expiry_close_lead_minutes_nfo` | INT (0–120) | Minutes before NFO close at which an expiry-close hold is created. Default: 15. Client validates integers only; invalid/empty reverts with toast. | No |
+
+*(`expiry_close_lead_minutes_mcx`/`_nfo` were removed 2026-11-24, audit finding
+#17 — their one backend reader, `order_hold_gate.py:cutoff_for()`/
+`before_cutoff()`, had zero live callers. The real pre-close lead time for the
+`expiry-day-itm-auto-close` agent is a hardcoded constant in
+`grammar_tokens/metric_is_expiry_preclose_close_window.py`, not an admin setting.)*
 
 The `default_agent_trade_mode` dropdown is a direct read/write of the same
 `execution.default_agent_trade_mode` setting that appears in the regular

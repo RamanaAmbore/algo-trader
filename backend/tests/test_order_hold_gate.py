@@ -32,30 +32,11 @@ def test_record_held_order_returns_none_on_db_failure(monkeypatch):
     assert out is None
 
 
-def test_cutoff_is_close_minus_default_lead_nfo(monkeypatch):
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
-    monkeypatch.setattr(gate, "get_int", lambda key, default=0: default)
-    now = datetime(2026, 10, 15, 14, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
-    assert gate.cutoff_for("NFO", now).strftime("%H:%M") == "15:15"
-
-
-def test_cutoff_uses_mcx_lead_default(monkeypatch):
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
-    monkeypatch.setattr(gate, "get_int", lambda key, default=0: default)
-    now = datetime(2026, 10, 15, 20, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
-    assert gate.cutoff_for("MCX", now).strftime("%H:%M") == "23:00"
-
-
-def test_before_cutoff_true_until_cutoff(monkeypatch):
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
-    monkeypatch.setattr(gate, "get_int", lambda key, default=0: default)
-    early = datetime(2026, 10, 15, 14, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
-    late = datetime(2026, 10, 15, 15, 20, tzinfo=ZoneInfo("Asia/Kolkata"))
-    assert gate.before_cutoff("NFO", early) is True
-    assert gate.before_cutoff("NFO", late) is False
+# `test_cutoff_is_close_minus_default_lead_nfo` / `test_cutoff_uses_
+# mcx_lead_default` / `test_before_cutoff_true_until_cutoff` removed
+# (2026-11-24, audit finding #17) — exercised the now-deleted
+# `cutoff_for()`/`before_cutoff()`, confirmed to have zero live
+# callers.
 
 
 # test_template_exit_held_by_default removed (Bracket/Template-GTT
