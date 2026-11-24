@@ -839,7 +839,7 @@ class TestExpVerifyCancelFailedLeg:
                    new=AsyncMock(return_value=truth)), \
              patch("backend.api.algo.chase.is_chase_active", return_value=False), \
              patch("backend.shared.helpers.alert_utils.send_order_failure_alert") as alert_mock, \
-             patch("backend.api.algo.expiry.logger") as mock_logger:
+             patch("backend.api.algo.order_inflight.logger") as mock_logger:
             still_blocking = await _exp_verify_cancel_failed_leg(row)
 
         assert still_blocking is True
@@ -857,7 +857,7 @@ class TestExpVerifyCancelFailedLeg:
                    new=AsyncMock(return_value=truth)), \
              patch("backend.api.algo.chase.is_chase_active", return_value=True), \
              patch("backend.shared.helpers.alert_utils.send_order_failure_alert") as alert_mock, \
-             patch("backend.api.algo.expiry.logger") as mock_logger:
+             patch("backend.api.algo.order_inflight.logger") as mock_logger:
             still_blocking = await _exp_verify_cancel_failed_leg(row)
 
         assert still_blocking is True
@@ -873,7 +873,7 @@ class TestExpVerifyCancelFailedLeg:
         with patch("backend.api.routes.orders_helpers.get_broker_order_truth",
                    new=AsyncMock(return_value=truth)), \
              patch("backend.shared.helpers.alert_utils.send_order_failure_alert") as alert_mock, \
-             patch("backend.api.algo.expiry.logger") as mock_logger:
+             patch("backend.api.algo.order_inflight.logger") as mock_logger:
             still_blocking = await _exp_verify_cancel_failed_leg(row)
 
         assert still_blocking is True
@@ -905,7 +905,7 @@ class TestExpVerifyCancelFailedLeg:
         row = _make_row()
         with patch("backend.api.routes.orders_helpers.get_broker_order_truth",
                    new=AsyncMock(side_effect=RuntimeError("boom"))), \
-             patch("backend.api.algo.expiry.logger") as mock_logger:
+             patch("backend.api.algo.order_inflight.logger") as mock_logger:
             still_blocking = await _exp_verify_cancel_failed_leg(row)
 
         assert still_blocking is True

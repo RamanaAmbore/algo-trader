@@ -390,6 +390,8 @@ class TestHoldStagedExactlyOnceZeroBrokerCalls:
              patch("backend.shared.helpers.settings.get_bool", return_value=False), \
              patch("backend.api.algo.actions_live._al_close_resolve_position",
                    new=AsyncMock(return_value=("BUY", 50, "NRML"))), \
+             patch("backend.api.algo.order_inflight._exp_leg_in_flight_this_session",
+                   new=AsyncMock(return_value=False)), \
              patch("backend.api.algo.actions_live._al_agent_close_recently_cancelled_this_session",
                    new=AsyncMock(return_value=False)), \
              patch("backend.api.algo.actions_live._al_find_held_agent_close",
@@ -435,6 +437,8 @@ class TestHoldStagedExactlyOnceZeroBrokerCalls:
              patch("backend.shared.helpers.settings.get_bool", return_value=False), \
              patch("backend.api.algo.actions_live._al_close_resolve_position",
                    new=AsyncMock(return_value=("BUY", 50, "NRML"))), \
+             patch("backend.api.algo.order_inflight._exp_leg_in_flight_this_session",
+                   new=AsyncMock(return_value=False)), \
              patch("backend.api.algo.actions_live._al_agent_close_recently_cancelled_this_session",
                    mock_suppression_check), \
              patch("backend.api.algo.order_hold_gate.record_held_order", mock_record_held), \

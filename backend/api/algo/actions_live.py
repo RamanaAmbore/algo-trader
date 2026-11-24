@@ -2130,6 +2130,23 @@ async def _al_maybe_stage_agent_close_hold(agent, params: dict, context: dict) -
     side, qty, product = resolved
     agent_id = getattr(agent, "id", None)
 
+    # 2026-11-24 fix (audit finding #3): generalized from expiry.py's
+    # own in-flight guard — without this, a released AGENT_CLOSE or
+    # EXPIRY_CLOSE hold that is `OPEN` and still chasing was invisible
+    # to this function's dedup below (which only sees `status=='HELD'`
+    # rows), so a second HELD row could stage and auto-release while
+    # the first chase was still live, flipping the leg. Identity-only
+    # (no HoldCategory filter), so it also blocks against a hold the
+    # OTHER category is already working for this exact leg.
+    from backend.api.algo.order_inflight import _exp_leg_in_flight_this_session
+    if await _exp_leg_in_flight_this_session(account, symbol, exchange, side):
+        logger.info(
+            f"[AGENT-CLOSE-HOLD] agent {getattr(agent, 'slug', '?')}: "
+            f"{side} {symbol} ({exchange}) already has an unresolved order "
+            f"this session (HELD/OPEN/CANCEL_FAILED) — skipping re-stage"
+        )
+        return
+
     if await _al_agent_close_recently_cancelled_this_session(
         agent_id, account, symbol, exchange, side,
     ):
