@@ -1843,9 +1843,15 @@ async def _action_live_expiry_auto_close(agent, context: dict, params: dict):
     its duration, matching the alert sibling's own `_v2_expiry_
     position_breakdown()`.
 
-    `params` is accepted for action-dispatch signature compatibility
-    but intentionally empty/unused — which exchange(s) get processed is
-    decided by the live window check above, not a static param.
+    `params.exchange` (2026-11-24 fix, audit finding #4): when a custom
+    agent sets it explicitly, the live path now intersects it with the
+    real pre-close window check above — never bypassing that check, only
+    narrowing it — so `expiry_auto_close(exchange='NFO')` behaves the
+    same way across live/paper/sim, instead of live silently closing
+    whatever OTHER exchange happens to be in-window too. Omitted
+    (the common case, including the default `expiry-day-itm-auto-close`
+    agent), it processes every exchange currently in-window, unchanged
+    from before this fix.
 
     2026-11-23 fix (Part C — the expiry-close hold/auto-release
     mechanism): every HELD row this action's `close_positions()` call
@@ -1867,6 +1873,9 @@ async def _action_live_expiry_auto_close(agent, context: dict, params: dict):
 
     shim = _al_expiry_context_shim(context)
     exchanges_in_window = _expiry_preclose_exchanges(shim, None, CLOSE_LEAD_MINUTES)
+    requested_exchange = (params or {}).get("exchange")
+    if requested_exchange:
+        exchanges_in_window = exchanges_in_window & {requested_exchange.upper()}
     if not exchanges_in_window:
         logger.info(
             f"[LIVE] expiry_auto_close: agent {agent.slug} fired but no "

@@ -250,6 +250,76 @@ async def test_expiry_auto_close_action_scans_unconditionally_no_cutoff_gate():
 
 
 @pytest.mark.asyncio
+async def test_expiry_auto_close_honors_explicit_exchange_param():
+    """Audit finding #4 (2026-11-24): an explicit params['exchange']
+    must narrow which exchange(s) get closed, even when the OTHER
+    exchange is also genuinely within its own pre-close window right
+    now -- closing the live/paper/sim divergence (paper/sim already
+    honored this param)."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from backend.api.algo.actions_live import _action_live_expiry_auto_close
+
+    agent = MagicMock()
+    agent.slug = "expiry-day-itm-auto-close"
+    agent.id = 42
+
+    mock_engine = MagicMock()
+    mock_engine.scan_positions.return_value = [
+        MagicMock(exchange="MCX"), MagicMock(exchange="NFO"),
+    ]
+    mock_engine.close_positions = AsyncMock()
+    mock_engine.state.closed = []
+    mock_engine.state.failed = []
+    mock_engine.state.total_slippage = 0.0
+
+    with patch("backend.api.algo.expiry.ExpiryEngine", return_value=mock_engine), \
+         patch(
+             "backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window."
+             "_expiry_preclose_exchanges",
+             return_value={"MCX", "NFO"},
+         ):
+        await _action_live_expiry_auto_close(agent, {}, {"exchange": "NFO"})
+
+    mock_engine.close_positions.assert_awaited_once()
+    closed_positions = mock_engine.close_positions.await_args.args[0]
+    assert len(closed_positions) == 1
+    assert closed_positions[0].exchange == "NFO"
+
+
+@pytest.mark.asyncio
+async def test_expiry_auto_close_no_exchange_param_keeps_every_in_window_exchange():
+    """No `exchange` param (the default agent's own shape) -- behaviour
+    unchanged from before this fix: every exchange currently in-window
+    is processed together."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from backend.api.algo.actions_live import _action_live_expiry_auto_close
+
+    agent = MagicMock()
+    agent.slug = "expiry-day-itm-auto-close"
+    agent.id = 42
+
+    mock_engine = MagicMock()
+    mock_engine.scan_positions.return_value = [
+        MagicMock(exchange="MCX"), MagicMock(exchange="NFO"),
+    ]
+    mock_engine.close_positions = AsyncMock()
+    mock_engine.state.closed = []
+    mock_engine.state.failed = []
+    mock_engine.state.total_slippage = 0.0
+
+    with patch("backend.api.algo.expiry.ExpiryEngine", return_value=mock_engine), \
+         patch(
+             "backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window."
+             "_expiry_preclose_exchanges",
+             return_value={"MCX", "NFO"},
+         ):
+        await _action_live_expiry_auto_close(agent, {}, {})
+
+    closed_positions = mock_engine.close_positions.await_args.args[0]
+    assert {p.exchange for p in closed_positions} == {"MCX", "NFO"}
+
+
+@pytest.mark.asyncio
 async def test_nfo_rescan_loop_catches_newly_itm_in_run():
     """run() re-scan loop must detect NFO positions that cross ITM after morning scan.
 
