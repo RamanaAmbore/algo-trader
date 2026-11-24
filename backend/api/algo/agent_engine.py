@@ -3564,6 +3564,29 @@ def _ae_sync_trade_mode_fail_safe(existing, agent_def: dict) -> None:
     existing.trade_mode = spec_value
 
 
+def _ae_sync_events_additive(existing, agent_def: dict) -> None:
+    """Additive-sync events: add any default channel missing from the
+    stored events. Never removes channels the operator may have added
+    manually. Extracted from `_ae_sync_existing_builtin` to keep it
+    under the CC gate, mirroring `_ae_sync_require_release_fail_safe`'s
+    own extraction above.
+
+    2026-11-24 fix (audit finding #8): skipped entirely once
+    `events_operator_edited` is True — before this, re-adding a missing
+    default channel silently reverted an operator's deliberate removal
+    of that channel (e.g. ntfy) on every restart. `getattr(..., False)`
+    — a hand-built test double may not set this new field at all;
+    absence means "never edited by an operator", the same as a fresh
+    row's real column default."""
+    if getattr(existing, "events_operator_edited", False):
+        return
+    code_events = agent_def.get("events", [])
+    stored_channels = {e["channel"] for e in (existing.events or [])}
+    missing = [e for e in code_events if e["channel"] not in stored_channels]
+    if missing:
+        existing.events = list(existing.events or []) + missing
+
+
 def _ae_has_pnl_leaf(cond: dict | None) -> bool:
     """True when the condition tree contains any leaf with metric in ('pnl', 'pnl_pct')."""
     if not isinstance(cond, dict):
@@ -3724,13 +3747,7 @@ def _ae_sync_existing_builtin(existing, agent_def: dict) -> None:
         _ae_sync_builtin_status(existing, _ae_guard_seed_status(agent_def, default=None))
     _ae_sync_require_release_fail_safe(existing, agent_def)
     _ae_sync_trade_mode_fail_safe(existing, agent_def)
-    # Additive-sync events: add any default channel missing from the stored events.
-    # Never removes channels the operator may have added manually.
-    code_events = agent_def.get("events", [])
-    stored_channels = {e["channel"] for e in (existing.events or [])}
-    missing = [e for e in code_events if e["channel"] not in stored_channels]
-    if missing:
-        existing.events = list(existing.events or []) + missing
+    _ae_sync_events_additive(existing, agent_def)
     new_fire_at_time = agent_def.get("fire_at_time")
     if existing.fire_at_time != new_fire_at_time:
         existing.fire_at_time = new_fire_at_time

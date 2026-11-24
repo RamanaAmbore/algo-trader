@@ -1627,6 +1627,15 @@ class AgentController(Controller):
                 val = getattr(data, field, None)
                 if val is not None:
                     setattr(agent, field, val)
+                    # Audit finding #8 (2026-11-24): a builtin's
+                    # additive events-channel sync (agent_engine.py
+                    # _ae_sync_existing_builtin) must stop touching
+                    # this row's events once an operator has explicitly
+                    # edited them — otherwise a deliberately-removed
+                    # channel (e.g. ntfy) silently comes back on the
+                    # next restart.
+                    if field == 'events':
+                        agent.events_operator_edited = True
             # group maps to the ORM attribute `group_name` (`group` is a
             # reserved SQL keyword) — can't live in the setattr loop above
             # since the request field name and the ORM attribute name

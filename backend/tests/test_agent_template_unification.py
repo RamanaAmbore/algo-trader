@@ -92,6 +92,7 @@ async def sqlite_env():
         preamble_fired_at    = Column(DateTime, nullable=True)
         preamble_alert_last_fired_at = Column(DateTime, nullable=True)
         has_explicit_alert   = Column(Boolean, nullable=False, default=False)
+        events_operator_edited = Column(Boolean, nullable=False, default=False)
         conditions           = Column(JSON, nullable=False, default=dict)
         events               = Column(JSON, nullable=False, default=list)
         actions              = Column(JSON, nullable=False, default=list)
@@ -475,6 +476,46 @@ async def test_update_agent_allows_body_edit_on_custom_template(sqlite_env):
     async with factory() as s:
         row = (await s.execute(select(_Agent).where(_Agent.slug == "custom-tpl"))).scalar_one()
         assert row.events == [{"channel": "telegram", "enabled": True}]
+
+
+async def test_update_agent_sets_events_operator_edited_marker(sqlite_env):
+    """Audit finding #8 (2026-11-24): editing `events` via the real
+    update_agent route must flip `events_operator_edited`, so a
+    builtin's additive events-channel restart-sync stops touching this
+    row — see `_ae_sync_existing_builtin`'s own test coverage for the
+    read side of this marker."""
+    factory, _Agent = sqlite_env
+    from sqlalchemy import select
+    from backend.api.routes.agents import AgentController, AgentUpdateRequest
+
+    async with factory() as s:
+        s.add(_Agent(slug="sys-events-edit", name="X", kind="cycle",
+                      is_system=True, status="active", conditions={},
+                      events=[{"channel": "telegram", "enabled": True}], actions=[]))
+        await s.commit()
+
+    controller = AgentController.__new__(AgentController)
+    data = AgentUpdateRequest(events=[{"channel": "log", "enabled": True}])
+    await AgentController.update_agent.fn(controller, "sys-events-edit", data)
+
+    async with factory() as s:
+        row = (await s.execute(select(_Agent).where(_Agent.slug == "sys-events-edit"))).scalar_one()
+        assert row.events_operator_edited is True
+
+    # An update that never touches `events` at all must not set the marker.
+    async with factory() as s:
+        s.add(_Agent(slug="sys-events-untouched", name="Y", kind="cycle",
+                      is_system=True, status="active", conditions={},
+                      events=[{"channel": "telegram", "enabled": True}], actions=[]))
+        await s.commit()
+
+    data2 = AgentUpdateRequest(cooldown_minutes=45)
+    await AgentController.update_agent.fn(controller, "sys-events-untouched", data2)
+
+    async with factory() as s:
+        row2 = (await s.execute(
+            select(_Agent).where(_Agent.slug == "sys-events-untouched"))).scalar_one()
+        assert row2.events_operator_edited is False
 
 
 # ═══════════════════════════════════════════════════════════════════════

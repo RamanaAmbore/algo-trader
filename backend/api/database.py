@@ -1275,6 +1275,21 @@ async def _migrate_agents_require_release(conn) -> None:
     ))
 
 
+async def _migrate_agents_events_operator_edited(conn) -> None:
+    """Additive migration — `agents.events_operator_edited` (audit
+    finding #8, 2026-11-24). Same `SET LOCAL lock_timeout` pattern as
+    every other migration here. `NOT NULL DEFAULT false` for the same
+    reason `require_release` has one — every pre-existing row reads
+    back `False` (additive-sync keeps running for it, unchanged
+    behaviour), never an ambiguous `NULL`."""
+    from sqlalchemy import text
+    await conn.execute(text("SET LOCAL lock_timeout = '5s'"))
+    await conn.execute(text(
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS events_operator_edited "
+        "BOOLEAN NOT NULL DEFAULT false"
+    ))
+
+
 async def _migrate_agents_strip_notify_from_actions(conn) -> None:
     """One-time data normalization — strips the retired `notify` sibling
     key from every entry of every `agents.actions` AND `agents.preamble`
@@ -1497,6 +1512,7 @@ async def init_db() -> None:
         await _migrate_agents_seed_spec_hash(conn)
         await _migrate_agents_priority(conn)
         await _migrate_agents_require_release(conn)
+        await _migrate_agents_events_operator_edited(conn)
         await _migrate_agents_strip_notify_from_actions(conn)
         await _migrate_drop_position_pairs_table(conn)
         await _migrate_market_special_sessions_source(conn)
