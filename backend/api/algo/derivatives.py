@@ -73,8 +73,11 @@ def parse_tradingsymbol(symbol: str) -> Optional[dict]:
                      underlying_ltp_key(root) or option_underlying_quote_key().
         opt_type:    'CE' | 'PE'   (options only)
         strike:      float          (options only)
-        expiry:      datetime.date  (best-effort — last Thursday for
-                     monthly, parsed exactly for weekly)
+        expiry:      datetime.date  (best-effort for monthly — last Tuesday
+                     for NSE/NFO equity from 2025-09 (last Thursday
+                     before), last Thursday for BSE/BFO, last Friday for
+                     MCX options (approximate for MCX futures); parsed
+                     exactly for weekly)
     Returns None if the symbol doesn't match a known F&O shape (e.g.
     cash-equity holdings).
     """
@@ -118,13 +121,22 @@ def parse_tradingsymbol(symbol: str) -> Optional[dict]:
         try:
             month  = _MONTH_BY_CODE_LONG[mon]
             year   = 2000 + int(yy)
-            # Futures expiry varies per commodity (GOLDM ≈ 5th, CRUDEOIL
-            # ≈ 19th, NATURALGAS ≈ 25th, base metals ≈ last day). No
-            # single rule fits; the Kite instruments cache is the only
-            # reliable source. Parser keeps the equity last-Thursday
-            # fallback so callers that don't pass `leg.expiry` get a
-            # consistent (if approximate) date.
-            expiry = _last_thursday(year, month)
+            if is_mcx_underlying(und):
+                # MCX futures expiry varies per commodity (GOLDM ≈ 5th,
+                # CRUDEOIL ≈ 19th, NATURALGAS ≈ 25th, base metals ≈ last
+                # day). No single rule fits; the Kite instruments cache is
+                # the only reliable source. Parser keeps the equity
+                # last-Thursday fallback so callers that don't pass
+                # `leg.expiry` get a consistent (if approximate) date.
+                expiry = _last_thursday(year, month)
+            elif is_bse_underlying(und):
+                expiry = _last_thursday(year, month)
+            else:
+                # NSE/NFO index + stock futures: this IS the real rule
+                # (not an approximation) — last Tuesday from 2025-09
+                # onward, last Thursday before that. See
+                # `_NSE_TUESDAY_EXPIRY_EFFECTIVE`.
+                expiry = _nse_nfo_equity_monthly_expiry(year, month)
             return {"kind": "fut", "root": und, "expiry": expiry}
         except Exception:
             pass
@@ -146,9 +158,34 @@ def _last_weekday(year: int, month: int, weekday: int) -> date:
             return d
 
 
+# NSE moved equity-derivatives (index + stock F&O on NFO) monthly expiry
+# from the last Thursday to the last Tuesday of the month, effective
+# 2025-09-01 (contracts expiring on/before 2025-08-31 kept Thursday). BSE/BFO
+# (SENSEX, BANKEX) was NOT affected and stays on Thursday. A bare
+# tradingsymbol carries no exchange, so `_BSE_UNDERLYINGS` is the only
+# available signal to tell the two apart.
+_NSE_TUESDAY_EXPIRY_EFFECTIVE = date(2025, 9, 1)
+
+_BSE_UNDERLYINGS = frozenset({"SENSEX", "BANKEX"})
+
+
+def is_bse_underlying(underlying: str) -> bool:
+    """True for a BSE/BFO index underlying (SENSEX, BANKEX). These kept the
+    equity-derivatives 'last Thursday' monthly expiry convention when NSE
+    moved to Tuesday on 2025-09-01."""
+    return (underlying or "").upper() in _BSE_UNDERLYINGS
+
+
 def _last_thursday(year: int, month: int) -> date:
-    """Last Thursday of the given month — NSE/NFO equity options monthly expiry."""
+    """Last Thursday of the given month — BSE/BFO (SENSEX/BANKEX) equity
+    options monthly expiry, and the pre-2025-09 NSE/NFO convention."""
     return _last_weekday(year, month, 3)
+
+
+def _last_tuesday(year: int, month: int) -> date:
+    """Last Tuesday of the given month — NSE/NFO equity derivatives monthly
+    expiry, effective 2025-09-01 (SEBI-mandated shift off Thursday)."""
+    return _last_weekday(year, month, 1)
 
 
 def _last_friday(year: int, month: int) -> date:
@@ -159,13 +196,26 @@ def _last_friday(year: int, month: int) -> date:
     return _last_weekday(year, month, 4)
 
 
+def _nse_nfo_equity_monthly_expiry(year: int, month: int) -> date:
+    """NSE/NFO equity-derivatives (index + stock F&O) monthly expiry: last
+    Tuesday for a contract month on/after 2025-09, last Thursday before
+    that. See `_NSE_TUESDAY_EXPIRY_EFFECTIVE`."""
+    if date(year, month, 1) >= _NSE_TUESDAY_EXPIRY_EFFECTIVE:
+        return _last_tuesday(year, month)
+    return _last_thursday(year, month)
+
+
 def _monthly_expiry(underlying: str, year: int, month: int) -> date:
     """Pick the monthly-expiry day appropriate for the underlying's exchange.
     MCX commodities (GOLDM, CRUDEOIL, SILVER, etc.) → last Friday.
-    Everything else (NSE/NFO equity) → last Thursday."""
-    return (_last_friday(year, month)
-            if is_mcx_underlying(underlying)
-            else _last_thursday(year, month))
+    BSE/BFO indices (SENSEX, BANKEX) → last Thursday (unchanged).
+    Everything else (NSE/NFO equity) → last Tuesday from 2025-09 onward,
+    last Thursday before that."""
+    if is_mcx_underlying(underlying):
+        return _last_friday(year, month)
+    if is_bse_underlying(underlying):
+        return _last_thursday(year, month)
+    return _nse_nfo_equity_monthly_expiry(year, month)
 
 
 def days_to_expiry(expiry: date, *, ref: Optional[datetime] = None,

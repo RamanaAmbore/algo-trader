@@ -1100,8 +1100,11 @@ def test_positions_snapshot_includes_todays_closed_qty_zero_rows():
 
     from backend.api.routes.positions import _positions_snapshot
 
-    today = date(2026, 7, 28)
-    now_dt = datetime(2026, 7, 28, 10, 0, 0, tzinfo=timezone.utc)
+    # Mid-month, deliberately far from this contract's own monthly expiry
+    # (last Tuesday of July 2026 = 2026-07-28) — see the note in the
+    # sibling "excludes_yesterday" test below.
+    today = date(2026, 7, 15)
+    now_dt = datetime(2026, 7, 15, 10, 0, 0, tzinfo=timezone.utc)
 
     rows = [
         _make_pos_row("NIFTY26JUL24500CE", 25, now_dt),   # open
@@ -1139,14 +1142,20 @@ def test_positions_snapshot_excludes_yesterday_closed_qty_zero_rows():
 
     from backend.api.routes.positions import _positions_snapshot
 
-    today = date(2026, 7, 29)  # Tuesday
-    yesterday_dt = datetime(2026, 7, 28, 10, 0, 0, tzinfo=timezone.utc)  # Monday
+    # Mid-month dates, deliberately far from this contract's own monthly
+    # expiry (last Tuesday of July 2026 = 2026-07-28, per the NSE
+    # Thursday→Tuesday expiry-day fix) so this fixture can't accidentally
+    # collide with the expiry-freeze filter in
+    # `_union_and_filter_expiry_frozen_rows` — this test is only about the
+    # qty=0 SQL date gate, not expiry handling.
+    today = date(2026, 7, 15)  # Wednesday
+    yesterday_dt = datetime(2026, 7, 14, 10, 0, 0, tzinfo=timezone.utc)  # Tuesday
 
     # DB (with the filter applied) returns only the open row; the closed
-    # qty=0 row from Monday is excluded by db.date != today condition.
+    # qty=0 row from yesterday is excluded by db.date != today condition.
     rows = [
         _make_pos_row("NIFTY26JUL24500CE", 25, yesterday_dt),  # carried overnight
-        # NIFTY26JUL24000PE (qty=0, date=Monday) → filtered by SQL, not in result
+        # NIFTY26JUL24000PE (qty=0, date=yesterday) → filtered by SQL, not in result
     ]
     mock_session, mock_ts = _make_snapshot_session(rows, today)
 
