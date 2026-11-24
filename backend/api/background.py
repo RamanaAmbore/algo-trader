@@ -6167,6 +6167,113 @@ async def _agent_close_auto_release_sweep_once(now: "datetime | None" = None) ->
     return released
 
 
+# In-process dedup for the stuck-OPEN recovery below, same lifetime
+# convention as `_AUTO_RELEASE_FAILED_ALERTED` — one retry, then one
+# alert, per row id for the process lifetime (ids are never reused).
+_STUCK_OPEN_RETRIED: set[int] = set()
+_STUCK_OPEN_ALERTED: set[int] = set()
+
+
+async def _recover_stuck_open_agent_close_rows() -> int:
+    """Audit finding #2 (2026-11-24): `release_held_order()` commits
+    `status='OPEN'` then fire-and-forgets `_chase_released()` via a bare
+    `asyncio.create_task`. If that task is refused, returns early (e.g.
+    `_verify_close_still_valid` fails), or the process restarts in the
+    gap, nothing ever resolves the row — `order-poll` skips it (no
+    `broker_order_id` to query), `recover_live_chases` needs
+    `next_attempt_at` (never set, since no chase ever actually ran),
+    and `_exp_leg_in_flight_this_session`/the AGENT_CLOSE sibling then
+    treat `OPEN` as unconditionally in-flight forever.
+
+    Detector: `status='OPEN'`, `broker_order_id==''` (nothing was ever
+    placed), `mode='live'`, and the row's own `detail` carries
+    `release_held_order()`'s literal `"released by"` marker — scoping
+    this to rows this exact mechanism produced, not any other OPEN row
+    shape. `release_held_order()` clears `hold_json` on release, so the
+    original category/price_policy are gone by the time this runs; the
+    resumed chase falls back to the "med" tier, same as any other
+    price_policy-less row (`_chase_level_from_price_policy`'s own
+    fallback).
+
+    Gated on `is_chase_active(row.id) is False` — the trap this fix
+    must avoid: a chase genuinely still in progress must never be
+    raced by a second placement attempt from here.
+
+    Returns the number of rows for which a retry was (re-)fired this
+    sweep. Never raises — a failure here must not prevent the sibling
+    HELD-row sweep from running."""
+    from sqlalchemy import select as _sel
+    from backend.api.database import async_session
+    from backend.api.models import AlgoOrder
+    from backend.api.algo.chase import is_chase_active
+
+    async with async_session() as s:
+        rows = (await s.execute(
+            _sel(AlgoOrder).where(
+                AlgoOrder.status == "OPEN",
+                AlgoOrder.broker_order_id == "",
+                AlgoOrder.mode == "live",
+                AlgoOrder.detail.like("%released by%"),
+            ).order_by(AlgoOrder.created_at.asc()).limit(200)
+        )).scalars().all()
+
+    retried = 0
+    for row in rows:
+        try:
+            if is_chase_active(row.id):
+                continue  # a real chase is genuinely still working this row
+            if row.id not in _STUCK_OPEN_RETRIED:
+                _STUCK_OPEN_RETRIED.add(row.id)
+                logger.warning(
+                    "[AUTO-RELEASE] stuck-OPEN order %s (%s, acct=%s) — released "
+                    "but no broker order was ever placed and no chase is active; "
+                    "retrying the chase once", row.id, row.symbol, row.account,
+                )
+                from backend.api.algo.order_release import _chase_released
+                asyncio.create_task(_chase_released(
+                    row.id, row.account, row.symbol, row.exchange,
+                    row.transaction_type, int(row.quantity), row.product,
+                    "med", agent_id=row.agent_id,
+                ))
+                retried += 1
+                continue
+            if row.id in _STUCK_OPEN_ALERTED:
+                continue
+            _STUCK_OPEN_ALERTED.add(row.id)
+            logger.critical(
+                "[AUTO-RELEASE] stuck-OPEN order %s (%s, acct=%s) — retry also "
+                "never placed a broker order; needs manual review", row.id,
+                row.symbol, row.account,
+            )
+            try:
+                from backend.shared.helpers.alert_utils import send_order_failure_alert
+                send_order_failure_alert(
+                    account=row.account, symbol=row.symbol, exchange=row.exchange,
+                    side=row.transaction_type, qty=int(row.quantity), mode="live",
+                    source="auto-release-stuck-open",
+                    error=(
+                        f"Released order {row.id} has been OPEN with no broker "
+                        f"order placed since release, and a retry did not resolve "
+                        f"it either. It is left OPEN rather than forced to a "
+                        f"terminal status that could misrepresent broker reality "
+                        f"— needs manual review."
+                    ),
+                    agent_id=getattr(row, "agent_id", None),
+                    bypass_gates=True,
+                )
+            except Exception as alert_exc:
+                logger.warning(
+                    "[AUTO-RELEASE] stuck-OPEN alert itself failed for order %s: %s",
+                    row.id, alert_exc,
+                )
+        except Exception as e:
+            logger.error(
+                "[AUTO-RELEASE] stuck-OPEN recovery failed for order %s: %s",
+                row.id, e,
+            )
+    return retried
+
+
 async def _task_agent_close_auto_release() -> None:
     """Sprint 3 (auto-close-short-option plan), piece 6 — auto-release
     scan for `HoldCategory.AGENT_CLOSE`/`HoldCategory.EXPIRY_CLOSE`
@@ -6225,6 +6332,12 @@ async def _task_agent_close_auto_release() -> None:
             await _agent_close_auto_release_sweep_once()
         except Exception as exc:
             logger.warning("[AUTO-RELEASE] sweep iteration failed: %s", exc)
+        # 2026-11-24 fix (audit finding #2): separate try/except so a
+        # failure in either scan never blocks the other.
+        try:
+            await _recover_stuck_open_agent_close_rows()
+        except Exception as exc:
+            logger.warning("[AUTO-RELEASE] stuck-OPEN recovery iteration failed: %s", exc)
 
 
 async def _snapshot_book_symbols(days: int = 7) -> list[tuple[str, str]]:
