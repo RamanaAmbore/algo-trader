@@ -3523,6 +3523,47 @@ def _ae_sync_require_release_fail_safe(existing, agent_def: dict) -> None:
     existing.require_release = True
 
 
+def _ae_sync_trade_mode_fail_safe(existing, agent_def: dict) -> None:
+    """`trade_mode` restart fail-safe (audit finding #7, 2026-11-24;
+    operator decision: apply uniformly to every builtin spec, not
+    scoped to any specific agent). Mirrors `_ae_sync_require_release_
+    fail_safe`'s own extraction/placement — same `_ae_sync_existing_
+    builtin` caller.
+
+    This is the exact bug class behind the 2026-10-31 incident where
+    `expiry-day-itm-auto-close` silently ran in paper mode on its first
+    live trading day because `_ae_build_agent_row` never read
+    `trade_mode` from the spec at all — `require_release` already got
+    a one-way restart fail-safe for the identical reason; `trade_mode`
+    never did.
+
+    Unlike `require_release`, there is no single universally-"safer"
+    direction across every builtin — a spec that declares `trade_mode:
+    "live"` is a deliberate per-agent design choice (e.g. a safety
+    action that must reach its own real hold-gate path), not a
+    generically-safer value than "paper". So this restores the row to
+    whatever value its OWN spec declares, in whichever direction that
+    requires, for ANY builtin that sets `trade_mode` explicitly — a
+    builtin with no `trade_mode` key in its spec is completely
+    unaffected, same guard pattern `_ae_build_agent_row` already uses
+    for the same key."""
+    if "trade_mode" not in agent_def:
+        return
+    spec_value = agent_def["trade_mode"]
+    # getattr, not direct attribute access — a hand-built test double
+    # (SimpleNamespace/MagicMock) may not set this field at all; a real
+    # Agent row always has it (non-null column default "paper").
+    current_value = getattr(existing, "trade_mode", None)
+    if current_value == spec_value:
+        return
+    logger.warning(
+        "Agent engine: seed '%s' declares trade_mode=%r but the "
+        "existing row has %r — restoring the spec's own value.",
+        agent_def.get("slug", "<unknown>"), spec_value, current_value,
+    )
+    existing.trade_mode = spec_value
+
+
 def _ae_has_pnl_leaf(cond: dict | None) -> bool:
     """True when the condition tree contains any leaf with metric in ('pnl', 'pnl_pct')."""
     if not isinstance(cond, dict):
@@ -3682,6 +3723,7 @@ def _ae_sync_existing_builtin(existing, agent_def: dict) -> None:
     if _ae_seed_ships_inactive(agent_def):
         _ae_sync_builtin_status(existing, _ae_guard_seed_status(agent_def, default=None))
     _ae_sync_require_release_fail_safe(existing, agent_def)
+    _ae_sync_trade_mode_fail_safe(existing, agent_def)
     # Additive-sync events: add any default channel missing from the stored events.
     # Never removes channels the operator may have added manually.
     code_events = agent_def.get("events", [])
