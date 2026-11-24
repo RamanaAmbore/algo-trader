@@ -1884,8 +1884,34 @@ async def _action_live_expiry_auto_close(agent, context: dict, params: dict):
 
     to_close = [p for p in to_close if (p.exchange or "").upper() in exchanges_in_window]
     if not to_close:
-        logger.info(f"[LIVE] expiry_auto_close: no positions need closing in "
-                    f"{sorted(exchanges_in_window)} (agent={agent.slug})")
+        # 2026-11-24 fix (audit finding #11): an UNKNOWN-moneyness leg
+        # (underlying_ltp <= 0 — a failed LTP fetch, or no brokers
+        # configured, see `_fetch_underlying_ltps`) is never flagged
+        # `needs_close` by `classify_prepared()`, so `to_close` reads
+        # identically empty whether the book is genuinely clean OR the
+        # spot-price fetch just failed. The alert-renderer sibling
+        # (`_v2_expiry_position_breakdown`) surfaces UNKNOWN lines
+        # loudly on this same data gap — this action must not stay
+        # silent on it ("never a false all-clear"). It still does NOT
+        # close anything on unresolved data; it only stops claiming
+        # "nothing to close" when the real answer is "don't know".
+        unresolved = [
+            p for p in (engine.state.positions or [])
+            if (p.exchange or "").upper() in exchanges_in_window
+            and p.moneyness == "UNKNOWN"
+        ]
+        if unresolved:
+            logger.critical(
+                f"[LIVE] expiry_auto_close: agent {agent.slug} — "
+                f"{len(unresolved)} expiring position(s) in "
+                f"{sorted(exchanges_in_window)} have UNKNOWN moneyness "
+                f"(underlying LTP unresolved) and were skipped; this is "
+                f"NOT a confirmed clean scan — needs manual review: "
+                f"{[p.tradingsymbol for p in unresolved]}"
+            )
+        else:
+            logger.info(f"[LIVE] expiry_auto_close: no positions need closing in "
+                        f"{sorted(exchanges_in_window)} (agent={agent.slug})")
         return
 
     by_exch: dict[str, int] = {}

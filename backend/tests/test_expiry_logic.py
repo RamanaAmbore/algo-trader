@@ -753,6 +753,84 @@ async def test_expiry_auto_close_chases_when_operator_releases_the_hold():
     held_mock.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_expiry_auto_close_fails_loud_on_unresolved_spot_instead_of_false_all_clear():
+    """Audit finding #11 (2026-11-24): a failed underlying-LTP fetch
+    leaves every expiring leg's moneyness UNKNOWN (never flagged
+    needs_close), so `to_close` reads empty identically whether the
+    book is genuinely clean or the fetch just failed. The action must
+    log CRITICAL, not a routine INFO "nothing to close", when that
+    empty result is explained by an unresolved spot price."""
+    from unittest.mock import MagicMock, patch
+    from datetime import date, datetime, timezone
+    from backend.api.algo.expiry import OptionPosition
+    from backend.api.algo.actions_live import _action_live_expiry_auto_close
+
+    today = date(2026, 11, 26)
+    frozen_now = datetime(2026, 11, 26, 16, 0, 0, tzinfo=timezone.utc)
+    lone_leg = OptionPosition(
+        account="ZG0790", tradingsymbol="CRUDEOIL26NOV5500CE", exchange="MCX",
+        instrument_type="CE", underlying="CRUDEOIL", strike=5500.0,
+        expiry=today, quantity=1, product="NRML", ltp=120.0,
+    )
+
+    agent = MagicMock()
+    agent.slug = "expiry-day-itm-auto-close"
+    agent.id = 42
+
+    with patch("backend.api.algo.expiry.timestamp_indian", return_value=frozen_now), \
+         patch("backend.api.algo.expiry.ExpiryEngine._fetch_option_positions",
+               return_value=[lone_leg]), \
+         patch("backend.api.algo.expiry.ExpiryEngine._fetch_future_positions",
+               return_value=[]), \
+         patch("backend.api.algo.expiry.ExpiryEngine._fetch_underlying_ltps",
+               return_value={}), \
+         patch("backend.api.algo.actions_live.logger") as mock_logger, \
+         patch(
+             "backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window."
+             "_expiry_preclose_exchanges",
+             return_value={"MCX"},
+         ):
+        await _action_live_expiry_auto_close(agent, {}, {})
+
+    assert mock_logger.critical.called, \
+        "an unresolved-spot-price empty result must log CRITICAL, not a silent all-clear"
+    assert not mock_logger.info.called or all(
+        "no positions need closing" not in str(c) for c in mock_logger.info.call_args_list
+    )
+
+
+@pytest.mark.asyncio
+async def test_expiry_auto_close_genuinely_clean_scan_stays_info_level():
+    """Sanity check for the other side: a genuinely empty expiry day
+    (nothing expiring at all, real LTP fetch untouched) must NOT
+    escalate to CRITICAL — only an UNKNOWN-moneyness leg should."""
+    from unittest.mock import MagicMock, patch
+    from datetime import datetime, timezone
+    from backend.api.algo.actions_live import _action_live_expiry_auto_close
+
+    frozen_now = datetime(2026, 11, 26, 16, 0, 0, tzinfo=timezone.utc)
+
+    agent = MagicMock()
+    agent.slug = "expiry-day-itm-auto-close"
+    agent.id = 42
+
+    with patch("backend.api.algo.expiry.timestamp_indian", return_value=frozen_now), \
+         patch("backend.api.algo.expiry.ExpiryEngine._fetch_option_positions",
+               return_value=[]), \
+         patch("backend.api.algo.expiry.ExpiryEngine._fetch_future_positions",
+               return_value=[]), \
+         patch("backend.api.algo.actions_live.logger") as mock_logger, \
+         patch(
+             "backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window."
+             "_expiry_preclose_exchanges",
+             return_value={"MCX"},
+         ):
+        await _action_live_expiry_auto_close(agent, {}, {})
+
+    mock_logger.critical.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # 2026-11-22 double-close fix — a leg released from HELD and still chasing
 # could get a SECOND HELD row from the next re-scan (expiry-day-itm-auto-
