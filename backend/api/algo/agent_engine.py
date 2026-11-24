@@ -3822,6 +3822,7 @@ async def _ae_prune_retired_builtins(session, builtin_slugs: set) -> None:
     `bracket_registry.migrate_order_templates_to_bracket_agents()`) are
     likewise never in BUILTIN_AGENTS — same exclusion, same reason."""
     from sqlalchemy import delete as sa_delete
+    from backend.api.models import AlgoOrder
     retired = await session.execute(
         select(Agent).where(
             Agent.is_system.is_(True),
@@ -3831,6 +3832,31 @@ async def _ae_prune_retired_builtins(session, builtin_slugs: set) -> None:
     )
     for row in retired.scalars().all():
         if row.slug not in builtin_slugs:
+            # 2026-11-24 fix (audit finding #9): `Agent.id`'s FK is
+            # `ondelete="SET NULL"` — deleting a retired agent row out
+            # from under a pending hold orphans that hold's `agent_id`
+            # to NULL, which the auto-release kill switch can never
+            # resolve (it needs a real agent to check `status !=
+            # 'inactive'`). Refuse the delete this pass when any
+            # AlgoOrder still references this agent in an unresolved
+            # state; retry on a later boot once they clear. Never
+            # delete out from under a live hold.
+            pending = await session.execute(
+                select(AlgoOrder.id).where(
+                    AlgoOrder.agent_id == row.id,
+                    AlgoOrder.status.in_(("HELD", "OPEN", "CANCEL_FAILED")),
+                ).limit(1)
+            )
+            if pending.scalars().first() is not None:
+                logger.warning(
+                    f"Agent engine: NOT pruning retired built-in "
+                    f"'{row.slug}' (id={row.id}) — it has pending HELD/"
+                    f"OPEN/CANCEL_FAILED order(s) referencing it; "
+                    f"pruning would orphan agent_id to NULL and make "
+                    f"them unreleasable. Will retry on a later boot "
+                    f"once they clear."
+                )
+                continue
             logger.info(f"Agent engine: pruning retired built-in '{row.slug}'")
             await session.execute(sa_delete(Agent).where(Agent.id == row.id))
 
