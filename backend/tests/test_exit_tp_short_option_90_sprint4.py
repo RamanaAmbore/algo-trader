@@ -661,8 +661,17 @@ class TestAutoReleaseReVerifiesLivePositionFirst:
     async def test_position_mismatch_refuses_release_despite_deadline_passed(self):
         """Proves "re-verifying the live position first" is real, not
         assumed: the deadline has passed, but the broker now reports a
-        FLAT position (mismatch) — release must be REFUSED, row must
-        stay HELD, and the resumed chase_order must never be called."""
+        FLAT position — release must be REFUSED and chase_order must
+        never be called.
+
+        2026-11-24 fix (audit finding #12) updates this test's own
+        expectation: a CONFIRMED-flat position (net==0) is no longer
+        left HELD to retry forever — it now auto-resolves to a terminal
+        CANCELLED, since there is genuinely nothing left to close. See
+        `test_order_release.py::test_release_settled_flat_position_
+        auto_resolves_to_cancelled` for the dedicated coverage of that
+        behaviour; this test's own job is still "chase_order must never
+        be called on a refused release", which is unchanged."""
         from backend.api.algo import order_release as m
 
         row = _held_row()
@@ -676,15 +685,16 @@ class TestAutoReleaseReVerifiesLivePositionFirst:
         with patch("backend.api.database.async_session", return_value=session), \
              patch("backend.brokers.get_broker", return_value=mock_broker), \
              patch("backend.brokers.broker_apis.fetch_positions", return_value=[flat_frame]), \
+             patch("backend.api.algo.order_events.write_event", new_callable=AsyncMock), \
              patch("backend.api.algo.chase.chase_order", mock_chase_order):
             result = await m.release_held_order(777, actor="auto-release")
             await asyncio.sleep(0)
 
         assert result["ok"] is False
-        assert "position" in result["reason"].lower() or "changed" in result["reason"].lower(), (
-            f"expected a position-mismatch reason, got {result['reason']!r}"
+        assert row.status == "CANCELLED", (
+            "a confirmed-flat position auto-resolves to a terminal status "
+            "instead of being left HELD to retry forever"
         )
-        assert row.status == "HELD", "a refused release must leave the row HELD"
         mock_chase_order.assert_not_called()
 
     @pytest.mark.asyncio
