@@ -472,7 +472,11 @@ async def test_close_positions_records_held_order_with_expiry_close_category():
     from backend.api.algo.expiry import ExpiryEngine, OptionPosition
     from backend.api.algo.order_hold import HoldCategory
 
-    engine = ExpiryEngine()
+    # 2026-11-23 fix (Part C): close_positions() now refuses to stage a
+    # HELD row when the engine has no agent_id (a hold with no agent_id
+    # can never be auto-released). A real agent_id is required here so
+    # this test still exercises the record_held_order call it asserts.
+    engine = ExpiryEngine(agent_id=42)
     pos = OptionPosition(
         account="ZG0790",
         tradingsymbol="CRUDEOIL26OCT8600CE",
@@ -891,7 +895,10 @@ class TestClosePositionsSkipsInFlightLegs:
         async def _fake_in_flight(account, symbol, exchange, side):
             return symbol == "CRUDEOIL26NOV5500CE"
 
-        engine = ExpiryEngine()
+        # 2026-11-23 fix (Part C): a real agent_id is required so
+        # close_positions() doesn't refuse to stage the fresh leg's
+        # HELD row (a hold with no agent_id can never be auto-released).
+        engine = ExpiryEngine(agent_id=42)
         with patch("backend.api.algo.expiry._exp_leg_in_flight_this_session",
                    new=_fake_in_flight), \
              patch("backend.api.algo.expiry.expiry_close_held", return_value=True), \

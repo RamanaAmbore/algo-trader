@@ -3417,6 +3417,93 @@ Held Orders first; release re-verifies the live position before resuming the cha
   zero changes touched `template_attach.py` or any Bracket/GTT code path (confirmed via
   `git diff --name-only <pre-plan-base>..HEAD`).
 
+**Part C — `expiry-day-itm-auto-close` never actually closed anything in production; generic
+auto-release wired for `EXPIRY_CLOSE`; `position_matches` refused legitimate netted-residual
+releases; MCX netting partner required same contract month; `CANCEL_FAILED` legs re-verified
+against broker truth (2026-11-23)** — Follow-up to the 90%-premium entry above: this agent exists
+for `EXPIRY_CLOSE` too, not only `AGENT_CLOSE`, and this round found it was structurally dead.
+- **Confirmed-live P0: `_action_live_expiry_auto_close` has never closed anything.** Both
+  `_al_expiry_context_shim` (`actions_live.py`) and its twin `_v2_expiry_context_shim`
+  (`agent_engine.py`) omitted `.now`. `_scope_positions_expiring_today()` reads `ctx.now` inside a
+  bare `except Exception: continue`, so every row silently failed to parse and
+  `_expiry_preclose_exchanges()` always returned an empty set — confirmed directly by calling the
+  real, unpatched functions, not assumed. The action always hit its "no exchange is in its own
+  pre-close window" branch and returned. The sibling render helper
+  (`_v2_expiry_position_breakdown`, feeding `expiry-day-preclose-alert`) had the identical gap: it
+  always rendered nothing. Both now read `now` from `context["now"]` (the key `_build_context()`
+  sets), falling back to `timestamp_indian()` only for a hand-built test context.
+- **`EXPIRY_CLOSE` holds now get a real `auto_release_at`, reusing Sprint 3's generic infra.**
+  `ExpiryEngine.close_positions()` gained an optional `release_policy` param
+  (`order_hold._resolve_hold_auto_release_at`'s existing two-shape dict — see the 90%-premium entry
+  above). `_action_live_expiry_auto_close` passes `{"after_min": 30, "floor_tier": "high"}` — the
+  operator's own instruction: "release it 30 mins if user does not respond, whatever it takes".
+  `_task_agent_close_auto_release`'s sweep (`background.py`) widened `_AUTO_RELEASE_CATEGORIES` from
+  a hardcoded `{"agent_close"}` to `{"agent_close", "expiry_close"}` — both fall through
+  `get_release_handler()` to the same `_DEFAULT_RELEASE_HANDLER`. The per-iteration body was
+  extracted to `_agent_close_auto_release_sweep_once(now=...)` for direct testability. A real bug
+  in the old loop was fixed in the same pass: it incremented `released` and logged success for ANY
+  handler result, including `{"ok": False, ...}` — now it checks `result.get("ok")` honestly, and
+  distinguishes a benign race (row no longer HELD — someone else already acted) from a genuine
+  failure, which alerts once per row for the process lifetime.
+  - **Defense in depth: a HELD row with no `agent_id` can never be auto-released** (the kill-switch
+    check needs a real agent). `close_positions()` now refuses outright to stage such a row. The one
+    legacy caller that constructed `ExpiryEngine()` with no `agent_id` — `_task_expiry_check`'s own
+    09:20 IST `engine.run()` call — is retired; that task now only does its morning detection
+    scan/broadcast (confirmed zero frontend/backend consumers of `expiry_day_detected`, kept as a
+    harmless ops log line). The real close action is owned exclusively by the
+    `expiry-day-itm-auto-close` agent, which always passes a real `agent_id`.
+- **`position_matches` refused every legitimate netted-residual release.** An MCX expiry-close
+  hold's `quantity` is the NETTING RESIDUAL (`close_positions()` stages `qty=abs(pos.residual_qty)`),
+  not the gross symbol quantity — a leg long 2 contracts that nets 1 away against a partner still
+  shows net=2 at the broker. The old exact-equality check (`net_qty == want`) refused this every
+  time, for both auto-release and a manual operator click. Fixed to sign + magnitude: a SELL-close
+  needs the account still net LONG by at least `expected_qty`; a BUY-close needs it still net SHORT
+  by at least `expected_qty` — mirrors `_verify_close_still_valid`'s existing rule for the sibling
+  `release_repeated_rejection_hold` path.
+- **MCX netting partner must be the SAME contract month, not just the same underlying.** An MCX
+  option devolves at settlement into a future of its OWN specific contract month —
+  `_classify_mcx_group` used to accept ANY held future on the same underlying as a netting partner
+  "even if the future itself expires on a different date". Reversed: `_future_matches_option_
+  devolvement()` (pure, no-I/O, mirrors `derivatives._resolve_monthly_option_future`'s own regex)
+  filters `futs` per group to only the contract each option would actually devolve into.
+  - **NTM legs are never used to net away another leg's risk**, from either side of a pair — an
+    NTM leg's settlement fate (devolve vs. expire worthless) is genuinely uncertain. Checked
+    symmetrically in `_best_opt_partner` (since the walk order is by `|theta|` descending, and an
+    NTM leg often carries the largest theta, so it's usually the first leg checked, not the second).
+    One carve-out: `_exp_opt_same_contract` (identical strike + type) always nets to the same
+    moneyness regardless of band, so a genuine same-strike hedge sitting in the NTM band is still
+    allowed. `_best_fut_partner` has no such carve-out (a future is never "the same contract" as an
+    option) — an NTM option is refused a futures partner outright.
+- **A `CANCEL_FAILED` leg no longer blocks `_exp_leg_in_flight_this_session` forever.** `HELD` and
+  `OPEN` rows are still unconditionally blocking. When EVERY unresolved row from today's session is
+  `CANCEL_FAILED`, each is re-verified against real broker truth via the new
+  `_exp_verify_cancel_failed_leg()` (`get_broker_order_truth`/`apply_order_truth`, the same accessor
+  the chase-robustness round above uses) — confirmed genuinely terminal (and reconciled, so it stops
+  sitting at `CANCEL_FAILED` forever) → no longer blocking; confirmed still resting at the broker
+  with no active chase, or truth unavailable → stays blocking and alerts (action-required,
+  `bypass_gates=True`, deduped per row for the process lifetime) — never a silent guess either way.
+- **Chase tier table extracted to `chase_tiers.py`** — a pure, zero-import sibling module, so
+  `order_hold.py`'s `_floor_minutes_for_tier()` (worst-case chase duration for the auto-release
+  deadline clamp) can read the SAME (interval_seconds, aggression_step, max_attempts) table
+  `orders_helpers.py:_live_chase_config()` already used, without pulling litestar/msgspec/schemas
+  into `order_hold.py`'s import graph. Byte-identical behaviour, including the
+  unknown-aggressiveness→"low" fallback.
+- Tests: `test_expiry_close_release_part_c.py` (new, 58 tests — position_matches, NTM exclusion,
+  MCX contract-month matching, CANCEL_FAILED re-verification, chase_tiers extraction, agent_id
+  refusal), `test_expiry_close_release_e2e.py` (new — the mandatory end-to-end test: real condition
+  token → real action → real `scan_positions()`/`close_positions()` staging a real HELD row in a
+  real sqlite DB → simulated time passage → the real auto-release sweep → the real
+  `release_held_order()` → an asserted real chase placement at the correct tier/side/qty/identity;
+  only the broker boundary and `chase_order()` itself are mocked), plus updated
+  `test_order_release.py`/`test_expiry_logic.py`. Full backend suite: 11166 passed, 0 failed; CC
+  gate clean (the e2e test's own orchestrating function was split into several `_e2e_*` helpers to
+  stay under the D-grade gate, no behaviour change).
+- Invariant: an `EXPIRY_CLOSE` hold always gets a real, resolved `auto_release_at` or is refused at
+  stage time — never silently persisted with no deadline. A release's position check accepts a
+  partially-netted residual, never only an exact gross-quantity match. An MCX netting partner must
+  share the option's own contract month, and an NTM leg is never used to net away risk from either
+  side of a pair.
+
 **Positions loss guard — `day_val` floor raised, rate leaves gated on drawdown-from-peak, co-firing
 leaves grouped, guard-alert `extra` masked (2026-11-06; commits `b4972fd0`, `f38db207`, `dc9969c7`)** —
 `loss-positions-total` (critical tier, `_LOSS_AGENTS`,

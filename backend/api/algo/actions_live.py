@@ -1762,12 +1762,30 @@ def _al_expiry_context_shim(context: dict | None):
     `Context` class condition-evaluation shape) can be reused here. Same
     pattern as `agent_engine.py:_v2_expiry_context_shim` — duplicated
     rather than imported to avoid a circular import between this module
-    and agent_engine.py."""
+    and agent_engine.py.
+
+    2026-11-23 fix (Part C, confirmed-live P0): this shim omitted `.now`
+    entirely. `_scope_positions_expiring_today()` reads `ctx.now` inside
+    a bare `except Exception: continue`, so every position row silently
+    failed to parse and the scope ALWAYS returned `[]` — meaning
+    `_expiry_preclose_exchanges()` ALWAYS returned an empty set for this
+    shim, in production, not only in a test. `_action_live_expiry_auto_
+    close` has therefore never actually closed anything: it always hit
+    its own "no exchange is currently within its own pre-close window"
+    branch and returned, every single time it fired. Confirmed directly
+    (not assumed) via a scratchpad call against the real, unpatched
+    functions before this fix. `now` is read from the dispatch
+    context's own `"now"` key (the exact value `_build_context()` sets,
+    see `agent_engine.py:4250`) and falls back to `timestamp_indian()`
+    only when that key is absent (e.g. a hand-built test context),
+    never silently defaulting to a wrong clock."""
     from types import SimpleNamespace
+    from backend.shared.helpers.date_time_utils import timestamp_indian
     context = context or {}
     return SimpleNamespace(
         segment_flags=context.get("segment_flags") or {},
         position_rows=context.get("position_rows") or [],
+        now=context.get("now") or timestamp_indian(),
     )
 
 
@@ -1828,6 +1846,16 @@ async def _action_live_expiry_auto_close(agent, context: dict, params: dict):
     `params` is accepted for action-dispatch signature compatibility
     but intentionally empty/unused — which exchange(s) get processed is
     decided by the live window check above, not a static param.
+
+    2026-11-23 fix (Part C — the expiry-close hold/auto-release
+    mechanism): every HELD row this action's `close_positions()` call
+    stages now gets a real `auto_release_at` deadline, via
+    `_EXPIRY_HOLD_RELEASE_POLICY` below — "release it 30 minutes after
+    staging if the operator does not respond, never later than
+    close_time minus the high-tier chase's own worst-case duration".
+    Before this, a HELD expiry-close row sat forever until an operator
+    manually clicked Release — the gap this whole mechanism was
+    originally meant to close.
     """
     from backend.api.algo.expiry import ExpiryEngine
     from backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window import (
@@ -1865,10 +1893,23 @@ async def _action_live_expiry_auto_close(agent, context: dict, params: dict):
         by_exch[p.exchange] = by_exch.get(p.exchange, 0) + 1
     logger.info(f"[LIVE] expiry_auto_close: agent {agent.slug} closing "
                 f"{len(to_close)} positions ({by_exch})")
-    await engine.close_positions(to_close)
+    await engine.close_positions(to_close, release_policy=_EXPIRY_HOLD_RELEASE_POLICY)
     logger.info(f"[LIVE] expiry_auto_close: agent {agent.slug} done — "
                 f"closed={len(engine.state.closed)} failed={len(engine.state.failed)} "
                 f"slippage=₹{engine.state.total_slippage:.2f}")
+
+
+# Generic, DSL-expressible hold auto-release policy (see
+# `order_hold._resolve_hold_auto_release_at`'s own docstring for the
+# two recognised shapes) — this one is the operator's own explicit
+# instruction for expiry-close holds: "release it 30 mins if user does
+# not respond, whatever it takes". The rolling 30-minute deadline is
+# clamped so it never runs later than close_time minus the high-tier
+# chase's own worst-case duration (plus a fixed scan-latency margin —
+# see `_floor_minutes_for_tier`), so a late-staged hold still gets a
+# real deadline comfortably before close rather than one that leaves no
+# time for the resumed chase to run.
+_EXPIRY_HOLD_RELEASE_POLICY: dict = {"after_min": 30, "floor_tier": "high"}
 
 
 # ═══════════════════════════════════════════════════════════════════════

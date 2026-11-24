@@ -153,15 +153,27 @@ async def test_release_mcx_expiry_close_succeeds_with_normalized_contracts():
 
 
 @pytest.mark.asyncio
-async def test_release_mcx_expiry_close_refused_when_quantity_really_changed():
-    """Held row expects 1 lot (100 contracts) closed, but the broker book
-    now shows 2 lots (200 contracts, multiplier=100) open — a genuine
-    position change, correctly refused."""
+async def test_release_mcx_expiry_close_refused_when_position_sign_flips():
+    """Held row expects 1 lot (100 contracts, SELL) closed, but the
+    broker book now shows a SHORT 1 lot (-100 contracts) — the
+    direction genuinely flipped, which `position_matches`'s sign +
+    magnitude rule (2026-11-23 fix) must still refuse: a SELL-close
+    needs the account still net LONG, not short.
+
+    This replaces the OLD `test_release_mcx_expiry_close_refused_when_
+    quantity_really_changed`, which asserted that net=+200 against an
+    expected +100 SELL-close was refused — that was the exact bug this
+    fix closes (see `position_matches`'s own docstring): a partially-
+    netted MCX leg's HELD `quantity` is the netting RESIDUAL, not the
+    gross symbol position, so "broker shows MORE in the SAME direction"
+    is the normal, legitimate case, not a position change — see
+    `test_release_mcx_expiry_close_succeeds_when_broker_shows_more_than_
+    the_residual` below for that corrected case."""
     from backend.api.algo import order_release as m
 
     row = _held_expiry_row()
     mock_session = _mock_session(row)
-    frame = _mcx_positions_frame(quantity_lots=2, multiplier=100)
+    frame = _mcx_positions_frame(quantity_lots=-1, multiplier=100)
     mock_broker = MagicMock()
 
     with patch("backend.api.database.async_session", return_value=mock_session), \
@@ -173,6 +185,44 @@ async def test_release_mcx_expiry_close_refused_when_quantity_really_changed():
     assert "position changed" in result["reason"]
     assert row.status == "HELD"
     mock_broker.positions.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_release_mcx_expiry_close_succeeds_when_broker_shows_more_than_the_residual():
+    """2026-11-23 fix — the actual bug: a HELD row's `quantity` (100
+    contracts / 1 lot, SELL) is a netting RESIDUAL, not the gross
+    symbol position. A real MCX leg that was long 2 lots, netted 1 lot
+    away against a partner, and left a 1-lot residual to close, still
+    shows net=+200 (2 lots) at the broker — the OLD exact-equality
+    `position_matches` wrongly refused this every time. The release
+    must now proceed past the position check to the price check (and
+    succeed, given a valid quote/tick)."""
+    from backend.api.algo import order_release as m
+
+    row = _held_expiry_row()
+    mock_session = _mock_session(row)
+    frame = _mcx_positions_frame(quantity_lots=2, multiplier=100)
+    mock_broker = MagicMock()
+    mock_broker.quote = MagicMock(return_value={
+        "MCX:CRUDEOIL26OCT8600CE": {
+            "last_price": 130.0,
+            "depth": {"buy": [{"price": 129.0}], "sell": [{"price": 131.0}]},
+            "lower_circuit_limit": 0.0,
+            "upper_circuit_limit": 0.0,
+        }
+    })
+
+    with patch("backend.api.database.async_session", return_value=mock_session), \
+         patch("backend.brokers.get_broker", return_value=mock_broker), \
+         patch("backend.brokers.broker_apis.fetch_positions", return_value=[frame]), \
+         patch("backend.api.routes.orders_helpers._ensure_tick_index", new=AsyncMock()), \
+         patch("backend.api.routes.orders_helpers._TICK_INDEX",
+               {("MCX", "CRUDEOIL26OCT8600CE"): 1.0}), \
+         patch("backend.api.algo.chase.chase_order", new=AsyncMock()):
+        result = await m.release_held_order(501, actor="operator")
+
+    assert result["ok"] is True, result
+    assert row.status == "OPEN"
 
 
 @pytest.mark.asyncio

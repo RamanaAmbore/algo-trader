@@ -1459,13 +1459,26 @@ def _v2_expiry_context_shim(context: dict | None):
     dict, so the grammar-token metric resolvers (which read `ctx.
     segment_flags`/`ctx.position_rows` via `getattr`) can be reused
     outside the condition-evaluation path. Same pattern used by
-    `actions_live.py:_al_expiry_exchanges_in_window` — kept as one
-    function so the two never drift into different attribute sets."""
+    `actions_live.py:_al_expiry_context_shim` — kept as one shape so
+    the two never drift into different attribute sets.
+
+    2026-11-23 fix (Part C, confirmed-live P0, same bug as the sibling
+    shim in `actions_live.py` — see that function's own docstring for
+    the full incident): this shim omitted `.now`, so `_expiry_preclose_
+    exchanges()` ALWAYS returned an empty set here too, meaning
+    `_v2_expiry_position_breakdown()` (the `expiry-day-preclose-alert`
+    render helper) has never actually rendered a position breakdown —
+    it always hit its own "fired but no exchange is currently within
+    its own pre-close window" branch and rendered nothing, every time
+    the alert fired. `now` comes from the SAME `context["now"]` key
+    `_build_context()` sets (line ~4250 above)."""
     from types import SimpleNamespace
+    from backend.shared.helpers.date_time_utils import timestamp_indian
     context = context or {}
     return SimpleNamespace(
         segment_flags=context.get("segment_flags") or {},
         position_rows=context.get("position_rows") or [],
+        now=context.get("now") or timestamp_indian(),
     )
 
 

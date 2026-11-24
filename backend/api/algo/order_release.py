@@ -54,11 +54,36 @@ logger = get_logger(__name__)
 
 
 def position_matches(side: str, expected_qty: int, net_qty: int) -> tuple[bool, str]:
-    """A SELL close needs a long position of expected_qty; a BUY close needs a short one."""
-    want = expected_qty if side.upper() == "SELL" else -expected_qty
-    if net_qty == want:
-        return True, "ok"
-    return False, f"position changed: net {net_qty}, expected {want}"
+    """A SELL close needs the account still net LONG by AT LEAST
+    expected_qty; a BUY close needs it still net SHORT by at least
+    expected_qty — sign + magnitude, not exact equality.
+
+    2026-11-23 fix (Part C's own Done-when criterion exposed this):
+    `release_held_order()` is the generic release path for EVERY
+    category that falls through to it, including `HoldCategory.
+    EXPIRY_CLOSE` — and an MCX expiry-close hold's `expected_qty` (the
+    row's own `quantity`) is the NETTING RESIDUAL
+    (`ExpiryEngine.close_positions()` stages `qty=abs(pos.residual_
+    qty)`, not the gross symbol quantity). A leg long 2 contracts that
+    nets 1 away against another leg still shows net=2 at the broker;
+    the OLD exact-equality check (`net_qty == want`) refused this
+    legitimate release every time, for ANY partially-netted leg —
+    auto-release (this fix) and a manual operator click alike. This
+    mirrors the sign+magnitude rule `_verify_close_still_valid` (this
+    module) already implements for the OTHER release path
+    (`release_repeated_rejection_hold`) — same rule, same reasoning:
+    an operator adding to the position (net grows larger, same sign)
+    must not refuse a legitimate close either.
+    """
+    if side.upper() == "SELL":
+        if net_qty > 0 and net_qty >= expected_qty:
+            return True, "ok"
+        want_desc = f">= {expected_qty} (long)"
+    else:
+        if net_qty < 0 and abs(net_qty) >= expected_qty:
+            return True, "ok"
+        want_desc = f"<= {-expected_qty} (short)"
+    return False, f"position changed: net {net_qty}, expected {want_desc}"
 
 
 def _find_net_qty(positions: dict, symbol: str, exchange: str) -> int | None:

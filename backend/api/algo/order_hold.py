@@ -122,3 +122,100 @@ def parse_hold_record(raw: str | None) -> dict | None:
     except (TypeError, ValueError):
         return None
     return value if isinstance(value, dict) else None
+
+
+# ── Generic hold auto-release policy resolver (2026-11-23, Part C) ────────
+#
+# Built once, reused by any future `Agent.require_release`-shaped action —
+# not expiry-specific. The resolver stays pure (no database, no broker
+# calls, matching this module's own docstring) by reading the chase tier
+# durations from `chase_tiers.py`, a zero-import sibling module, rather
+# than `backend/api/routes/orders_helpers.py` (which pulls in litestar/
+# msgspec/schemas at module level and would risk a cycle).
+
+def _floor_minutes_for_tier(tier: "str | None") -> float:
+    """Worst-case chase duration (minutes) for an L/M/H tier, plus a
+    fixed +1 minute safety margin for the auto-release scan's own poll
+    latency (`hold.agent_close_auto_release_poll_seconds`, default 30s
+    — this module stays pure, so the margin is a constant, not read
+    live from /admin/settings).
+
+    Known, accepted residual: a leg staged in literally the final 1-2
+    minutes before `close_time` can, in the worst case, still get a
+    resumed chase with too little time to exhaust every attempt before
+    close. This margin narrows that window; it does not eliminate it.
+    """
+    from backend.api.algo.chase_tiers import resolve_chase_tier
+    _level, cfg = resolve_chase_tier(tier)
+    chase_seconds = float(cfg["interval_seconds"]) * float(cfg["max_attempts"])
+    return (chase_seconds / 60.0) + 1.0
+
+
+def _resolve_hold_auto_release_at(
+    policy: "dict | None",
+    now: datetime,
+    close_time: "datetime | None",
+    held_at: datetime,
+    default_chase_tier: str = "med",
+) -> "datetime | None":
+    """Generic, reusable auto-release deadline resolver for any
+    `Agent.require_release`-shaped hold — not expiry-specific. Pure: no
+    database, no broker calls (see this module's own docstring).
+
+    `policy` is a plain, DSL-expressible dict with exactly one of two
+    recognised shapes. An empty/falsy `policy`, or one matching
+    neither shape, returns `None` — callers must treat a `None` result
+    the same way they treat a missing `agent_id`: refuse to stage an
+    unreleasable hold, never silently persist one with no deadline.
+
+      - `{"before_close_min": N}` — a FIXED deadline: `close_time`
+        minus `N` minutes. Requires `close_time`; returns `None` when
+        `close_time` is unknown (never guess a deadline with no clock
+        to anchor it to).
+      - `{"after_min": N, "floor_tier": "low"|"med"|"high"}` — a
+        ROLLING deadline: `held_at + N` minutes, clamped so it never
+        runs later than `close_time` minus the worst-case chase
+        duration for `floor_tier` (`floor_tier` defaults to
+        `default_chase_tier` when omitted) — see
+        `_floor_minutes_for_tier`. The clamp is skipped (the rolling
+        deadline is used as-is) when `close_time` is unknown.
+
+    Every datetime argument MUST be timezone-aware — this codebase
+    persists `auto_release_at` as an ISO string compared later against
+    `datetime.now(timezone.utc)` (`background.py`'s auto-release
+    scan); a naive IST value compared against an aware one would
+    silently release roughly 5h30m late. This function does not itself
+    attach a timezone; that is the caller's responsibility, same as
+    every other pure helper in this module.
+
+    The result is never earlier than `now` — a policy that resolves to
+    an already-elapsed instant means "release on the very next scan",
+    not "never" and not a confusing deadline sitting in the past.
+
+    `now` and `held_at` are kept as independent parameters (not
+    collapsed into one), so a future caller recomputing or
+    re-validating an ALREADY-staged hold's deadline can pass the
+    ORIGINAL `held_at` (unchanged) alongside the CURRENT `now`, without
+    this function needing to know which case it's in. A caller staging
+    a hold right now (the only case Part C itself uses) passes the
+    same wall-clock read for both.
+    """
+    if not policy:
+        return None
+    before_close_min = policy.get("before_close_min")
+    if before_close_min is not None:
+        if close_time is None:
+            return None
+        deadline = close_time - timedelta(minutes=float(before_close_min))
+    else:
+        after_min = policy.get("after_min")
+        if after_min is None:
+            return None
+        deadline = held_at + timedelta(minutes=float(after_min))
+        if close_time is not None:
+            tier = policy.get("floor_tier") or default_chase_tier
+            floor_deadline = close_time - timedelta(minutes=_floor_minutes_for_tier(tier))
+            deadline = min(deadline, floor_deadline)
+    if deadline < now:
+        deadline = now
+    return deadline

@@ -248,31 +248,22 @@ def _live_chase_config(aggressiveness: str, intent: str | None = None,
     attempt. Defaults here match ChaseConfig's own defaults so every
     OTHER caller (test_close_intent_chase.py, any future caller that
     doesn't pass these kwargs) keeps its current behavior unchanged.
+
+    2026-11-23 extraction (Part C, expiry-close auto-release): the
+    (interval, aggression_step, max_attempts) table itself now lives in
+    `chase_tiers.py` — a pure, zero-import module — so
+    `order_hold.py`'s generic hold auto-release resolver can read the
+    SAME tier durations without importing this module (which pulls in
+    litestar/msgspec/schemas and would risk a cycle). Behaviour here is
+    byte-identical to before the extraction, including the
+    unknown-aggressiveness→"low" fallback and the `cfg.level` stamp.
     """
     from backend.api.algo.chase import ChaseConfig
-    a = (aggressiveness or "low").lower()
-    if a == "high":
-        cfg = ChaseConfig(interval_seconds=10, aggression_step=0.25,
-                          max_attempts=10)
-        level = "high"
-    elif a == "med":
-        cfg = ChaseConfig(interval_seconds=20, aggression_step=0.10,
-                          max_attempts=20)
-        level = "med"
-    else:
-        # low (default) — patient: peg passively, ease into the
-        # spread only after enough ticks pass. Also the fallback tier
-        # for any unrecognised `aggressiveness` string, so `level` is
-        # pinned to "low" here too (NOT the raw `a`) — otherwise a
-        # malformed value (e.g. a client typo; `chase_aggressiveness`
-        # is an unvalidated free-form str in schemas.py) would run at
-        # the LOW tuple while stamping a non-canonical `level` that
-        # `chase.py`'s hold writer can't recognise, falls back to
-        # "CHASE_MED", and resumes a HELD release at the WRONG
-        # (MED, not LOW) tier.
-        cfg = ChaseConfig(interval_seconds=30, aggression_step=0.05,
-                          max_attempts=30)
-        level = "low"
+    from backend.api.algo.chase_tiers import resolve_chase_tier
+    level, tier = resolve_chase_tier(aggressiveness)
+    cfg = ChaseConfig(interval_seconds=tier["interval_seconds"],
+                      aggression_step=tier["aggression_step"],
+                      max_attempts=tier["max_attempts"])
     cfg.intent = intent
     cfg.product = product
     cfg.variety = variety

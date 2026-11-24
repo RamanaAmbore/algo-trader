@@ -2933,7 +2933,33 @@ def _bg_parse_expiry_check_time(cfg_time: str) -> tuple[int, int]:
 
 
 async def _task_expiry_check() -> None:
-    """Check once daily at 09:20 IST if today is an expiry day and auto-start the engine.
+    """Check once daily at 09:20 IST whether today is an expiry day.
+
+    2026-11-23 fix (Part C): this task NO LONGER calls `engine.run()` —
+    the one actual close action, confirmed by grep, flagged by the
+    commit that retires this call, and by CLAUDE.md's own "Expiry
+    pre-close alert + auto-close" entry. It used to construct its own
+    `ExpiryEngine` with no `agent_id` (`ExpiryEngine(on_event=...)`,
+    no `agent_id=` kwarg), so any HELD row it staged could never be
+    auto-released by `_task_agent_close_auto_release` (which requires
+    a real `agent_id` to check the kill switch) — an unreleasable hold
+    that sat forever until an operator noticed and clicked Release by
+    hand. The real close path is now owned exclusively by the agent
+    engine's `expiry-day-itm-auto-close` (`_action_live_expiry_auto_
+    close`, `actions_live.py`), which always passes a real `agent_id`
+    and wires a concrete auto-release deadline. `close_positions()`
+    itself also now refuses outright to stage a HELD row with no
+    `agent_id` (defense in depth — see its own docstring), so even a
+    FUTURE caller that reintroduces this exact mistake is refused
+    rather than silently reproducing the bug.
+
+    This task still runs its own morning detection scan and logs/
+    broadcasts `expiry_day_detected` — confirmed via grep to have zero
+    consumers in frontend or backend, so it is purely informational
+    (ops visibility), never load-bearing for any UI or downstream
+    logic. Left in place rather than removed outright: it is a cheap,
+    harmless daily log line, and removing it is a separate decision
+    from retiring the UNSAFE close action this fix is scoped to.
 
     SAFETY GATE — prod only. expiry.py → chase.py::_place_order calls
     broker.place_order() directly with NO paper_trading_mode / branch
@@ -2987,8 +3013,10 @@ async def _task_expiry_check() -> None:
             if expiring:
                 logger.info(f"Background: expiry day detected — {len(expiring)} option positions expiring today")
                 _broadcast_event("expiry_day_detected", {"count": len(expiring)})
-                # Run full expiry engine
-                await engine.run()
+                # Detection + broadcast only — the real close action is
+                # owned exclusively by the `expiry-day-itm-auto-close`
+                # agent (see this function's own docstring for why the
+                # legacy `engine.run()` call was removed here).
             else:
                 logger.info("Background: no option positions expiring today")
 
@@ -5983,12 +6011,175 @@ async def _task_order_poll() -> None:
     await _real_task_order_poll()
 
 
+# Categories whose HELD rows this sweep may auto-release. 2026-11-23
+# fix (Part C): widened from a hardcoded "agent_close" literal to cover
+# "expiry_close" too — both fall through `order_release.get_release_
+# handler()` to the same `_DEFAULT_RELEASE_HANDLER` (`release_held_
+# order`), the correct shape for "close an existing position that was
+# never attempted at the broker" (see `order_release.py`'s own module
+# docstring for the registration contract any THIRD future category
+# must follow). Plain string literals (not `HoldCategory.*.value`) —
+# this file keeps its imports lazy/function-local throughout, and
+# these two values are the exact, stable strings `order_hold.
+# HoldCategory.AGENT_CLOSE`/`.EXPIRY_CLOSE` already serialise via
+# `hold_record()`/`parse_hold_record()`.
+_AUTO_RELEASE_CATEGORIES = {"agent_close", "expiry_close"}
+
+# In-process dedup for the failure alert below — keyed by AlgoOrder.id.
+# One alert per row for the LIFETIME of the row (ids are never reused),
+# not one per failed sweep tick, so a row stuck for hours doesn't page
+# the operator every 30s. Resets on process restart — acceptable, same
+# tradeoff as the pre-existing `_blocked_alert_sent` one-shot pattern
+# elsewhere in this codebase.
+_AUTO_RELEASE_FAILED_ALERTED: set[int] = set()
+
+
+async def _agent_close_auto_release_sweep_once(now: "datetime | None" = None) -> int:
+    """One iteration of the agent-close/expiry-close auto-release scan,
+    extracted from `_task_agent_close_auto_release`'s infinite loop body
+    so it is independently callable/testable with an injected `now`
+    (same `_run_nav_compute_once`/`_task_nav_compute` convention used
+    elsewhere in this file). Returns the number of rows released.
+
+    See `_task_agent_close_auto_release`'s own docstring for the full
+    design: the snapshotted-`auto_release_at` convention, the dispatch-
+    through-`get_release_handler` reuse (no new release logic, no new
+    lock), and the deliberate `agent.status != 'inactive'` kill switch.
+    """
+    from datetime import datetime as _dt, timezone as _tz
+    from sqlalchemy import select as _sel
+    from backend.api.database import async_session
+    from backend.api.models import AlgoOrder, Agent
+    from backend.api.algo.order_hold import parse_hold_record
+    from backend.api.algo.order_release import get_release_handler
+
+    async with async_session() as s:
+        rows = (await s.execute(
+            _sel(AlgoOrder).where(AlgoOrder.status == "HELD").limit(500)
+        )).scalars().all()
+    if not rows:
+        return 0
+    now = now or _dt.now(_tz.utc)
+    released = 0
+    for row in rows:
+        rec = parse_hold_record(row.hold_json) or {}
+        category = rec.get("category")
+        if category not in _AUTO_RELEASE_CATEGORIES:
+            continue
+        raw_deadline = rec.get("auto_release_at")
+        if not raw_deadline:
+            continue
+        try:
+            deadline = _dt.fromisoformat(raw_deadline)
+        except (TypeError, ValueError):
+            continue
+        if deadline.tzinfo is None:
+            deadline = deadline.replace(tzinfo=_tz.utc)
+        if now < deadline:
+            continue
+
+        agent_id = getattr(row, "agent_id", None)
+        if agent_id is None:
+            logger.warning(
+                "[AUTO-RELEASE] HELD order %s has no agent_id — "
+                "skipping (kill switch needs a real agent to check)",
+                row.id,
+            )
+            continue
+        async with async_session() as s2:
+            agent = (await s2.execute(
+                _sel(Agent).where(Agent.id == agent_id)
+            )).scalar_one_or_none()
+        if agent is None:
+            logger.warning(
+                "[AUTO-RELEASE] HELD order %s: agent %s not found — "
+                "skipping auto-release", row.id, agent_id,
+            )
+            continue
+        if agent.status == "inactive":
+            logger.info(
+                "[AUTO-RELEASE] HELD order %s: agent %s is inactive — "
+                "kill switch blocks auto-release", row.id, agent_id,
+            )
+            continue
+
+        handler = get_release_handler(category)
+        result = await handler(row.id, actor="auto-release")
+
+        # 2026-11-23 fix (confirmed before shipping: this loop used to
+        # increment `released` and log "released" on ANY result dict,
+        # including `{"ok": False, ...}` — e.g. a stale position/price
+        # check failure, or the row genuinely not found. The row stays
+        # HELD, gets retried every poll interval with no operator
+        # alert, while the log line and this function's own return
+        # value both claimed success. `ok` is the one field every
+        # release handler's own docstring promises to set honestly.
+        if not result.get("ok"):
+            status_after = result.get("status")
+            if status_after not in ("HELD", "", None):
+                # Benign race: the row is no longer HELD at all — an
+                # operator (or a concurrent manual click) already acted
+                # on it between this scan's deadline check and the
+                # handler call. Not a failure; nothing to alert.
+                logger.info(
+                    "[AUTO-RELEASE] HELD order %s: no longer HELD by the "
+                    "time the handler ran (status=%s) — someone else "
+                    "already acted on it, not counted as a release",
+                    row.id, status_after,
+                )
+                continue
+            logger.warning(
+                "[AUTO-RELEASE] HELD order %s: auto-release FAILED "
+                "(agent=%s, category=%s): %s — still HELD, will retry "
+                "next sweep", row.id, agent_id, category, result,
+            )
+            if row.id not in _AUTO_RELEASE_FAILED_ALERTED:
+                _AUTO_RELEASE_FAILED_ALERTED.add(row.id)
+                try:
+                    from backend.shared.helpers.alert_utils import send_order_failure_alert
+                    send_order_failure_alert(
+                        account=row.account, symbol=row.symbol, exchange=row.exchange,
+                        side=row.transaction_type, qty=int(row.quantity), mode="live",
+                        source="auto-release",
+                        error=(
+                            f"auto-release could not act on HELD order {row.id} "
+                            f"({category}): {result.get('reason', result)!r}. The "
+                            f"position is NOT closed and remains HELD — requires "
+                            f"manual review."
+                        ),
+                        agent_id=agent_id,
+                        bypass_gates=True,
+                    )
+                except Exception as alert_exc:
+                    logger.warning(
+                        "[AUTO-RELEASE] failure alert itself failed for order %s: %s",
+                        row.id, alert_exc,
+                    )
+            continue
+
+        released += 1
+        logger.info(
+            "[AUTO-RELEASE] HELD order %s released by auto-release "
+            "(agent=%s, category=%s): %s", row.id, agent_id, category, result,
+        )
+    if released:
+        logger.info("[AUTO-RELEASE] sweep released=%s", released)
+    return released
+
+
 async def _task_agent_close_auto_release() -> None:
     """Sprint 3 (auto-close-short-option plan), piece 6 — auto-release
-    scan for `HoldCategory.AGENT_CLOSE` holds past their snapshotted
-    `auto_release_at` deadline. Generic infra, reused by any future
-    `Agent.require_release` agent. Same 30s-loop scheduling convention
-    as `_task_oco_pair_watcher`/`_task_trail_stop` above.
+    scan for `HoldCategory.AGENT_CLOSE`/`HoldCategory.EXPIRY_CLOSE`
+    holds past their snapshotted `auto_release_at` deadline. Generic
+    infra, reused by any future `Agent.require_release` agent. Same
+    30s-loop scheduling convention as `_task_oco_pair_watcher`/
+    `_task_trail_stop` above.
+
+    2026-11-23 fix (Part C): widened to also cover `expiry_close` holds
+    (`expiry-day-itm-auto-close`'s own HELD rows) — see
+    `_AUTO_RELEASE_CATEGORIES`'s own comment. The per-iteration body
+    now lives in `_agent_close_auto_release_sweep_once()`, so this
+    function is just the sleep/dispatch loop.
 
     Each HELD row's `auto_release_at` was snapshotted onto `hold_json`
     at STAGE time (`order_hold.hold_record`/`order_hold_gate.record_
@@ -5996,10 +6187,10 @@ async def _task_agent_close_auto_release() -> None:
     timeout_minutes`, so a later edit to that setting can never
     retroactively move an already-staged hold's deadline.
 
-    Dispatches through `get_release_handler("agent_close")` — the
-    IDENTICAL function the manual `/api/orders/held/{id}/release` route
-    already calls. No new release logic, no new row-level claim, no new
-    lock: `release_held_order`'s own `.with_for_update()` lock +
+    Dispatches through `get_release_handler(category)` — the IDENTICAL
+    function the manual `/api/orders/held/{id}/release` route already
+    calls. No new release logic, no new row-level claim, no new lock:
+    `release_held_order`'s own `.with_for_update()` lock +
     `status != "HELD"` guard already makes a concurrent manual-click-
     vs-scan race resolve safely on its own.
 
@@ -6022,8 +6213,6 @@ async def _task_agent_close_auto_release() -> None:
     release.
     """
     import asyncio as _asyncio
-    from datetime import datetime, timezone
-    from sqlalchemy import select as _sel
     from backend.shared.helpers.settings import get_int
 
     while True:
@@ -6033,69 +6222,7 @@ async def _task_agent_close_auto_release() -> None:
             interval = 30
         await _asyncio.sleep(interval)
         try:
-            from backend.api.database import async_session
-            from backend.api.models import AlgoOrder, Agent
-            from backend.api.algo.order_hold import parse_hold_record
-            from backend.api.algo.order_release import get_release_handler
-
-            async with async_session() as s:
-                rows = (await s.execute(
-                    _sel(AlgoOrder).where(AlgoOrder.status == "HELD").limit(500)
-                )).scalars().all()
-            if not rows:
-                continue
-            now = datetime.now(timezone.utc)
-            released = 0
-            for row in rows:
-                rec = parse_hold_record(row.hold_json) or {}
-                if rec.get("category") != "agent_close":
-                    continue
-                raw_deadline = rec.get("auto_release_at")
-                if not raw_deadline:
-                    continue
-                try:
-                    deadline = datetime.fromisoformat(raw_deadline)
-                except (TypeError, ValueError):
-                    continue
-                if deadline.tzinfo is None:
-                    deadline = deadline.replace(tzinfo=timezone.utc)
-                if now < deadline:
-                    continue
-
-                agent_id = getattr(row, "agent_id", None)
-                if agent_id is None:
-                    logger.warning(
-                        "[AUTO-RELEASE] HELD order %s has no agent_id — "
-                        "skipping (kill switch needs a real agent to check)",
-                        row.id,
-                    )
-                    continue
-                async with async_session() as s2:
-                    agent = (await s2.execute(
-                        _sel(Agent).where(Agent.id == agent_id)
-                    )).scalar_one_or_none()
-                if agent is None:
-                    logger.warning(
-                        "[AUTO-RELEASE] HELD order %s: agent %s not found — "
-                        "skipping auto-release", row.id, agent_id,
-                    )
-                    continue
-                if agent.status == "inactive":
-                    logger.info(
-                        "[AUTO-RELEASE] HELD order %s: agent %s is inactive — "
-                        "kill switch blocks auto-release", row.id, agent_id,
-                    )
-                    continue
-
-                handler = get_release_handler("agent_close")
-                result = await handler(row.id, actor="auto-release")
-                released += 1
-                logger.info(
-                    "[AUTO-RELEASE] HELD order %s released by auto-release "
-                    "(agent=%s): %s", row.id, agent_id, result,
-                )
-            if released:
-                logger.info("[AUTO-RELEASE] sweep released=%s", released)
+            await _agent_close_auto_release_sweep_once()
         except Exception as exc:
             logger.warning("[AUTO-RELEASE] sweep iteration failed: %s", exc)
 
