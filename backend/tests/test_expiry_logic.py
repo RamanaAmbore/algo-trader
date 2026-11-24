@@ -497,6 +497,8 @@ async def test_close_positions_records_held_order_with_expiry_close_category():
 
     with patch("backend.api.algo.expiry._exp_leg_in_flight_this_session", new=_not_in_flight), \
          patch("backend.api.algo.expiry.expiry_close_held", return_value=True), \
+         patch("backend.api.algo.actions_live._al_agent_close_recently_cancelled_this_session",
+               new=AsyncMock(return_value=False)), \
          patch("backend.api.algo.expiry.record_held_order", mock_record):
         await engine.close_positions([pos])
 
@@ -902,6 +904,8 @@ class TestClosePositionsSkipsInFlightLegs:
         with patch("backend.api.algo.expiry._exp_leg_in_flight_this_session",
                    new=_fake_in_flight), \
              patch("backend.api.algo.expiry.expiry_close_held", return_value=True), \
+             patch("backend.api.algo.actions_live._al_agent_close_recently_cancelled_this_session",
+                   new=AsyncMock(return_value=False)), \
              patch("backend.api.algo.expiry.record_held_order",
                    new=AsyncMock(return_value=101)) as held_mock, \
              patch("backend.api.algo.expiry.chase_order",

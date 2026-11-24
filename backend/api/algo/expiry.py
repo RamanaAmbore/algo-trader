@@ -1146,6 +1146,30 @@ class ExpiryEngine:
                         f"Skipping this leg; it needs manual attention."
                     )
                     continue
+                # 2026-11-24 fix (audit finding #1): without this check, an
+                # operator-cancelled EXPIRY_CLOSE hold was silently re-staged
+                # on the next re-fire (this agent's own cooldown) and could
+                # auto-release into a real chase near close, directly
+                # overriding the explicit cancel. Reuses the exact same
+                # generic, category-agnostic check `_al_maybe_stage_agent_
+                # close_hold` already uses for AGENT_CLOSE — discriminated
+                # purely by `agent_id` + identity + `status=='CANCELLED'
+                # AND broker_order_id==''`, with no HoldCategory coupling.
+                # Deliberately NOT a change to `_EXP_IN_FLIGHT_STATUSES`
+                # (CANCELLED must stay excluded from that set — see this
+                # check's own sibling function for why).
+                from backend.api.algo.actions_live import (
+                    _al_agent_close_recently_cancelled_this_session,
+                )
+                if await _al_agent_close_recently_cancelled_this_session(
+                    self._agent_id, pos.account, pos.tradingsymbol, pos.exchange, txn,
+                ):
+                    logger.info(
+                        f"Expiry: {pos.tradingsymbol} ({pos.account}) {txn} was "
+                        f"explicitly cancelled earlier this session — suppressing "
+                        f"re-stage"
+                    )
+                    continue
                 auto_release_at = None
                 price_policy = "CHASE_MED"
                 if release_policy is not None:

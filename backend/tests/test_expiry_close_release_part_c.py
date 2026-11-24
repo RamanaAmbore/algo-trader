@@ -549,6 +549,8 @@ class TestClosePositionsReleasePolicyWiring:
 
         with patch("backend.api.algo.expiry._exp_leg_in_flight_this_session", new=_not_in_flight), \
              patch("backend.api.algo.expiry.expiry_close_held", return_value=True), \
+             patch("backend.api.algo.actions_live._al_agent_close_recently_cancelled_this_session",
+                   new=AsyncMock(return_value=False)), \
              patch("backend.api.algo.expiry.record_held_order", new=AsyncMock(return_value=101)) as held_mock:
             await engine.close_positions([pos], release_policy={"after_min": 30, "floor_tier": "high"})
 
@@ -579,6 +581,8 @@ class TestClosePositionsReleasePolicyWiring:
 
         with patch("backend.api.algo.expiry._exp_leg_in_flight_this_session", new=_not_in_flight), \
              patch("backend.api.algo.expiry.expiry_close_held", return_value=True), \
+             patch("backend.api.algo.actions_live._al_agent_close_recently_cancelled_this_session",
+                   new=AsyncMock(return_value=False)), \
              patch("backend.api.algo.expiry.record_held_order", new=AsyncMock()) as held_mock:
             await engine.close_positions([pos], release_policy={})
 
@@ -603,6 +607,8 @@ class TestClosePositionsReleasePolicyWiring:
 
         with patch("backend.api.algo.expiry._exp_leg_in_flight_this_session", new=_not_in_flight), \
              patch("backend.api.algo.expiry.expiry_close_held", return_value=True), \
+             patch("backend.api.algo.actions_live._al_agent_close_recently_cancelled_this_session",
+                   new=AsyncMock(return_value=False)), \
              patch("backend.api.algo.expiry.record_held_order", new=AsyncMock(return_value=101)) as held_mock:
             await engine.close_positions([pos])  # no release_policy
 
@@ -610,6 +616,73 @@ class TestClosePositionsReleasePolicyWiring:
         kwargs = held_mock.await_args.kwargs
         assert kwargs["auto_release_at"] is None
         assert kwargs["price_policy"] == "CHASE_MED"
+
+
+class TestExpiryCloseCancelSuppression:
+    """Audit finding #1 (2026-11-24): an operator-cancelled EXPIRY_CLOSE
+    hold must never be silently re-staged on the engine's next re-fire."""
+
+    @pytest.mark.asyncio
+    async def test_recently_cancelled_leg_is_not_restaged(self):
+        from backend.api.algo.expiry import ExpiryEngine, OptionPosition
+
+        engine = ExpiryEngine(agent_id=42)
+        pos = OptionPosition(
+            account="ZG0790", tradingsymbol="CRUDEOIL26NOV5500CE", exchange="MCX",
+            instrument_type="CE", underlying="CRUDEOIL", strike=5500.0,
+            expiry=date.today(), quantity=1, product="NRML", residual_qty=1,
+        )
+
+        async def _not_in_flight(account, symbol, exchange, side):
+            return False
+
+        cancel_check = AsyncMock(return_value=True)
+        with patch("backend.api.algo.expiry._exp_leg_in_flight_this_session", new=_not_in_flight), \
+             patch("backend.api.algo.expiry.expiry_close_held", return_value=True), \
+             patch("backend.api.algo.actions_live._al_agent_close_recently_cancelled_this_session",
+                   new=cancel_check), \
+             patch("backend.api.algo.expiry.record_held_order", new=AsyncMock()) as held_mock:
+            await engine.close_positions([pos], release_policy={"after_min": 30, "floor_tier": "high"})
+
+        held_mock.assert_not_awaited()
+        cancel_check.assert_awaited_once()
+        call = cancel_check.await_args
+        assert call.args[0] == 42  # agent_id
+        assert call.args[1] == "ZG0790"
+        assert call.args[2] == "CRUDEOIL26NOV5500CE"
+        assert call.args[3] == "MCX"
+        assert call.args[4] == "SELL"
+
+    @pytest.mark.asyncio
+    async def test_lookup_failure_fails_toward_staging(self):
+        """The real `_al_agent_close_recently_cancelled_this_session`
+        already fails toward False (stage it) on any lookup error — this
+        pins that `close_positions()` relies on that contract rather than
+        adding a second, divergent fail-safe direction."""
+        from backend.api.algo.expiry import ExpiryEngine, OptionPosition
+
+        engine = ExpiryEngine(agent_id=42)
+        pos = OptionPosition(
+            account="ZG0790", tradingsymbol="CRUDEOIL26NOV5500CE", exchange="MCX",
+            instrument_type="CE", underlying="CRUDEOIL", strike=5500.0,
+            expiry=date.today(), quantity=1, product="NRML", residual_qty=1,
+        )
+
+        async def _not_in_flight(account, symbol, exchange, side):
+            return False
+
+        async def _boom(*a, **kw):
+            raise RuntimeError("db unreachable")
+
+        with patch("backend.api.algo.expiry._exp_leg_in_flight_this_session", new=_not_in_flight), \
+             patch("backend.api.algo.expiry.expiry_close_held", return_value=True), \
+             patch("backend.api.algo.actions_live._al_agent_close_recently_cancelled_this_session",
+                   new=_boom), \
+             patch("backend.api.algo.expiry.record_held_order", new=AsyncMock(return_value=101)) as held_mock:
+            with pytest.raises(RuntimeError):
+                await engine.close_positions([pos], release_policy={"after_min": 30, "floor_tier": "high"})
+
+        held_mock.assert_not_awaited()
 
 
 # ═══════════════════════════════════════════════════════════════════════
