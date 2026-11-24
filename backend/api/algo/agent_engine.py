@@ -2889,17 +2889,19 @@ BUILTIN_AGENTS.extend(_EXPIRY_RISK_AGENTS)
 # account) with NO exchange dimension (this `funds.total`-scoped leaf
 # carries no account/underlying to key on) — but a SHORT cooldown here
 # is deliberate, not a leftover: at 65/60-minute windows (was 30/25),
-# MCX had no periodic re-scan of its own between the single scan at
-# T-60 and close — unlike NFO, which already re-scans every
-# `algo.expiry_rescan_minutes` (default 30) inside the legacy
-# ExpiryEngine.run() loop. A leg that turns genuinely unnetted-ITM in
-# that last hour (price moves against it after the T-60 scan) would
-# have gone unflagged until next-day review. 30 min — reusing the SAME
-# default cadence NFO's own re-scan loop already uses, not a new
-# arbitrary number — lets `expiry-day-itm-auto-close` re-fire ~2 times
-# inside its own 60-min window (T-60, T-30), re-running
-# `ExpiryEngine.scan_positions()` each time. A re-fire is safe for an
-# already-HELD leg (the per-leg dedup guard inside `record_held_order()`,
+# a single scan at T-60 has no periodic re-scan of its own before
+# close for EITHER exchange (2026-11-24 fix, audit finding #15: the
+# OLD rationale here cited a "legacy ExpiryEngine.run() loop" that
+# re-scanned NFO every `algo.expiry_rescan_minutes` — that loop and
+# both settings are now fully dead code, removed; neither exchange has
+# had a standalone re-scan mechanism since Part C). A leg that turns
+# genuinely unnetted-ITM in that last hour (price moves against it
+# after the T-60 scan) would go unflagged until next-day review
+# without this agent's OWN periodic re-fire covering the gap. 30 min
+# lets `expiry-day-itm-auto-close` re-fire ~2 times inside its own
+# 60-min window (T-60, T-30), re-running `ExpiryEngine.scan_positions()`
+# each time. A re-fire is safe for an already-HELD leg (the per-leg
+# dedup guard inside `record_held_order()`,
 # order_hold_gate.py, returns the existing HELD row's id instead of
 # duplicating it) AND for a leg the operator already released and is
 # still chasing (`_exp_leg_in_flight_this_session()`, expiry.py, skips

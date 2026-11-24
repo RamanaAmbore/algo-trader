@@ -9,11 +9,15 @@ Key rules:
   - Commodity (MCX): close only UNBALANCED ITM legs (hedged pairs are safe)
   - Expiry may shift due to holidays — use instrument expiry date, not weekday
   - NSE and MCX have different expiry schedules and market hours
-  - Re-scan every 30 min for positions that become ITM during the day
 
-Usage:
-    engine = ExpiryEngine(on_event=callback)
-    await engine.run()  # blocks until market close
+Usage (2026-11-24, audit finding #15 — the OLD self-driving `await
+engine.run()` loop is gone; the agent engine now owns timing/re-scan):
+    engine = ExpiryEngine(agent_id=firing_agent.id)
+    to_close = await asyncio.to_thread(engine.scan_positions)
+    await engine.close_positions(to_close, release_policy=...)
+See `actions_live.py:_action_live_expiry_auto_close` for the real,
+production call shape (periodic re-scan comes from the firing agent's
+own cooldown/schedule, not a loop inside this engine).
 """
 
 import asyncio
@@ -332,12 +336,12 @@ class ExpiryEngine:
         self._ntm_buffer = get_float(
             "algo.expiry_ntm_buffer_pct",
             float(self._algo_cfg.get("expiry_ntm_buffer_pct", 2.0)))
-        self._start_offset_h = get_float(
-            "algo.expiry_start_offset_hours",
-            float(self._algo_cfg.get("expiry_start_offset_hours", 2)))
-        self._rescan_min = get_int(
-            "algo.expiry_rescan_minutes",
-            int(self._algo_cfg.get("expiry_rescan_minutes", 30)))
+        # `_start_offset_h`/`_rescan_min` (algo.expiry_start_offset_hours/
+        # algo.expiry_rescan_minutes) removed (2026-11-24, audit finding
+        # #15) — both were read only by `run()`/`_run_nfo_close()`/
+        # `_run_mcx_close()`, deleted below as fully dead code once Part C
+        # retired their only production caller. See the removed settings'
+        # own SEEDS entries (settings.py) for the matching cleanup.
         self._chase_cfg = ChaseConfig(
             interval_seconds=get_int(
                 "algo.chase_interval_seconds",
@@ -1101,7 +1105,8 @@ class ExpiryEngine:
         })
 
     # ------------------------------------------------------------------
-    # Main run loop (called by background task on expiry days)
+    # Session close-time resolution (read by close_positions()'s
+    # release-policy deadline computation)
     # ------------------------------------------------------------------
 
     def _parse_segment_close_times(
@@ -1147,116 +1152,16 @@ class ExpiryEngine:
                 mcx_close = dtime(h, m)
         return equity_close, mcx_close
 
-    async def _run_nfo_close(
-        self, today: "date", equity_close: "dtime", nfo_positions: "list[OptionPosition]",
-    ) -> None:
-        """Wait until NFO close window, then chase-close all NFO positions."""
-        nfo_start = (datetime.combine(today, equity_close) -
-                     timedelta(hours=self._start_offset_h)).time()
-        now_t = timestamp_indian().time()
-        if now_t < nfo_start:
-            wait = (datetime.combine(today, nfo_start) -
-                    datetime.combine(today, now_t)).total_seconds()
-            logger.info(
-                f"Expiry: waiting {wait/60:.0f} min until NFO close phase "
-                f"starts at {nfo_start}"
-            )
-            self._emit("waiting", {"exchange": "NFO", "start_time": str(nfo_start)})
-            await asyncio.sleep(max(wait, 0))
-        logger.info(f"Expiry: starting NFO close for {len(nfo_positions)} positions")
-        await self.close_positions(nfo_positions)
-
-    async def _run_mcx_close(
-        self, today: "date", mcx_close: "dtime",
-    ) -> None:
-        """Wait until MCX close window, re-scan, then chase-close MCX positions."""
-        mcx_start = (datetime.combine(today, mcx_close) -
-                     timedelta(hours=self._start_offset_h)).time()
-        now_t = timestamp_indian().time()
-        if now_t < mcx_start:
-            wait = (datetime.combine(today, mcx_start) -
-                    datetime.combine(today, now_t)).total_seconds()
-            logger.info(
-                f"Expiry: waiting {wait/60:.0f} min until MCX close phase "
-                f"starts at {mcx_start}"
-            )
-            self._emit("waiting", {"exchange": "MCX", "start_time": str(mcx_start)})
-            await asyncio.sleep(max(wait, 0))
-        logger.info("Expiry: re-scanning MCX positions before closing")
-        fresh = self.scan_positions()
-        mcx_fresh = [p for p in fresh if p.exchange == "MCX" and p.needs_close]
-        if mcx_fresh:
-            logger.info(f"Expiry: starting MCX close for {len(mcx_fresh)} positions")
-            await self.close_positions(mcx_fresh)
-
-    async def run(self):
-        """
-        Full expiry-day workflow:
-        1. Morning scan at 09:15
-        2. Wait until T-2h before close
-        3. Start closing
-        4. Re-scan every _rescan_min minutes for NFO positions that cross ITM intraday
-        5. Continue until all closed or 15:25 IST (NFO market close - 5 min buffer)
-        """
-        now_ist = timestamp_indian()
-        today = now_ist.date()
-        equity_close, mcx_close = self._parse_segment_close_times(today)
-
-        # Morning scan
-        logger.info("Expiry: starting morning scan")
-        to_close = self.scan_positions()
-
-        if not to_close:
-            logger.info("Expiry: no positions need closing today")
-            self._emit("no_positions", {"date": str(today)})
-            return
-
-        self._emit("morning_alert", {
-            "count": len(to_close),
-            "positions": [
-                f"{p.account} {p.tradingsymbol} qty={p.quantity} {p.moneyness}"
-                for p in to_close
-            ],
-        })
-
-        nfo_positions = [p for p in to_close if p.exchange == "NFO"]
-        mcx_positions = [p for p in to_close if p.exchange == "MCX"]
-
-        if nfo_positions:
-            await self._run_nfo_close(today, equity_close, nfo_positions)
-
-        # Periodic re-scan for NFO positions that cross ITM intraday.
-        # Runs until 15:25 IST (5-min buffer before NFO close) so any
-        # position that moves ITM after the morning scan is still caught.
-        _closed_syms: set[str] = {r.symbol for r in self.state.closed}
-        _nfo_deadline = now_ist.replace(hour=15, minute=25, second=0, microsecond=0)
-        while timestamp_indian() < _nfo_deadline:
-            await asyncio.sleep(self._rescan_min * 60)
-            _fresh = self.scan_positions()
-            _new_itm = [
-                p for p in _fresh
-                if p.exchange == "NFO"
-                and p.moneyness == "ITM"
-                and p.tradingsymbol not in _closed_syms
-            ]
-            if _new_itm:
-                logger.info("[EXPIRY] re-scan: %d newly-ITM NFO position(s)", len(_new_itm))
-                await self._run_nfo_close(today, equity_close, _new_itm)
-                _closed_syms.update(r.symbol for r in self.state.closed)
-
-        if mcx_positions:
-            await self._run_mcx_close(today, mcx_close)
-
-        logger.info(
-            f"Expiry: complete — closed {len(self.state.closed)}, "
-            f"failed {len(self.state.failed)}, "
-            f"slippage ₹{self.state.total_slippage:.2f}"
-        )
-        self._emit("expiry_complete", {
-            "closed": len(self.state.closed),
-            "failed": len(self.state.failed),
-            "total_slippage": self.state.total_slippage,
-        })
+    # `_run_nfo_close()`/`_run_mcx_close()`/`run()` removed (2026-11-24,
+    # audit finding #15) — fully dead code. Part C (commit `33a2afea`)
+    # already removed `run()`'s only production caller
+    # (`_task_expiry_check`'s legacy `await engine.run()` call,
+    # background.py); confirmed via grep this was the sole call site
+    # for all three methods. The real close path is owned exclusively
+    # by the agent engine's `expiry-day-itm-auto-close`
+    # (`_action_live_expiry_auto_close`, actions_live.py), which calls
+    # `scan_positions()`/`close_positions()` directly — the SAME two
+    # methods this legacy loop also called, so no capability was lost.
 
 
 # ═══════════════════════════════════════════════════════════════════════
