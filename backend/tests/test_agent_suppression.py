@@ -19,7 +19,7 @@ entirely and prove nothing.
 """
 
 import pytest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, AsyncMock, patch, call
 
 
@@ -317,3 +317,128 @@ async def test_survivor_agent_db_state_mutated():
     assert len(write_sessions) >= 1, (
         "Critical-tier survivor must have at least one DB write (trigger_count/status update)."
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Audit finding #5 (2026-11-24) — topic-loss cooldown shrink + visibility
+# ═══════════════════════════════════════════════════════════════════════
+
+class TestTopicLossCooldownShrink:
+    """A same-cycle topic tie-break must not silence the loser for its
+    FULL standing cooldown — it gets a short (~5 min) retry instead."""
+
+    def _match(self):
+        return {"metric": "is_expiry_preclose_close_window", "scope": "funds.total",
+                "op": "==", "threshold": 1.0, "value": 1.0}
+
+    @pytest.mark.asyncio
+    async def test_suppressed_entry_rewinds_its_own_latch(self):
+        from backend.api.algo import agent_engine
+
+        agent_engine._V2_LATCH.clear()
+        now = datetime(2026, 11, 24, 10, 0, 0, tzinfo=timezone.utc)
+        loser = _make_agent(id=2, slug="expiry-day-nse-morning-preview",
+                            tier="high", topic="expiry_warning",
+                            cooldown_minutes=1320)
+        m = self._match()
+        key = agent_engine._latch_key(loser.slug, m)
+        # Simulate the latch write _v2_apply_escalation_gate already did
+        # THIS tick, moments before suppression was computed.
+        agent_engine._V2_LATCH[key] = {"ts": now, "val": m["value"]}
+
+        entry = {
+            "agent": loser, "result": MagicMock(condition_text="x"),
+            "sim_mode": False, "replay_mode": False,
+            "matches": [m], "latched_matches": [m],
+        }
+        with patch.object(agent_engine, "log_event", new=AsyncMock()):
+            await agent_engine._ae_dispatch_suppressed_entry(
+                entry, {2: "expiry-day-preclose-alert"}, None, now=now,
+            )
+
+        rewound = agent_engine._V2_LATCH[key]["ts"]
+        remaining = timedelta(minutes=1320) - (now - rewound)
+        assert abs(remaining.total_seconds() - 5 * 60) < 1, (
+            f"effective remaining cooldown must be ~5 min, got {remaining}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_sim_mode_entry_is_never_rewound(self):
+        """Sim/replay ticks use an isolated latch store this function
+        can't reach — the shared _V2_LATCH must be left untouched."""
+        from backend.api.algo import agent_engine
+
+        agent_engine._V2_LATCH.clear()
+        now = datetime(2026, 11, 24, 10, 0, 0, tzinfo=timezone.utc)
+        loser = _make_agent(id=2, slug="sim-loser", tier="high",
+                            topic="expiry_warning", cooldown_minutes=1320)
+        m = self._match()
+        key = agent_engine._latch_key(loser.slug, m)
+        agent_engine._V2_LATCH[key] = {"ts": now, "val": m["value"]}
+
+        entry = {
+            "agent": loser, "result": MagicMock(condition_text="x"),
+            "sim_mode": True, "replay_mode": False,
+            "matches": [m], "latched_matches": [m],
+        }
+        with patch.object(agent_engine, "log_event", new=AsyncMock()):
+            await agent_engine._ae_dispatch_suppressed_entry(
+                entry, {2: "expiry-day-preclose-alert"}, None, now=now,
+            )
+
+        assert agent_engine._V2_LATCH[key]["ts"] == now, (
+            "a sim-mode suppressed entry must never touch the live latch"
+        )
+
+    @pytest.mark.asyncio
+    async def test_short_cooldown_agent_is_left_alone(self):
+        """An agent whose cooldown is already <= the retry floor has
+        nothing to shrink."""
+        from backend.api.algo import agent_engine
+
+        agent_engine._V2_LATCH.clear()
+        now = datetime(2026, 11, 24, 10, 0, 0, tzinfo=timezone.utc)
+        loser = _make_agent(id=2, slug="short-cooldown-loser", tier="high",
+                            topic="expiry_warning", cooldown_minutes=3)
+        m = self._match()
+        key = agent_engine._latch_key(loser.slug, m)
+        agent_engine._V2_LATCH[key] = {"ts": now, "val": m["value"]}
+
+        entry = {
+            "agent": loser, "result": MagicMock(condition_text="x"),
+            "sim_mode": False, "replay_mode": False,
+            "matches": [m], "latched_matches": [m],
+        }
+        with patch.object(agent_engine, "log_event", new=AsyncMock()):
+            await agent_engine._ae_dispatch_suppressed_entry(
+                entry, {2: "expiry-day-preclose-alert"}, None, now=now,
+            )
+
+        assert agent_engine._V2_LATCH[key]["ts"] == now
+
+    @pytest.mark.asyncio
+    async def test_suppressed_entry_logs_winner_and_loser(self):
+        from backend.api.algo import agent_engine
+
+        agent_engine._V2_LATCH.clear()
+        now = datetime(2026, 11, 24, 10, 0, 0, tzinfo=timezone.utc)
+        loser = _make_agent(id=2, slug="expiry-day-nse-morning-preview",
+                            tier="high", topic="expiry_warning",
+                            cooldown_minutes=1320)
+        m = self._match()
+        entry = {
+            "agent": loser, "result": MagicMock(condition_text="x"),
+            "sim_mode": False, "replay_mode": False,
+            "matches": [m], "latched_matches": [m],
+        }
+        with patch.object(agent_engine, "log_event", new=AsyncMock()), \
+             patch.object(agent_engine, "logger") as mock_logger:
+            await agent_engine._ae_dispatch_suppressed_entry(
+                entry, {2: "expiry-day-preclose-alert"}, None, now=now,
+            )
+
+        info_calls = [c for c in mock_logger.info.call_args_list
+                     if "topic tie-break" in c.args[0]]
+        assert len(info_calls) == 1
+        assert loser.slug in info_calls[0].args
+        assert "expiry-day-preclose-alert" in info_calls[0].args

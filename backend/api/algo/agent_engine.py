@@ -5886,8 +5886,52 @@ async def run_cycle(context: dict, broadcast_fn=None,
         await _cycle_dispatch_survivors(pending_dispatches, now, context, broadcast_fn)
 
 
+# Audit finding #5 (2026-11-24): a same-cycle topic tie-break could
+# silence the loser for its FULL standing cooldown (e.g. 1320 min for
+# the expiry agents sharing topic='expiry_warning') with no near-term
+# retry. 5 minutes, not immediate — avoids hammering the same tie
+# every engine tick while still recovering far faster than the full
+# cooldown.
+_TOPIC_LOSS_RETRY_MINUTES = 5.0
+
+
+def _ae_shrink_topic_loser_cooldown(agent, entry: dict, now) -> None:
+    """Rewind this agent's own just-written per-leaf latch timestamps
+    (`_V2_LATCH`, written moments ago by `_v2_apply_escalation_gate`
+    during THIS SAME tick's evaluation, before topic suppression was
+    even computed) so its effective remaining cooldown becomes
+    `_TOPIC_LOSS_RETRY_MINUTES` instead of the agent's full
+    `cooldown_minutes` — the loser gets a near-term retry rather than
+    going silent for the rest of the day.
+
+    Live-only: sim/replay ticks use an isolated per-run latch store
+    (`alert_state['_sim_latch']`, not reachable here) and are
+    deliberately skipped — never touch the shared `_V2_LATCH` from a
+    sim/replay tick.
+
+    Only rewinds a key whose `ts` is still THIS tick's `now` (the
+    defensive check `prev['ts'] == now`) — i.e. genuinely just written
+    by this same evaluation, never an older, unrelated latch entry
+    that happens to share a key by coincidence.
+    """
+    if entry.get('sim_mode') or entry.get('replay_mode'):
+        return
+    cooldown_min = getattr(agent, 'cooldown_minutes', None) or 30
+    if cooldown_min <= _TOPIC_LOSS_RETRY_MINUTES:
+        return  # already shorter than the retry floor — nothing to shrink
+    rewound_ts = now - timedelta(minutes=(cooldown_min - _TOPIC_LOSS_RETRY_MINUTES))
+    latched = entry.get('latched_matches')
+    if latched is None:
+        latched = entry.get('matches') or []
+    for m in latched:
+        key = _latch_key(agent.slug, m)
+        prev = _V2_LATCH.get(key)
+        if prev is not None and prev.get('ts') == now:
+            prev['ts'] = rewound_ts
+
+
 async def _ae_dispatch_suppressed_entry(entry: dict, suppressed_ids: dict,
-                                       broadcast_fn) -> None:
+                                       broadcast_fn, now=None) -> None:
     """Emit an audit-log event for a suppressed fire and broadcast state.
 
     No push notification or action execution. Extracted from
@@ -5897,6 +5941,8 @@ async def _ae_dispatch_suppressed_entry(entry: dict, suppressed_ids: dict,
     sim_mode_p   = entry['sim_mode']
     replay_mode_p = entry.get('replay_mode', False)
     matches_     = entry.get('matches') or []
+    if now is not None:
+        _ae_shrink_topic_loser_cooldown(agent, entry, now)
     # Fix (2026-10): hydration must latch only the escalation-gated subset,
     # not every raw breaching match — see _v2_build_evalresult's docstring.
     # Falls back to matches_ when the caller (e.g. a test building this
@@ -5908,6 +5954,15 @@ async def _ae_dispatch_suppressed_entry(entry: dict, suppressed_ids: dict,
     topic        = getattr(agent, 'topic', 'general')
     detail_text = (
         f"Suppressed by higher-tier agent '{supp_by}' in topic '{topic}'."
+    )
+    # Audit finding #5 (2026-11-24): cheap, always-on visibility — the
+    # loser's loss used to be observable only via the audit-log
+    # 'triggered_suppressed' event below, with no plain-text trace. A
+    # same-topic tie is otherwise easy to miss entirely.
+    logger.info(
+        "Agent engine: topic tie-break — '%s' suppressed by '%s' in "
+        "topic '%s' (retry in ~%.0f min instead of the full cooldown)",
+        agent.slug, supp_by, topic, _TOPIC_LOSS_RETRY_MINUTES,
     )
     detail: dict = {'matches': matches_,
                     'latched_matches': latched_,
@@ -6330,7 +6385,7 @@ async def _cycle_dispatch_survivors(
     for entry in pending_dispatches:
         agent = entry['agent']
         if agent.id in suppressed_ids:
-            await _ae_dispatch_suppressed_entry(entry, suppressed_ids, broadcast_fn)
+            await _ae_dispatch_suppressed_entry(entry, suppressed_ids, broadcast_fn, now=now)
             continue
         extra = merge_map.get(agent.id)
         if extra:
