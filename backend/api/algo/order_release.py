@@ -291,6 +291,53 @@ async def release_held_order(order_id: int, actor: str) -> dict:
             net = _find_net_qty(positions, row.symbol, row.exchange)
             ok, why = position_matches(row.transaction_type, int(row.quantity), net or 0)
             if not ok:
+                # 2026-11-24 fix (audit finding #12): `position_matches`
+                # returns the identical "not ok" shape whether the
+                # account is genuinely flat (net==0 — settled/closed by
+                # some other path) or merely mismatched-but-nonzero
+                # (ambiguous — keep retrying, unchanged below). This
+                # distinguishes "nothing left to close, done" from
+                # "still unclear" so a settled-flat row stops being
+                # retried forever with one alert only.
+                #
+                # `_positions_data_unreliable` already ran above and
+                # returned before this point on a degraded/stale fetch
+                # — this branch only runs on a CONFIRMED-fresh read, so
+                # a genuinely-stale "0" can never masquerade as settled.
+                #
+                # Known, accepted interaction: marking the row CANCELLED
+                # makes it match `_al_agent_close_recently_cancelled_
+                # this_session`'s discriminator (status=='CANCELLED' AND
+                # broker_order_id==''), the same shape an explicit
+                # operator cancel leaves. A leg that settles flat then
+                # genuinely re-opens a position later the SAME session
+                # would have a fresh restage suppressed as if the
+                # operator had cancelled it — rare, and strictly better
+                # than retrying a confirmed-dead row forever.
+                if (net or 0) == 0:
+                    row.status = "CANCELLED"
+                    row.hold_json = None
+                    row.detail = (
+                        f"{row.detail or ''} · auto-resolved by auto-release at "
+                        f"{datetime.now(timezone.utc).isoformat()}: position "
+                        f"already flat/settled — nothing to close"
+                    )
+                    await s.commit()
+                    from backend.api.algo.order_events import write_event
+                    await write_event(
+                        order_id, "released",
+                        f"Auto-resolved: {row.symbol} position already flat/"
+                        f"settled — hold closed, nothing to close",
+                        {"actor": actor, "reason": "settled_flat"},
+                    )
+                    logger.info(
+                        f"[RELEASE] order {order_id} ({row.symbol}, {row.account}) "
+                        f"auto-resolved — position already flat/settled"
+                    )
+                    return {
+                        "ok": False, "status": "CANCELLED",
+                        "reason": "position already flat/settled — hold resolved",
+                    }
                 return {"ok": False, "reason": why, "status": "HELD"}
 
             key = f"{row.exchange}:{row.symbol}"
