@@ -2036,13 +2036,12 @@ def _al_agent_close_hold_message(
 
 async def _al_send_agent_close_hold_alert(
     agent, held_order_id: int, account: str, symbol: str, exchange: str,
-    side: str, qty: int, reason: str,
+    side: str, qty: int, reason: str, *, title_prefix: str = "Agent close held",
 ) -> None:
-    """Fire one action-required alert for a newly-staged AGENT_CLOSE
-    hold. Writes ONE log record via `_DISPATCH_LOGGER`, tagged
-    `alert_event="agent_close_hold"` — a dedicated seeded agent
-    (`event_agents.AGENT_CLOSE_HOLD_ALERT_AGENT` + its
-    `_render_agent_close_hold` renderer) picks this up. Channel
+    """Fire one action-required alert for a newly-staged hold. Writes ONE
+    log record via `_DISPATCH_LOGGER`, tagged `alert_event="agent_close_hold"`
+    — a dedicated seeded agent (`event_agents.AGENT_CLOSE_HOLD_ALERT_AGENT` +
+    its `_render_agent_close_hold` renderer) picks this up. Channel
     selection is resolved by `alert_routing.py`'s per-slug override for
     that agent's slug, not a per-record `channels` literal here (2026-11
     channel-authoring retirement — this used to embed its own hardcoded
@@ -2054,7 +2053,14 @@ async def _al_send_agent_close_hold_alert(
     required_email_gate`), forcing urgent ntfy plus a forced email
     entry regardless of the per-slug channel list. Never raises — a
     failed alert must not prevent the hold itself from having been
-    staged."""
+    staged.
+
+    `title_prefix` (2026-11-24, audit finding #6): defaults to the exact
+    original "Agent close held" text, so every pre-existing AGENT_CLOSE
+    caller is byte-identical to before. `close_positions()` (expiry.py)
+    is the one other caller, passing "Expiry close held" — same
+    mechanism, same renderer (`_render_agent_close_hold` already reads
+    `extra["title"]` verbatim), no new alert agent/renderer needed."""
     try:
         from backend.shared.helpers.alert_utils import _DISPATCH_LOGGER
         agent_key = getattr(agent, "slug", None) or getattr(agent, "id", None) or "unknown"
@@ -2065,7 +2071,7 @@ async def _al_send_agent_close_hold_alert(
             f"[AGENT-CLOSE-HOLD] {message}",
             extra={
                 "tags": ["agent", "alert"], "alert_event": "agent_close_hold",
-                "title": f"Agent close held — {agent_key}", "body": message,
+                "title": f"{title_prefix} — {agent_key}", "body": message,
                 "action_required": True,
                 "agent_id": getattr(agent, "id", None),
                 "agent_name": getattr(agent, "name", None),

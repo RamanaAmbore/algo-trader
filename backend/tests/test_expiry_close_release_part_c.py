@@ -685,6 +685,71 @@ class TestExpiryCloseCancelSuppression:
         held_mock.assert_not_awaited()
 
 
+class TestExpiryCloseHoldStagingAlert:
+    """Audit finding #6 (backend half, 2026-11-24): EXPIRY_CLOSE staging
+    must send the same action-required alert AGENT_CLOSE already does."""
+
+    @pytest.mark.asyncio
+    async def test_successful_stage_sends_one_alert_per_leg(self):
+        from backend.api.algo.expiry import ExpiryEngine, OptionPosition
+
+        engine = ExpiryEngine(agent_id=42)
+        pos = OptionPosition(
+            account="ZG0790", tradingsymbol="CRUDEOIL26NOV5500CE", exchange="MCX",
+            instrument_type="CE", underlying="CRUDEOIL", strike=5500.0,
+            expiry=date.today(), quantity=1, product="NRML", residual_qty=1,
+        )
+
+        async def _not_in_flight(account, symbol, exchange, side):
+            return False
+
+        alert_mock = AsyncMock()
+        with patch("backend.api.algo.expiry._exp_leg_in_flight_this_session", new=_not_in_flight), \
+             patch("backend.api.algo.expiry.expiry_close_held", return_value=True), \
+             patch("backend.api.algo.actions_live._al_agent_close_recently_cancelled_this_session",
+                   new=AsyncMock(return_value=False)), \
+             patch("backend.api.algo.expiry.record_held_order", new=AsyncMock(return_value=101)), \
+             patch("backend.api.algo.actions_live._al_send_agent_close_hold_alert", new=alert_mock):
+            await engine.close_positions([pos], release_policy={"after_min": 30, "floor_tier": "high"})
+
+        alert_mock.assert_awaited_once()
+        args, kwargs = alert_mock.await_args
+        assert args[0].id == 42  # lightweight agent stand-in carries the real agent_id
+        assert args[1] == 101  # held_row_id
+        assert args[2] == "ZG0790"
+        assert args[3] == "CRUDEOIL26NOV5500CE"
+        assert args[4] == "MCX"
+        assert args[5] == "SELL"
+        assert kwargs["title_prefix"] == "Expiry close held"
+
+    @pytest.mark.asyncio
+    async def test_no_alert_when_record_held_order_returns_none(self):
+        """A failed stage (record_held_order returns None, e.g. a DB
+        write failure) must not fire a staging-succeeded alert."""
+        from backend.api.algo.expiry import ExpiryEngine, OptionPosition
+
+        engine = ExpiryEngine(agent_id=42)
+        pos = OptionPosition(
+            account="ZG0790", tradingsymbol="CRUDEOIL26NOV5500CE", exchange="MCX",
+            instrument_type="CE", underlying="CRUDEOIL", strike=5500.0,
+            expiry=date.today(), quantity=1, product="NRML", residual_qty=1,
+        )
+
+        async def _not_in_flight(account, symbol, exchange, side):
+            return False
+
+        alert_mock = AsyncMock()
+        with patch("backend.api.algo.expiry._exp_leg_in_flight_this_session", new=_not_in_flight), \
+             patch("backend.api.algo.expiry.expiry_close_held", return_value=True), \
+             patch("backend.api.algo.actions_live._al_agent_close_recently_cancelled_this_session",
+                   new=AsyncMock(return_value=False)), \
+             patch("backend.api.algo.expiry.record_held_order", new=AsyncMock(return_value=None)), \
+             patch("backend.api.algo.actions_live._al_send_agent_close_hold_alert", new=alert_mock):
+            await engine.close_positions([pos], release_policy={"after_min": 30, "floor_tier": "high"})
+
+        alert_mock.assert_not_awaited()
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # CANCEL_FAILED broker-truth verification
 # ═══════════════════════════════════════════════════════════════════════

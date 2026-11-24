@@ -1193,7 +1193,7 @@ class ExpiryEngine:
                         continue
                     tier = (release_policy.get("floor_tier") or "high").upper()
                     price_policy = f"CHASE_{tier}"
-                await record_held_order(
+                held_row_id = await record_held_order(
                     HoldCategory.EXPIRY_CLOSE,
                     account=pos.account, symbol=pos.tradingsymbol,
                     exchange=pos.exchange, side=txn, qty=qty,
@@ -1202,6 +1202,24 @@ class ExpiryEngine:
                     price_policy=price_policy,
                     auto_release_at=auto_release_at,
                 )
+                # 2026-11-24 fix (audit finding #6): AGENT_CLOSE sends a
+                # dedicated action-required alert when it stages a hold
+                # (`_al_send_agent_close_hold_alert`) — EXPIRY_CLOSE never
+                # did, so an operator with the Held Orders card closed had
+                # no signal a leg was staged until a manual reload. Reuses
+                # the exact same alert mechanism/renderer, one per staged
+                # leg (a single expiry-day pass can stage several).
+                if held_row_id is not None:
+                    from types import SimpleNamespace
+                    from backend.api.algo.actions_live import (
+                        _al_send_agent_close_hold_alert,
+                    )
+                    await _al_send_agent_close_hold_alert(
+                        SimpleNamespace(id=self._agent_id, slug=None, name=None),
+                        held_row_id, pos.account, pos.tradingsymbol, pos.exchange,
+                        txn, qty, "expiry close (held by default)",
+                        title_prefix="Expiry close held",
+                    )
                 continue
 
             cfg = ChaseConfig(
