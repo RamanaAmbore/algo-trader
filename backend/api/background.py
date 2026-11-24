@@ -2953,13 +2953,21 @@ async def _task_expiry_check() -> None:
     FUTURE caller that reintroduces this exact mistake is refused
     rather than silently reproducing the bug.
 
-    This task still runs its own morning detection scan and logs/
-    broadcasts `expiry_day_detected` — confirmed via grep to have zero
-    consumers in frontend or backend, so it is purely informational
-    (ops visibility), never load-bearing for any UI or downstream
-    logic. Left in place rather than removed outright: it is a cheap,
-    harmless daily log line, and removing it is a separate decision
-    from retiring the UNSAFE close action this fix is scoped to.
+    2026-11-24 fix (audit finding #16): the morning detection scan
+    itself is now removed too. It made a real daily broker round-trip
+    (positions + instruments) solely to log/broadcast
+    `expiry_day_detected` — confirmed via grep (and pinned by
+    `test_expiry_day_detected_has_zero_consumers`) to have zero
+    consumers in frontend or backend. Against this project's own
+    closed-window/unnecessary-broker-call discipline, that cost was
+    never justified by the information it produced: "do I hold
+    anything expiring today" is already reported, far more usefully
+    (with moneyness/position breakdown), by `expiry-day-preclose-
+    alert` and the two morning-preview agents, which run on real
+    agent-engine cycles rather than a second, independent broker call.
+    This task is kept (not deleted outright) purely as the scheduling
+    skeleton + prod-only safety gate, in case a future cheap, non-
+    broker-touching daily check wants this time slot.
 
     SAFETY GATE — prod only. expiry.py → chase.py::_place_order calls
     broker.place_order() directly with NO paper_trading_mode / branch
@@ -2975,9 +2983,6 @@ async def _task_expiry_check() -> None:
         while not is_prod_branch():
             await asyncio.sleep(300)
         return
-
-    from backend.api.algo.expiry import ExpiryEngine
-    from backend.api.routes.algo import _broadcast_event
 
     from backend.shared.helpers.settings import get_string
     global _expiry_last_run_date
@@ -3004,22 +3009,14 @@ async def _task_expiry_check() -> None:
             await asyncio.sleep(delay_s)
 
         try:
-            engine = ExpiryEngine(on_event=_broadcast_event)
-            # Quick scan to see if any positions expire today
-            positions = await _run(engine._fetch_option_positions)
+            # 2026-11-24 fix (audit finding #16): no broker call here
+            # any more — see this function's own docstring. Real
+            # detection/alerting is owned by `expiry-day-preclose-alert`
+            # and the morning-preview agents, which already run on the
+            # agent engine's own cycle.
+            logger.info("Background: daily expiry-check tick — no broker call; "
+                        "see expiry-day-preclose-alert for real-time status")
             today = timestamp_indian().date()
-            expiring = [p for p in positions if p.expiry == today]
-
-            if expiring:
-                logger.info(f"Background: expiry day detected — {len(expiring)} option positions expiring today")
-                _broadcast_event("expiry_day_detected", {"count": len(expiring)})
-                # Detection + broadcast only — the real close action is
-                # owned exclusively by the `expiry-day-itm-auto-close`
-                # agent (see this function's own docstring for why the
-                # legacy `engine.run()` call was removed here).
-            else:
-                logger.info("Background: no option positions expiring today")
-
             _expiry_last_run_date = today
         except Exception as e:
             logger.error(f"Background: expiry check failed: {e}")

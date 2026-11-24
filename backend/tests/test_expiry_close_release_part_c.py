@@ -1415,17 +1415,28 @@ class TestTaskExpiryCheckRetiresEngineRun:
             "_task_expiry_check must never call engine.run() — the real "
             "close action is owned exclusively by expiry-day-itm-auto-close"
         )
-        assert "_broadcast_event(\"expiry_day_detected\"" in src, (
-            "the detection broadcast itself is informational-only and "
-            "may stay — only the close ACTION was removed"
-        )
 
-    def test_expiry_day_detected_has_zero_consumers(self):
-        """Confirms the plan's own grep claim stays true: nothing in
-        the backend reads this broadcast event — only the one emit
-        call site in background.py exists. Restricted to real `.py`
-        source files (never `.pyc`/docstring-prose lines that merely
-        MENTION the event name)."""
+    def test_no_broker_call_or_dead_broadcast_remains(self):
+        """Audit finding #16 (2026-11-24): the morning detection scan's
+        own broker round-trip (positions fetch) and its zero-consumer
+        broadcast are both removed now too — not just the close action.
+        Real detection is owned by expiry-day-preclose-alert and the
+        morning-preview agents, which never need a second broker call."""
+        import inspect
+        from backend.api import background as bg
+        src = inspect.getsource(bg._task_expiry_check)
+        assert "engine = ExpiryEngine" not in src, (
+            "_task_expiry_check must no longer construct an ExpiryEngine at all "
+            "(the docstring's own historical mention of the OLD call shape, in "
+            "prose, is fine and deliberately not checked here)"
+        )
+        assert "_fetch_option_positions" not in src
+        assert "_broadcast_event" not in src
+
+    def test_expiry_day_detected_event_has_no_remaining_emit_call_site(self):
+        """Confirms the broadcast itself is gone, not merely unread —
+        the plan's own prior grep claim (exactly one emit call site, in
+        background.py) is now superseded: there are zero."""
         import subprocess
         repo_root = __file__.rsplit("/backend/", 1)[0]
         result = subprocess.run(
@@ -1434,8 +1445,7 @@ class TestTaskExpiryCheckRetiresEngineRun:
             cwd=repo_root, capture_output=True, text=True,
         )
         lines = [l for l in result.stdout.splitlines() if l.strip()]
-        assert len(lines) == 1, f"expected exactly one emit call site, got: {lines}"
-        assert "backend/api/background.py" in lines[0]
+        assert lines == [], f"expected zero emit call sites, got: {lines}"
 
         # And confirm no consumer reads it back out (WS/event-handler
         # style lookup) anywhere else in the backend or frontend.
