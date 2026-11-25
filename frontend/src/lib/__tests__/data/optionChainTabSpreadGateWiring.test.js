@@ -20,8 +20,11 @@ import { describe, it, expect } from 'vitest';
 import src from '$lib/order/OptionChainTab.svelte?raw';
 
 describe('OptionChainTab.svelte — pre-submit spread gate wiring', () => {
-  it('imports buildSpreadGatePlan from spreadGate.js', () => {
-    expect(src).toMatch(/import\s*\{\s*createSpreadGate,\s*buildSpreadGatePlan\s*\}\s*from\s*['"]\$lib\/data\/spreadGate\.js['"]/);
+  it('imports createSpreadGate and buildSpreadGatePlan from spreadGate.js (alongside any later Part-A additions to the same import)', () => {
+    const m = src.match(/import\s*\{([^}]*)\}\s*from\s*['"]\$lib\/data\/spreadGate\.js['"]/);
+    expect(m).toBeTruthy();
+    expect(m[1]).toMatch(/\bcreateSpreadGate\b/);
+    expect(m[1]).toMatch(/\bbuildSpreadGatePlan\b/);
   });
 
   it('imports portfolioStore from portfolioStore.svelte.js', () => {

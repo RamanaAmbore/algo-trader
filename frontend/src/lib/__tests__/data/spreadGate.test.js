@@ -6,6 +6,7 @@ import {
   SPREAD_GATE_MAX_ERRORS,
   isCloseIntentLeg,
   buildSpreadGatePlan,
+  resolveHedgeStrike,
 } from '../../data/spreadGate.js';
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -340,6 +341,209 @@ describe('isCloseIntentLeg', () => {
   it('a zero-contracts leg (missing lots/lotSize) is never close-intent', () => {
     const leg = { sym: 'NIFTY26JUN24000CE', side: 'SELL' };
     expect(isCloseIntentLeg(leg, 'ACC1', positionRows)).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// resolveHedgeStrike — Part A, Chain-tab auto-hedge strike resolution.
+// Mirrors (not merges with) resolveWingTradingsymbol above — a
+// forward-looking, premium-percent match among currently-quoted
+// strikes, not a backward manual-points offset.
+// ─────────────────────────────────────────────────────────────────────────
+describe('resolveHedgeStrike', () => {
+  it('CE direction — searches strikes strictly above the parent, nearest-to-target wins', () => {
+    const chainQuotesMap = {
+      '90':  { ce: { bid: 200, ask: 205 } }, // below parent — must be ignored
+      '110': { ce: { bid: 60, ask: 62 } },   // ratio 60%
+      '120': { ce: { bid: 50, ask: 52 } },   // ratio 50% — exact target
+      '130': { ce: { bid: 20, ask: 22 } },   // ratio 20% — below tolerance [25,75]
+    };
+    const r = resolveHedgeStrike({
+      parentOptType: 'CE', parentStrike: 100, parentSide: 'BUY',
+      parentPremium: 100, targetPct: 50, chainQuotesMap,
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.strike).toBe(120);
+      expect(r.price).toBe(50);
+      expect(r.ratio).toBeCloseTo(50, 6);
+    }
+  });
+
+  it('PE direction — searches strikes strictly below the parent, nearest-to-target wins', () => {
+    const chainQuotesMap = {
+      '110': { pe: { bid: 999, ask: 999 } }, // above parent — must be ignored
+      '90':  { pe: { bid: 10, ask: 12 } },   // ratio 12%
+      '80':  { pe: { bid: 23, ask: 25 } },   // ratio 25% — exact target
+      '70':  { pe: { bid: 40, ask: 45 } },   // ratio 45% — above tolerance [12.5,37.5]
+    };
+    const r = resolveHedgeStrike({
+      parentOptType: 'PE', parentStrike: 100, parentSide: 'SELL',
+      parentPremium: 100, targetPct: 25, chainQuotesMap,
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.strike).toBe(80);
+      expect(r.price).toBe(25);
+      expect(r.ratio).toBeCloseTo(25, 6);
+    }
+  });
+
+  it('BUY parent → hedge is a SELL, reads bid first (falls back to ask when bid is missing)', () => {
+    const withBid = resolveHedgeStrike({
+      parentOptType: 'CE', parentStrike: 100, parentSide: 'BUY', parentPremium: 100,
+      targetPct: 50, chainQuotesMap: { '110': { ce: { bid: 50, ask: 55 } } },
+    });
+    expect(withBid.ok).toBe(true);
+    if (withBid.ok) expect(withBid.price).toBe(50); // bid preferred over ask
+
+    const noBid = resolveHedgeStrike({
+      parentOptType: 'CE', parentStrike: 100, parentSide: 'BUY', parentPremium: 100,
+      targetPct: 50, chainQuotesMap: { '110': { ce: { bid: null, ask: 50 } } },
+    });
+    expect(noBid.ok).toBe(true);
+    if (noBid.ok) expect(noBid.price).toBe(50); // falls back to ask
+  });
+
+  it('SELL parent → hedge is a BUY, reads ask first (falls back to bid when ask is missing)', () => {
+    const withAsk = resolveHedgeStrike({
+      parentOptType: 'PE', parentStrike: 100, parentSide: 'SELL', parentPremium: 100,
+      targetPct: 25, chainQuotesMap: { '90': { pe: { bid: 20, ask: 25 } } },
+    });
+    expect(withAsk.ok).toBe(true);
+    if (withAsk.ok) expect(withAsk.price).toBe(25); // ask preferred over bid
+
+    const noAsk = resolveHedgeStrike({
+      parentOptType: 'PE', parentStrike: 100, parentSide: 'SELL', parentPremium: 100,
+      targetPct: 25, chainQuotesMap: { '90': { pe: { bid: 25, ask: null } } },
+    });
+    expect(noAsk.ok).toBe(true);
+    if (noAsk.ok) expect(noAsk.price).toBe(25); // falls back to bid
+  });
+
+  it('rejects a candidate whose resolved price is 0/null/undefined — never treats it as a 0%-ratio match', () => {
+    const r = resolveHedgeStrike({
+      parentOptType: 'CE', parentStrike: 100, parentSide: 'BUY', parentPremium: 100, targetPct: 50,
+      chainQuotesMap: {
+        '110': { ce: { bid: 0, ask: null } },    // no real quote — rejected
+        '120': { ce: { bid: 50, ask: 52 } },     // valid, exact target
+      },
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.strike).toBe(120);
+  });
+
+  it('tolerance band is inclusive at exactly ±50% of target (25% and 75% both accepted for target=50)', () => {
+    const lowBoundary = resolveHedgeStrike({
+      parentOptType: 'CE', parentStrike: 100, parentSide: 'BUY', parentPremium: 100, targetPct: 50,
+      chainQuotesMap: { '110': { ce: { bid: 25, ask: 26 } } }, // ratio exactly 25%
+    });
+    expect(lowBoundary.ok).toBe(true);
+
+    const highBoundary = resolveHedgeStrike({
+      parentOptType: 'CE', parentStrike: 100, parentSide: 'BUY', parentPremium: 100, targetPct: 50,
+      chainQuotesMap: { '110': { ce: { bid: 75, ask: 76 } } }, // ratio exactly 75%
+    });
+    expect(highBoundary.ok).toBe(true);
+
+    const justBelowLow = resolveHedgeStrike({
+      parentOptType: 'CE', parentStrike: 100, parentSide: 'BUY', parentPremium: 100, targetPct: 50,
+      chainQuotesMap: { '110': { ce: { bid: 24.9, ask: 25 } } }, // ratio 24.9% — outside
+    });
+    expect(justBelowLow.ok).toBe(false);
+
+    const justAboveHigh = resolveHedgeStrike({
+      parentOptType: 'CE', parentStrike: 100, parentSide: 'BUY', parentPremium: 100, targetPct: 50,
+      chainQuotesMap: { '110': { ce: { bid: 75.1, ask: 76 } } }, // ratio 75.1% — outside
+    });
+    expect(justAboveHigh.ok).toBe(false);
+  });
+
+  it('on an exact distance tie, the strike nearer to the parent (visited first in search order) wins', () => {
+    // target=50: strike 110 → ratio 60 (dist 10); strike 130 → ratio 40 (dist 10).
+    // Ascending search order for CE visits 110 before 130.
+    const r = resolveHedgeStrike({
+      parentOptType: 'CE', parentStrike: 100, parentSide: 'BUY', parentPremium: 100, targetPct: 50,
+      chainQuotesMap: {
+        '110': { ce: { bid: 60, ask: 61 } },
+        '130': { ce: { bid: 40, ask: 41 } },
+      },
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.strike).toBe(110);
+  });
+
+  it('structured failure — invalid inputs (non-positive parentPremium)', () => {
+    const r = resolveHedgeStrike({
+      parentOptType: 'CE', parentStrike: 100, parentSide: 'BUY', parentPremium: 0, targetPct: 50,
+      chainQuotesMap: { '110': { ce: { bid: 50, ask: 52 } } },
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok === false) expect(r.reason).toMatch(/invalid/i);
+  });
+
+  it('structured failure — invalid inputs (non-positive targetPct)', () => {
+    const r = resolveHedgeStrike({
+      parentOptType: 'CE', parentStrike: 100, parentSide: 'BUY', parentPremium: 100, targetPct: 0,
+      chainQuotesMap: { '110': { ce: { bid: 50, ask: 52 } } },
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok === false) expect(r.reason).toMatch(/invalid/i);
+  });
+
+  it('structured failure — invalid inputs (unrecognised option type)', () => {
+    const r = resolveHedgeStrike({
+      // @ts-expect-error — deliberately wrong optType to exercise the guard
+      parentOptType: 'FUT', parentStrike: 100, parentSide: 'BUY', parentPremium: 100, targetPct: 50,
+      chainQuotesMap: { '110': { ce: { bid: 50, ask: 52 } } },
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok === false) expect(r.reason).toMatch(/option type/i);
+  });
+
+  it('structured failure — no chain quotes loaded yet (null map)', () => {
+    const r = resolveHedgeStrike({
+      parentOptType: 'CE', parentStrike: 100, parentSide: 'BUY', parentPremium: 100, targetPct: 50,
+      chainQuotesMap: null,
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok === false) expect(r.reason).toMatch(/no chain quotes/i);
+  });
+
+  it('structured failure — no chain quotes loaded yet (empty map)', () => {
+    const r = resolveHedgeStrike({
+      parentOptType: 'CE', parentStrike: 100, parentSide: 'BUY', parentPremium: 100, targetPct: 50,
+      chainQuotesMap: {},
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok === false) expect(r.reason).toMatch(/no chain quotes/i);
+  });
+
+  it('structured failure — no strikes further OTM than the parent at all', () => {
+    const r = resolveHedgeStrike({
+      parentOptType: 'CE', parentStrike: 100, parentSide: 'BUY', parentPremium: 100, targetPct: 50,
+      chainQuotesMap: { '90': { ce: { bid: 10, ask: 12 } }, '100': { ce: { bid: 50, ask: 52 } } },
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok === false) expect(r.reason).toMatch(/further OTM/i);
+  });
+
+  it('structured failure — further-OTM strikes exist but none has a real quote', () => {
+    const r = resolveHedgeStrike({
+      parentOptType: 'CE', parentStrike: 100, parentSide: 'BUY', parentPremium: 100, targetPct: 50,
+      chainQuotesMap: { '110': { ce: { bid: 0, ask: null } }, '120': { ce: { bid: null, ask: null } } },
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok === false) expect(r.reason).toMatch(/depth-backed quote/i);
+  });
+
+  it('structured failure — priced candidates exist but none within tolerance of target', () => {
+    const r = resolveHedgeStrike({
+      parentOptType: 'CE', parentStrike: 100, parentSide: 'BUY', parentPremium: 100, targetPct: 50,
+      chainQuotesMap: { '110': { ce: { bid: 5, ask: 6 } } }, // ratio 5% — nowhere near [25,75]
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok === false) expect(r.reason).toMatch(/no strike priced near/i);
   });
 });
 

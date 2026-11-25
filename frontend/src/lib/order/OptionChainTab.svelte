@@ -17,7 +17,7 @@
     fetchAccounts,
     checkOrderSpread,
   } from '$lib/api';
-  import { createSpreadGate, buildSpreadGatePlan } from '$lib/data/spreadGate.js';
+  import { createSpreadGate, buildSpreadGatePlan, isCloseIntentLeg, resolveHedgeStrike } from '$lib/data/spreadGate.js';
   import { portfolioStore } from '$lib/data/portfolioStore.svelte.js';
   import { executionMode } from '$lib/stores';
   import { toast } from '$lib/data/toastStore.svelte.js';
@@ -112,6 +112,21 @@
   // legs into the shared basket. On: +/− open the Ticket tab pre-
   // filled with that leg for direct submit, same as Command's flow.
   let _placeMode = $state(false);
+
+  // HEDGE — Part A (order-entry-time auto-hedge, not an agent and not
+  // the deleted Bracket/Template-GTT wing system — see
+  // spreadGate.js:resolveHedgeStrike's own header comment for why the
+  // two are deliberately different algorithms). Local $state, Chain-
+  // only — switching tabs away and back resets this to off (component
+  // remounts under the parent's `{#if _activeTab==='chain'}`), which
+  // does not retroactively touch legs already staged. Percent fields
+  // default to the operator-specified ratios: a BUY parent's hedge is
+  // a SELL targeting hedgeBuyPct% of the bought premium (debit
+  // spread); a SELL parent's hedge is a BUY targeting hedgeSellPct%
+  // of the sold premium (credit spread).
+  let hedgeOn       = $state(false);
+  let hedgeBuyPct   = $state(50);
+  let hedgeSellPct  = $state(25);
 
   // CHASE tooltip trigger — own copy of SymbolPanel's click-to-pin
   // InfoHint anchor (T3.3, bracket-removal, CHASE relocated into this
@@ -593,7 +608,11 @@
   }
 
   function _mergeIntoBasket(/** @type {{sym:string,side:'BUY'|'SELL',lots:number,account?:string}} */ incoming) {
-    const idx = chainBasket.findIndex(b => b.sym === incoming.sym && b.side === incoming.side
+    // !b._hedgeParentKey — a hedge leg is never a merge TARGET. Merging
+    // a manual click onto it would silently corrupt the hedge leg's own
+    // premium ratio (it's priced once, at stage time, against its own
+    // parent — not meant to accumulate lots independently of the parent).
+    const idx = chainBasket.findIndex(b => !b._hedgeParentKey && b.sym === incoming.sym && b.side === incoming.side
       && (b.account || '') === (incoming.account || ''));
     if (idx < 0) return false;
     if (_externalBasket && onUpdateLeg) {
@@ -618,7 +637,9 @@
 
   function _netAgainstBasket(/** @type {string} */ sym, /** @type {'BUY'|'SELL'} */ sideTag, /** @type {string} */ acct) {
     const oppSide = sideTag === 'BUY' ? 'SELL' : 'BUY';
-    const idx = chainBasket.findIndex(b => b.sym === sym && b.side === oppSide
+    // !b._hedgeParentKey — a hedge leg is never a netting TARGET either;
+    // it would wrongly net away a leg the operator never manually staged.
+    const idx = chainBasket.findIndex(b => !b._hedgeParentKey && b.sym === sym && b.side === oppSide
       && (b.account || '') === (acct || ''));
     if (idx < 0) return false;
     const leg = chainBasket[idx];
@@ -696,7 +717,7 @@
     }
     const q = chainQuotesMap?.[String(strike)]?.[optType.toLowerCase()];
     const limit = sideTag === 'BUY' ? (q?.ask ?? q?.bid ?? 0) : (q?.bid ?? q?.ask ?? 0);
-    _pushToBasket({
+    const newLeg = {
       key:      `${sideTag}|${_quickKeyOpt(strike, optType)}|${Date.now()}`,
       side:     sideTag, sym: String(inst.s), exchange: inst.e || 'NFO',
       account:  _account,
@@ -716,8 +737,86 @@
       // `_lastQuote` truthy check, applied per-leg. Read by SymbolPanel's
       // `_legNeedsDepth()` basket-submit gate.
       quoteArrived: !!q,
-    });
+    };
+    _pushToBasket(newLeg);
     basketError = ''; _flashToast(_quickKeyOpt(strike, optType), '✓ added');
+    // Only on a genuinely fresh push — a +1-lot merge onto an existing
+    // staged leg does not re-trigger hedge resolution (see
+    // _maybeStageHedgeLeg's own header comment on why that's accepted,
+    // not an oversight).
+    _maybeStageHedgeLeg(newLeg, strike, optType);
+  }
+
+  /**
+   * Part A — HEDGE. Auto-stage a second, opposite-side leg further OTM
+   * right after a fresh option leg is pushed into the basket. See
+   * spreadGate.js:resolveHedgeStrike for the strike-search algorithm —
+   * deliberately NOT the same algorithm as the deleted Bracket system's
+   * manual-offset wing resolver (`resolveWingTradingsymbol`), which
+   * solves a different, backward-looking problem.
+   *
+   * Fail-safe only: a resolution failure sets `basketError` with the
+   * reason and leaves the parent leg exactly as already staged — this
+   * function never blocks the parent and never falls back to a wrong
+   * strike. No-ops silently (no warning) when Hedge is off, when Place
+   * mode has no basket to stage into, when the symbol's exchange isn't
+   * NFO (MCX/other — out of scope v1), or when the leg being added is
+   * verified as closing/reducing an existing real position (closing is
+   * the expected, non-alarming case Hedge should never react to).
+   *
+   * @param {any} parentLeg - the leg object just pushed via _pushToBasket
+   * @param {number} strike - the parent's own strike
+   * @param {'CE'|'PE'} optType
+   */
+  function _maybeStageHedgeLeg(parentLeg, strike, optType) {
+    if (!hedgeOn) return;
+    if (_placeMode) return; // ticket mode has no basket to stage into
+    if (parentLeg.exchange !== 'NFO') return; // MCX/other — silent no-op, out of scope v1
+
+    const positionRows = untrack(() => portfolioStore.positions.rows);
+    if (isCloseIntentLeg(parentLeg, parentLeg.account, positionRows)) return;
+
+    const targetPct = parentLeg.side === 'BUY' ? hedgeBuyPct : hedgeSellPct;
+    const result = resolveHedgeStrike({
+      parentOptType:  optType,
+      parentStrike:   strike,
+      parentSide:     parentLeg.side,
+      parentPremium:  Number(parentLeg.limit),
+      targetPct:      Number(targetPct),
+      chainQuotesMap,
+    });
+    if (result.ok === false) {
+      basketError = `Hedge not staged — ${result.reason}`;
+      toast.warning(basketError.slice(0, 80), { timeoutMs: 5000 });
+      return;
+    }
+
+    const hedgeSide = parentLeg.side === 'BUY' ? 'SELL' : 'BUY';
+    const inst = findOption(chainUnderlying.toUpperCase(), optType, result.strike, chainExpiry);
+    if (!inst) {
+      basketError = `Hedge not staged — ${result.strike} ${optType} not in instruments cache.`;
+      toast.warning(basketError.slice(0, 80), { timeoutMs: 5000 });
+      return;
+    }
+
+    _pushToBasket({
+      key:      `${hedgeSide}|${_quickKeyOpt(result.strike, optType)}|hedge|${Date.now()}`,
+      side:     hedgeSide, sym: String(inst.s), exchange: inst.e || 'NFO',
+      account:  parentLeg.account,
+      lots: parentLeg.lots, lotSize: Number(inst.ls || 1), product: parentLeg.product || 'NRML',
+      limit: Number(result.price) || 0, chaseAgg: parentLeg.chaseAgg || 'low',
+      strike: result.strike, optType,
+      quoteArrived: true,
+      // Snapshot signature at staging time — the removal $effect below
+      // removes this leg the moment the parent's own sig no longer
+      // matches (lots changed, account changed, parent removed). This
+      // is a literal "offset leg should disappear", not a re-stage —
+      // the operator must remove+re-add the parent for a fresh hedge
+      // at the updated ratio (accepted v1 behavior).
+      _hedgeParentKey: parentLeg.key,
+      _hedgeParentSig: `${parentLeg.sym}|${parentLeg.side}|${parentLeg.lots}|${parentLeg.account}`,
+    });
+    basketError = '';
   }
 
   // ── Keep `quoteArrived` in sync with the live chain-quotes poll ────
@@ -747,6 +846,40 @@
         } else {
           _localBasket = _localBasket.map(b => b.key === leg.key ? { ...b, quoteArrived: true } : b);
         }
+      }
+    });
+  });
+
+  // ── Remove a hedge leg once its parent changes or disappears ──────
+  // Literal reading of "offset leg should disappear" — this does NOT
+  // re-stage a fresh hedge; the operator must remove+re-add the
+  // parent leg to get one at the updated ratio (accepted v1 cost, see
+  // _maybeStageHedgeLeg's own header comment above). Watches every leg
+  // carrying `_hedgeParentKey`: removed when its parent is no longer in
+  // the basket, OR the parent's current `${sym}|${side}|${lots}
+  // |${account}` signature no longer matches what was snapshotted at
+  // staging time (`_hedgeParentSig`).
+  $effect(() => {
+    const legs = chainBasket;
+    const parents = new Map(legs.filter(l => !l._hedgeParentKey).map(l => [l.key, l]));
+    const stale = legs.filter(l => {
+      if (!l._hedgeParentKey) return false;
+      const parent = parents.get(l._hedgeParentKey);
+      if (!parent) return true;
+      const sig = `${parent.sym}|${parent.side}|${parent.lots}|${parent.account}`;
+      return sig !== l._hedgeParentSig;
+    });
+    if (!stale.length) return;
+    untrack(() => {
+      if (_externalBasket && onRemoveLeg) {
+        for (const leg of stale) onRemoveLeg(leg);
+      } else if (_externalBasket && !onRemoveLeg) {
+        // Same guard as _netAgainstBasket's own no-onRemoveLeg branch —
+        // cannot safely mutate _localBasket (wrong array) in this mode.
+        console.warn('OptionChainTab: _externalBasket requires onRemoveLeg — stale hedge leg(s) not removed');
+      } else {
+        const staleKeys = new Set(stale.map(l => l.key));
+        _localBasket = _localBasket.filter(b => !staleKeys.has(b.key));
       }
     });
   });
@@ -1120,6 +1253,29 @@
                placeholder="0.5"
                bind:value={spreadMaxPctOverride} />
       </label>
+      <!-- HEDGE — Part A. Auto-stage a second, opposite-side leg
+           further OTM whenever a BUY/SELL option leg is added — BUY
+           hedges with a SELL (debit spread), SELL hedges with a BUY
+           (credit spread). Basket mode only; ticket mode has no basket
+           to stage a hedge leg into. -->
+      <label class="oct-hedge-toggle" title="Auto-stage a hedge leg when adding an option (basket mode only).">
+        <input type="checkbox" bind:checked={hedgeOn} />
+        <span class="oct-hedge-label" class:on={hedgeOn}>HEDGE</span>
+      </label>
+      {#if hedgeOn}
+        <label class="oct-hedge-field" title="BUY leg hedges with a SELL further OTM, targeting this % of the bought premium (debit spread).">
+          <span>B%</span>
+          <input type="number" step="5" min="1"
+                 placeholder="50"
+                 bind:value={hedgeBuyPct} />
+        </label>
+        <label class="oct-hedge-field" title="SELL leg hedges with a BUY further OTM, targeting this % of the sold premium (credit spread).">
+          <span>S%</span>
+          <input type="number" step="5" min="1"
+                 placeholder="25"
+                 bind:value={hedgeSellPct} />
+        </label>
+      {/if}
       <!-- CHASE — relocated verbatim from SymbolPanel's shared
            CHASE/DRAFT row (T3.3, bracket-removal — "merge CHASE into
            OptionChainTab's .oct-toolbar"). Chase is unconditionally
@@ -1581,6 +1737,67 @@
   .oct-spread-field > input::placeholder {
     color: rgba(251, 191, 36, 0.6);
     font-style: italic;
+  }
+  /* HEDGE toggle + percent fields (Part A) — sky/info palette tier,
+     distinct from Spread%'s amber and DRAFT's violet so the three
+     toolbar toggles stay visually distinguishable at a glance. */
+  .oct-hedge-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    cursor: pointer;
+    user-select: none;
+  }
+  .oct-hedge-toggle input[type="checkbox"] {
+    accent-color: var(--algo-sky);
+    width: 0.85rem;
+    height: 0.85rem;
+    cursor: pointer;
+  }
+  .oct-hedge-label {
+    font-family: monospace;
+    font-size: var(--fs-md);
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    padding: 0.15rem 0.4rem;
+    border-radius: 3px;
+    border: 1px solid rgba(255,255,255,0.12);
+    color: var(--text-muted);
+    background: rgba(255,255,255,0.04);
+  }
+  .oct-hedge-label.on {
+    background: var(--algo-sky-bg);
+    border-color: var(--algo-sky-border-soft);
+    color: var(--algo-sky);
+  }
+  .oct-hedge-field {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-family: monospace;
+    font-size: var(--fs-xs);
+    color: var(--algo-muted);
+  }
+  .oct-hedge-field > span {
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 700;
+    color: var(--algo-sky-text);
+  }
+  .oct-hedge-field > input {
+    width: 2.6rem;
+    min-height: 1.4rem;
+    padding: 0 0.3rem;
+    background: #1d2a44;
+    border: 1px solid var(--algo-sky-border-soft);
+    border-radius: 3px;
+    color: var(--algo-slate);
+    font-family: var(--font-numeric);
+    font-size: var(--fs-md);
+    text-align: right;
+    box-sizing: border-box;
+    font-variant-numeric: tabular-nums;
+    color-scheme: dark;
   }
   /* CHASE cluster (T3.3, bracket-removal — relocated verbatim from
      SymbolPanel's shared CHASE/DRAFT row; Svelte scopes `<style>` per

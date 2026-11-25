@@ -119,6 +119,113 @@ export function resolveWingTradingsymbol(parentSymbol, offset) {
 }
 
 /**
+ * Resolve the Chain tab's "hedge leg" strike (Part A, order-entry-time
+ * auto-hedge) — given a parent option leg and a target premium-ratio
+ * %, finds the strike further OTM whose hedge-side price lands
+ * nearest that target among currently-quoted strikes.
+ *
+ * Deliberately a DIFFERENT algorithm from `resolveWingTradingsymbol()`
+ * above — that one is a backward manual-points offset for the deleted
+ * Bracket system's wing leg; this one is a forward-looking,
+ * premium-percent match among currently-quoted strikes, run once at
+ * order-entry time. Never merge the two.
+ *
+ * Direction: for a CE parent, search strikes STRICTLY ABOVE
+ * `parentStrike` (further OTM for a call = higher strike), nearest
+ * first. For a PE parent, search strikes STRICTLY BELOW
+ * `parentStrike`, nearest first.
+ *
+ * Pricing: the hedge leg's own side is the OPPOSITE of the parent
+ * (`parentSide === 'BUY' ? 'SELL' : 'BUY'`) — priced the same way
+ * `addOptionToBasket` prices any leg: a BUY reads `ask` (falling back
+ * to `bid`), a SELL reads `bid` (falling back to `ask`). A candidate
+ * whose resolved price is not a positive number (no real depth-backed
+ * quote) is rejected outright, never treated as a 0%-ratio match.
+ *
+ * Tolerance: `ratio = price / parentPremium * 100` must fall within
+ * `[targetPct * 0.5, targetPct * 1.5]` (inclusive) to be considered at
+ * all. Among candidates within that band, the one whose ratio is
+ * CLOSEST to `targetPct` wins; on an exact tie, the strike visited
+ * first in search order (i.e. nearest to the parent) wins.
+ *
+ * Never silently falls back to a wrong/nearest strike outside
+ * tolerance — any failure mode returns a structured `{ok: false,
+ * reason}` with a human-readable reason instead.
+ *
+ * @param {{
+ *   parentOptType: 'CE'|'PE',
+ *   parentStrike: number,
+ *   parentSide: 'BUY'|'SELL',
+ *   parentPremium: number,
+ *   targetPct: number,
+ *   chainQuotesMap: Record<string, {ce?: {bid?:number|null,ask?:number|null}, pe?: {bid?:number|null,ask?:number|null}}> | null | undefined,
+ * }} args
+ * @returns {{ok: true, strike: number, price: number, ratio: number} | {ok: false, reason: string}}
+ */
+export function resolveHedgeStrike({ parentOptType, parentStrike, parentSide, parentPremium, targetPct, chainQuotesMap }) {
+  if (parentOptType !== 'CE' && parentOptType !== 'PE') {
+    return { ok: false, reason: 'Unrecognised option type for hedge.' };
+  }
+  const pStrike = Number(parentStrike);
+  const premium = Number(parentPremium);
+  const target = Number(targetPct);
+  if (!Number.isFinite(pStrike) || !(premium > 0) || !(target > 0)) {
+    return { ok: false, reason: 'Invalid hedge inputs — need a positive parent premium and target %.' };
+  }
+
+  const keys = (chainQuotesMap && typeof chainQuotesMap === 'object') ? Object.keys(chainQuotesMap) : [];
+  if (!keys.length) {
+    return { ok: false, reason: 'No chain quotes loaded yet.' };
+  }
+
+  const hedgeSide = parentSide === 'BUY' ? 'SELL' : 'BUY';
+  const sideKey = parentOptType === 'CE' ? 'ce' : 'pe';
+
+  /** @type {number[]} */
+  const otmStrikes = [];
+  for (const k of keys) {
+    const strike = Number(k);
+    if (!Number.isFinite(strike)) continue;
+    if (parentOptType === 'CE' ? strike > pStrike : strike < pStrike) otmStrikes.push(strike);
+  }
+  if (!otmStrikes.length) {
+    return { ok: false, reason: `No quoted ${parentOptType} strikes further OTM than ${pStrike}.` };
+  }
+  // Nearest-to-parent first — the tie-break below relies on this order.
+  otmStrikes.sort((a, b) => parentOptType === 'CE' ? a - b : b - a);
+
+  /** @type {Array<{strike:number, price:number}>} */
+  const priced = [];
+  for (const strike of otmStrikes) {
+    const q = chainQuotesMap[String(strike)]?.[sideKey];
+    const price = hedgeSide === 'BUY' ? (q?.ask ?? q?.bid ?? 0) : (q?.bid ?? q?.ask ?? 0);
+    if (Number(price) > 0) priced.push({ strike, price: Number(price) });
+  }
+  if (!priced.length) {
+    return { ok: false, reason: `No further-OTM ${parentOptType} strike has a real depth-backed quote.` };
+  }
+
+  const lo = target * 0.5;
+  const hi = target * 1.5;
+  /** @type {{strike:number, price:number, ratio:number}|null} */
+  let best = null;
+  let bestDist = Infinity;
+  for (const c of priced) {
+    const ratio = (c.price / premium) * 100;
+    if (ratio < lo || ratio > hi) continue;
+    const dist = Math.abs(ratio - target);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = { strike: c.strike, price: c.price, ratio };
+    }
+  }
+  if (!best) {
+    return { ok: false, reason: `No strike priced near ${target}% of premium (checked ${priced.length} candidate${priced.length === 1 ? '' : 's'}).` };
+  }
+  return { ok: true, strike: best.strike, price: best.price, ratio: best.ratio };
+}
+
+/**
  * Is `leg` genuinely CLOSING/reducing an existing live position, rather
  * than opening or adding to one?
  *
