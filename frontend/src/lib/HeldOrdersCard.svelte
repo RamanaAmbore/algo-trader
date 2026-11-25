@@ -8,9 +8,10 @@
   own comment.
 -->
 <script>
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { fetchHeldOrders, releaseHeldOrder, cancelHeldOrder } from '$lib/api';
   import { toast } from '$lib/data/toastStore.svelte.js';
+  import { visibleInterval } from '$lib/stores';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
   import CardHeader from '$lib/CardHeader.svelte';
@@ -20,6 +21,39 @@
 
   let rows = $state(/** @type {any[]} */ ([]));
   let busy = $state(/** @type {Record<string, boolean>} */ ({}));
+
+  // 2026-11-24 fix (audit finding #6, frontend half) — this card used to
+  // load once on mount and never again. An operator had to manually
+  // reload the page to see a newly-staged hold, or to notice one had
+  // auto-released. Polls on the same 30s cadence BrokerHealthBadge.svelte
+  // already uses, via the shared visibleInterval helper (NavCard.svelte's
+  // own load()/stopInterval() convention).
+  /** @type {(() => void) | null} */
+  let stopInterval = null;
+
+  // Per-second clock for the auto-release countdown — same pattern as
+  // ChaseCard.svelte's `_nowSec` (ticks every 1s between the slower data
+  // poll, so the "releases in Xm Ys" text counts down live).
+  let _nowMs = $state(Date.now());
+  /** @type {ReturnType<typeof setInterval> | null} */
+  let _clockTimer = null;
+
+  /** `auto_release_at` is an ISO datetime string (set by hold_record() —
+   *  see order_hold.py), not epoch seconds like ChaseCard's
+   *  `next_attempt_at`, so this parses rather than subtracting directly.
+   *  Returns null when there's nothing to show (absent, unparseable, or
+   *  already past — a released row should just not show a countdown,
+   *  not a confusing negative one). */
+  function _releaseCountdown(/** @type {string | null | undefined} */ autoReleaseAt, /** @type {number} */ nowMs) {
+    if (!autoReleaseAt) return null;
+    const t = Date.parse(autoReleaseAt);
+    if (Number.isNaN(t)) return null;
+    const totalSec = Math.floor((t - nowMs) / 1000);
+    if (totalSec <= 0) return null;
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    return `${m}m ${String(s).padStart(2, '0')}s`;
+  }
 
   function kindOf(row) {
     try {
@@ -34,17 +68,23 @@
       // the 'Expiry close' default below — a real, live category, not a
       // removed one. Give it its own label instead of misreporting it.
       if (h.category === 'agent_close') return 'Profit-target close';
-      return 'Expiry close';
-    } catch {
-      // Item 3 (2026-11-02, PLAN.md) — "Held" → "Pending": a malformed/
-      // unparseable hold record is the one case here with no real
-      // category to label, but it's still a release-pending row, not a
-      // genuine failure — same "Pending" vocabulary as every other
-      // template-exit-hold surface. Distinct from the unrelated
-      // covered-call feature's own "Held" usage, which this does not
-      // touch.
-      return 'Pending';
-    }
+      if (h.category === 'expiry_close') return 'Expiry close';
+      // 2026-11-24 fix (audit finding #19): any OTHER category (missing,
+      // malformed, or a genuinely unrecognized value — e.g. a future
+      // category this card hasn't been taught yet) used to silently fall
+      // through to 'Expiry close', which actively mislabels it as a real,
+      // known kind. Falls through to the neutral 'Pending' below instead
+      // — the same genuinely-unknown label the parse-failure catch branch
+      // already uses, so a category this card doesn't recognize is never
+      // misreported as one it does.
+    } catch { /* fall through to the neutral default below */ }
+    // Item 3 (2026-11-02, PLAN.md) — "Held" → "Pending": a malformed/
+    // unparseable hold record, or any unrecognized category, is still a
+    // release-pending row, not a genuine failure — same "Pending"
+    // vocabulary as every other template-exit-hold surface. Distinct from
+    // the unrelated covered-call feature's own "Held" usage, which this
+    // does not touch.
+    return 'Pending';
   }
 
   // 2026-10 fix: the hold categories previously all rendered with the
@@ -56,7 +96,11 @@
     const kind = kindOf(row);
     if (kind === 'Repeated rejection') return 'held-kind-rejection';
     if (kind === 'Profit-target close') return 'held-kind-agent-close';
-    return 'held-kind-expiry';
+    if (kind === 'Expiry close') return 'held-kind-expiry';
+    // 2026-11-24 fix (audit finding #19): a genuinely unrecognized
+    // category gets the neutral muted styling, not the amber "Expiry
+    // close" treatment — matching kindOf()'s own fallback above.
+    return 'held-kind-pending';
   }
 
   async function load() {
@@ -131,7 +175,15 @@
     await load();
   }
 
-  onMount(() => { load(); });
+  onMount(() => {
+    load();
+    stopInterval = visibleInterval(load, 30_000);
+    _clockTimer = setInterval(() => { _nowMs = Date.now(); }, 1000);
+  });
+  onDestroy(() => {
+    if (stopInterval) stopInterval();
+    if (_clockTimer) clearInterval(_clockTimer);
+  });
 </script>
 
 <ConfirmModal bind:this={confirmRef} />
@@ -157,6 +209,11 @@
           <span class="held-side held-side-{(row.side || '').toLowerCase()}">{row.side}</span>
           {row.qty} {row.symbol} · {row.account}
         </span>
+        {#if _releaseCountdown(row.auto_release_at, _nowMs)}
+          <span class="held-countdown" title="Auto-releases unless cancelled or released first">
+            auto-releases in {_releaseCountdown(row.auto_release_at, _nowMs)}
+          </span>
+        {/if}
         <button type="button" class="held-release"
                 disabled={busy[row.id]}
                 onclick={() => release(row)}>Release</button>
@@ -199,7 +256,17 @@
   .held-kind-expiry    { color: var(--algo-amber); background: var(--algo-amber-bg-strong); padding: 1px 5px; border-radius: 3px; }
   .held-kind-rejection { color: var(--algo-orange); background: color-mix(in srgb, var(--algo-orange) 22%, transparent); padding: 1px 5px; border-radius: 3px; }
   .held-kind-agent-close { color: var(--algo-green); background: var(--algo-green-bg-strong); padding: 1px 5px; border-radius: 3px; }
+  /* 2026-11-24 fix (audit finding #19) — neutral styling for a row this
+     card genuinely doesn't recognize, instead of misreporting it as
+     Expiry close's own amber. The pre-2026-10 undifferentiated color
+     every category used to share, before the per-category tint fix
+     above. */
+  .held-kind-pending   { color: var(--algo-muted); background: color-mix(in srgb, var(--algo-muted) 18%, transparent); padding: 1px 5px; border-radius: 3px; }
   .held-desc { flex: 1; color: var(--algo-slate); }
+  /* 2026-11-24 fix (audit finding #6, frontend half) — muted, not an
+     alert color: an auto-release is the designed, expected outcome of
+     leaving a hold alone, not a problem the operator needs to notice. */
+  .held-countdown { color: var(--algo-muted); font-size: var(--fs-2xs); white-space: nowrap; }
   .held-side { font-weight: 700; }
   .held-side-buy  { color: var(--btn-buy); }
   .held-side-sell { color: var(--btn-sell); }

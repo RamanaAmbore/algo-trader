@@ -549,6 +549,8 @@ class TestClosePositionsReleasePolicyWiring:
 
         with patch("backend.api.algo.expiry._exp_leg_in_flight_this_session", new=_not_in_flight), \
              patch("backend.api.algo.expiry.expiry_close_held", return_value=True), \
+             patch("backend.api.algo.actions_live._al_agent_close_recently_cancelled_this_session",
+                   new=AsyncMock(return_value=False)), \
              patch("backend.api.algo.expiry.record_held_order", new=AsyncMock(return_value=101)) as held_mock:
             await engine.close_positions([pos], release_policy={"after_min": 30, "floor_tier": "high"})
 
@@ -579,6 +581,8 @@ class TestClosePositionsReleasePolicyWiring:
 
         with patch("backend.api.algo.expiry._exp_leg_in_flight_this_session", new=_not_in_flight), \
              patch("backend.api.algo.expiry.expiry_close_held", return_value=True), \
+             patch("backend.api.algo.actions_live._al_agent_close_recently_cancelled_this_session",
+                   new=AsyncMock(return_value=False)), \
              patch("backend.api.algo.expiry.record_held_order", new=AsyncMock()) as held_mock:
             await engine.close_positions([pos], release_policy={})
 
@@ -603,6 +607,8 @@ class TestClosePositionsReleasePolicyWiring:
 
         with patch("backend.api.algo.expiry._exp_leg_in_flight_this_session", new=_not_in_flight), \
              patch("backend.api.algo.expiry.expiry_close_held", return_value=True), \
+             patch("backend.api.algo.actions_live._al_agent_close_recently_cancelled_this_session",
+                   new=AsyncMock(return_value=False)), \
              patch("backend.api.algo.expiry.record_held_order", new=AsyncMock(return_value=101)) as held_mock:
             await engine.close_positions([pos])  # no release_policy
 
@@ -610,6 +616,138 @@ class TestClosePositionsReleasePolicyWiring:
         kwargs = held_mock.await_args.kwargs
         assert kwargs["auto_release_at"] is None
         assert kwargs["price_policy"] == "CHASE_MED"
+
+
+class TestExpiryCloseCancelSuppression:
+    """Audit finding #1 (2026-11-24): an operator-cancelled EXPIRY_CLOSE
+    hold must never be silently re-staged on the engine's next re-fire."""
+
+    @pytest.mark.asyncio
+    async def test_recently_cancelled_leg_is_not_restaged(self):
+        from backend.api.algo.expiry import ExpiryEngine, OptionPosition
+
+        engine = ExpiryEngine(agent_id=42)
+        pos = OptionPosition(
+            account="ZG0790", tradingsymbol="CRUDEOIL26NOV5500CE", exchange="MCX",
+            instrument_type="CE", underlying="CRUDEOIL", strike=5500.0,
+            expiry=date.today(), quantity=1, product="NRML", residual_qty=1,
+        )
+
+        async def _not_in_flight(account, symbol, exchange, side):
+            return False
+
+        cancel_check = AsyncMock(return_value=True)
+        with patch("backend.api.algo.expiry._exp_leg_in_flight_this_session", new=_not_in_flight), \
+             patch("backend.api.algo.expiry.expiry_close_held", return_value=True), \
+             patch("backend.api.algo.actions_live._al_agent_close_recently_cancelled_this_session",
+                   new=cancel_check), \
+             patch("backend.api.algo.expiry.record_held_order", new=AsyncMock()) as held_mock:
+            await engine.close_positions([pos], release_policy={"after_min": 30, "floor_tier": "high"})
+
+        held_mock.assert_not_awaited()
+        cancel_check.assert_awaited_once()
+        call = cancel_check.await_args
+        assert call.args[0] == 42  # agent_id
+        assert call.args[1] == "ZG0790"
+        assert call.args[2] == "CRUDEOIL26NOV5500CE"
+        assert call.args[3] == "MCX"
+        assert call.args[4] == "SELL"
+
+    @pytest.mark.asyncio
+    async def test_lookup_failure_fails_toward_staging(self):
+        """The real `_al_agent_close_recently_cancelled_this_session`
+        already fails toward False (stage it) on any lookup error — this
+        pins that `close_positions()` relies on that contract rather than
+        adding a second, divergent fail-safe direction."""
+        from backend.api.algo.expiry import ExpiryEngine, OptionPosition
+
+        engine = ExpiryEngine(agent_id=42)
+        pos = OptionPosition(
+            account="ZG0790", tradingsymbol="CRUDEOIL26NOV5500CE", exchange="MCX",
+            instrument_type="CE", underlying="CRUDEOIL", strike=5500.0,
+            expiry=date.today(), quantity=1, product="NRML", residual_qty=1,
+        )
+
+        async def _not_in_flight(account, symbol, exchange, side):
+            return False
+
+        async def _boom(*a, **kw):
+            raise RuntimeError("db unreachable")
+
+        with patch("backend.api.algo.expiry._exp_leg_in_flight_this_session", new=_not_in_flight), \
+             patch("backend.api.algo.expiry.expiry_close_held", return_value=True), \
+             patch("backend.api.algo.actions_live._al_agent_close_recently_cancelled_this_session",
+                   new=_boom), \
+             patch("backend.api.algo.expiry.record_held_order", new=AsyncMock(return_value=101)) as held_mock:
+            with pytest.raises(RuntimeError):
+                await engine.close_positions([pos], release_policy={"after_min": 30, "floor_tier": "high"})
+
+        held_mock.assert_not_awaited()
+
+
+class TestExpiryCloseHoldStagingAlert:
+    """Audit finding #6 (backend half, 2026-11-24): EXPIRY_CLOSE staging
+    must send the same action-required alert AGENT_CLOSE already does."""
+
+    @pytest.mark.asyncio
+    async def test_successful_stage_sends_one_alert_per_leg(self):
+        from backend.api.algo.expiry import ExpiryEngine, OptionPosition
+
+        engine = ExpiryEngine(agent_id=42)
+        pos = OptionPosition(
+            account="ZG0790", tradingsymbol="CRUDEOIL26NOV5500CE", exchange="MCX",
+            instrument_type="CE", underlying="CRUDEOIL", strike=5500.0,
+            expiry=date.today(), quantity=1, product="NRML", residual_qty=1,
+        )
+
+        async def _not_in_flight(account, symbol, exchange, side):
+            return False
+
+        alert_mock = AsyncMock()
+        with patch("backend.api.algo.expiry._exp_leg_in_flight_this_session", new=_not_in_flight), \
+             patch("backend.api.algo.expiry.expiry_close_held", return_value=True), \
+             patch("backend.api.algo.actions_live._al_agent_close_recently_cancelled_this_session",
+                   new=AsyncMock(return_value=False)), \
+             patch("backend.api.algo.expiry.record_held_order", new=AsyncMock(return_value=101)), \
+             patch("backend.api.algo.actions_live._al_send_agent_close_hold_alert", new=alert_mock):
+            await engine.close_positions([pos], release_policy={"after_min": 30, "floor_tier": "high"})
+
+        alert_mock.assert_awaited_once()
+        args, kwargs = alert_mock.await_args
+        assert args[0].id == 42  # lightweight agent stand-in carries the real agent_id
+        assert args[1] == 101  # held_row_id
+        assert args[2] == "ZG0790"
+        assert args[3] == "CRUDEOIL26NOV5500CE"
+        assert args[4] == "MCX"
+        assert args[5] == "SELL"
+        assert kwargs["title_prefix"] == "Expiry close held"
+
+    @pytest.mark.asyncio
+    async def test_no_alert_when_record_held_order_returns_none(self):
+        """A failed stage (record_held_order returns None, e.g. a DB
+        write failure) must not fire a staging-succeeded alert."""
+        from backend.api.algo.expiry import ExpiryEngine, OptionPosition
+
+        engine = ExpiryEngine(agent_id=42)
+        pos = OptionPosition(
+            account="ZG0790", tradingsymbol="CRUDEOIL26NOV5500CE", exchange="MCX",
+            instrument_type="CE", underlying="CRUDEOIL", strike=5500.0,
+            expiry=date.today(), quantity=1, product="NRML", residual_qty=1,
+        )
+
+        async def _not_in_flight(account, symbol, exchange, side):
+            return False
+
+        alert_mock = AsyncMock()
+        with patch("backend.api.algo.expiry._exp_leg_in_flight_this_session", new=_not_in_flight), \
+             patch("backend.api.algo.expiry.expiry_close_held", return_value=True), \
+             patch("backend.api.algo.actions_live._al_agent_close_recently_cancelled_this_session",
+                   new=AsyncMock(return_value=False)), \
+             patch("backend.api.algo.expiry.record_held_order", new=AsyncMock(return_value=None)), \
+             patch("backend.api.algo.actions_live._al_send_agent_close_hold_alert", new=alert_mock):
+            await engine.close_positions([pos], release_policy={"after_min": 30, "floor_tier": "high"})
+
+        alert_mock.assert_not_awaited()
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -701,7 +839,7 @@ class TestExpVerifyCancelFailedLeg:
                    new=AsyncMock(return_value=truth)), \
              patch("backend.api.algo.chase.is_chase_active", return_value=False), \
              patch("backend.shared.helpers.alert_utils.send_order_failure_alert") as alert_mock, \
-             patch("backend.api.algo.expiry.logger") as mock_logger:
+             patch("backend.api.algo.order_inflight.logger") as mock_logger:
             still_blocking = await _exp_verify_cancel_failed_leg(row)
 
         assert still_blocking is True
@@ -719,7 +857,7 @@ class TestExpVerifyCancelFailedLeg:
                    new=AsyncMock(return_value=truth)), \
              patch("backend.api.algo.chase.is_chase_active", return_value=True), \
              patch("backend.shared.helpers.alert_utils.send_order_failure_alert") as alert_mock, \
-             patch("backend.api.algo.expiry.logger") as mock_logger:
+             patch("backend.api.algo.order_inflight.logger") as mock_logger:
             still_blocking = await _exp_verify_cancel_failed_leg(row)
 
         assert still_blocking is True
@@ -735,7 +873,7 @@ class TestExpVerifyCancelFailedLeg:
         with patch("backend.api.routes.orders_helpers.get_broker_order_truth",
                    new=AsyncMock(return_value=truth)), \
              patch("backend.shared.helpers.alert_utils.send_order_failure_alert") as alert_mock, \
-             patch("backend.api.algo.expiry.logger") as mock_logger:
+             patch("backend.api.algo.order_inflight.logger") as mock_logger:
             still_blocking = await _exp_verify_cancel_failed_leg(row)
 
         assert still_blocking is True
@@ -767,7 +905,7 @@ class TestExpVerifyCancelFailedLeg:
         row = _make_row()
         with patch("backend.api.routes.orders_helpers.get_broker_order_truth",
                    new=AsyncMock(side_effect=RuntimeError("boom"))), \
-             patch("backend.api.algo.expiry.logger") as mock_logger:
+             patch("backend.api.algo.order_inflight.logger") as mock_logger:
             still_blocking = await _exp_verify_cancel_failed_leg(row)
 
         assert still_blocking is True
@@ -1245,6 +1383,25 @@ class TestExpiryContextShimsCarryNow:
         shim = _v2_expiry_context_shim(context)
         assert shim.now is not None
 
+    def test_both_shims_delegate_to_one_shared_implementation(self):
+        """Audit finding #18 (2026-11-24): the two shims were a
+        byte-identical copy-paste, which is exactly the duplication-
+        drift class that let one copy's `.now` omission go unnoticed
+        while the other was fixed. Both must now delegate to the SAME
+        underlying function, not merely produce the same output."""
+        from backend.api.algo import actions_live, agent_engine
+        from backend.api.algo.expiry_context_shim import expiry_context_shim
+        from unittest.mock import patch
+
+        context = self._representative_context("CRUDEOIL26NOV5500CE")
+        with patch(
+            "backend.api.algo.expiry_context_shim.expiry_context_shim",
+            wraps=expiry_context_shim,
+        ) as shared:
+            actions_live._al_expiry_context_shim(context)
+            agent_engine._v2_expiry_context_shim(context)
+        assert shared.call_count == 2
+
 
 class TestTaskExpiryCheckRetiresEngineRun:
     def test_source_has_no_engine_run_call(self):
@@ -1258,17 +1415,28 @@ class TestTaskExpiryCheckRetiresEngineRun:
             "_task_expiry_check must never call engine.run() — the real "
             "close action is owned exclusively by expiry-day-itm-auto-close"
         )
-        assert "_broadcast_event(\"expiry_day_detected\"" in src, (
-            "the detection broadcast itself is informational-only and "
-            "may stay — only the close ACTION was removed"
-        )
 
-    def test_expiry_day_detected_has_zero_consumers(self):
-        """Confirms the plan's own grep claim stays true: nothing in
-        the backend reads this broadcast event — only the one emit
-        call site in background.py exists. Restricted to real `.py`
-        source files (never `.pyc`/docstring-prose lines that merely
-        MENTION the event name)."""
+    def test_no_broker_call_or_dead_broadcast_remains(self):
+        """Audit finding #16 (2026-11-24): the morning detection scan's
+        own broker round-trip (positions fetch) and its zero-consumer
+        broadcast are both removed now too — not just the close action.
+        Real detection is owned by expiry-day-preclose-alert and the
+        morning-preview agents, which never need a second broker call."""
+        import inspect
+        from backend.api import background as bg
+        src = inspect.getsource(bg._task_expiry_check)
+        assert "engine = ExpiryEngine" not in src, (
+            "_task_expiry_check must no longer construct an ExpiryEngine at all "
+            "(the docstring's own historical mention of the OLD call shape, in "
+            "prose, is fine and deliberately not checked here)"
+        )
+        assert "_fetch_option_positions" not in src
+        assert "_broadcast_event" not in src
+
+    def test_expiry_day_detected_event_has_no_remaining_emit_call_site(self):
+        """Confirms the broadcast itself is gone, not merely unread —
+        the plan's own prior grep claim (exactly one emit call site, in
+        background.py) is now superseded: there are zero."""
         import subprocess
         repo_root = __file__.rsplit("/backend/", 1)[0]
         result = subprocess.run(
@@ -1277,8 +1445,7 @@ class TestTaskExpiryCheckRetiresEngineRun:
             cwd=repo_root, capture_output=True, text=True,
         )
         lines = [l for l in result.stdout.splitlines() if l.strip()]
-        assert len(lines) == 1, f"expected exactly one emit call site, got: {lines}"
-        assert "backend/api/background.py" in lines[0]
+        assert lines == [], f"expected zero emit call sites, got: {lines}"
 
         # And confirm no consumer reads it back out (WS/event-handler
         # style lookup) anywhere else in the backend or frontend.

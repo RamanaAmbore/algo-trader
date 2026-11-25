@@ -10,17 +10,11 @@
  * submit paths (OrderTicket.svelte's single-leg path, SymbolPanel.svelte's
  * submitBasket()) explicitly `return` before any chase/broker call — so
  * this was never a real broker/chase invocation. Two real presentation
- * defects, fixed here, source-grep only (no live render needed for a pure
- * template-condition / string-literal regression guard):
+ * defects were fixed then:
  *
- * 1. The CHASE cluster (toggle + aggressiveness picker) in SymbolPanel's
- *    shared CHASE/BRACKET/DRAFT row stayed visually present — merely
- *    greyed/non-interactive — while Draft mode was on, instead of
- *    disappearing. A draft never reaches chase, so there is nothing for
- *    it to show. Now hidden entirely via `{#if _chaseEnabled &&
- *    !_sharedDraftMode}`. BRACKET deliberately keeps its own grey-not-hide
- *    treatment (coordinator: "no brackets in draft mode") — untouched,
- *    out of scope for this fix.
+ * 1. (SUPERSEDED 2026-11-24, see below.) The CHASE cluster was first made
+ *    to disappear entirely (`{#if _chaseEnabled && !_sharedDraftMode}`)
+ *    instead of staying greyed/non-interactive.
  * 2. The shared `.oes-common-submit` button (the one real submit button —
  *    OrderTicket's own internal footer is always suppressed via
  *    `actionsHidden` at the real SymbolPanel mount) read "Add to Payoff"
@@ -39,6 +33,22 @@
  * instead of a bare "Submit". A multi-leg basket keeps the pre-existing
  * plain "Submit" (2026-09-30 operator decision, unrelated to Draft) since
  * there is no one coherent side to format across mixed-side legs.
+ *
+ * 2026-11-24 — reversal of item 1 above (operator: "when draft mode
+ * selected keep chase protected without hiding it completely... so draft
+ * does not shift to left when chase is hidden"). Fully removing the CHASE
+ * cluster made every control after it in the shared CHASE/DRAFT row
+ * reflow/shift left each time Draft was toggled. The cluster now always
+ * renders whenever chase would otherwise apply (stable row width), and
+ * while Draft is on it is "protected" instead: deselected, greyed
+ * (`.oes-chase-protected`, opacity + pointer-events:none) and
+ * non-interactive (no info-panel click, `tabindex=-1`, `aria-disabled`).
+ * This also makes BRACKET's former grey-not-hide-while-draft precedent
+ * moot for this file — BRACKET itself was removed entirely in the
+ * Bracket/Template/GTT removal (T3.1–T3.4, 2026-11), so there is nothing
+ * left here for CHASE's new protected treatment to be "the exception"
+ * against; CHASE is simply the one remaining cluster that now follows
+ * that same deselected-but-present convention on its own.
  */
 
 import { test, expect } from '@playwright/test';
@@ -50,22 +60,32 @@ const SYMBOL_PANEL_PATH = path.resolve(
   '../src/lib/SymbolPanel.svelte',
 );
 
-test.describe('CHASE cluster hidden (not just greyed) while Draft mode is on', () => {
-  test('CHASE cluster render condition excludes draft mode', () => {
+test.describe('CHASE cluster stays rendered (protected, not hidden) while Draft mode is on', () => {
+  test('CHASE cluster render condition no longer excludes draft mode — only chain tab / chase-disabled', () => {
     const src = readFileSync(SYMBOL_PANEL_PATH, 'utf8');
-    expect(src).toMatch(/\{#if _chaseEnabled && !_sharedDraftMode\}/);
+    expect(src).toMatch(/\{#if _chaseEnabled && _activeTab !== 'chain'\}/);
+    expect(src).not.toMatch(/\{#if _chaseEnabled && !_sharedDraftMode\}/);
   });
 
-  test('CHASE cluster no longer carries the grey/disabled-while-draft class — it is gone, not styled', () => {
+  test('the cluster carries a protected/greyed class while draft is on, not full removal', () => {
     const src = readFileSync(SYMBOL_PANEL_PATH, 'utf8');
-    const clusterBlock = src.match(/\{#if _chaseEnabled && !_sharedDraftMode\}([\s\S]*?)\{\/if\}/)?.[1] ?? '';
-    expect(clusterBlock).not.toContain('oes-ctl-cluster-disabled');
-    expect(clusterBlock).not.toContain('_sharedDraftMode');
+    expect(src).toMatch(/class="oes-chase-cluster"\s+class:oes-chase-protected=\{_sharedDraftMode\}/);
   });
 
-  test('BRACKET keeps its own separate grey-while-draft treatment — not touched by this fix', () => {
+  test('CHASE label deselects (.on removed) and becomes non-interactive while draft is on', () => {
     const src = readFileSync(SYMBOL_PANEL_PATH, 'utf8');
-    expect(src).toMatch(/oes-bracket-cluster[\s\S]{0,40}class:oes-ctl-cluster-disabled=\{_sharedDraftMode\}/);
+    const clusterBlock = src.match(/\{#if _chaseEnabled && _activeTab !== 'chain'\}([\s\S]*?)\n        \{\/if\}/)?.[1] ?? '';
+    expect(clusterBlock).toMatch(/class:on=\{!_sharedDraftMode\}/);
+    expect(clusterBlock).toMatch(/tabindex=\{_sharedDraftMode \? -1 : 0\}/);
+    expect(clusterBlock).toMatch(/aria-disabled=\{_sharedDraftMode\}/);
+    expect(clusterBlock).toMatch(/if \(!_sharedDraftMode\) _chaseInfoOpen/);
+  });
+
+  test('.oes-chase-protected greys out and disables pointer interaction', () => {
+    const src = readFileSync(SYMBOL_PANEL_PATH, 'utf8');
+    const ruleBlock = src.match(/\.oes-chase-protected\s*\{([\s\S]*?)\}/)?.[1] ?? '';
+    expect(ruleBlock).toMatch(/opacity:\s*0\.4/);
+    expect(ruleBlock).toMatch(/pointer-events:\s*none/);
   });
 });
 

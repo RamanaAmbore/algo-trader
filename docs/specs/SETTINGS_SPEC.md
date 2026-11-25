@@ -126,16 +126,18 @@ Master trading-mode flags (live-order gatekeeping, not per-agent overrides).
 | execution.default_agent_trade_mode | STRING | "paper" | Default trade mode for newly-created agents: "paper" or "live". Applied once at creation time; changing this does NOT retroactively affect existing agents. |
 
 ### hold.*
-Order hold gates for expiry-close automation (tunable via Global Switches
+Order hold gate for expiry-close automation (tunable via Global Switches
 panel). A second gate for template-exit automation existed here until
 T3.6 (Bracket/Template/GTT removal, 2026-11) — see the "Amended 2026-11"
-note below.
+note below. `hold.lead_minutes_nfo`/`hold.lead_minutes_mcx` existed here
+until 2026-11-24 (audit finding #17) — their one reader,
+`order_hold_gate.py:cutoff_for()`/`before_cutoff()`, had zero live
+callers and was removed in the same commit, along with the two settings
+and their `/admin/settings` panel fields.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
 | hold.expiry_close_released | BOOL | false | Release automated expiry closes. False = closes are held for review (operator must click Release on the held-orders card). |
-| hold.lead_minutes_nfo | INT | 15 | Minutes before the NFO close at which expiry closes are created. Valid range: 0–120 min. |
-| hold.lead_minutes_mcx | INT | 30 | Minutes before the MCX close at which expiry closes are created. Valid range: 0–180 min. |
 
 ### cap_in_dev
 Capability flag overrides for development/testing only. **Dict structure** (not string).
@@ -209,15 +211,13 @@ next read falls back to YAML.
 
 **`GET /api/admin/global-switches`** (requires `view_settings_readonly` capability)
 
-Fetch the current values of all five global switches. Response:
+Fetch the current values of all three global switches. Response:
 
 ```json
 {
   "paper_trading_mode": false,
   "default_agent_trade_mode": "paper",
-  "expiry_close_hold_enabled": true,
-  "expiry_close_lead_minutes_mcx": 30,
-  "expiry_close_lead_minutes_nfo": 15
+  "expiry_close_hold_enabled": true
 }
 ```
 
@@ -229,11 +229,14 @@ Update one or more switches. Request body (all fields optional):
 {
   "paper_trading_mode": true,
   "default_agent_trade_mode": "live",
-  "expiry_close_hold_enabled": false,
-  "expiry_close_lead_minutes_mcx": 30,
-  "expiry_close_lead_minutes_nfo": 15
+  "expiry_close_hold_enabled": false
 }
 ```
+
+An unknown field (e.g. a stale browser tab still sending a removed field
+such as `expiry_close_lead_minutes_mcx`) is silently dropped on decode —
+never a 500/422 — and any other real field in the same request is still
+processed normally.
 
 Only changes (old ≠ new) are written to the DB. Every write is audited in a 
 single transaction: the `Setting` row update and an `audit_log` row are 
@@ -254,8 +257,14 @@ so the inversion logic is never hand-copied.
 and its storage key `hold.template_exit_released` are removed — `order_hold_gate.py:
 template_exit_held()`, the only function that ever read that key, was removed in T3.1
 along with `template_attach.py`. The shared inversion helper now handles one bool
-(`expiry_close_hold_enabled`), not two. `GlobalSwitchesRequest`/`Response` are five
-fields, one inverted bool — see the JSON examples above, already updated to match.
+(`expiry_close_hold_enabled`), not two.
+
+**Amended 2026-11-24 (audit finding #17)**: `expiry_close_lead_minutes_mcx`/
+`expiry_close_lead_minutes_nfo` are removed — their one reader,
+`order_hold_gate.py:cutoff_for()`/`before_cutoff()`, had zero live callers and was
+removed in the same commit, along with the two settings and the panel's numeric
+inputs. `GlobalSwitchesRequest`/`Response` are now three fields, one inverted
+bool — see the JSON examples above, already updated to match.
 
 ---
 
@@ -265,7 +274,7 @@ fields, one inverted bool — see the JSON examples above, already updated to ma
 
 **Global Switches panel** (top of page, pinned card):
 
-Five rows (in order):
+Three rows (in order):
 1. `paper_trading_mode`: green "PAPER" / red "LIVE" chip, "Flip to X" button.
    Confirm-gated: opening the danger modal shows "⚠ Affects every account,
    prod-wide — flips real-money execution".
@@ -277,15 +286,11 @@ Five rows (in order):
    Flipping to AUTO opens a danger confirm: "Disable expiry-close hold?" with
    warning "⚠ Expiry closes will fire automatically with no review". Flipping
    back to HELD needs no confirm.
-4. `expiry_close_lead_minutes_mcx`: numeric input field, 0–180 min. Minutes
-   before MCX close at which an expiry-close hold is created. Client-side
-   validation: integers only; empty string rejected with toast error "Lead must
-   be 0–180 min"; field reverts on rejection.
-5. `expiry_close_lead_minutes_nfo`: numeric input field, 0–120 min. Minutes
-   before NFO close at which an expiry-close hold is created. Same validation
-   pattern with error message "Lead must be 0–120 min".
 
-*(A sixth row, `template_exit_hold_enabled`, was removed along with the rest of the
+*(A fourth and fifth row, `expiry_close_lead_minutes_mcx`/`_nfo`, were removed
+2026-11-24 (audit finding #17) — their one backend reader,
+`order_hold_gate.py:cutoff_for()`/`before_cutoff()`, had zero live callers.
+A sixth row, `template_exit_hold_enabled`, was removed along with the rest of the
 Bracket/Template/GTT system — T3.6, 2026-11. It used to show a `HELD`/`AUTO` chip +
 button controlling whether template/bracket exit GTTs were created-and-held vs.
 attached automatically on parent fill. `template_attach.py`, the only consumer of

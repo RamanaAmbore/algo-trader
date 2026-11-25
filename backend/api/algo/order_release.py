@@ -256,13 +256,108 @@ async def _verify_close_still_valid(
     )
 
 
+async def _release_settle_flat(s, row, order_id: int, actor: str) -> dict:
+    """Auto-resolve a HELD row whose position is confirmed genuinely flat.
+
+    2026-11-24 fix (audit finding #12): `position_matches` returns the
+    identical "not ok" shape whether the account is genuinely flat
+    (net==0 — settled/closed by some other path) or merely
+    mismatched-but-nonzero (ambiguous — keep retrying). This distinguishes
+    "nothing left to close, done" from "still unclear" so a settled-flat
+    row stops being retried forever, with one alert only.
+
+    Known, accepted interaction: marking the row CANCELLED makes it match
+    `_al_agent_close_recently_cancelled_this_session`'s discriminator
+    (status=='CANCELLED' AND broker_order_id==''), the same shape an
+    explicit operator cancel leaves. A leg that settles flat then
+    genuinely re-opens a position later the SAME session would have a
+    fresh restage suppressed as if the operator had cancelled it — rare,
+    and strictly better than retrying a confirmed-dead row forever.
+    """
+    row.status = "CANCELLED"
+    row.hold_json = None
+    row.detail = (
+        f"{row.detail or ''} · auto-resolved by auto-release at "
+        f"{datetime.now(timezone.utc).isoformat()}: position "
+        f"already flat/settled — nothing to close"
+    )
+    await s.commit()
+    from backend.api.algo.order_events import write_event
+    await write_event(
+        order_id, "released",
+        f"Auto-resolved: {row.symbol} position already flat/"
+        f"settled — hold closed, nothing to close",
+        {"actor": actor, "reason": "settled_flat"},
+    )
+    logger.info(
+        f"[RELEASE] order {order_id} ({row.symbol}, {row.account}) "
+        f"auto-resolved — position already flat/settled"
+    )
+    return {
+        "ok": False, "status": "CANCELLED",
+        "reason": "position already flat/settled — hold resolved",
+    }
+
+
+async def _release_verify_position(s, row, order_id: int, actor: str) -> "dict | None":
+    """Re-check the live position for a HELD close-intent row.
+
+    Returns an early-return result dict when release must stop here
+    (data unreliable, position mismatched, or settled-flat auto-resolve).
+    Returns None when the position check passed and release should proceed.
+    """
+    # Normalised fetch (contracts, not raw Kite lots for MCX/NCO) — see
+    # `_positions_net_rows_from_dfs`'s docstring for why a raw
+    # `broker.positions()` call must never feed this comparison.
+    from backend.brokers import broker_apis
+    pos_dfs = await asyncio.get_running_loop().run_in_executor(
+        None, lambda: broker_apis.fetch_positions(account=row.account))
+    if _positions_data_unreliable(pos_dfs):
+        return {
+            "ok": False,
+            "reason": "position check failed: positions data stale or unavailable",
+            "status": "HELD",
+        }
+    positions = {"net": _positions_net_rows_from_dfs(pos_dfs)}
+    net = _find_net_qty(positions, row.symbol, row.exchange)
+    ok, why = position_matches(row.transaction_type, int(row.quantity), net or 0)
+    if ok:
+        return None
+    # `_positions_data_unreliable` already ran above and returned before
+    # this point on a degraded/stale fetch — this branch only runs on a
+    # CONFIRMED-fresh read, so a genuinely-stale "0" can never masquerade
+    # as settled.
+    if (net or 0) == 0:
+        return await _release_settle_flat(s, row, order_id, actor)
+    return {"ok": False, "reason": why, "status": "HELD"}
+
+
+async def _release_verify_price(broker, row) -> "tuple[bool, float | None, str]":
+    """Fetch a fresh quote and run it through the release-price check."""
+    from backend.api.routes.orders_helpers import _ensure_tick_index, _TICK_INDEX
+
+    key = f"{row.exchange}:{row.symbol}"
+    quote = (await asyncio.get_running_loop().run_in_executor(
+        None, broker.quote, [key])) or {}
+    q = quote.get(key) or {}
+    depth = q.get("depth") or {}
+    bid = (depth.get("buy") or [{}])[0].get("price")
+    ask = (depth.get("sell") or [{}])[0].get("price")
+    await _ensure_tick_index()
+    tick = _TICK_INDEX.get((row.exchange.upper(), row.symbol.upper()), 0.0)
+    return release_price(
+        bid, ask, q.get("last_price"), tick,
+        float(q.get("lower_circuit_limit") or 0),
+        float(q.get("upper_circuit_limit") or 0) or 1e12,
+    )
+
+
 async def release_held_order(order_id: int, actor: str) -> dict:
     """Return {'ok': bool, 'reason': str, 'status': str}. Sends and chases only when all checks pass."""
     from backend.api.database import async_session
     from backend.api.models import AlgoOrder
     from sqlalchemy import select
     from backend.brokers import get_broker
-    from backend.api.routes.orders_helpers import _ensure_tick_index, _TICK_INDEX
 
     async with async_session() as s:
         row = (await s.execute(select(AlgoOrder).where(AlgoOrder.id == order_id)
@@ -275,38 +370,11 @@ async def release_held_order(order_id: int, actor: str) -> dict:
 
         try:
             broker = get_broker(row.account)
-            # Normalised fetch (contracts, not raw Kite lots for MCX/NCO) —
-            # see `_positions_net_rows_from_dfs`'s docstring for why a raw
-            # `broker.positions()` call must never feed this comparison.
-            from backend.brokers import broker_apis
-            pos_dfs = await asyncio.get_running_loop().run_in_executor(
-                None, lambda: broker_apis.fetch_positions(account=row.account))
-            if _positions_data_unreliable(pos_dfs):
-                return {
-                    "ok": False,
-                    "reason": "position check failed: positions data stale or unavailable",
-                    "status": "HELD",
-                }
-            positions = {"net": _positions_net_rows_from_dfs(pos_dfs)}
-            net = _find_net_qty(positions, row.symbol, row.exchange)
-            ok, why = position_matches(row.transaction_type, int(row.quantity), net or 0)
-            if not ok:
-                return {"ok": False, "reason": why, "status": "HELD"}
+            pos_result = await _release_verify_position(s, row, order_id, actor)
+            if pos_result is not None:
+                return pos_result
 
-            key = f"{row.exchange}:{row.symbol}"
-            quote = (await asyncio.get_running_loop().run_in_executor(
-                None, broker.quote, [key])) or {}
-            q = quote.get(key) or {}
-            depth = q.get("depth") or {}
-            bid = (depth.get("buy") or [{}])[0].get("price")
-            ask = (depth.get("sell") or [{}])[0].get("price")
-            await _ensure_tick_index()
-            tick = _TICK_INDEX.get((row.exchange.upper(), row.symbol.upper()), 0.0)
-            ok, price, why = release_price(
-                bid, ask, q.get("last_price"), tick,
-                float(q.get("lower_circuit_limit") or 0),
-                float(q.get("upper_circuit_limit") or 0) or 1e12,
-            )
+            ok, price, why = await _release_verify_price(broker, row)
             if not ok:
                 return {"ok": False, "reason": f"price check failed: {why}", "status": "HELD"}
         except Exception as e:

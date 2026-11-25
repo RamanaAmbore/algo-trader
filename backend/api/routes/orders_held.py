@@ -14,6 +14,7 @@ class HeldOrdersController(Controller):
         from sqlalchemy import select
         from backend.api.database import async_session
         from backend.api.models import AlgoOrder
+        from backend.api.algo.order_hold import parse_hold_record
         from sqlalchemy import or_
         async with async_session() as s:
             rows = (await s.execute(
@@ -31,13 +32,27 @@ class HeldOrdersController(Controller):
             do_mask = not is_admin_request(request)
             masked_acct = mask_account if do_mask else (lambda a: a)
             masked_text = mask_account_in_text if do_mask else (lambda t: t)
-            return {"held": [
-                {"id": r.id, "account": masked_acct(r.account), "symbol": r.symbol,
-                 "exchange": r.exchange, "side": r.transaction_type,
-                 "qty": int(r.quantity), "product": r.product,
-                 "hold": masked_text(r.hold_json or "")}
-                for r in rows
-            ]}
+            out = []
+            for r in rows:
+                # `status` and `auto_release_at` surfaced as first-class
+                # fields (2026-11-24, audit finding #6 frontend half) —
+                # `auto_release_at` already lived inside `hold_json` (set
+                # by `hold_record()`), the frontend previously had to
+                # parse the raw `hold` string itself to find it, same as
+                # `kindOf()` already does for `category`. A malformed/
+                # unparseable `hold_json` yields `auto_release_at: None`,
+                # never a 500 — matches this route's existing fail-open
+                # convention (a row with no real category still lists).
+                rec = parse_hold_record(r.hold_json) or {}
+                out.append({
+                    "id": r.id, "account": masked_acct(r.account), "symbol": r.symbol,
+                    "exchange": r.exchange, "side": r.transaction_type,
+                    "qty": int(r.quantity), "product": r.product,
+                    "hold": masked_text(r.hold_json or ""),
+                    "status": r.status,
+                    "auto_release_at": rec.get("auto_release_at"),
+                })
+            return {"held": out}
 
     @post("/{order_id:int}/release", guards=[admin_guard])
     async def release(self, order_id: int) -> dict:

@@ -3,12 +3,12 @@
 // an explicit danger-styled warning + ConfirmModal gate. default_agent_trade_mode
 // is a softer per-create default, saved directly via Select.
 //
-// 2026-10: four previously-unexposed GlobalSwitchesResponse fields get their
+// 2026-10: previously-unexposed GlobalSwitchesResponse fields got their
 // first UI here — expiry_close_hold_enabled / template_exit_hold_enabled
 // (review-hold booleans, danger-confirm-gated on the OFF/"auto" direction,
-// same treatment as paper_trading_mode) and expiry_close_lead_minutes_mcx/nfo
-// (numeric lead-time inputs). Source-level guards read the real page source +
-// api.js wrapper; the live-browser block drives the actual DOM.
+// same treatment as paper_trading_mode). Source-level guards read the real
+// page source + api.js wrapper; the live-browser block drives the actual
+// DOM.
 //
 // 2026-11 (Track 3, T3.4, Bracket/Template/GTT removal): the
 // template_exit_hold_enabled toggle was removed from this page — the
@@ -18,6 +18,12 @@
 // field itself is untouched (backend out of scope for this frontend-only
 // sub-sprint). expiry_close_hold_enabled is a DIFFERENT, still-live toggle
 // (HoldCategory.EXPIRY_CLOSE) and is unaffected.
+//
+// 2026-11-24 (audit finding #17): expiry_close_lead_minutes_mcx/nfo (the
+// numeric lead-time inputs) were removed entirely — their one backend
+// reader, order_hold_gate.py:cutoff_for()/before_cutoff(), had zero live
+// callers and was removed in the same commit. Both the panel's handlers
+// and the tests that covered them are gone.
 
 import { test, expect } from '@playwright/test';
 import { readFileSync } from 'fs';
@@ -91,13 +97,13 @@ test.describe('admin/settings — Global Switches panel', () => {
     expect(pageSrc).toMatch(/const updated = await updateGlobalSwitches\(\{ paper_trading_mode: next \}\);\s*\n\s*globalSwitches = updated;/);
   });
 
-  // ── Expiry-close / template-exit hold rows (2026-10) ────────────────
-  // Four previously-unexposed GlobalSwitchesResponse fields finally get a
-  // UI: two review-hold booleans (danger-confirm-gated on the OFF/auto
-  // direction, same as paper_trading_mode) and two MCX/NFO lead-time
-  // numeric inputs. The human-readable label is the primary visible text
-  // (not the raw snake_case key) — the key is kept as small secondary
-  // mono text, matching the task's "operator confusion" complaint.
+  // ── Expiry-close hold row (2026-10; lead-time inputs removed 2026-11-24,
+  // finding #17) ──────────────────────────────────────────────────────
+  // A review-hold boolean, danger-confirm-gated on the OFF/auto
+  // direction, same as paper_trading_mode. The human-readable label is
+  // the primary visible text (not the raw snake_case key) — the key is
+  // kept as small secondary mono text, matching the task's "operator
+  // confusion" complaint.
 
   test('expiry_close_hold_enabled row has an operator-facing label, a Held/Auto pill, and a flip button', () => {
     expect(pageSrc).toMatch(/<span>Hold expiry-close orders for review<\/span>/);
@@ -132,36 +138,18 @@ test.describe('admin/settings — Global Switches panel', () => {
     expect(expiryFn).toMatch(/await load\(\);/);
   });
 
-  test('lead-time save handlers reject empty/out-of-range input instead of silently PATCHing 0', () => {
-    expect(pageSrc).toMatch(/function _validLeadMinutes\(/);
-    expect(pageSrc).toMatch(/if \(raw === '' \|\| raw == null\) return null;/);
-    expect(pageSrc).toMatch(/if \(!Number\.isInteger\(n\) \|\| n < 0 \|\| n > max\) return null;/);
+  // Lead-time save-handler and numeric-input tests removed (2026-11-24,
+  // audit finding #17) — the feature they covered no longer exists.
 
-    const mcxFn = pageSrc.slice(
-      pageSrc.indexOf('async function saveExpiryCloseLeadMcx('),
-      pageSrc.indexOf('async function saveExpiryCloseLeadNfo(')
-    );
-    expect(mcxFn).toMatch(/_validLeadMinutes\(el\.value, 180\)/);
-    expect(mcxFn).toMatch(/if \(n == null\) \{/);
-    expect(mcxFn).toMatch(/el\.value = String\(globalSwitches\?\.expiry_close_lead_minutes_mcx \?\? 30\);/);
-    expect(mcxFn).toMatch(/await updateGlobalSwitches\(\{ expiry_close_lead_minutes_mcx: n \}\);/);
-  });
-
-  test('expiry_close_lead_minutes_mcx renders a 0-180 numeric input with an operator-facing label', () => {
-    expect(pageSrc).toMatch(/<span>MCX expiry-close lead time \(minutes\)<\/span>/);
-    expect(pageSrc).toMatch(/font-mono text-\[length:var\(--fs-2xs\)\] opacity-50">expiry_close_lead_minutes_mcx</);
-    expect(pageSrc).toMatch(/aria-label="MCX expiry-close lead time \(minutes\)"/);
-    expect(pageSrc).toMatch(/min=\{0\} max=\{180\} step=\{1\}/);
-    expect(pageSrc).toMatch(/onchange=\{\(e\) => saveExpiryCloseLeadMcx\(e\.currentTarget\)\}/);
-  });
-
-  test('expiry_close_lead_minutes_nfo renders a 0-120 numeric input with an operator-facing label', () => {
-    expect(pageSrc).toMatch(/<span>NFO expiry-close lead time \(minutes\)<\/span>/);
-    expect(pageSrc).toMatch(/font-mono text-\[length:var\(--fs-2xs\)\] opacity-50">expiry_close_lead_minutes_nfo</);
-    expect(pageSrc).toMatch(/aria-label="NFO expiry-close lead time \(minutes\)"/);
-    expect(pageSrc).toMatch(/min=\{0\} max=\{120\} step=\{1\}/);
-    expect(pageSrc).toMatch(/onchange=\{\(e\) => saveExpiryCloseLeadNfo\(e\.currentTarget\)\}/);
-    expect(pageSrc).toMatch(/await updateGlobalSwitches\(\{ expiry_close_lead_minutes_nfo: n \}\);/);
+  test('expiry_close_lead_minutes_mcx/nfo are gone from the page source', () => {
+    // Matches real code usage only (bound attribute, function definition) —
+    // not the explanatory removal comments this file's own source carries,
+    // which legitimately still mention these retired names by string.
+    expect(pageSrc).not.toMatch(/value=\{globalSwitches\?\.expiry_close_lead_minutes_mcx/);
+    expect(pageSrc).not.toMatch(/value=\{globalSwitches\?\.expiry_close_lead_minutes_nfo/);
+    expect(pageSrc).not.toMatch(/function _validLeadMinutes\(/);
+    expect(pageSrc).not.toMatch(/async function saveExpiryCloseLeadMcx\(/);
+    expect(pageSrc).not.toMatch(/async function saveExpiryCloseLeadNfo\(/);
   });
 });
 
@@ -177,8 +165,8 @@ test.describe('admin/settings — Global Switches panel (live browser)', () => {
     // template_exit_hold_enabled removed from the frontend panel (2026-11
     // T3.4) — the backend may still return it in the real response, but
     // the mock no longer needs to carry it since nothing reads it.
-    expiry_close_lead_minutes_mcx: 30,
-    expiry_close_lead_minutes_nfo: 15,
+    // expiry_close_lead_minutes_mcx/nfo removed from the mock (2026-11-24,
+    // audit finding #17) — the backend no longer returns these fields.
   };
 
   /** Skips the test if the logged-in user lacks manage_settings — the page
@@ -277,49 +265,19 @@ test.describe('admin/settings — Global Switches panel (live browser)', () => {
     expect(patches[0]).toEqual({ expiry_close_hold_enabled: true });
   });
 
-  test('numeric lead-time inputs accept an in-range value and PATCH it', async ({ page }) => {
+  // Lead-time live-DOM tests removed (2026-11-24, audit finding #17) —
+  // the numeric inputs they drove no longer exist on the page.
+
+  test('MCX/NFO expiry-close lead-time inputs are gone from the live page', async ({ page }) => {
     const { token } = await loginAsAdmin(page);
     await skipUnlessCanManageSettings(page, token);
 
-    /** @type {any[]} */
-    const patches = [];
-    await mockGlobalSwitches(page, patches);
-
+    await mockGlobalSwitches(page, []);
     await page.goto('/admin/settings');
-    const mcxInput = page.getByLabel('MCX expiry-close lead time (minutes)');
-    await mcxInput.waitFor({ state: 'visible', timeout: 15000 });
-    await mcxInput.fill('45');
-    await mcxInput.blur();
+    await page.locator('.settings-row', { hasText: 'Hold expiry-close orders for review' })
+      .waitFor({ state: 'visible', timeout: 15000 });
 
-    await expect.poll(() => patches.length).toBe(1);
-    expect(patches[0]).toEqual({ expiry_close_lead_minutes_mcx: 45 });
-    await expect(mcxInput).toHaveValue('45');
-
-    const nfoInput = page.getByLabel('NFO expiry-close lead time (minutes)');
-    await nfoInput.fill('20');
-    await nfoInput.blur();
-    await expect.poll(() => patches.length).toBe(2);
-    expect(patches[1]).toEqual({ expiry_close_lead_minutes_nfo: 20 });
-  });
-
-  test('clearing a lead-time input sends no PATCH and resets to the last-known value', async ({ page }) => {
-    const { token } = await loginAsAdmin(page);
-    await skipUnlessCanManageSettings(page, token);
-
-    /** @type {any[]} */
-    const patches = [];
-    await mockGlobalSwitches(page, patches);
-
-    await page.goto('/admin/settings');
-    const mcxInput = page.getByLabel('MCX expiry-close lead time (minutes)');
-    await mcxInput.waitFor({ state: 'visible', timeout: 15000 });
-    await mcxInput.fill('');
-    await mcxInput.blur();
-
-    // No PATCH for the empty/invalid entry — Number('') would be 0, which
-    // must never be silently written as a real lead-time value.
-    await page.waitForTimeout(500);
-    expect(patches.length).toBe(0);
-    await expect(mcxInput).toHaveValue('30');
+    await expect(page.getByLabel('MCX expiry-close lead time (minutes)')).toHaveCount(0);
+    await expect(page.getByLabel('NFO expiry-close lead time (minutes)')).toHaveCount(0);
   });
 });

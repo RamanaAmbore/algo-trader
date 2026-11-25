@@ -226,6 +226,61 @@ async def test_release_mcx_expiry_close_succeeds_when_broker_shows_more_than_the
 
 
 @pytest.mark.asyncio
+async def test_release_settled_flat_position_auto_resolves_to_cancelled():
+    """Audit finding #12 (2026-11-24): a HELD row whose position has
+    already settled flat (net==0, confirmed via a FRESH, non-degraded
+    fetch) must stop retrying forever — it resolves to a terminal
+    CANCELLED status, clears hold_json, and writes an order_event,
+    instead of looping at {"ok": False, "status": "HELD"} every poll."""
+    from backend.api.algo import order_release as m
+
+    row = _held_expiry_row()
+    mock_session = _mock_session(row)
+    frame = _mcx_positions_frame(quantity_lots=0, multiplier=100)
+    mock_broker = MagicMock()
+
+    with patch("backend.api.database.async_session", return_value=mock_session), \
+         patch("backend.brokers.get_broker", return_value=mock_broker), \
+         patch("backend.brokers.broker_apis.fetch_positions", return_value=[frame]), \
+         patch("backend.api.algo.order_events.write_event",
+               new_callable=AsyncMock) as mock_write:
+        result = await m.release_held_order(501, actor="auto-release")
+
+    assert result["ok"] is False
+    assert result["status"] == "CANCELLED"
+    assert row.status == "CANCELLED"
+    assert row.hold_json is None
+    mock_write.assert_called_once()
+    assert mock_write.call_args.args[1] == "released"
+    mock_broker.quote.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_release_ambiguous_nonzero_mismatch_still_retries_forever_unchanged():
+    """The OTHER side of finding #12: a non-zero but mismatched net
+    (ambiguous, not confirmed flat) must keep its pre-fix behaviour —
+    stays HELD, retried next sweep, no CANCELLED transition."""
+    from backend.api.algo import order_release as m
+
+    row = _held_expiry_row()
+    mock_session = _mock_session(row)
+    frame = _mcx_positions_frame(quantity_lots=-1, multiplier=100)
+    mock_broker = MagicMock()
+
+    with patch("backend.api.database.async_session", return_value=mock_session), \
+         patch("backend.brokers.get_broker", return_value=mock_broker), \
+         patch("backend.brokers.broker_apis.fetch_positions", return_value=[frame]), \
+         patch("backend.api.algo.order_events.write_event",
+               new_callable=AsyncMock) as mock_write:
+        result = await m.release_held_order(501, actor="auto-release")
+
+    assert result["status"] == "HELD"
+    assert row.status == "HELD"
+    assert row.hold_json == "{}"  # unchanged
+    mock_write.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_release_refuses_when_positions_data_is_stale():
     """A degraded/substituted positions read must fail closed instead of
     comparing against a possibly-outdated last-known-good frame."""

@@ -12,8 +12,15 @@
 // mislabeled the new (Track 1) `agent_close` hold category — the
 // exit-tp-short-option-90 agent's require_release hold — as "Expiry
 // close". Added a dedicated 'Profit-target close' / .held-kind-agent-close
-// branch. Three kinds now: Expiry close, Repeated rejection,
-// Profit-target close.
+// branch.
+//
+// 2026-11-24 (audit finding #19): the fallback for ANY OTHER category —
+// missing, malformed, or genuinely unrecognized — also used to silently
+// mislabel as "Expiry close". Changed to a neutral "Pending" /
+// .held-kind-pending fallback. Four kinds now: Expiry close, Repeated
+// rejection, Profit-target close, Pending. See the dedicated live-browser
+// fixture spec, held_orders_card_kind_labels.spec.js, for the behavioral
+// coverage this file's source-grep tests don't provide.
 
 import { test, expect } from '@playwright/test';
 import { readFileSync } from 'fs';
@@ -34,6 +41,15 @@ test.describe('held orders card — per-category coloring + token usage', () => 
   test("agent_close hold category resolves to its own label, not the Expiry-close fallback", () => {
     expect(cardSrc).toMatch(/h\.category === 'agent_close'/);
     expect(cardSrc).toMatch(/return 'Profit-target close'/);
+  });
+
+  test('an unrecognized category falls through to the neutral Pending label, not Expiry close (finding #19)', () => {
+    expect(cardSrc).toMatch(/h\.category === 'expiry_close'/);
+    expect(cardSrc).toMatch(/return 'held-kind-pending'/);
+    const kindOfFn = cardSrc.slice(
+      cardSrc.indexOf('function kindOf('), cardSrc.indexOf('function kindClassOf(')
+    );
+    expect(kindOfFn).toMatch(/return 'Pending';/);
   });
 
   test('the three hold-kind classes resolve to three different color tokens', () => {

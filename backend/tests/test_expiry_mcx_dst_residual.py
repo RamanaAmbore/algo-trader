@@ -205,12 +205,14 @@ def test_parse_segment_close_times_resolver_failure_falls_back_safely():
     assert equity_close == dtime(15, 30)
 
 
-def test_run_passes_todays_date_into_parse_segment_close_times():
-    """`run()` must thread its own resolved `today` into
-    `_parse_segment_close_times()` rather than letting it re-derive the
-    date independently — confirmed via source inspection, since driving
-    the whole `run()` coroutine end-to-end needs a live scan/chase stack
-    out of scope for this test."""
+def test_close_positions_passes_todays_date_into_parse_segment_close_times():
+    """`close_positions()` (the real, current caller of
+    `_parse_segment_close_times()` — `run()` was removed as fully dead
+    code, 2026-11-24, audit finding #15) must thread its own resolved
+    `today` into it rather than letting it re-derive the date
+    independently — confirmed via source inspection, since driving the
+    whole `close_positions()` coroutine end-to-end needs a live
+    scan/chase stack out of scope for this test."""
     import inspect
-    src = inspect.getsource(ExpiryEngine.run)
+    src = inspect.getsource(ExpiryEngine.close_positions)
     assert "_parse_segment_close_times(today)" in src

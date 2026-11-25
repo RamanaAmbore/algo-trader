@@ -9,11 +9,15 @@ Key rules:
   - Commodity (MCX): close only UNBALANCED ITM legs (hedged pairs are safe)
   - Expiry may shift due to holidays — use instrument expiry date, not weekday
   - NSE and MCX have different expiry schedules and market hours
-  - Re-scan every 30 min for positions that become ITM during the day
 
-Usage:
-    engine = ExpiryEngine(on_event=callback)
-    await engine.run()  # blocks until market close
+Usage (2026-11-24, audit finding #15 — the OLD self-driving `await
+engine.run()` loop is gone; the agent engine now owns timing/re-scan):
+    engine = ExpiryEngine(agent_id=firing_agent.id)
+    to_close = await asyncio.to_thread(engine.scan_positions)
+    await engine.close_positions(to_close, release_policy=...)
+See `actions_live.py:_action_live_expiry_auto_close` for the real,
+production call shape (periodic re-scan comes from the firing agent's
+own cooldown/schedule, not a loop inside this engine).
 """
 
 import asyncio
@@ -297,193 +301,21 @@ def _exp_net_one_pair(
     return remaining_opt[id(A)]
 
 
-_EXP_IN_FLIGHT_STATUSES = ("HELD", "OPEN", "CANCEL_FAILED")
-
-
-async def _exp_leg_in_flight_this_session(
-    account: str, symbol: str, exchange: str, side: str,
-) -> bool:
-    """True when this exact (account, symbol, exchange, side) already
-    has an unresolved `AlgoOrder` from the CURRENT trading session (see
-    `expiry_freeze.session_date_of`) — status `HELD` (staged, awaiting
-    operator release), `OPEN` (released and actively chasing, or a
-    live chase placed directly when hold is off), or `CANCEL_FAILED`
-    (a cancel attempt that may still leave the broker order resting).
-
-    2026-11-22 fix (see `close_positions()`'s own docstring for the
-    full incident this closes): `record_held_order()`'s own dedup
-    guard only matches `status == 'HELD'`, so it alone cannot see a
-    row the operator already released and is still chasing. This check
-    runs BEFORE that guard, for BOTH the held-staging branch and the
-    live-chase branch, so a re-scan (the agent's own 30-min periodic
-    re-fire, or this engine's legacy NFO re-scan loop) can never stage
-    or place a second order for a leg that already has one outstanding
-    this session — regardless of which branch created the first one.
-
-    Deliberately existence-based across EVERY row from today's session
-    for this identity, not just the most recent one — an account could
-    in principle have more than one row for the same leg this session
-    (e.g. a CANCEL_FAILED row followed by a fresh attempt), and any one
-    of them being unresolved is reason enough to skip.
-
-    On any lookup failure, fails TOWARD SKIPPING (returns True) — the
-    opposite failure direction from the sibling cancel-suppression
-    check in `actions_live.py`, and deliberately so: that check guards
-    an alert-only re-stage (failing open just means "the operator sees
-    the reminder again", harmless), while this one guards whether a
-    SECOND REAL ORDER gets placed or staged (failing open there risks
-    exactly the double-close incident this function exists to prevent).
-    A transient DB error here costs one skipped re-scan tick, which the
-    next tick (or the operator's own manual review) recovers from.
-
-    2026-11-23 fix (Part C): a `CANCEL_FAILED` row alone no longer
-    blocks forever. `HELD` and `OPEN` rows are unconditionally
-    blocking, as before (they are, respectively, still awaiting
-    operator action, or actively being worked by a chase — neither
-    needs re-verification). When EVERY unresolved row from today's
-    session is `CANCEL_FAILED`, each is checked against real broker
-    truth via `_exp_verify_cancel_failed_leg` rather than assumed to
-    be forever resting: confirmed genuinely gone (cancelled/rejected/
-    expired, or filled and reconciled) → no longer blocking; confirmed
-    still resting at the broker, or truth unavailable → stays
-    blocking, and an alert fires either way (never a silent guess).
-    """
-    from datetime import timezone
-    from sqlalchemy import select
-    from backend.api.database import async_session
-    from backend.api.models import AlgoOrder
-    from backend.api.algo.expiry_freeze import session_date_of
-    try:
-        async with async_session() as s:
-            rows = (await s.execute(
-                select(AlgoOrder).where(
-                    AlgoOrder.account == account,
-                    AlgoOrder.symbol == symbol,
-                    AlgoOrder.exchange == exchange,
-                    AlgoOrder.transaction_type == side,
-                    AlgoOrder.status.in_(_EXP_IN_FLIGHT_STATUSES),
-                )
-            )).scalars().all()
-        if not rows:
-            return False
-        now = datetime.now(timezone.utc)
-        today_session = session_date_of(now)
-        todays_rows = [r for r in rows if session_date_of(r.created_at) == today_session]
-        if not todays_rows:
-            return False
-        unconditionally_blocking = [r for r in todays_rows if r.status != "CANCEL_FAILED"]
-        if unconditionally_blocking:
-            return True
-        # Every one of today's rows is CANCEL_FAILED — verify each
-        # against real broker truth rather than assuming it's still
-        # resting forever (see `_exp_verify_cancel_failed_leg`).
-        for r in todays_rows:
-            if await _exp_verify_cancel_failed_leg(r):
-                return True
-        return False
-    except Exception as e:
-        logger.warning(
-            f"Expiry: in-flight check failed for {symbol} ({account}), "
-            f"skipping this leg rather than risking a duplicate order: {e}"
-        )
-        return True
-
-
-async def _exp_verify_cancel_failed_leg(row) -> bool:
-    """Re-verify ONE `CANCEL_FAILED` `AlgoOrder` row against real broker
-    truth. Returns True when the row must STILL be treated as
-    in-flight (blocking); False when it is confirmed resolved and safe
-    to allow a fresh close to be staged/placed for this leg.
-
-    Three outcomes, matching `get_broker_order_truth`'s own contract —
-    never a silent guess:
-      - genuinely terminal (cancelled/rejected/expired, or filled) →
-        not blocking. A genuine fill is reconciled onto the row via
-        `apply_order_truth` (writes the FIFO ledger on FILLED) so the
-        row doesn't sit at CANCEL_FAILED forever once the real outcome
-        is known.
-      - confirmed still resting at the broker → stays blocking. Alerts
-        as stale UNLESS a live chase is already working this exact
-        `algo_order_id` (`chase.is_chase_active`) — a chase genuinely
-        in progress is not "silently unmanaged", so no alert.
-      - truth unavailable (lookup failed, or no usable broker id) →
-        stays blocking, and always alerts (never silently guessed).
-    """
-    from backend.api.routes.orders_helpers import get_broker_order_truth, apply_order_truth
-    from backend.api.algo.chase import is_chase_active
-
-    try:
-        truth = await get_broker_order_truth(row.broker_order_id)
-    except Exception as e:
-        logger.error(
-            f"Expiry: CANCEL_FAILED order {row.id} ({row.symbol}, {row.account}) — "
-            f"broker truth lookup failed: {e}. Staying blocked; needs manual review."
-        )
-        _exp_alert_cancel_failed_stale(row, f"broker truth lookup failed: {e}")
-        return True
-
-    if not truth.available:
-        logger.error(
-            f"Expiry: CANCEL_FAILED order {row.id} ({row.symbol}, {row.account}) — "
-            f"broker truth unavailable. Staying blocked; needs manual review."
-        )
-        _exp_alert_cancel_failed_stale(row, "broker truth unavailable")
-        return True
-
-    if truth.algo_status is None:
-        # Confirmed still resting at the broker (not yet terminal).
-        if not is_chase_active(row.id):
-            logger.error(
-                f"Expiry: CANCEL_FAILED order {row.id} ({row.symbol}, {row.account}) — "
-                f"confirmed still resting at the broker with no active chase. "
-                f"Staying blocked; needs manual review."
-            )
-            _exp_alert_cancel_failed_stale(
-                row, "confirmed still resting at the broker with no active chase")
-        return True
-
-    # Genuinely terminal — reconcile the row so it no longer sits at
-    # CANCEL_FAILED forever, then it's safe (no longer in-flight).
-    try:
-        await apply_order_truth(row.id, truth)
-    except Exception as e:
-        logger.warning(f"Expiry: reconcile of CANCEL_FAILED order {row.id} failed: {e}")
-    return False
-
-
-# In-process dedup for the alert below — keyed by AlgoOrder.id, same
-# convention as `background.py:_AUTO_RELEASE_FAILED_ALERTED`. A stale
-# CANCEL_FAILED leg is re-checked on every re-scan; without this it
-# would page the operator again every ~30 minutes for the same row.
-_CANCEL_FAILED_ALERTED: set[int] = set()
-
-
-def _exp_alert_cancel_failed_stale(row, reason: str) -> None:
-    """Action-required alert for a CANCEL_FAILED leg that could not be
-    confirmed resolved — never a silent `logger.error` alone, which
-    only reaches the generic ERROR_AGENT catch-all (Telegram only, with
-    its own repeat-gate). `bypass_gates=True` so a closed-market gate
-    never suppresses a genuine "this leg may still need manual
-    attention" warning on expiry day. One alert per row for the process
-    lifetime (ids are never reused)."""
-    if row.id in _CANCEL_FAILED_ALERTED:
-        return
-    _CANCEL_FAILED_ALERTED.add(row.id)
-    try:
-        from backend.shared.helpers.alert_utils import send_order_failure_alert
-        send_order_failure_alert(
-            account=row.account, symbol=row.symbol, exchange=row.exchange,
-            side=row.transaction_type, qty=int(row.quantity), mode="live",
-            source="expiry-cancel-failed-reverify",
-            error=(
-                f"CANCEL_FAILED order {row.id} could not be confirmed resolved "
-                f"at settlement: {reason}. It may still need a manual close "
-                f"before expiry."
-            ),
-            bypass_gates=True,
-        )
-    except Exception as e:
-        logger.warning(f"Expiry: CANCEL_FAILED alert itself failed for order {row.id}: {e}")
+# `_EXP_IN_FLIGHT_STATUSES`, `_exp_leg_in_flight_this_session`,
+# `_exp_verify_cancel_failed_leg`, `_exp_alert_cancel_failed_stale` moved
+# to `order_inflight.py` (2026-11-24, audit finding #3) so
+# `actions_live.py`'s `_al_maybe_stage_agent_close_hold` can call the
+# SAME in-flight guard this engine uses, instead of growing its own
+# byte-identical copy. Imported here, under their original names, so
+# every existing `patch("backend.api.algo.expiry._exp_leg_in_flight_this_session", ...)`
+# call site keeps working unchanged.
+from backend.api.algo.order_inflight import (  # noqa: E402
+    _EXP_IN_FLIGHT_STATUSES,
+    _exp_leg_in_flight_this_session,
+    _exp_verify_cancel_failed_leg,
+    _exp_alert_cancel_failed_stale,
+    _CANCEL_FAILED_ALERTED,
+)
 
 
 class ExpiryEngine:
@@ -504,12 +336,12 @@ class ExpiryEngine:
         self._ntm_buffer = get_float(
             "algo.expiry_ntm_buffer_pct",
             float(self._algo_cfg.get("expiry_ntm_buffer_pct", 2.0)))
-        self._start_offset_h = get_float(
-            "algo.expiry_start_offset_hours",
-            float(self._algo_cfg.get("expiry_start_offset_hours", 2)))
-        self._rescan_min = get_int(
-            "algo.expiry_rescan_minutes",
-            int(self._algo_cfg.get("expiry_rescan_minutes", 30)))
+        # `_start_offset_h`/`_rescan_min` (algo.expiry_start_offset_hours/
+        # algo.expiry_rescan_minutes) removed (2026-11-24, audit finding
+        # #15) — both were read only by `run()`/`_run_nfo_close()`/
+        # `_run_mcx_close()`, deleted below as fully dead code once Part C
+        # retired their only production caller. See the removed settings'
+        # own SEEDS entries (settings.py) for the matching cleanup.
         self._chase_cfg = ChaseConfig(
             interval_seconds=get_int(
                 "algo.chase_interval_seconds",
@@ -1146,6 +978,30 @@ class ExpiryEngine:
                         f"Skipping this leg; it needs manual attention."
                     )
                     continue
+                # 2026-11-24 fix (audit finding #1): without this check, an
+                # operator-cancelled EXPIRY_CLOSE hold was silently re-staged
+                # on the next re-fire (this agent's own cooldown) and could
+                # auto-release into a real chase near close, directly
+                # overriding the explicit cancel. Reuses the exact same
+                # generic, category-agnostic check `_al_maybe_stage_agent_
+                # close_hold` already uses for AGENT_CLOSE — discriminated
+                # purely by `agent_id` + identity + `status=='CANCELLED'
+                # AND broker_order_id==''`, with no HoldCategory coupling.
+                # Deliberately NOT a change to `_EXP_IN_FLIGHT_STATUSES`
+                # (CANCELLED must stay excluded from that set — see this
+                # check's own sibling function for why).
+                from backend.api.algo.actions_live import (
+                    _al_agent_close_recently_cancelled_this_session,
+                )
+                if await _al_agent_close_recently_cancelled_this_session(
+                    self._agent_id, pos.account, pos.tradingsymbol, pos.exchange, txn,
+                ):
+                    logger.info(
+                        f"Expiry: {pos.tradingsymbol} ({pos.account}) {txn} was "
+                        f"explicitly cancelled earlier this session — suppressing "
+                        f"re-stage"
+                    )
+                    continue
                 auto_release_at = None
                 price_policy = "CHASE_MED"
                 if release_policy is not None:
@@ -1169,7 +1025,7 @@ class ExpiryEngine:
                         continue
                     tier = (release_policy.get("floor_tier") or "high").upper()
                     price_policy = f"CHASE_{tier}"
-                await record_held_order(
+                held_row_id = await record_held_order(
                     HoldCategory.EXPIRY_CLOSE,
                     account=pos.account, symbol=pos.tradingsymbol,
                     exchange=pos.exchange, side=txn, qty=qty,
@@ -1178,6 +1034,24 @@ class ExpiryEngine:
                     price_policy=price_policy,
                     auto_release_at=auto_release_at,
                 )
+                # 2026-11-24 fix (audit finding #6): AGENT_CLOSE sends a
+                # dedicated action-required alert when it stages a hold
+                # (`_al_send_agent_close_hold_alert`) — EXPIRY_CLOSE never
+                # did, so an operator with the Held Orders card closed had
+                # no signal a leg was staged until a manual reload. Reuses
+                # the exact same alert mechanism/renderer, one per staged
+                # leg (a single expiry-day pass can stage several).
+                if held_row_id is not None:
+                    from types import SimpleNamespace
+                    from backend.api.algo.actions_live import (
+                        _al_send_agent_close_hold_alert,
+                    )
+                    await _al_send_agent_close_hold_alert(
+                        SimpleNamespace(id=self._agent_id, slug=None, name=None),
+                        held_row_id, pos.account, pos.tradingsymbol, pos.exchange,
+                        txn, qty, "expiry close (held by default)",
+                        title_prefix="Expiry close held",
+                    )
                 continue
 
             cfg = ChaseConfig(
@@ -1231,7 +1105,8 @@ class ExpiryEngine:
         })
 
     # ------------------------------------------------------------------
-    # Main run loop (called by background task on expiry days)
+    # Session close-time resolution (read by close_positions()'s
+    # release-policy deadline computation)
     # ------------------------------------------------------------------
 
     def _parse_segment_close_times(
@@ -1277,116 +1152,16 @@ class ExpiryEngine:
                 mcx_close = dtime(h, m)
         return equity_close, mcx_close
 
-    async def _run_nfo_close(
-        self, today: "date", equity_close: "dtime", nfo_positions: "list[OptionPosition]",
-    ) -> None:
-        """Wait until NFO close window, then chase-close all NFO positions."""
-        nfo_start = (datetime.combine(today, equity_close) -
-                     timedelta(hours=self._start_offset_h)).time()
-        now_t = timestamp_indian().time()
-        if now_t < nfo_start:
-            wait = (datetime.combine(today, nfo_start) -
-                    datetime.combine(today, now_t)).total_seconds()
-            logger.info(
-                f"Expiry: waiting {wait/60:.0f} min until NFO close phase "
-                f"starts at {nfo_start}"
-            )
-            self._emit("waiting", {"exchange": "NFO", "start_time": str(nfo_start)})
-            await asyncio.sleep(max(wait, 0))
-        logger.info(f"Expiry: starting NFO close for {len(nfo_positions)} positions")
-        await self.close_positions(nfo_positions)
-
-    async def _run_mcx_close(
-        self, today: "date", mcx_close: "dtime",
-    ) -> None:
-        """Wait until MCX close window, re-scan, then chase-close MCX positions."""
-        mcx_start = (datetime.combine(today, mcx_close) -
-                     timedelta(hours=self._start_offset_h)).time()
-        now_t = timestamp_indian().time()
-        if now_t < mcx_start:
-            wait = (datetime.combine(today, mcx_start) -
-                    datetime.combine(today, now_t)).total_seconds()
-            logger.info(
-                f"Expiry: waiting {wait/60:.0f} min until MCX close phase "
-                f"starts at {mcx_start}"
-            )
-            self._emit("waiting", {"exchange": "MCX", "start_time": str(mcx_start)})
-            await asyncio.sleep(max(wait, 0))
-        logger.info("Expiry: re-scanning MCX positions before closing")
-        fresh = self.scan_positions()
-        mcx_fresh = [p for p in fresh if p.exchange == "MCX" and p.needs_close]
-        if mcx_fresh:
-            logger.info(f"Expiry: starting MCX close for {len(mcx_fresh)} positions")
-            await self.close_positions(mcx_fresh)
-
-    async def run(self):
-        """
-        Full expiry-day workflow:
-        1. Morning scan at 09:15
-        2. Wait until T-2h before close
-        3. Start closing
-        4. Re-scan every _rescan_min minutes for NFO positions that cross ITM intraday
-        5. Continue until all closed or 15:25 IST (NFO market close - 5 min buffer)
-        """
-        now_ist = timestamp_indian()
-        today = now_ist.date()
-        equity_close, mcx_close = self._parse_segment_close_times(today)
-
-        # Morning scan
-        logger.info("Expiry: starting morning scan")
-        to_close = self.scan_positions()
-
-        if not to_close:
-            logger.info("Expiry: no positions need closing today")
-            self._emit("no_positions", {"date": str(today)})
-            return
-
-        self._emit("morning_alert", {
-            "count": len(to_close),
-            "positions": [
-                f"{p.account} {p.tradingsymbol} qty={p.quantity} {p.moneyness}"
-                for p in to_close
-            ],
-        })
-
-        nfo_positions = [p for p in to_close if p.exchange == "NFO"]
-        mcx_positions = [p for p in to_close if p.exchange == "MCX"]
-
-        if nfo_positions:
-            await self._run_nfo_close(today, equity_close, nfo_positions)
-
-        # Periodic re-scan for NFO positions that cross ITM intraday.
-        # Runs until 15:25 IST (5-min buffer before NFO close) so any
-        # position that moves ITM after the morning scan is still caught.
-        _closed_syms: set[str] = {r.symbol for r in self.state.closed}
-        _nfo_deadline = now_ist.replace(hour=15, minute=25, second=0, microsecond=0)
-        while timestamp_indian() < _nfo_deadline:
-            await asyncio.sleep(self._rescan_min * 60)
-            _fresh = self.scan_positions()
-            _new_itm = [
-                p for p in _fresh
-                if p.exchange == "NFO"
-                and p.moneyness == "ITM"
-                and p.tradingsymbol not in _closed_syms
-            ]
-            if _new_itm:
-                logger.info("[EXPIRY] re-scan: %d newly-ITM NFO position(s)", len(_new_itm))
-                await self._run_nfo_close(today, equity_close, _new_itm)
-                _closed_syms.update(r.symbol for r in self.state.closed)
-
-        if mcx_positions:
-            await self._run_mcx_close(today, mcx_close)
-
-        logger.info(
-            f"Expiry: complete — closed {len(self.state.closed)}, "
-            f"failed {len(self.state.failed)}, "
-            f"slippage ₹{self.state.total_slippage:.2f}"
-        )
-        self._emit("expiry_complete", {
-            "closed": len(self.state.closed),
-            "failed": len(self.state.failed),
-            "total_slippage": self.state.total_slippage,
-        })
+    # `_run_nfo_close()`/`_run_mcx_close()`/`run()` removed (2026-11-24,
+    # audit finding #15) — fully dead code. Part C (commit `33a2afea`)
+    # already removed `run()`'s only production caller
+    # (`_task_expiry_check`'s legacy `await engine.run()` call,
+    # background.py); confirmed via grep this was the sole call site
+    # for all three methods. The real close path is owned exclusively
+    # by the agent engine's `expiry-day-itm-auto-close`
+    # (`_action_live_expiry_auto_close`, actions_live.py), which calls
+    # `scan_positions()`/`close_positions()` directly — the SAME two
+    # methods this legacy loop also called, so no capability was lost.
 
 
 # ═══════════════════════════════════════════════════════════════════════

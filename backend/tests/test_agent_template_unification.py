@@ -92,6 +92,7 @@ async def sqlite_env():
         preamble_fired_at    = Column(DateTime, nullable=True)
         preamble_alert_last_fired_at = Column(DateTime, nullable=True)
         has_explicit_alert   = Column(Boolean, nullable=False, default=False)
+        events_operator_edited = Column(Boolean, nullable=False, default=False)
         conditions           = Column(JSON, nullable=False, default=dict)
         events               = Column(JSON, nullable=False, default=list)
         actions              = Column(JSON, nullable=False, default=list)
@@ -123,6 +124,18 @@ async def sqlite_env():
         updated_at           = Column(DateTime, nullable=False,
                                        default=lambda: datetime.now(timezone.utc))
 
+    class _AlgoOrder(_Base):
+        """Minimal sqlite-compatible stand-in — only the columns
+        `_ae_prune_retired_builtins`'s pending-hold guard reads
+        (audit finding #9, 2026-11-24). Patched onto `backend.api.
+        models.AlgoOrder`, which that function's own LAZY `from
+        backend.api.models import AlgoOrder` import re-resolves at
+        call time, so no further patch site is needed."""
+        __tablename__ = "algo_orders"
+        id        = Column(Integer, primary_key=True, autoincrement=True)
+        agent_id  = Column(Integer, nullable=True)
+        status    = Column(String(16), nullable=False, default="OPEN")
+
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
     async with engine.begin() as conn:
         await conn.run_sync(_Base.metadata.create_all)
@@ -136,6 +149,7 @@ async def sqlite_env():
 
     patches = [
         patch.object(_models, "Agent", _Agent),
+        patch.object(_models, "AlgoOrder", _AlgoOrder),
         patch.object(_database, "async_session", factory),
         patch.object(_agents_route, "Agent", _Agent),
         patch.object(_agents_route, "async_session", factory),
@@ -464,6 +478,46 @@ async def test_update_agent_allows_body_edit_on_custom_template(sqlite_env):
         assert row.events == [{"channel": "telegram", "enabled": True}]
 
 
+async def test_update_agent_sets_events_operator_edited_marker(sqlite_env):
+    """Audit finding #8 (2026-11-24): editing `events` via the real
+    update_agent route must flip `events_operator_edited`, so a
+    builtin's additive events-channel restart-sync stops touching this
+    row — see `_ae_sync_existing_builtin`'s own test coverage for the
+    read side of this marker."""
+    factory, _Agent = sqlite_env
+    from sqlalchemy import select
+    from backend.api.routes.agents import AgentController, AgentUpdateRequest
+
+    async with factory() as s:
+        s.add(_Agent(slug="sys-events-edit", name="X", kind="cycle",
+                      is_system=True, status="active", conditions={},
+                      events=[{"channel": "telegram", "enabled": True}], actions=[]))
+        await s.commit()
+
+    controller = AgentController.__new__(AgentController)
+    data = AgentUpdateRequest(events=[{"channel": "log", "enabled": True}])
+    await AgentController.update_agent.fn(controller, "sys-events-edit", data)
+
+    async with factory() as s:
+        row = (await s.execute(select(_Agent).where(_Agent.slug == "sys-events-edit"))).scalar_one()
+        assert row.events_operator_edited is True
+
+    # An update that never touches `events` at all must not set the marker.
+    async with factory() as s:
+        s.add(_Agent(slug="sys-events-untouched", name="Y", kind="cycle",
+                      is_system=True, status="active", conditions={},
+                      events=[{"channel": "telegram", "enabled": True}], actions=[]))
+        await s.commit()
+
+    data2 = AgentUpdateRequest(cooldown_minutes=45)
+    await AgentController.update_agent.fn(controller, "sys-events-untouched", data2)
+
+    async with factory() as s:
+        row2 = (await s.execute(
+            select(_Agent).where(_Agent.slug == "sys-events-untouched"))).scalar_one()
+        assert row2.events_operator_edited is False
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # 6 — prune guard: template rows survive seed_agents()
 # ═══════════════════════════════════════════════════════════════════════
@@ -492,6 +546,61 @@ async def test_prune_retired_builtins_spares_template_rows(sqlite_env):
 
     assert "sys-template-not-in-builtins" in slugs
     assert "sys-cycle-retired" not in slugs
+
+
+async def test_prune_retired_builtins_spares_an_agent_with_a_pending_hold(sqlite_env):
+    """Audit finding #9 (2026-11-24): deleting a retired agent row out
+    from under a pending HELD/OPEN/CANCEL_FAILED order orphans that
+    order's agent_id to NULL (the FK is ondelete=SET NULL), which the
+    auto-release kill switch can never resolve. The prune must refuse
+    and retry on a later boot instead."""
+    import backend.api.models as _models
+    from sqlalchemy import select
+    from backend.api.algo.agent_engine import _ae_prune_retired_builtins
+
+    factory, _Agent = sqlite_env
+    _AlgoOrder = _models.AlgoOrder  # patched by the fixture onto backend.api.models
+
+    async with factory() as s:
+        retired = _Agent(slug="sys-retired-with-hold", name="Retired", kind="cycle",
+                          status="active", is_system=True, conditions={}, events=[], actions=[])
+        s.add(retired)
+        await s.commit()
+        s.add(_AlgoOrder(agent_id=retired.id, status="HELD"))
+        await s.commit()
+
+        await _ae_prune_retired_builtins(s, builtin_slugs=set())
+        await s.commit()
+
+        rows = (await s.execute(select(_Agent))).scalars().all()
+    assert "sys-retired-with-hold" in {r.slug for r in rows}, \
+        "an agent with a pending hold must never be pruned"
+
+
+async def test_prune_retired_builtins_deletes_once_the_hold_clears(sqlite_env):
+    """The other side: once no AlgoOrder references the retired agent
+    in an unresolved state (HELD/OPEN/CANCEL_FAILED), pruning proceeds
+    as normal — a resolved (e.g. FILLED) row must not block it."""
+    import backend.api.models as _models
+    from sqlalchemy import select
+    from backend.api.algo.agent_engine import _ae_prune_retired_builtins
+
+    factory, _Agent = sqlite_env
+    _AlgoOrder = _models.AlgoOrder
+
+    async with factory() as s:
+        retired = _Agent(slug="sys-retired-cleared", name="Retired", kind="cycle",
+                          status="active", is_system=True, conditions={}, events=[], actions=[])
+        s.add(retired)
+        await s.commit()
+        s.add(_AlgoOrder(agent_id=retired.id, status="FILLED"))
+        await s.commit()
+
+        await _ae_prune_retired_builtins(s, builtin_slugs=set())
+        await s.commit()
+
+        rows = (await s.execute(select(_Agent))).scalars().all()
+    assert "sys-retired-cleared" not in {r.slug for r in rows}
 
 
 # ═══════════════════════════════════════════════════════════════════════
