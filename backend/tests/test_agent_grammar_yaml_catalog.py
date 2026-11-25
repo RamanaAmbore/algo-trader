@@ -260,6 +260,20 @@ explicit "(signature unavailable)"/"(no docstring)" placeholders. Zero
 live-dispatch behavior change — operator: "why the exception for
 place_order, order, etc?" / "go ahead".
 
+Amendment (2026-11, Part A hedge leg): `place_order`/`order`'s
+`params_schema` each gained a new optional `hedge_pct` field (type
+number), inserted right after the existing `chase_level` field — same
+position in both `agent_grammar.yaml` and this baseline, kept
+byte-identical across the two tokens per their existing intentional
+duplication. Resolved by `_action_place_order`
+(`backend.api.algo.actions_live`) via the new
+`backend.api.algo.hedge_strike.resolve_hedge_strike()` — when set on a
+live NFO option order, auto-stages a second, concurrently chased order
+(same option type, further OTM, opposite side, priced to ~hedge_pct%
+of the parent's own premium). Never blocks the parent order on any
+failure to resolve a hedge. See `backend/tests/test_hedge_strike.py`
+and CLAUDE.md's "Hedge leg" entry.
+
 Perf: no DB / network calls, pure in-memory comparison.
 Reuse: shares the same SYSTEM_TOKENS / LOG_TAG_TOKENS module attributes
 every other grammar test and `seed_grammar_tokens()` read.

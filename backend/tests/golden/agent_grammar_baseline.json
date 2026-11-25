@@ -1211,6 +1211,11 @@
           ],
           "required": false,
           "description": "Chase aggressiveness for the live adaptive limit-order chase engine — LOW (patient, long interval, small step, more attempts), MED (balanced, used when omitted), HIGH (urgent, short interval, big step, fewer attempts, crosses the spread fast). Threads into the same backend.api.routes.orders_helpers._live_chase_config() mapping every manual-ticket chase already uses."
+        },
+        "hedge_pct": {
+          "type": "number",
+          "required": false,
+          "description": "Target % of this order's own premium to size an auto-staged hedge leg at (further OTM, opposite side, same option type). Only applies to NFO options; ignored otherwise. Omit for no hedge."
         }
       }
     },
@@ -1337,6 +1342,11 @@
           ],
           "required": false,
           "description": "Chase aggressiveness for the live adaptive limit-order chase engine — LOW (patient, long interval, small step, more attempts), MED (balanced, used when omitted), HIGH (urgent, short interval, big step, fewer attempts, crosses the spread fast). Threads into the same backend.api.routes.orders_helpers._live_chase_config() mapping every manual-ticket chase already uses."
+        },
+        "hedge_pct": {
+          "type": "number",
+          "required": false,
+          "description": "Target % of this order's own premium to size an auto-staged hedge leg at (further OTM, opposite side, same option type). Only applies to NFO options; ignored otherwise. Omit for no hedge."
         }
       }
     },

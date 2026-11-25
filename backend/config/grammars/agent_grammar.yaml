@@ -1151,6 +1151,21 @@ system_tokens:
     chase_level:
       $ref: chase_level
       required: false
+    # Hedge leg (Part A, 2026-11) — when set and the symbol is an NFO
+    # option, `_action_place_order` (backend/api/algo/actions_live.py)
+    # auto-stages a second, concurrently chased order: same option
+    # type, further OTM, opposite side, priced to cost ~hedge_pct% of
+    # this order's own premium. Resolved via
+    # backend/api/algo/hedge_strike.py:resolve_hedge_strike(). Mirrors
+    # the Chain tab's own Hedge checkbox (frontend/src/lib/order/
+    # OptionChainTab.svelte) — deliberately a separate implementation,
+    # not shared code; both read the same rules. Never blocks the
+    # parent order: a close, a non-option symbol, or no strike found
+    # within tolerance all silently skip the hedge.
+    hedge_pct:
+      type: number
+      required: false
+      description: Target % of this order's own premium to size an auto-staged hedge leg at (further OTM, opposite side, same option type). Only applies to NFO options; ignored otherwise. Omit for no hedge.
     # `template_id`/`template_slug`/`tp_pct_override`/`sl_pct_override`/
     # `wing_premium_pct_override`/`wing_strike_offset_override` params,
     # and the token-level `mutually_exclusive_groups` declaration that
@@ -1236,6 +1251,21 @@ system_tokens:
     chase_level:
       $ref: chase_level
       required: false
+    # Hedge leg (Part A, 2026-11) — when set and the symbol is an NFO
+    # option, `_action_place_order` (backend/api/algo/actions_live.py)
+    # auto-stages a second, concurrently chased order: same option
+    # type, further OTM, opposite side, priced to cost ~hedge_pct% of
+    # this order's own premium. Resolved via
+    # backend/api/algo/hedge_strike.py:resolve_hedge_strike(). Mirrors
+    # the Chain tab's own Hedge checkbox (frontend/src/lib/order/
+    # OptionChainTab.svelte) — deliberately a separate implementation,
+    # not shared code; both read the same rules. Never blocks the
+    # parent order: a close, a non-option symbol, or no strike found
+    # within tolerance all silently skip the hedge.
+    hedge_pct:
+      type: number
+      required: false
+      description: Target % of this order's own premium to size an auto-staged hedge leg at (further OTM, opposite side, same option type). Only applies to NFO options; ignored otherwise. Omit for no hedge.
     # `template_id`/`template_slug`/override params + `mutually_exclusive_
     # groups` removed (Bracket/Template-GTT removal, T3.2, 2026-11) — see
     # the identical note on place_order's own params_schema above.

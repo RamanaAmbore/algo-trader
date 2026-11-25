@@ -156,7 +156,8 @@ async def _on_algo_order_write_failure(
 async def _place_order_write_intent(agent_shim, pf: dict,
                                     account: str, symbol: str, exchange: str,
                                     side: str, qty: int, price,
-                                    product: str = "NRML") -> "int | None":
+                                    product: str = "NRML",
+                                    action_type: str = "place_order") -> "int | None":
     """Write OPEN AlgoOrder row and fire preflight_ok event (best-effort).
 
     Returns the AlgoOrder row id so callers can pass algo_order_id to chase_order.
@@ -172,12 +173,19 @@ async def _place_order_write_intent(agent_shim, pf: dict,
     `_place_order_set_product_template`'s now-removed write to
     `AlgoOrder.template_id`/`template_overrides_json`, both dropped
     columns.
+
+    `action_type` (Part A, hedge leg): `_write_live_order`'s own
+    `detail` string embeds it (`"{slug} → {action_type}: ..."`), so
+    the hedge leg's own AlgoOrder row reads distinctly from its
+    parent's in logs/UI when `_al_prepare_hedge_leg` passes
+    `"place_order_hedge"` here — it is still a real `mode='live'`
+    order row, not a different DSL action.
     """
     from backend.api.algo.actions import _write_live_order
 
     try:
         intent_id = await _write_live_order(
-            agent_shim, "place_order",
+            agent_shim, action_type,
             {"account": account, "symbol": symbol, "exchange": exchange,
              "side": side, "qty": qty, "price": price},
             status="OPEN",
@@ -333,6 +341,459 @@ async def _place_order_set_product_template(row_id: int, product: str) -> None:
         )
 
 
+# ── Hedge leg (Part A, 2026-11) ─────────────────────────────────────────────
+#
+# DSL equivalent of the Chain tab's own Hedge checkbox
+# (`frontend/src/lib/order/OptionChainTab.svelte`). Deliberately a
+# separate implementation from that JS code, and from Part C's MCX
+# settlement netting (`expiry.py:_best_opt_partner`/`_best_fut_partner`)
+# — the latter is a backward-looking theta-priority match among
+# currently HELD positions for settlement risk; this is a
+# forward-looking, premium-percent match among currently QUOTED
+# strikes at order-entry time. Never merge the two.
+
+def _al_hedge_precheck_symbol(exchange: str, symbol: str, hedge_pct) -> "dict | None":
+    """Cheap, synchronous gate before any broker/DB call: `hedge_pct`
+    unset, a non-NFO exchange, or a symbol that doesn't parse as an
+    option all mean "no hedge possible here" — no reason to pay for a
+    position fetch or a quote call first. Returns the parsed symbol
+    dict (`parse_tradingsymbol()`'s own shape) on success, else None.
+    """
+    if not hedge_pct:
+        return None
+    if str(exchange or "").upper() != "NFO":
+        return None
+    from backend.api.algo.derivatives import parse_tradingsymbol
+    parsed = parse_tradingsymbol(symbol)
+    if not parsed or parsed.get("kind") != "opt":
+        return None
+    return parsed
+
+
+async def _al_hedge_account_signal(account: str) -> "tuple[list | None, list]":
+    """One `fetch_positions()` pass. Returns `(dfs, signal)`, or
+    `(None, [])` on a fetch exception. `signal` is `positions.py`'s own
+    `_extract_per_account_signal()` shape — reused rather than
+    re-derived, so this reads the IDENTICAL per-account health/outage
+    classification `/api/positions` itself relies on (see CLAUDE.md,
+    "Per-account failures degrade one account, never the batch")."""
+    try:
+        from backend.brokers.broker_apis import fetch_positions as _fp
+        dfs = await asyncio.to_thread(_fp)
+    except Exception:
+        return None, []
+    from backend.api.routes.positions import _extract_per_account_signal
+    return dfs, _extract_per_account_signal(dfs)
+
+
+def _al_hedge_account_is_degraded(dfs: "list | None", signal: list, account: str) -> bool:
+    """True when THIS specific account's own fetch cannot be trusted —
+    never inferred from whether some OTHER account in the same batch
+    happened to come back healthy.
+
+    Two signals, both scoped to `account`:
+      1. A full-batch outage (`positions._is_positions_outage`) — every
+         account failed, or the whole per-account fetch came back empty
+         while accounts are genuinely configured. No per-account signal
+         can be trusted when the whole fetch is down.
+      2. This account's OWN entry in `signal` is tagged `stale` or
+         `fetch_failed` — set by `_stale_substitute_frame`/
+         `_lkg_or_fallback` on every degraded path, always alongside an
+         explicit `account` tag (`broker_apis.py`). A genuinely healthy
+         EMPTY account frame carries NO account tag at all (its
+         `"account"` row/column is only populated on a non-empty
+         frame) — so an account with no matching, explicitly-bad entry
+         here is a confirmed-flat, confirmed-healthy account, not an
+         untrustworthy one. The full-batch check above is what catches
+         the case where this account is missing from the signal
+         because the ENTIRE fetch failed, rather than because it is
+         genuinely flat.
+    """
+    from backend.api.routes.positions import _is_positions_outage
+    if _is_positions_outage(dfs or []):
+        return True
+    account_upper = str(account or "").upper()
+    for s in signal:
+        acct = s.get("account")
+        if acct and str(acct).upper() == account_upper and (s.get("stale") or s.get("fetch_failed")):
+            return True
+    return False
+
+
+async def _al_hedge_close_guard(
+    symbol: str, exchange: str, side: str, account: str, qty: int,
+) -> bool:
+    """True only when it is genuinely safe to resolve a hedge for this
+    order. False means "skip the hedge", on any of: the position fetch
+    itself can't be trusted FOR THIS ACCOUNT (broker exception, a
+    full-batch outage, or this account's own frame explicitly tagged
+    stale/fetch_failed — never inferred from a DIFFERENT account's
+    frame being healthy), or a held position's sign is offset by
+    `side` — at ANY magnitude, not only when it covers the full order
+    quantity. A partial close and a flip both still mean "this order
+    is at least partly closing", which is exactly the case Part A's
+    design says must never stage a hedge.
+
+    Deliberately NOT `_verify_close_intent()` (`orders_place.py`) —
+    that function is tuned for a cap-BYPASS decision (G2/ceiling), so
+    it fails CLOSED (treats "can't verify" as "not a close", i.e. the
+    opposite of what a hedge-fire gate needs) and only returns True
+    when the order qty doesn't exceed the held qty, which would let an
+    oversized offsetting order (a flip) read as "not closing" here and
+    wrongly fire a hedge on it.
+    """
+    dfs, signal = await _al_hedge_account_signal(account)
+    if dfs is None or _al_hedge_account_is_degraded(dfs, signal, account):
+        return False
+    try:
+        from backend.api.routes.orders_place import _fetch_net_position_qty
+        net_qty = await _fetch_net_position_qty(symbol, exchange, account)
+    except Exception:
+        return False
+    if net_qty is None:
+        return True  # this account's own fetch is confirmed healthy, genuinely no matching row
+    side_upper = str(side).upper()
+    if side_upper == "BUY" and net_qty < 0:
+        return False
+    if side_upper == "SELL" and net_qty > 0:
+        return False
+    return True
+
+
+def _al_hedge_build_leg_dict(
+    candidates: dict, result: dict, opt_type: str, side: str,
+    exchange: str, qty: int, account: str, symbol: str,
+) -> "dict | None":
+    """Resolve the winning strike's own tradingsymbol out of the same
+    candidates book the search ran over, and flip the side. Returns
+    None (log + skip) on the pathological case of a winning strike
+    whose own quote entry carries no symbol."""
+    hedge_strike = result["strike"]
+    hedge_sym = ((candidates.get(hedge_strike) or {}).get(opt_type.lower()) or {}).get("sym")
+    if not hedge_sym:
+        from backend.shared.helpers.utils import mask_account
+        logger.warning(
+            f"[LIVE] place_order hedge leg resolved a strike with no "
+            f"tradingsymbol for {mask_account(account)} {exchange}/{symbol} "
+            f"— proceeding unhedged"
+        )
+        return None
+    hedge_side = "SELL" if str(side).upper() == "BUY" else "BUY"
+    return {
+        "symbol": hedge_sym,
+        "exchange": exchange,
+        "side": hedge_side,
+        "qty": qty,
+        "price": result["price"],
+    }
+
+
+async def _al_hedge_resolve_leg(
+    account: str, symbol: str, exchange: str, side: str, qty: int,
+    price, hedge_pct, parsed: dict,
+) -> "dict | None":
+    """Quote fetch + strike search + leg assembly, once the cheap
+    precheck and the close-intent guard have both already passed."""
+    from backend.api.algo.hedge_strike import (
+        fetch_hedge_quotes, resolve_hedge_strike, resolve_parent_real_expiry,
+        candidates_match_parent_symbol,
+    )
+    from backend.shared.helpers.utils import mask_account
+
+    underlying = str(parsed.get("root") or "")
+    parent_expiry = parsed.get("expiry")
+    fallback_iso = parent_expiry.isoformat() if parent_expiry else ""
+    expiry_iso = await resolve_parent_real_expiry(symbol, fallback_iso)
+    if not expiry_iso:
+        return None
+
+    candidates = await fetch_hedge_quotes(underlying, expiry_iso, account)
+    opt_type = str(parsed.get("opt_type") or "")
+    parent_strike = float(parsed.get("strike") or 0)
+
+    if not candidates_match_parent_symbol(candidates, parent_strike, opt_type, symbol):
+        logger.warning(
+            f"[LIVE] place_order hedge leg skipped for {mask_account(account)} "
+            f"{exchange}/{symbol}: parent symbol not found in the resolved "
+            f"option chain for expiry {expiry_iso} (possible expiry-"
+            f"approximation mismatch) — proceeding unhedged"
+        )
+        return None
+
+    result = resolve_hedge_strike(
+        parent_opt_type=opt_type,
+        parent_strike=parent_strike,
+        parent_side=side,
+        parent_premium=float(price or 0),
+        target_pct=float(hedge_pct),
+        candidates=candidates,
+    )
+    if not result.get("ok"):
+        logger.warning(
+            f"[LIVE] place_order hedge leg not resolved for "
+            f"{mask_account(account)} {exchange}/{symbol}: "
+            f"{result.get('reason')} — proceeding unhedged"
+        )
+        return None
+
+    return _al_hedge_build_leg_dict(candidates, result, opt_type, side, exchange, qty, account, symbol)
+
+
+async def _al_resolve_hedge_plan(
+    agent, context: dict, account: str, symbol: str, exchange: str,
+    side: str, qty: int, price, hedge_pct,
+) -> "dict | None":
+    """Resolve a hedge leg for a just-pre-persisted parent order, or None.
+
+    None means "no hedge" — the parent proceeds exactly as it would
+    with `hedge_pct` unset. This function must NEVER cause the parent
+    order to be blocked or delayed beyond its own resolution cost, so
+    its entire body runs inside one broad try/except: any exception
+    anywhere in here (including inside the close-intent guard's own
+    position fetch) degrades to "no hedge", same as a genuine
+    not-found or a non-option symbol.
+
+    Returns {"symbol", "exchange", "side", "qty", "price"} for the
+    hedge leg's own order on a match — always a 1:1 qty ratio with the
+    parent (no ratio knob in v1, same as the Chain-tab feature).
+    """
+    try:
+        parsed = _al_hedge_precheck_symbol(exchange, symbol, hedge_pct)
+        if parsed is None:
+            return None
+
+        safe = await _al_hedge_close_guard(symbol, exchange, side, account, qty)
+        if not safe:
+            return None
+
+        return await _al_hedge_resolve_leg(account, symbol, exchange, side, qty, price, hedge_pct, parsed)
+    except Exception as e:
+        from backend.shared.helpers.utils import mask_account
+        logger.warning(
+            f"[LIVE] place_order hedge leg resolution raised for "
+            f"{mask_account(account)} {exchange}/{symbol}: {e} — proceeding unhedged"
+        )
+        return None
+
+
+async def _al_hedge_prepare_failure_alert(
+    agent_shim, account: str, exchange: str, hedge_ctx: dict, reason: str,
+) -> None:
+    """Fire the operator-facing failure alert for a hedge leg that
+    never reached the broker at all (preflight exception/block, or a
+    DB-write failure before `chase_order()` is even called). The
+    `self_alerted=True` WARNING these three callers also log would
+    otherwise be silent to the operator — the position they asked to
+    be hedged is naked, which is exactly the gap this alert, and the
+    separate unhedged-short-option alert (Part B), both exist to
+    surface. Never raises."""
+    try:
+        from backend.shared.helpers.alert_utils import send_order_failure_alert
+        await asyncio.to_thread(
+            send_order_failure_alert,
+            account=account, symbol=hedge_ctx["symbol"], exchange=exchange,
+            side=hedge_ctx["side"], qty=hedge_ctx["qty"], mode="live",
+            source=f"agent:{getattr(agent_shim, 'slug', 'place_order_hedge')}",
+            error=f"hedge leg never placed: {reason}",
+            agent_id=getattr(agent_shim, "id", None),
+        )
+    except Exception:
+        pass
+
+
+async def _al_prepare_hedge_leg(
+    agent_shim, account: str, exchange: str, hedge_ctx: dict,
+    product: str, aggressiveness: str,
+) -> "tuple[int, object] | None":
+    """Preflight + persist the hedge leg's own AlgoOrder row.
+
+    Mirrors the parent's own preflight-then-persist sequence in
+    `_action_place_order` so a hedge leg gets the exact same G1/G2/
+    margin safety net as any other live order — this is still a real
+    broker order, placed with real money, not a cosmetic second leg.
+    Returns None on any preflight block or DB-write failure; callers
+    MUST treat None as "skip the hedge", never as a reason to touch
+    the parent's own placement.
+    """
+    from backend.shared.helpers.utils import mask_account
+    symbol = hedge_ctx["symbol"]
+    side = hedge_ctx["side"]
+    qty = hedge_ctx["qty"]
+    price = hedge_ctx["price"]
+
+    try:
+        pf = await run_preflight(account, {
+            "exchange": exchange, "tradingsymbol": symbol, "side": side,
+            "quantity": qty, "order_type": "LIMIT", "product": product,
+            "price": price or 0, "variety": "regular",
+        })
+    except Exception as e:
+        logger.warning(
+            f"[LIVE] place_order hedge leg preflight raised for "
+            f"{mask_account(account)} {exchange}/{symbol}: {e} — "
+            f"proceeding with parent order unhedged",
+            extra={"self_alerted": True},
+        )
+        await _al_hedge_prepare_failure_alert(agent_shim, account, exchange, hedge_ctx, f"preflight raised: {e}")
+        return None
+    if not pf["ok"]:
+        reasons = "; ".join(b["reason"] for b in pf["blocked"])
+        logger.warning(
+            f"[LIVE] place_order hedge leg BLOCKED for "
+            f"{mask_account(account)} {exchange}/{symbol} {side} {qty}: "
+            f"{reasons} — proceeding with parent order unhedged",
+            extra={"self_alerted": True},
+        )
+        await _al_hedge_prepare_failure_alert(agent_shim, account, exchange, hedge_ctx, f"preflight blocked: {reasons}")
+        return None
+
+    oid = await _place_order_write_intent(
+        agent_shim, pf, account, symbol, exchange, side, qty, price,
+        product=product, action_type="place_order_hedge",
+    )
+    if oid is None:
+        logger.warning(
+            f"[LIVE] place_order hedge leg AlgoOrder write failed for "
+            f"{mask_account(account)} {exchange}/{symbol} — proceeding "
+            f"with parent order unhedged",
+            extra={"self_alerted": True},
+        )
+        await _al_hedge_prepare_failure_alert(agent_shim, account, exchange, hedge_ctx, "AlgoOrder DB write failed")
+        return None
+
+    from backend.api.routes.orders_helpers import _live_chase_config
+    hedge_cfg = _live_chase_config(aggressiveness, product=product)
+    hedge_cfg.exchange = exchange or "NFO"
+    return oid, hedge_cfg
+
+
+def _al_chase_status_str(outcome) -> str:
+    """Normalize a `chase_order()` outcome (a real `ChaseResult`, a
+    test double, or a raised exception) to an uppercase status string.
+    `status` may be a real `ChaseStatus` enum member or a bare string
+    — both compare the same way via `.value` when present. An
+    exception has no status at all; it reads as the sentinel
+    `"EXCEPTION"`, never mistaken for a real `ChaseStatus` value."""
+    if isinstance(outcome, Exception):
+        return "EXCEPTION"
+    status = getattr(outcome, "status", None)
+    return str(getattr(status, "value", status) or "").upper()
+
+
+def _al_chase_outcome_is_failure(outcome) -> bool:
+    """True when a `chase_order()` call did not reach a genuinely
+    filled (full or partial) state. Covers both a raised exception AND
+    a non-raising failure `ChaseResult` — e.g. the per-(account,
+    symbol, exchange) position-resolution lock's contended-fast-fail
+    path, or ordinary attempt exhaustion, neither of which raises;
+    both leave `status` at FAILED/CANCELLED/HELD rather than
+    FILLED/PARTIAL. Used for BOTH the parent's and the hedge leg's own
+    outcome — it is not hedge-specific despite most of its callers
+    being in this file's hedge section."""
+    return _al_chase_status_str(outcome) not in ("FILLED", "PARTIAL")
+
+
+async def _al_handle_hedge_chase_outcome(
+    agent_shim, account: str, hedge_ctx: dict, outcome,
+) -> None:
+    """Log + alert (never raise) when the hedge leg's own `chase_order()`
+    call did not fill. The parent's own result is `_action_place_order`'s
+    sole success/failure signal (operator decision — see Part A design
+    in `.claude/PLAN.md`): a hedge-leg failure never turns a correctly
+    placed parent order into a reported action failure. It still needs
+    to reach the operator promptly, since it leaves an intended-to-be-
+    hedged position naked — the same gap the unhedged-short-option
+    alert (Part B) independently exists to catch."""
+    if not _al_chase_outcome_is_failure(outcome):
+        return
+    from backend.shared.helpers.utils import mask_account
+    symbol = hedge_ctx["symbol"]
+    exchange = hedge_ctx["exchange"]
+    side = hedge_ctx["side"]
+    qty = hedge_ctx["qty"]
+    logger.warning(
+        f"[LIVE] place_order hedge leg chase failed for "
+        f"{mask_account(account)} {exchange}/{symbol} {side} {qty}: "
+        f"{outcome} — parent order placed successfully, position may "
+        f"be naked",
+        extra={"self_alerted": True},
+    )
+    try:
+        from backend.shared.helpers.alert_utils import send_order_failure_alert
+        await asyncio.to_thread(
+            send_order_failure_alert,
+            account=account, symbol=symbol, exchange=exchange,
+            side=side, qty=qty, mode="live",
+            source=f"agent:{getattr(agent_shim, 'slug', 'place_order_hedge')}",
+            error=f"hedge leg chase failed: {outcome}",
+            agent_id=getattr(agent_shim, "id", None),
+        )
+    except Exception:
+        pass
+
+
+def _al_detect_hedge_pairing_issue(parent_outcome, hedge_outcome) -> "str | None":
+    """After both legs' `chase_order()` calls have settled, detect the
+    two shapes where the parent/hedge pairing itself is wrong even
+    though neither leg necessarily "failed" in isolation:
+
+      - The parent did not fully fill (any status other than FILLED,
+        including an exception or PARTIAL) while the hedge leg IS live
+        (FILLED or PARTIAL) — the hedge is now an orphan, naked
+        position with no (or a smaller) parent position behind it.
+      - The hedge leg itself is only PARTIAL — it covers less than the
+        full intended hedge quantity, leaving part of the parent's own
+        position unhedged even when the parent filled completely.
+
+    Returns a human-readable reason, or None when the pairing is fine.
+    Deliberately does NOT re-alert the plain "hedge is dead"
+    (FAILED/CANCELLED/HELD/exception) case — `_al_handle_hedge_chase_
+    outcome` already covers that; this function only ever fires when
+    the hedge leg is otherwise reported live.
+    """
+    hedge_status = _al_chase_status_str(hedge_outcome)
+    hedge_is_live = hedge_status in ("FILLED", "PARTIAL")
+    parent_filled_fully = _al_chase_status_str(parent_outcome) == "FILLED"
+
+    if not parent_filled_fully and hedge_is_live:
+        return (
+            f"parent order did not fully fill (status={_al_chase_status_str(parent_outcome)}) "
+            f"while the hedge leg is live (status={hedge_status}) — hedge may now be "
+            f"unmatched or orphaned"
+        )
+    if hedge_status == "PARTIAL":
+        return "hedge leg only partially filled — part of the intended hedge coverage is missing"
+    return None
+
+
+async def _al_alert_hedge_pairing_issue(
+    agent_shim, account: str, symbol: str, exchange: str, side: str, qty: int, reason: str,
+) -> None:
+    """Fire the operator-facing alert for an orphaned/under-covered
+    hedge pairing (see `_al_detect_hedge_pairing_issue`). Scoped to the
+    PARENT order's own identity — that is the position the operator
+    actually placed and is now tracking, whether or not it filled.
+    Never raises."""
+    from backend.shared.helpers.utils import mask_account
+    logger.warning(
+        f"[LIVE] place_order hedge pairing issue for "
+        f"{mask_account(account)} {exchange}/{symbol} {side} {qty}: {reason}",
+        extra={"self_alerted": True},
+    )
+    try:
+        from backend.shared.helpers.alert_utils import send_order_failure_alert
+        await asyncio.to_thread(
+            send_order_failure_alert,
+            account=account, symbol=symbol, exchange=exchange,
+            side=side, qty=qty, mode="live",
+            source=f"agent:{getattr(agent_shim, 'slug', 'place_order_hedge')}",
+            error=f"hedge pairing issue: {reason}",
+            agent_id=getattr(agent_shim, "id", None),
+        )
+    except Exception:
+        pass
+
+
 async def _action_place_order(agent, context: dict, params: dict):
     """
     Place an order using the chase engine (live mode).
@@ -360,6 +821,17 @@ async def _action_place_order(agent, context: dict, params: dict):
     cadence. ('low' is NOT byte-identical here — it's the slower/patient
     tier, interval=30/step=0.05/attempts=30 — so it is intentionally not
     used as the silent default.)
+
+    `params.hedge_pct` (Part A, 2026-11): when set and `symbol` parses
+    as an NFO option, `_al_resolve_hedge_plan`/`_al_prepare_hedge_leg`
+    stage a second order (further-OTM, opposite side, same option
+    type) and both legs' `chase_order()` calls run CONCURRENTLY via
+    `asyncio.gather` — a sequential await would leave the position
+    naked for the parent's entire chase window, defeating the hedge's
+    purpose. A hedge-resolution failure (no match, closing order,
+    non-option symbol, preflight block, DB-write failure) never blocks
+    or delays the parent order; omitting `hedge_pct` entirely is
+    byte-identical to this function's pre-hedge behavior.
     """
     import asyncio
     from backend.api.algo.chase import chase_order
@@ -421,27 +893,67 @@ async def _action_place_order(agent, context: dict, params: dict):
     ).lower()
     cfg = _live_chase_config(aggressiveness, product=product)
     cfg.exchange = exchange or "NFO"
-    try:
-        result = await chase_order(
-            account=account, symbol=symbol,
-            transaction_type=side, quantity=qty,
-            cfg=cfg,
-            algo_order_id=_oid,
+
+    hedge_ctx = await _al_resolve_hedge_plan(
+        agent, context, account, symbol, exchange, side, qty, price,
+        params.get("hedge_pct"),
+    )
+    hedge_prepared = None
+    if hedge_ctx is not None:
+        hedge_prepared = await _al_prepare_hedge_leg(
+            _shim, account, exchange, hedge_ctx, product, aggressiveness,
+        )
+
+    parent_coro = chase_order(
+        account=account, symbol=symbol,
+        transaction_type=side, quantity=qty,
+        cfg=cfg,
+        algo_order_id=_oid,
+        agent_id=_shim.id,
+    )
+
+    if hedge_prepared is None:
+        try:
+            result = await parent_coro
+        except Exception as e:
+            await _place_order_on_failure(e, context, account, symbol, exchange, side, qty, price, product)
+            raise
+    else:
+        hedge_oid, hedge_cfg = hedge_prepared
+        hedge_coro = chase_order(
+            account=account, symbol=hedge_ctx["symbol"],
+            transaction_type=hedge_ctx["side"], quantity=hedge_ctx["qty"],
+            cfg=hedge_cfg,
+            algo_order_id=hedge_oid,
             agent_id=_shim.id,
         )
-        # Stash the real chase outcome into context (not a changed return
-        # contract — a side effect only) so actions.py's notify wrapper can
-        # describe a successful-but-not-fully-filled order (e.g. PARTIAL)
-        # accurately instead of a blanket "placed". Mirrors the existing
-        # context["agent_kind"] stash-in-context pattern (actions.py:697).
-        status = getattr(result, "status", None)
-        context["_action_result_detail"] = {
-            "status": status.value if hasattr(status, "value") else str(status),
-            "detail": getattr(result, "detail", ""),
-        }
-    except Exception as e:
-        await _place_order_on_failure(e, context, account, symbol, exchange, side, qty, price, product)
-        raise
+        # return_exceptions=True — a hedge-leg failure must never
+        # propagate through this gather and abort the parent's own
+        # chase; each outcome is examined independently below.
+        parent_outcome, hedge_outcome = await asyncio.gather(
+            parent_coro, hedge_coro, return_exceptions=True,
+        )
+        await _al_handle_hedge_chase_outcome(_shim, account, hedge_ctx, hedge_outcome)
+        pairing_issue = _al_detect_hedge_pairing_issue(parent_outcome, hedge_outcome)
+        if pairing_issue:
+            await _al_alert_hedge_pairing_issue(_shim, account, symbol, exchange, side, qty, pairing_issue)
+        if isinstance(parent_outcome, Exception):
+            await _place_order_on_failure(
+                parent_outcome, context, account, symbol, exchange, side, qty, price, product,
+            )
+            raise parent_outcome
+        result = parent_outcome
+
+    # Stash the real chase outcome into context (not a changed return
+    # contract — a side effect only) so actions.py's notify wrapper can
+    # describe a successful-but-not-fully-filled order (e.g. PARTIAL)
+    # accurately instead of a blanket "placed". Mirrors the existing
+    # context["agent_kind"] stash-in-context pattern (actions.py:697).
+    status = getattr(result, "status", None)
+    context["_action_result_detail"] = {
+        "status": status.value if hasattr(status, "value") else str(status),
+        "detail": getattr(result, "detail", ""),
+    }
 
 
 async def _close_position_preflight_block(

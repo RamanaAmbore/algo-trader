@@ -238,15 +238,25 @@ def _live_place_order_params_schema() -> dict:
 
 
 class TestPlaceOrderParamsSchemaParity:
+    # Amendment (Part A, 2026-11, hedge leg): `hedge_pct` is a SECOND new
+    # field, added after Phase 2 (and after `chase_level`) — the DSL
+    # equivalent of the Chain tab's own Hedge checkbox, not part of the
+    # order/agent grammar unification this file's own docstring
+    # describes. Both "except *_is_new" tests below now exclude it
+    # explicitly, by name, rather than widening to "any extra field is
+    # fine" — a THIRD unexpected field would still fail these tests,
+    # same as a regression in `chase_level` would have before this.
     def test_every_pre_phase2_field_unchanged_except_chase_level_is_new(self):
         live = _live_place_order_params_schema()
-        live_minus_chase_level = {k: v for k, v in live.items() if k != "chase_level"}
-        assert live_minus_chase_level == _PRE_PHASE2_PLACE_ORDER_PARAMS_SCHEMA
+        live_minus_new_fields = {
+            k: v for k, v in live.items() if k not in ("chase_level", "hedge_pct")
+        }
+        assert live_minus_new_fields == _PRE_PHASE2_PLACE_ORDER_PARAMS_SCHEMA
 
     def test_chase_level_is_the_only_new_field(self):
         live = _live_place_order_params_schema()
         added = set(live.keys()) - set(_PRE_PHASE2_PLACE_ORDER_PARAMS_SCHEMA.keys())
-        assert added == {"chase_level"}
+        assert added == {"chase_level", "hedge_pct"}
 
     def test_chase_level_schema_shape(self):
         live = _live_place_order_params_schema()
@@ -255,6 +265,13 @@ class TestPlaceOrderParamsSchemaParity:
         assert live["chase_level"]["required"] is False
         assert "default" not in live["chase_level"]
         assert isinstance(live["chase_level"]["description"], str) and live["chase_level"]["description"]
+
+    def test_hedge_pct_schema_shape(self):
+        live = _live_place_order_params_schema()
+        assert live["hedge_pct"]["type"] == "number"
+        assert live["hedge_pct"]["required"] is False
+        assert "default" not in live["hedge_pct"]
+        assert isinstance(live["hedge_pct"]["description"], str) and live["hedge_pct"]["description"]
 
     @pytest.mark.parametrize("field,ref_key", [
         ("qty", "qty"),
