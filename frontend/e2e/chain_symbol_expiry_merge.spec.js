@@ -28,17 +28,17 @@
  *     the Chain tab at its OUTER gate, removing the dead empty `<div>`
  *     that used to sit between `.oes-picker` and `.oct-toolbar` once
  *     both its children had already individually moved off Chain.
- *   - `.oct-toolbar` never wraps (`flex-wrap: nowrap`, was `wrap`):
- *     `.oct-sym-expiry` is the one flexible/shrinkable half of the row
- *     (reuses `.oes-sym-pick`'s own existing `flex: 1 1 0; min-width:
- *     0;`), and `.oct-toolbar-trailing` (DTE chip through DRAFT) holds
- *     every fixed-size control at `flex-shrink: 0`, scrolling
- *     horizontally (`overflow-x: auto`) instead of squeezing any one
- *     of them illegible — same "shrink the flexible element, scroll
- *     the rest, never wrap" convention already used for the page
- *     header (AlgoTimestamp). This makes the single-row outcome a
- *     structural guarantee (enforced by flexbox layout), not merely a
- *     coincidence of one or two tested viewport widths.
+ *   - (2026-11-25/26 original behaviour, REVERSED 2026-11-26 — see the
+ *     amendment below) `.oct-toolbar` never wrapped (`flex-wrap:
+ *     nowrap`, was `wrap`): `.oct-sym-expiry` was the one flexible/
+ *     shrinkable half of the row, and `.oct-toolbar-trailing` (DTE chip
+ *     through DRAFT) held every fixed-size control at `flex-shrink: 0`,
+ *     scrolling horizontally (`overflow-x: auto`) instead of squeezing
+ *     any one of them illegible — "shrink the flexible element, scroll
+ *     the rest, never wrap", same convention as the page header
+ *     (AlgoTimestamp). This made the single-row outcome a structural
+ *     guarantee (enforced by flexbox layout), not merely a coincidence
+ *     of one or two tested viewport widths.
  *
  * Test shape — source-scan (static, run on every push, no browser/
  * backend needed) covers the structural/CSS guarantees exhaustively;
@@ -49,6 +49,22 @@
  * block, `algo_footer_centering_and_chain_toolbar_alignment.spec.js`)
  * is to drive the real Chain tab via `/orders`'s inline SymbolPanel —
  * reused here rather than invented fresh.
+ *
+ * AMENDED 2026-11-26 (same day, separate operator instruction: "in
+ * chain keep element after symbol expiry in the next row") — the
+ * single-row-via-nowrap guarantee above is REVERSED. `.oct-toolbar` is
+ * now `flex-wrap: wrap`, and `.oct-toolbar-trailing` forces itself onto
+ * a fresh second row via `flex: 0 1 100%` (a 100%-basis flex item
+ * always starts a new line in a wrapping container). `.oct-sym-expiry`
+ * is unchanged (`flex: 0 0 auto`) and alone occupies row 1. This is NOT
+ * a regression of the "dead empty row" bug the 2026-11-25 merge
+ * removed — that bug was an empty `<div>` with nothing in it;
+ * `.oct-toolbar-trailing` always has real content (DRAFT renders
+ * unconditionally at minimum), so a non-empty second row here is the
+ * explicit, current intent. The tests below that asserted `nowrap`/
+ * single-row/`flex: 0 1 auto` on `.oct-toolbar-trailing` were updated
+ * in place to assert the new two-row shape instead of being left to
+ * contradict the shipped code — see each test's own inline note.
  */
 
 import { test, expect } from '@playwright/test';
@@ -60,6 +76,18 @@ const BASE = process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:5174';
 const DIR = import.meta.dirname ?? new URL('.', import.meta.url).pathname;
 const CHAIN_TAB_PATH = path.resolve(DIR, '../src/lib/order/OptionChainTab.svelte');
 const SYMBOL_PANEL_PATH = path.resolve(DIR, '../src/lib/SymbolPanel.svelte');
+
+/**
+ * Strips `/* ... *\/` block comments before matching a CSS rule's actual
+ * declarations. `.oct-toolbar`'s own in-rule comment legitimately quotes
+ * its OLD `flex-wrap: nowrap` value for history (2026-11-26 reversal),
+ * which would otherwise false-fail a naive "this value must not appear
+ * anywhere in the rule" assertion against the rule's full text.
+ * @param {string} rule
+ */
+function _declsOnly(rule) {
+  return rule.replace(/\/\*[\s\S]*?\*\//g, '');
+}
 
 // ──────────────────────────────────────────────────────────────────
 // Source-scan — structural/CSS guarantees (no browser needed)
@@ -131,11 +159,18 @@ test.describe('Symbol+Expiry merge — OptionChainTab.svelte structure', () => {
     }
   });
 
-  test('.oct-toolbar is flex-wrap: nowrap (was wrap) — the row never wraps to a second line', () => {
+  // AMENDED 2026-11-26 (operator: "in chain keep element after symbol
+  // expiry in the next row") — reverses the `nowrap` guarantee this
+  // test used to pin. `.oct-toolbar` is now `flex-wrap: wrap`, so
+  // `.oct-toolbar-trailing` can (and, per its own `flex: 0 1 100%`
+  // basis — see the dedicated test below — always does) start a fresh
+  // second row below `.oct-sym-expiry`.
+  test('.oct-toolbar is flex-wrap: wrap (was nowrap) — .oct-toolbar-trailing is allowed to start a second row', () => {
     const rule = chainSrc.match(/\.oct-toolbar\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
     expect(rule, '.oct-toolbar rule').not.toBe('');
-    expect(rule).toMatch(/flex-wrap:\s*nowrap/);
-    expect(rule).not.toMatch(/flex-wrap:\s*wrap;/);
+    const decls = _declsOnly(rule);
+    expect(decls).toMatch(/flex-wrap:\s*wrap;/);
+    expect(decls).not.toMatch(/flex-wrap:\s*nowrap/);
   });
 
   test('.oct-toolbar still scopes --ctl-h and the same 0.4rem left-padding convention (pre-existing invariants preserved)', () => {
@@ -196,10 +231,19 @@ test.describe('Symbol+Expiry merge — OptionChainTab.svelte structure', () => {
     expect(rule).toMatch(/background-image:\s*none/);
   });
 
-  test('.oct-toolbar-trailing is also flex: 0 1 auto (no grow) — the whole row never fills width by expanding a middle gap', () => {
+  // AMENDED 2026-11-26 — `flex: 0 1 auto` (shared row with
+  // `.oct-sym-expiry`) is replaced by `flex: 0 1 100%`. A 100%-basis
+  // flex item in a `flex-wrap: wrap` container (`.oct-toolbar`, see its
+  // own test above) always starts a fresh line — this is the mechanism
+  // that forces `.oct-toolbar-trailing` onto its own row below "SYMBOL
+  // (EXPIRY)", not an accident of viewport width. Shrink stays 1 (not
+  // 0), so the row can still shrink as a whole; `overflow-x: auto`
+  // below is the real squeeze-absorber, same as before this change.
+  test('.oct-toolbar-trailing is flex: 0 1 100% (was 0 1 auto) — the 100% basis forces it onto its own row below .oct-sym-expiry', () => {
     const rule = chainSrc.match(/\.oct-toolbar-trailing\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
     expect(rule, '.oct-toolbar-trailing rule').not.toBe('');
-    expect(rule).toMatch(/flex:\s*0 1 auto/);
+    expect(rule).toMatch(/flex:\s*0 1 100%/);
+    expect(rule).not.toMatch(/flex:\s*0 1 auto/);
   });
 
   test('.oct-toolbar-trailing scrolls horizontally and holds every child at flex-shrink: 0', () => {
@@ -444,32 +488,43 @@ async function _chainChromeElements(page) {
 }
 
 /**
- * Every visible, non-zero-size direct-descendant-ish control inside
- * `.oct-toolbar` that the operator can see at once. Measures mutual
- * vertical overlap (max(top) < min(bottom)) rather than equal Y —
- * `align-items: center` legitimately gives shorter/taller children
- * different `top` values while still sharing one visual row.
+ * AMENDED 2026-11-26 (operator: "in chain keep element after symbol
+ * expiry in the next row") — `.oct-toolbar-trailing` is now forced onto
+ * its own row below `.oct-sym-expiry`, so this helper no longer measures
+ * "does everything share one row" (it no longer does, by design).
+ * It now splits the toolbar's controls into row-1 candidates
+ * (`.oes-sym-pick-chain`, `.oct-expiry-pick` — both live INSIDE
+ * `.oct-sym-expiry`) and row-2 candidates (every direct child of
+ * `.oct-toolbar-trailing`: DTE chip through DRAFT), and reports both
+ * groups' own mutual vertical overlap plus each group's own top/bottom
+ * bounds — so a test can assert "row 1 is one row, row 2 is one row,
+ * and row 2 sits entirely below row 1" instead of "everything is one
+ * row". Still measures mutual vertical overlap (max(top) < min(bottom))
+ * rather than equal Y, for the same `align-items: center` reason as
+ * before — different-height siblings can still share one visual row.
  * @param {import('@playwright/test').Page} page
  */
 async function _toolbarRowOverlap(page) {
   return page.evaluate(() => {
     const toolbar = document.querySelector('.oct-toolbar');
     if (!toolbar) return null;
-    const candidates = [
-      '.oes-sym-pick-chain', '.oct-expiry-pick', '.oct-expiry-dte',
-      '.oct-spread-field', '.oct-hedge-toggle', '.oes-chase-cluster',
-      '.ot-draft-toggle',
+    const row1Sel = ['.oes-sym-pick-chain', '.oct-expiry-pick'];
+    const row2Sel = [
+      '.oct-expiry-dte', '.oct-spread-field', '.oct-hedge-toggle',
+      '.oes-chase-cluster', '.ot-draft-toggle',
     ];
-    const boxes = [];
-    for (const sel of candidates) {
+    const boxOf = (sel) => {
       const el = toolbar.querySelector(sel);
-      if (!el) continue;
+      if (!el) return null;
       const r = el.getBoundingClientRect();
-      if (r.width > 0 && r.height > 0) boxes.push({ sel, top: r.top, bottom: r.bottom });
-    }
+      return (r.width > 0 && r.height > 0) ? { sel, top: r.top, bottom: r.bottom } : null;
+    };
+    const row1Boxes = row1Sel.map(boxOf).filter(Boolean);
+    const row2Boxes = row2Sel.map(boxOf).filter(Boolean);
     const toolbarBox = toolbar.getBoundingClientRect();
     return {
-      boxes,
+      row1Boxes,
+      row2Boxes,
       toolbarHeight: toolbarBox.height,
       overflowsX: toolbar.scrollWidth > toolbar.clientWidth + 1,
     };
@@ -502,7 +557,7 @@ for (const [label, viewport] of [
   ['desktop (1440px)', { width: 1440, height: 900 }],
   ['mobile (370px)', { width: 370, height: 800 }],
 ]) {
-  test.describe(`Live: Chain toolbar is a single row at ${label}`, () => {
+  test.describe(`Live: Chain toolbar — "SYMBOL (EXPIRY)" row 1, trailing cluster row 2, at ${label}`, () => {
     test.use({ viewport });
 
     test('Symbol and Expiry render as one combined "SYMBOL (EXPIRY)" element inside .oct-sym-expiry', async ({ page }) => {
@@ -661,7 +716,13 @@ for (const [label, viewport] of [
         .toBeLessThan(3);
     });
 
-    test('the toolbar occupies exactly one visible row — every visible control vertically overlaps', async ({ page }) => {
+    // AMENDED 2026-11-26 (operator: "in chain keep element after symbol
+    // expiry in the next row") — this used to pin "everything shares one
+    // row". It now pins the opposite, deliberate shape: `.oct-sym-expiry`
+    // (row 1) and `.oct-toolbar-trailing` (row 2, DTE chip through DRAFT)
+    // are each internally a single row, and row 2 sits entirely BELOW
+    // row 1 — never overlapping it, never above it.
+    test('"SYMBOL (EXPIRY)" is row 1 and the trailing cluster (DTE→DRAFT) is row 2, directly below it — not a single shared row', async ({ page }) => {
       await loginAsAdmin(page);
       await _openNiftyChain(page);
 
@@ -672,30 +733,42 @@ for (const [label, viewport] of [
 
       const info = await _toolbarRowOverlap(page);
       expect(info, '.oct-toolbar overlap info').toBeTruthy();
-      expect(info.boxes.length, 'at least the symbol + expiry controls must be visible').toBeGreaterThanOrEqual(2);
+      expect(info.row1Boxes.length, 'row 1 (Symbol+Expiry) controls must be visible').toBeGreaterThanOrEqual(1);
+      expect(info.row2Boxes.length, 'row 2 (trailing cluster) controls must be visible').toBeGreaterThanOrEqual(1);
 
-      const maxTop = Math.max(...info.boxes.map((b) => b.top));
-      const minBottom = Math.min(...info.boxes.map((b) => b.bottom));
-      expect(maxTop, `toolbar controls do not share one row: ${JSON.stringify(info.boxes)}`)
-        .toBeLessThan(minBottom);
+      // Row 1's own controls mutually overlap — they're one visual row.
+      const row1MaxTop = Math.max(...info.row1Boxes.map((b) => b.top));
+      const row1MinBottom = Math.min(...info.row1Boxes.map((b) => b.bottom));
+      expect(row1MaxTop, `row 1 controls do not share one row: ${JSON.stringify(info.row1Boxes)}`)
+        .toBeLessThan(row1MinBottom);
 
-      // A real single-row guarantee, not an accident of exactly-fitting
-      // content — the toolbar's own height should track one control's
-      // height (~1.4rem tier), never ~2x it (which would mean a second
-      // visible row silently formed).
-      expect(info.toolbarHeight).toBeLessThan(60);
+      // Row 2's own controls mutually overlap — they're one visual row too.
+      const row2MaxTop = Math.max(...info.row2Boxes.map((b) => b.top));
+      const row2MinBottom = Math.min(...info.row2Boxes.map((b) => b.bottom));
+      expect(row2MaxTop, `row 2 controls do not share one row: ${JSON.stringify(info.row2Boxes)}`)
+        .toBeLessThan(row2MinBottom);
 
-      // No dead-space drift — `.oct-sym-expiry` must never grow to
-      // absorb leftover row width (which would open a visible gap
-      // between the closing ")" and the DTE chip, pushing the whole
-      // trailing cluster including DRAFT toward the right edge).
+      // The two rows do NOT share vertical space — row 2 starts at or
+      // after row 1 ends. This is the actual "own row" assertion.
+      expect(row2MaxTop, `row 2 (top=${row2MaxTop}) overlaps row 1 (bottom=${row1MinBottom}) instead of sitting below it`)
+        .toBeGreaterThanOrEqual(row1MinBottom - 1);
+
+      // The combined toolbar height now tracks TWO control-height tiers
+      // (~1.4rem each) plus the inter-row gap, not one — the inverse of
+      // the old single-row ceiling this test used to assert.
+      expect(info.toolbarHeight).toBeGreaterThan(30);
+
+      // "DRAFT stays left-aligned" is preserved across the row break —
+      // row 2's own left edge should sit close to row 1's left edge
+      // (both anchored to the toolbar's own left padding), not drift
+      // rightward the way a dead-space gap on a SHARED row used to risk.
       const symExpiryBox = await page.locator('.oct-sym-expiry').first().boundingBox();
       const trailingBox = await page.locator('.oct-toolbar-trailing').first().boundingBox();
       expect(symExpiryBox, '.oct-sym-expiry box').toBeTruthy();
       expect(trailingBox, '.oct-toolbar-trailing box').toBeTruthy();
-      const gap = trailingBox.x - (symExpiryBox.x + symExpiryBox.width);
-      expect(gap, `gap between Symbol(Expiry) and the trailing cluster: ${gap.toFixed(1)}px`)
-        .toBeLessThan(32);
+      const leftDrift = Math.abs(trailingBox.x - symExpiryBox.x);
+      expect(leftDrift, `row 2's left edge (${trailingBox.x}px) drifted from row 1's left edge (${symExpiryBox.x}px) by ${leftDrift.toFixed(1)}px`)
+        .toBeLessThan(4);
     });
 
     test('both the Symbol search and the Expiry dropdown remain independently clickable/functional after the merge', async ({ page }) => {

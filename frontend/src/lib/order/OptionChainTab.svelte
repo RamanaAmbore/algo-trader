@@ -1719,16 +1719,31 @@
     /* Dashed border-bottom removed (2026-09-30, operator: "the dotted
        line is not needed") — it sat directly above the CE/Strike/PE
        header row and read as a stray second separator. */
-    /* Symbol+Expiry merge (2026-11-25) — this row now also carries the
-       Symbol picker (via the `symbolPicker` snippet prop), so it must
-       NEVER wrap to a second visible row (that would reintroduce the
-       exact "dead empty row" layout this merge removes). Was `wrap`;
-       now `nowrap` — the two direct children (`.oct-sym-expiry`,
-       `.oct-toolbar-trailing`) absorb narrow-viewport pressure by
-       shrinking/scrolling internally instead (see their own rules
-       below), same "shrink the flexible element, scroll the rest"
-       pattern already used for the page header (AlgoTimestamp). */
-    flex-wrap: nowrap;
+    /* Symbol+Expiry merge (2026-11-25) made this row carry the Symbol
+       picker too (via the `symbolPicker` snippet prop) and, the next
+       day, set `flex-wrap: nowrap` so `.oct-toolbar-trailing` (DTE chip
+       through DRAFT) could never wrap onto a second visible row — at
+       the time that would have reintroduced the "dead empty row" bug
+       the same merge had just removed (a row with NOTHING in it,
+       sitting between `.oes-picker` and this toolbar).
+
+       Reversed 2026-11-26 (operator: "in chain keep element after
+       symbol expiry in the next row") — the operator now explicitly
+       wants `.oct-toolbar-trailing` on its OWN row below "SYMBOL
+       (EXPIRY)", for better legibility on narrow/mobile viewports. This
+       is NOT a regression of the dead-row bug above: that bug was about
+       an EMPTY second row; `.oct-toolbar-trailing` always has real
+       content (DTE chip, Spread%, HEDGE fields, CHASE, and the DRAFT
+       `<label>` at minimum — DRAFT renders unconditionally, so this row
+       is never empty). `flex-wrap: wrap` on the container, plus
+       `.oct-toolbar-trailing`'s own `flex: 0 1 100%` (100% basis forces
+       a flex item onto a fresh line in a wrapping container, the
+       standard CSS technique for "always start the next row" without a
+       second DOM container) — `.oct-sym-expiry` keeps its own
+       `flex: 0 0 auto` unchanged, so it alone occupies row 1.
+       `.oct-toolbar-trailing`'s pre-existing `overflow-x: auto` still
+       absorbs any squeeze on its own, now full-width, row. */
+    flex-wrap: wrap;
     min-width: 0;
   }
   /* Expiry Select trigger loses its OWN border/background (2026-11-26
@@ -1778,23 +1793,26 @@
      Confirmed live before shipping: at 370px with a 9-char symbol
      ("BANKNIFTY"), the old `min-width: 0` let the chip compress to
      130px while its own children still needed 186px, spilling 56px of
-     content outside the drawn border. `.oct-toolbar-trailing`
-     (DTE chip through DRAFT) already has its own `overflow-x: auto` for
-     exactly this squeeze — it now absorbs ALL of it, not just the
-     overflow past whatever `.oct-sym-expiry` itself couldn't shrink to.
+     content outside the drawn border.
+     `.oct-toolbar-trailing` (DTE chip through DRAFT) moved to its OWN
+     row below this one (2026-11-26, see `.oct-toolbar`'s own comment
+     for why) — it no longer shares a row with `.oct-sym-expiry`, so it
+     no longer absorbs this chip's squeeze the way it used to. This chip
+     must fit row 1 on its own strength at every viewport; it was
+     already confirmed to do so down to 370px with a 9-char symbol (see
+     the live test in chain_symbol_expiry_merge.spec.js).
      Deliberately NO `flex-grow` here either (`flex: 0 0 auto`, not
-     `1 0 auto`) — growing this box would absorb leftover row width on a
-     wide desktop viewport that neither child actually consumes (the
+     `1 0 auto`) — growing this box would absorb leftover row-1 width on
+     a wide desktop viewport that neither child actually consumes (the
      Symbol snippet caps at 20rem, the Expiry picker doesn't grow
      either), leaving dead space INSIDE this box between the closing ")"
-     and `.oct-toolbar-trailing`'s first control — visually pushing the
-     DTE chip through DRAFT toward the right edge, undoing the
-     operator's "DRAFT stays left-aligned, doesn't shift" decision from
-     the shared CHASE/DRAFT row this merge absorbed CHASE out of. With
-     no grow on EITHER direct child of `.oct-toolbar`
-     (`.oct-toolbar-trailing` is `flex: 0 1 auto`), any leftover width on
-     a wide viewport simply trails after the whole row, matching the
-     pre-merge layout.
+     and the chip's own right edge. This no longer risks pushing
+     `.oct-toolbar-trailing` rightward the way it did pre-2026-11-26,
+     since trailing is on its own row now regardless of row 1's leftover
+     width (it always starts a fresh line via its own `flex: 0 1 100%`,
+     see `.oct-toolbar`'s comment above) — but the no-grow rule is kept
+     anyway, since growing this chip for no reason is still wrong on its
+     own terms.
      No `overflow` set here (stays the implicit `visible`) — the Symbol
      search box's own results dropdown (`SymbolSearchInput.svelte`'s
      `.ssi-drop`) is `position: absolute` relative to its own wrapper,
@@ -1846,12 +1864,25 @@
      in-place (non-`fixed`) popup — Select's own dropdown panel is
      `position: fixed` (floatingPanel.js) and InfoHint's popup is also
      `position: fixed` — both escape this container's overflow clipping
-     regardless of scroll position, so `overflow-x: auto` here is safe. */
+     regardless of scroll position, so `overflow-x: auto` here is safe.
+
+     Own row, below "SYMBOL (EXPIRY)" (2026-11-26, operator: "in chain
+     keep element after symbol expiry in the next row"; was a sibling
+     on the SAME row as `.oct-sym-expiry`, `flex: 0 1 auto`) —
+     `flex: 0 1 100%` sets a 100%-basis, which in a `flex-wrap: wrap`
+     container (`.oct-toolbar`, see its own comment) always forces this
+     item onto a fresh line, regardless of how much width row 1's own
+     content (`.oct-sym-expiry`) actually used. `flex-shrink: 1` is kept
+     (not 0) so this row can still shrink as a whole if the viewport is
+     narrower than its own content needs — `overflow-x: auto` below is
+     the real mechanism that absorbs that squeeze, same as before this
+     change; shrink on the container itself is just the other half of
+     that same contract. */
   .oct-toolbar-trailing {
     display: flex;
     align-items: center;
     gap: 0.4rem;
-    flex: 0 1 auto;
+    flex: 0 1 100%;
     min-width: 0;
     flex-wrap: nowrap;
     overflow-x: auto;
