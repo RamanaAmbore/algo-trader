@@ -23,6 +23,10 @@ Tools (Phase 1, read-only):
     get_recent_news, get_option_analytics, list_agents,
     save_research_thread, get_research_thread
 
+Tools (multi-day history, read-only, wraps /api/admin/history/*):
+    get_order_history, get_trade_history, get_funds_history,
+    get_realized_pnl_history
+
 Run:
     python -m backend.mcp.kite_server
 """
@@ -926,6 +930,192 @@ async def get_order_events(order_id: int) -> dict:
     """
     rows = await _get(f"/api/orders/{int(order_id)}/events")
     return {"events": rows or [], "count": len(rows or [])}
+
+
+# ── Multi-day history (orders / trades / funds / realized P&L) ────────
+# Wraps the four `/api/admin/history/*` endpoints (`backend/api/routes/
+# history.py`) — the forensic surface the operator's own admin UI uses
+# for "what happened over the last N days", distinct from the
+# live/current-session tools above (get_positions/get_holdings) and
+# from get_pnl_attribution (per-agent attribution, not a row-level
+# ledger). All four are cap-gated `view_audit` server-side
+# (designated/risk/admin) — the MCP server's own bound credential
+# already satisfies this, same as the admin-level place_order/
+# cancel_order/activate_agent tools above.
+
+@app.tool()
+async def get_order_history(
+    from_date: str | None = None,
+    to_date: str | None = None,
+    accounts: str | None = None,
+    symbols: str | None = None,
+    status: str | None = None,
+    mode: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict:
+    """Historical order book — every AlgoOrder placed in a date range,
+    not just today's. Use this for "show my orders from last week" or
+    "how many of my CRUDEOIL orders got rejected in October".
+
+    Date filter is on `created_at`, so an order shows up for the day it
+    was PLACED, even if it later filled or was cancelled on a different
+    day.
+
+    Args:
+        from_date: 'YYYY-MM-DD', inclusive. Defaults to 30 days ago.
+        to_date:   'YYYY-MM-DD', inclusive. Defaults to today.
+        accounts:  Comma-separated broker account codes (e.g.
+            "ZG0790,DH3747"). Omit for all accounts.
+        symbols:   Comma-separated tradingsymbols. Omit for all symbols.
+        status:    OPEN / FILLED / CANCELLED / REJECTED / UNFILLED.
+        mode:      live / paper / sim / replay / shadow.
+        limit:     Max rows (default 50, max 500).
+        offset:    Pagination offset.
+
+    Returns:
+        dict with `rows` list (newest-first) — each row carries id,
+        created_at, account, symbol, exchange, transaction_type,
+        quantity, filled_quantity, initial_price, fill_price, slippage,
+        status, mode, engine, broker_order_id, request_id, detail —
+        plus `total` (matching the filter, not just this page),
+        `counts` (a status histogram over the full filtered set),
+        `limit`, `offset`.
+    """
+    params: dict[str, Any] = {"limit": max(1, min(int(limit or 50), 500)),
+                               "offset": max(0, int(offset or 0))}
+    if from_date: params["from_date"] = from_date
+    if to_date:   params["to_date"]   = to_date
+    if accounts:  params["accounts"]  = accounts
+    if symbols:   params["symbols"]   = symbols
+    if status:    params["status"]    = status
+    if mode:      params["mode"]      = mode
+    res = await _get("/api/admin/history/orders", params)
+    return res or {"rows": [], "total": 0, "limit": params["limit"],
+                   "offset": params["offset"], "counts": {}}
+
+
+@app.tool()
+async def get_trade_history(
+    from_date: str | None = None,
+    to_date: str | None = None,
+    accounts: str | None = None,
+    symbols: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict:
+    """Historical per-symbol trade/position ledger — one row per
+    (date, account, symbol) from the daily settlement snapshot
+    (`daily_book` kind='trades'). This is the closest thing to
+    "what did I hold on date X": qty, average cost, and notional per
+    symbol per day, across the whole account — not a per-fill log (use
+    get_order_history for that) and not a live position (use
+    get_positions for that).
+
+    Args:
+        from_date: 'YYYY-MM-DD', inclusive. Defaults to 30 days ago.
+        to_date:   'YYYY-MM-DD', inclusive. Defaults to today.
+        accounts:  Comma-separated broker account codes. Omit for all.
+        symbols:   Comma-separated tradingsymbols. Omit for all symbols.
+        limit:     Max rows (default 50, max 500).
+        offset:    Pagination offset.
+
+    Returns:
+        dict with `rows` list — each row carries date, account,
+        segment, symbol, exchange, qty, avg_cost, notional
+        (qty × avg_cost), captured_at — plus `total`, `limit`, `offset`,
+        `summary` (aggregate figures such as total_notional).
+    """
+    params: dict[str, Any] = {"limit": max(1, min(int(limit or 50), 500)),
+                               "offset": max(0, int(offset or 0))}
+    if from_date: params["from_date"] = from_date
+    if to_date:   params["to_date"]   = to_date
+    if accounts:  params["accounts"]  = accounts
+    if symbols:   params["symbols"]   = symbols
+    res = await _get("/api/admin/history/trades", params)
+    return res or {"rows": [], "total": 0, "limit": params["limit"],
+                   "offset": params["offset"], "summary": {}}
+
+
+@app.tool()
+async def get_funds_history(
+    from_date: str | None = None,
+    to_date: str | None = None,
+    accounts: str | None = None,
+) -> dict:
+    """Historical per-account funds/cash ledger — one row per (date,
+    account, segment) from the daily settlement snapshot (`daily_book`
+    kind='funds'). Use this for "how has my available cash moved over
+    the last month" or "what was my opening balance on a given day".
+    Funds tracking started Jun 2026 — rows before that don't exist;
+    `earliest_date` in the response tells you when tracking began.
+
+    Args:
+        from_date: 'YYYY-MM-DD', inclusive. Defaults to 90 days ago.
+        to_date:   'YYYY-MM-DD', inclusive. Defaults to today.
+        accounts:  Comma-separated broker account codes. Omit for all.
+
+    Returns:
+        dict with `rows` list (newest-first) — each row carries date,
+        account, segment ('equity'/'commodity'), cash_available,
+        opening_balance, debits_today, realised_m2m, net, and
+        cash_delta (day-over-day change in cash_available within the
+        same account+segment series; null for the first row) — plus
+        `total` and `earliest_date`.
+    """
+    params: dict[str, Any] = {}
+    if from_date: params["from_date"] = from_date
+    if to_date:   params["to_date"]   = to_date
+    if accounts:  params["accounts"]  = accounts
+    res = await _get("/api/admin/history/funds", params)
+    return res or {"rows": [], "total": 0, "earliest_date": None}
+
+
+@app.tool()
+async def get_realized_pnl_history(
+    account: str | None = None,
+    segment: str | None = None,
+    instrument_type: str | None = None,
+    symbol_root: str | None = None,
+    expiry_from: str | None = None,
+    expiry_to: str | None = None,
+) -> dict:
+    """Realized P&L ground truth, by (account, symbol root, expiry
+    cycle) — sourced from the Kite Console P&L-statement backfill
+    (`scripts/kite_console_pnl_sync.py`), NOT derived from AlgoOrder
+    rows. This is the figure that matches what Kite Console itself
+    reports, net of brokerage/STT/charges — use it for "how much did I
+    actually make on GOLDM this expiry cycle" rather than
+    get_pnl_attribution (which is a chase-slippage proxy, gross, and
+    grouped by agent instead of by contract).
+
+    Sorted by expiry descending (most recent cycle first); equity rows
+    (no expiry) sort last.
+
+    Args:
+        account:         Broker account code (e.g. "ZG0790"). Omit for
+            all accounts.
+        segment:         'equity' / 'derivatives' / 'commodities'.
+        instrument_type: 'equity' / 'future' / 'option'.
+        symbol_root:     Underlying root, e.g. "GOLDM", "CRUDEOIL".
+        expiry_from:     'YYYY-MM-DD', inclusive. Filters by contract
+            expiry date, not trade date.
+        expiry_to:       'YYYY-MM-DD', inclusive.
+
+    Returns:
+        dict with `rows` list — each row carries account (masked,
+        e.g. 'Z1####'), segment, instrument_type, symbol_root, expiry
+        (ISO date or null for equity), realized_pnl — plus `count`.
+    """
+    params: dict[str, Any] = {}
+    if account:         params["account"]         = account
+    if segment:         params["segment"]         = segment
+    if instrument_type: params["instrument_type"] = instrument_type
+    if symbol_root:      params["symbol_root"]     = symbol_root
+    if expiry_from:      params["expiry_from"]     = expiry_from
+    if expiry_to:        params["expiry_to"]       = expiry_to
+    rows = await _get("/api/admin/history/realized-pnl", params)
+    return {"rows": rows or [], "count": len(rows or [])}
 
 
 @app.tool()
