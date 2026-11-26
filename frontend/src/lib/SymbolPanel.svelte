@@ -2282,7 +2282,15 @@
          chain` CSS (below) still applies wherever OptionChainTab
          renders it. -->
     {#snippet _chainSymbolPicker()}
-      <div class="oes-sym-pick-chain">
+      <!-- `--sym-ch` (2026-11-26, one-chip visual fix) — feeds the
+           ch-based width calc on `.ssi-input` below so the text input
+           hugs its OWN value's width at rest instead of stretching to
+           fill a fixed flex-basis box. SymbolSearchInput keeps its
+           typed-query state (`_symQuery`) internal, so this can only
+           track the committed `_localSymbol`, not a live keystroke —
+           `:focus` widens to a fixed comfortable width instead (see
+           that rule's own comment) so typing/search still has room. -->
+      <div class="oes-sym-pick-chain" style:--sym-ch={_localSymbol.length || 6}>
         <SymbolSearchInput
           value={_localSymbol}
           type={_symType}
@@ -3203,31 +3211,101 @@
      which places the input near the row's LEFT edge) keep the
      default left-anchor, where it's the correct choice. */
   .oes-sym-pick :global(.ssi-drop) { left: auto; right: 0; }
-  /* Chain-only Symbol picker (2026-11-25, Symbol+Expiry merge) —
-     rendered inside OptionChainTab's `.oct-toolbar`, where this
-     control sits LEFTMOST in the merged row (the opposite position
-     from `.oes-sym-pick` above). `min-width: 6rem` is a real floor —
-     the symbol input must stay legible even once `.oct-sym-expiry`
-     (its parent there) has shrunk as far as it can; `flex-basis: 8rem`
-     (not `0`, unlike `.oes-sym-pick` above) keeps this control's own
-     preferred/rest width a concrete, predictable number rather than
-     relying on a flex-basis-0 child inside a non-growing ancestor to
-     resolve sensibly. No `.ssi-drop` override here — the default LEFT
-     anchor (SymbolSearchInput's own CSS) is already correct for a
-     leftmost control; overriding it to right-anchor (like the rule
-     above) would clip the dropdown the OPPOSITE way, against the
-     modal's right edge, once this row's trailing controls (DTE through
-     DRAFT) sit to its right. */
+  /* Chain-only Symbol picker (2026-11-25, Symbol+Expiry merge;
+     chrome-merge fix 2026-11-26) — rendered inside OptionChainTab's
+     `.oct-toolbar`, where this control sits LEFTMOST in the merged
+     row (the opposite position from `.oes-sym-pick` above). No
+     `.ssi-drop` override here — the default LEFT anchor
+     (SymbolSearchInput's own CSS) is already correct for a leftmost
+     control; overriding it to right-anchor (like the rule above)
+     would clip the dropdown the OPPOSITE way, against the modal's
+     right edge, once this row's trailing controls (DTE through DRAFT)
+     sit to its right.
+
+     2026-11-26 — the operator reported the merge still rendered as
+     TWO visibly boxed controls (the Symbol input's own border, the
+     Expiry Select's own border) sitting either side of literal "("/")"
+     text, not one combined element. The single shared border/
+     background now lives on the PARENT `.oct-sym-expiry` chip
+     (OptionChainTab.svelte) instead — this rule and the `.ssi-input`
+     override below strip this control's OWN chrome so nothing paints
+     a second box inside that chip.
+
+     `flex: 1 1 8rem; min-width: 6rem;` (the pre-chrome-merge values)
+     are gone — that forced this box to stretch to an 8rem flex-basis
+     regardless of the symbol's actual text width, which read as a
+     visible dead-space gap between the symbol text and the ")" once
+     the border was removed (a plain gap reads just as "not one
+     element" as a second box does). `flex: 0 0 auto` + the ch-based
+     `.ssi-input` width below make this control hug its OWN content
+     width instead. `max-width: 20rem` stays as the pre-existing
+     safety ceiling for a genuinely long picked symbol. */
   .oes-sym-pick-chain {
     position: relative;
     display: inline-flex;
     align-items: center;
-    flex: 1 1 8rem;
-    min-width: 6rem;
+    flex: 0 0 auto;
+    min-width: 0;
     max-width: 20rem;
   }
-  .oes-sym-pick-chain :global(.ssi-wrap) { width: 100%; }
-  .oes-sym-pick-chain :global(.ssi-input) { width: 100%; min-width: 0; }
+  /* `width: auto` (was `100%`) — let the wrap hug the ch-sized input
+     below instead of stretching to this box's own (now content-driven)
+     width, which would otherwise just move the dead-space gap one
+     level down. */
+  .oes-sym-pick-chain :global(.ssi-wrap) { width: auto; }
+  /* Chrome strip + content-fit width (2026-11-26) — `background`/
+     `border` zeroed outright (not colour-transparent) so the visible
+     box disappears regardless of this rule's specificity vs.
+     SymbolSearchInput's own `.ssi-input:focus` rule, which repaints
+     `background` on focus — see the dedicated `:focus` override
+     immediately below, which wins on specificity (one more ancestor
+     class) rather than relying on source order between two different
+     components' <style> blocks.
+     Width: `var(--sym-ch)` (set via `style:--sym-ch` on the wrapper
+     div above, from the committed `_localSymbol`'s own length) sizes
+     the box to roughly fit the symbol text at rest — the font here IS
+     a true monospace stack (`.ssi-input`'s own `font-family` resolves
+     to `ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`), so
+     a `ch`-based width tracks the actual rendered glyph width closely.
+     `(1ch + 0.04em)` per character, NOT a bare `1ch` — SymbolSearchInput's
+     own `.ssi-input` rule sets `letter-spacing: 0.04em`, which a bare
+     `ch`-count does not account for; omitting it clipped a longer
+     symbol (confirmed live: "BANKNIFTY", 9 chars, measured
+     `scrollWidth` > `clientWidth` with only a bare `1ch` term — see
+     this file's own Playwright spec). `letter-spacing` is re-declared
+     explicitly here (even though it's already inherited from
+     SymbolSearchInput's own base rule) so the calc and the property it
+     depends on sit together — a future change to either one is a
+     single, visible diff, not two files that can silently drift apart.
+     `min-width: 3rem` is only a small sanity floor (e.g. a not-yet-
+     painted font, or a 1-2 char value), NOT the pre-chrome-merge `6rem`
+     floor — that value was sized for a fixed flex-basis box, not a
+     content-fit one, and left a visible dead-space gap once this
+     control's own border was removed (exactly the "still doesn't read
+     as one element" defect this fix exists to close). */
+  .oes-sym-pick-chain :global(.ssi-input) {
+    width: calc(var(--sym-ch, 6) * (1ch + 0.04em) + 0.6rem);
+    min-width: 3rem;
+    max-width: 20rem;
+    box-sizing: border-box;
+    background: none;
+    border: none;
+    padding: 0 0.2rem;
+    letter-spacing: 0.04em;
+  }
+  /* SymbolSearchInput's own `:focus` rule repaints `background` (amber
+     0.06) and `border-color` — both would reintroduce a visible box
+     the instant this control is focused/edited. This override also
+     widens the box to a fixed, generous width while typing: the
+     ch-based width above tracks the COMMITTED `_localSymbol`, not the
+     live `_symQuery` keystrokes (SymbolSearchInput keeps that state
+     internal), so a narrow at-rest box would otherwise visibly clip
+     the operator's own typing mid-search. */
+  .oes-sym-pick-chain :global(.ssi-input:focus) {
+    background: none;
+    border-color: transparent;
+    width: 11rem;
+  }
   /* Account dropdown — placeholder "Account" reads as its label when
      nothing is picked. Narrow Select pinned next to the symbol combo. */
   /* Picker row — Account · Symbol type · Symbol — between header and

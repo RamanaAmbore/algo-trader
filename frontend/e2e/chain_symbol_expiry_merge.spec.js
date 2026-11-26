@@ -145,20 +145,55 @@ test.describe('Symbol+Expiry merge — OptionChainTab.svelte structure', () => {
     expect(rule).not.toMatch(/\n\s*border-bottom:\s*\S/);
   });
 
-  test('.oct-sym-expiry shrinks but never grows (flex: 0 1 auto) — no dead space drifting the trailing cluster right', () => {
+  // 2026-11-26 — `.oct-sym-expiry` no longer shrinks below its own
+  // content (`flex: 0 0 auto`, was `0 1 auto; min-width: 0`). Confirmed
+  // live before this change: at 370px with a 9-char symbol
+  // ("BANKNIFTY"), the old `min-width: 0` let the flex layout compress
+  // the chip to 130px while its own children still needed 186px,
+  // spilling 56px of content outside the drawn border — now that the
+  // chip has a real border, letting it shrink means letting content
+  // spill past that border, strictly worse than the "two boxes" defect
+  // this whole fix exists to close. `.oct-toolbar-trailing`'s own
+  // `overflow-x: auto` absorbs the squeeze instead (see its own test
+  // below).
+  test('.oct-sym-expiry never shrinks below its own content, and never grows either (flex: 0 0 auto)', () => {
     const rule = chainSrc.match(/\.oct-sym-expiry\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
     expect(rule, '.oct-sym-expiry rule').not.toBe('');
     // flex-grow MUST be 0 — growing this box on a wide viewport would
     // leave dead space inside it (neither the Symbol snippet nor the
     // Expiry picker grows to fill it), visually pushing DTE→DRAFT
     // rightward and undoing the "DRAFT stays left-aligned" decision.
-    expect(rule).toMatch(/flex:\s*0 1 auto/);
+    // flex-shrink MUST also be 0 (the 2026-11-26 fix) — see above.
+    expect(rule).toMatch(/flex:\s*0 0 auto/);
     expect(rule).not.toMatch(/flex:\s*1 1 auto/);
-    expect(rule).toMatch(/min-width:\s*0/);
+    expect(rule).not.toMatch(/flex:\s*0 1 auto/);
     // No `overflow: hidden`/`auto` here — SymbolSearchInput's own results
     // dropdown is `position: absolute` relative to its wrapper, not
     // `fixed`, so clipping this container would clip that dropdown too.
     expect(rule).not.toMatch(/overflow:/);
+  });
+
+  // 2026-11-26 chrome-merge fix — operator reported the prior merge
+  // still rendered as TWO visibly boxed controls (Symbol input's own
+  // border, Expiry Select's own border) either side of literal "("/")"
+  // text, not one combined element. `.oct-sym-expiry` now carries the
+  // ONE shared border/background for the whole unit; both children
+  // strip their own chrome (this file's `.rbq-select-trigger` override,
+  // and SymbolPanel.svelte's `.ssi-input` override, tested separately).
+  test('.oct-sym-expiry carries the single shared chip border/background for the whole "SYMBOL (EXPIRY)" unit', () => {
+    const rule = chainSrc.match(/\.oct-sym-expiry\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
+    expect(rule, '.oct-sym-expiry rule').not.toBe('');
+    expect(rule).toMatch(/background:\s*#1d2a44/);
+    expect(rule).toMatch(/border:\s*1px solid rgba\(251,\s*191,\s*36,\s*0\.25\)/);
+    expect(rule).toMatch(/border-radius:\s*3px/);
+  });
+
+  test('.oct-expiry-pick :global(.rbq-select-trigger) strips its own border/background outright, not merely to transparent', () => {
+    const rule = chainSrc.match(/\.oct-expiry-pick :global\(\.rbq-select-trigger\)\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
+    expect(rule, '.oct-expiry-pick :global(.rbq-select-trigger) rule').not.toBe('');
+    expect(rule).toMatch(/border:\s*none/);
+    expect(rule).toMatch(/background:\s*none/);
+    expect(rule).toMatch(/background-image:\s*none/);
   });
 
   test('.oct-toolbar-trailing is also flex: 0 1 auto (no grow) — the whole row never fills width by expanding a middle gap', () => {
@@ -198,7 +233,11 @@ test.describe('Symbol+Expiry merge — SymbolPanel.svelte wiring', () => {
     const endIdx = panelSrc.indexOf('{/snippet}', idx);
     expect(endIdx).toBeGreaterThan(idx);
     const body = panelSrc.slice(idx, endIdx);
-    expect(body).toContain('<div class="oes-sym-pick-chain">');
+    // 2026-11-26 chrome-merge fix added a `style:--sym-ch={...}` binding
+    // on this same element (feeds the ch-based content-fit width calc —
+    // see the dedicated tests for that below), so the tag no longer
+    // closes immediately after the bare class attribute.
+    expect(body).toContain('class="oes-sym-pick-chain"');
     expect(body).toContain('<SymbolSearchInput');
     // Deliberately NOT the `.oes-sym-pick` class — see the dedicated
     // test below for why the two need different CSS (opposite anchor
@@ -257,11 +296,59 @@ test.describe('Symbol+Expiry merge — SymbolPanel.svelte wiring', () => {
     expect(panelSrc).not.toMatch(/\.oes-sym-pick-chain :global\(\.ssi-drop\)/);
   });
 
-  test('.oes-sym-pick-chain has a real min-width floor (not 0) so the symbol input stays legible once its parent has shrunk as far as it can', () => {
+  // 2026-11-26 chrome-merge fix — the operator reported the prior merge
+  // still rendered as TWO visibly boxed controls (the Symbol input's own
+  // border, the Expiry Select's own border) either side of literal "("/
+  // ")" text, not one combined element. Fix: the single shared border/
+  // background moves to the PARENT `.oct-sym-expiry` container
+  // (OptionChainTab.svelte, see that file's own source-scan tests below),
+  // and BOTH children strip their own chrome. The 6rem floor this test
+  // used to pin on `.oes-sym-pick-chain` itself moves to `.ssi-input`
+  // (the element that actually needs it) now that the wrapper no longer
+  // forces a fixed 8rem flex-basis — see the ch-based width test below
+  // for why.
+  test('.oes-sym-pick-chain no longer forces a fixed flex-basis — it hugs the ch-sized .ssi-input instead (no dead-space gap once the border is gone)', () => {
     const rule = panelSrc.match(/\.oes-sym-pick-chain\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
     expect(rule, '.oes-sym-pick-chain rule').not.toBe('');
-    expect(rule).toMatch(/min-width:\s*6rem/);
-    expect(rule).not.toMatch(/min-width:\s*0/);
+    expect(rule).toMatch(/flex:\s*0 0 auto/);
+    expect(rule).not.toMatch(/flex:\s*1 1 8rem/);
+    expect(rule).toMatch(/max-width:\s*20rem/);
+  });
+
+  test('the `--sym-ch` CSS var is set on the wrapper from the committed symbol length, feeding the ch-based width calc', () => {
+    const idx = panelSrc.indexOf('{#snippet _chainSymbolPicker()}');
+    const endIdx = panelSrc.indexOf('{/snippet}', idx);
+    const body = panelSrc.slice(idx, endIdx);
+    expect(body).toMatch(/style:--sym-ch=\{_localSymbol\.length \|\| 6\}/);
+  });
+
+  test('.ssi-input inside .oes-sym-pick-chain has NO border/background of its own — chrome lives on the shared chip only', () => {
+    const rule = panelSrc.match(/\.oes-sym-pick-chain :global\(\.ssi-input\)\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
+    expect(rule, '.oes-sym-pick-chain :global(.ssi-input) rule').not.toBe('');
+    // Zeroed outright, not merely colour-transparent — see this rule's
+    // own inline comment for why that distinction matters against
+    // SymbolSearchInput's own :focus rule.
+    expect(rule).toMatch(/border:\s*none/);
+    expect(rule).toMatch(/background:\s*none/);
+    // `(1ch + 0.04em)` per character, not a bare `1ch` — must include
+    // this control's own `letter-spacing` or a long symbol clips (live
+    // regression, confirmed with "BANKNIFTY" — see the dedicated live
+    // test for it, and this rule's own `letter-spacing: 0.04em`
+    // re-declaration just below, checked by the next assertion).
+    expect(rule).toMatch(/width:\s*calc\(var\(--sym-ch,\s*6\)\s*\*\s*\(1ch \+ 0\.04em\)/);
+    expect(rule).toMatch(/letter-spacing:\s*0\.04em/);
+    // A small sanity floor only (3rem), not the pre-chrome-merge 6rem
+    // fixed-flex-basis floor — 6rem left a visible dead-space gap once
+    // this control's own border was removed (measured live — see the
+    // "fits its own box at rest" live test below).
+    expect(rule).toMatch(/min-width:\s*3rem/);
+  });
+
+  test('.ssi-input:focus is overridden too (specificity tie against SymbolSearchInput\'s own :focus rule) — stays chrome-free and widens for typing', () => {
+    const rule = panelSrc.match(/\.oes-sym-pick-chain :global\(\.ssi-input:focus\)\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
+    expect(rule, '.oes-sym-pick-chain :global(.ssi-input:focus) rule').not.toBe('');
+    expect(rule).toMatch(/background:\s*none/);
+    expect(rule).toMatch(/width:\s*11rem/);
   });
 });
 
@@ -277,12 +364,20 @@ test.describe('Symbol+Expiry merge — SymbolPanel.svelte wiring', () => {
 // `chainDisabled` gate never fires), pick the suggestion, click Chain.
 // ──────────────────────────────────────────────────────────────────
 
-/** @param {import('@playwright/test').Page} page */
-async function _openNiftyChain(page) {
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} [sym] defaults to NIFTY, the suite's own established
+ *   index pick (NFO weekly options, never hits the Chain tab's
+ *   `chainDisabled` gate). 2026-11-26 chrome-merge fix adds an optional
+ *   override so the overflow/clipping tests below can drive a real
+ *   multi-character root (e.g. "BANKNIFTY") through the same flow
+ *   instead of duplicating it.
+ */
+async function _openNiftyChain(page, sym = 'NIFTY') {
   await page.goto(`${BASE}/orders`, { waitUntil: 'domcontentloaded', timeout: 30000 });
   const symInput = page.locator('.ssi-input').first();
   await expect(symInput).toBeVisible({ timeout: 15_000 });
-  await symInput.fill('NIFTY');
+  await symInput.fill(sym);
   const sugg = page.locator('.ssi-drop .ssi-row').first();
   await expect(sugg).toBeVisible({ timeout: 10_000 });
   await sugg.click({ force: true });
@@ -291,6 +386,61 @@ async function _openNiftyChain(page) {
   const chainTab = page.getByRole('tab', { name: /Chain/i }).first();
   await expect(chainTab).toBeEnabled({ timeout: 15_000 });
   await chainTab.click();
+}
+
+/**
+ * Walks `.oct-sym-expiry` and every descendant inside it, and counts
+ * how many elements actually paint visible chrome (a real border, or a
+ * real background colour/image) at the moment this runs. 2026-11-26
+ * chrome-merge fix: before this fix the Symbol input and the Expiry
+ * Select trigger each painted their own border/background, so this
+ * count was 3 (container + 2 children). The fix moves the ONE visible
+ * border/background onto the container alone, so the count must be
+ * exactly 1, and that one element must be `.oct-sym-expiry` itself —
+ * not merely "fewer boxes than before".
+ * @param {import('@playwright/test').Page} page
+ */
+async function _chainChromeElements(page) {
+  return page.evaluate(() => {
+    const root = document.querySelector('.oct-sym-expiry');
+    if (!root) return null;
+    const all = [root, ...root.querySelectorAll('*')];
+    const chromed = [];
+    for (const el of all) {
+      // `.ssi-drop` (the suggestion dropdown) legitimately opens the
+      // instant the symbol input is focused, even with nothing typed
+      // (SymbolSearchInput's own `onfocus` sets `_symOpen = true`), and
+      // it legitimately has its own box/border — that is a normal,
+      // expected popup/overlay, not a second box competing with the
+      // "SYMBOL (EXPIRY)" chip this test is about. Exclude it and its
+      // descendants from the count.
+      if (el.closest('.ssi-drop')) continue;
+      const cs = getComputedStyle(el);
+      const borderVisible = ['Top', 'Right', 'Bottom', 'Left'].some((side) => {
+        const w = parseFloat(cs[`border${side}Width`]) || 0;
+        if (w <= 0 || cs[`border${side}Style`] === 'none') return false;
+        const m = cs[`border${side}Color`].match(/rgba?\(([^)]+)\)/);
+        if (!m) return true;
+        const parts = m[1].split(',').map((s) => parseFloat(s.trim()));
+        const alpha = parts.length === 4 ? parts[3] : 1;
+        return alpha > 0;
+      });
+      const bg = cs.backgroundColor;
+      const bgm = bg.match(/rgba?\(([^)]+)\)/);
+      const bgParts = bgm ? bgm[1].split(',').map((s) => parseFloat(s.trim())) : [];
+      const bgAlpha = bgParts.length === 4 ? bgParts[3] : (bgm ? 1 : 0);
+      const backgroundVisible = bgAlpha > 0 || (cs.backgroundImage && cs.backgroundImage !== 'none');
+      if (borderVisible || backgroundVisible) {
+        chromed.push({
+          tag: el.tagName,
+          cls: el.className,
+          border: borderVisible,
+          background: backgroundVisible,
+        });
+      }
+    }
+    return { chromed, isRootChromed: chromed.length === 1 && chromed[0].cls === root.className };
+  });
 }
 
 /**
@@ -379,6 +529,136 @@ for (const [label, viewport] of [
       expect(combined).toMatch(/NIFTY/i);
       expect(combined).toMatch(/\(/);
       expect(combined).toMatch(/\)/);
+    });
+
+    // 2026-11-26 chrome-merge fix — the prior "merge" put the Symbol
+    // input and the Expiry Select side by side in one row/DOM unit, but
+    // each still painted its OWN border/background, so it still visibly
+    // READ as two boxed controls either side of plain "("/")" text. The
+    // operator rejected that as not "one element". This is the test
+    // that actually pins the fix: exactly ONE painted box around the
+    // whole "SYMBOL (EXPIRY)" unit, and it must be the container.
+    test('exactly ONE element inside .oct-sym-expiry paints visible chrome (border/background), and it is the container itself', async ({ page }) => {
+      await loginAsAdmin(page);
+      await _openNiftyChain(page);
+
+      await expect(page.locator('.oct-expiry-pick')).toBeVisible({ timeout: 15_000 });
+      // A true at-rest state — no control focused.
+      await page.evaluate(() => { (document.activeElement)?.blur?.(); });
+
+      const info = await _chainChromeElements(page);
+      expect(info, 'chrome-element scan').toBeTruthy();
+      expect(info.chromed.length, `chromed elements: ${JSON.stringify(info.chromed)}`).toBe(1);
+      expect(info.isRootChromed, `the one chromed element must be .oct-sym-expiry itself: ${JSON.stringify(info.chromed)}`).toBe(true);
+    });
+
+    test('focusing the Symbol input does not repaint a second box — SymbolSearchInput\'s own :focus chrome stays overridden', async ({ page }) => {
+      await loginAsAdmin(page);
+      await _openNiftyChain(page);
+
+      await expect(page.locator('.oct-expiry-pick')).toBeVisible({ timeout: 15_000 });
+      const symInput = page.locator('.oct-sym-expiry .ssi-input').first();
+      await symInput.click();
+      await expect(symInput).toBeFocused();
+
+      const info = await _chainChromeElements(page);
+      expect(info, 'chrome-element scan (focused)').toBeTruthy();
+      expect(info.chromed.length, `chromed elements while focused: ${JSON.stringify(info.chromed)}`).toBe(1);
+      expect(info.isRootChromed, `the one chromed element while focused must still be .oct-sym-expiry: ${JSON.stringify(info.chromed)}`).toBe(true);
+    });
+
+    test('the symbol text fits its own box at rest — no large dead-space gap between the committed value and "("', async ({ page }) => {
+      await loginAsAdmin(page);
+      await _openNiftyChain(page);
+      await expect(page.locator('.oct-expiry-pick')).toBeVisible({ timeout: 15_000 });
+      await page.evaluate(() => { (document.activeElement)?.blur?.(); });
+
+      const metrics = await page.evaluate(() => {
+        const input = document.querySelector('.oct-sym-expiry .ssi-input');
+        if (!input) return null;
+        const cs = getComputedStyle(input);
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        ctx.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+        const rawTextWidth = ctx.measureText(input.value || '').width;
+        // canvas measureText does NOT apply CSS letter-spacing — add it
+        // back per character (the live, 9-char "BANKNIFTY" case below is
+        // the real regression this omission caused: a bare `ch`-count
+        // calc with no letter-spacing term clipped the input's own text).
+        const letterSpacingPx = parseFloat(cs.letterSpacing) || 0;
+        const len = (input.value || '').length;
+        const textWidth = rawTextWidth + len * letterSpacingPx;
+        return { clientWidth: input.clientWidth, textWidth, scrollWidth: input.scrollWidth };
+      });
+      expect(metrics, 'symbol input metrics').toBeTruthy();
+      // Not clipped — the whole value fits inside the box.
+      expect(metrics.scrollWidth).toBeLessThanOrEqual(metrics.clientWidth + 1);
+      // Not a huge unused gap either — this is a loose bound (not
+      // pixel-exact: ch-unit sizing is an approximation of a
+      // variable-width font, not a canvas measurement), just enough to
+      // catch the old fixed-8rem-box-regardless-of-content shape.
+      const leftover = metrics.clientWidth - metrics.textWidth;
+      expect(leftover, `leftover space inside the symbol box: ${leftover.toFixed(1)}px (clientWidth=${metrics.clientWidth}, textWidth=${metrics.textWidth.toFixed(1)})`)
+        .toBeLessThan(40);
+    });
+
+    // 2026-11-26 — a 5-char symbol (NIFTY) never exercised the real
+    // ch-based width calc: it was always governed by the 3rem/6rem
+    // floor, so it could never surface a clipping regression. A 9-char
+    // root ("BANKNIFTY") does, and was used to find a real bug live:
+    // the width calc omitted CSS `letter-spacing`, clipping the input's
+    // own text (confirmed via `scrollWidth` > `clientWidth` before the
+    // fix). `scrollLeft` is the more robust clipping probe `clientWidth`
+    // vs. `scrollWidth` comparisons on an `<input>` can be unreliable
+    // for in some browsers/zoom levels — forcing `scrollLeft` past the
+    // content and reading it back to 0 proves there is nothing left to
+    // scroll to, i.e. the full value is visible with no clipped tail.
+    test('a 9-character symbol ("BANKNIFTY") is not clipped inside the input, and does not overflow the shared chip\'s own border', async ({ page }) => {
+      await loginAsAdmin(page);
+      await _openNiftyChain(page, 'BANKNIFTY');
+      await expect(page.locator('.oct-expiry-pick')).toBeVisible({ timeout: 15_000 });
+      await page.evaluate(() => { (document.activeElement)?.blur?.(); });
+
+      const info = await page.evaluate(() => {
+        const chip = document.querySelector('.oct-sym-expiry');
+        const input = document.querySelector('.oct-sym-expiry .ssi-input');
+        input.scrollLeft = 1e4;
+        const scrollLeftAfterForce = input.scrollLeft;
+        return {
+          value: input.value,
+          inputScrollWidth: input.scrollWidth,
+          inputClientWidth: input.clientWidth,
+          scrollLeftAfterForce,
+          chipScrollWidth: chip.scrollWidth,
+          chipClientWidth: chip.clientWidth,
+        };
+      });
+      expect(info.value, 'the picked symbol').toMatch(/BANKNIFTY/i);
+      // Nothing to scroll to — the whole value is visible, none of it
+      // clipped past the input's own right edge.
+      expect(info.scrollLeftAfterForce, `input.scrollLeft after forcing it to 10000: ${JSON.stringify(info)}`).toBe(0);
+      expect(info.inputScrollWidth, `input scrollWidth vs clientWidth: ${JSON.stringify(info)}`)
+        .toBeLessThanOrEqual(info.inputClientWidth + 1);
+      // The chip itself must never be compressed smaller than what its
+      // own children need — that would spill the expiry text and ")"
+      // outside the drawn border instead (confirmed live before this
+      // fix: 370px mobile viewport, chip compressed to 130px while its
+      // children needed 186px).
+      expect(info.chipScrollWidth, `chip scrollWidth vs clientWidth: ${JSON.stringify(info)}`)
+        .toBeLessThanOrEqual(info.chipClientWidth + 1);
+    });
+
+    test('the merged chip\'s height is within ~2px of the DTE chip (same control-height tier, not an oversized box)', async ({ page }) => {
+      await loginAsAdmin(page);
+      await _openNiftyChain(page);
+      await expect(page.locator('.oct-expiry-dte')).toBeVisible({ timeout: 15_000 });
+
+      const chipBox = await page.locator('.oct-sym-expiry').first().boundingBox();
+      const dteBox = await page.locator('.oct-expiry-dte').first().boundingBox();
+      expect(chipBox, '.oct-sym-expiry box').toBeTruthy();
+      expect(dteBox, '.oct-expiry-dte box').toBeTruthy();
+      expect(Math.abs(chipBox.height - dteBox.height), `chip height ${chipBox.height} vs DTE chip height ${dteBox.height}`)
+        .toBeLessThan(3);
     });
 
     test('the toolbar occupies exactly one visible row — every visible control vertically overlaps', async ({ page }) => {
