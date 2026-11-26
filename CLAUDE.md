@@ -3288,6 +3288,17 @@ Rule: these buttons must always live inside the shared card button-group slot. N
 
 ---
 
+## Future direction
+
+**Future multi-market extensibility (operator note, 2026-11-25, no timeline, applies to new work
+only)** — This codebase may eventually extend to US markets (equity, options, commodities). When
+writing NEW code, prefer parameterized timezone/market-hours/holiday-calendar handling over
+hardcoded IST/NSE/MCX literals where it costs little to do so (e.g. pass a timezone/exchange-
+calendar identifier through rather than assuming IST, reuse this codebase's existing calendar-gate
+abstractions — `exchange_schedule`, `market_special_sessions`, `_segment_is_open()` — rather than a
+new IST-only check). This does NOT mean retrofitting existing IST-specific code, and does NOT mean
+building US-market support now — it's a preference to apply when touching new code, nothing more.
+
 ## Things to Avoid
 
 - Don't mock broker API calls — `@for_all_accounts` and singleton behave differently

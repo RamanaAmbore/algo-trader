@@ -1,5 +1,17 @@
 # Plan: Hedge leg (Chain + DSL), unhedged-short alert agent, and the still-missing expiry-close release mechanism
 
+## Status (updated 2026-11-25)
+
+| Part | Status | Evidence |
+|---|---|---|
+| **A — Hedge leg (Chain + DSL)** | ✅ **DONE, shipped to main** | `aa5955d3` (Chain checkbox/staging), `c013ff7f` (`hedge_pct` DSL param + concurrent chase) |
+| **C — Expiry-close release mechanism** | ✅ **DONE, shipped to main** | `33a2afea` (Wave 1 implementation) + the 20-finding follow-up audit (`d00a860b` … `f010cd02`, CC-gate cleanup `39e9ee05`) — all merged `workshop`→`dev`→`main` |
+| **B — Unhedged-short-option 75% alert** | ⏸ **DEFERRED — not started** | Operator instruction 2026-11-25: "defer part b". No `position_pairing.py`, no `waterfall_pair()`, no new metric/agent exist yet. Resume when asked; design below is unchanged and still the agreed approach. |
+
+`workshop`/`dev`/`main` are all in sync at the same commit as of this status update — Parts A and
+C are live in production. The sections below are kept as the historical design record and as the
+still-current design for Part B whenever work resumes.
+
 ## ⚠️ Deadline — Part C is live within 3 days, real money, no-fail
 
 Operator: "exp close is going to be used in next 3 days. make sure, it works with no fail." This
@@ -126,7 +138,7 @@ expiry-close hold that nobody ever releases) is real and unaddressed. This part 
 
 ---
 
-## Part A — Hedge leg (Chain tab + DSL)
+## Part A — Hedge leg (Chain tab + DSL) — ✅ DONE (`aa5955d3`, `c013ff7f`)
 
 ### Design (from dedicated Plan-agent design pass, file paths and line numbers verified against
 the live tree)
@@ -215,7 +227,7 @@ the live tree)
 
 ---
 
-## Part B — Alert: unhedged short option at 75% captured
+## Part B — Alert: unhedged short option at 75% captured — ⏸ DEFERRED (not started)
 
 ### Design
 
@@ -261,7 +273,7 @@ the live tree)
 
 ---
 
-## Part C — Expiry-close: build the actual release mechanism (still missing)
+## Part C — Expiry-close: build the actual release mechanism (still missing) — ✅ DONE (`33a2afea` + 20-finding audit)
 
 ### Design
 
@@ -319,7 +331,7 @@ the live tree)
 
 ## Agents
 
-**Wave 1 — Part C ONLY. Ships, tests, and deploys to prod completely before Wave 2 starts.**
+**Wave 1 — Part C ONLY. Ships, tests, and deploys to prod completely before Wave 2 starts.** ✅ DONE.
 
 - **backend**: implement Part C in full, per its Design/Files section above — the legacy-task
   removal + defense-in-depth `agent_id` refusal, the generic hold-release resolver, wiring it into
@@ -342,31 +354,32 @@ the live tree)
   documents for this exact agent), and confirm the real `hold.expiry_close_released` setting value
   with the operator before relying on it.
 
-**Wave 2 — Parts A and B, started only after Wave 1 is live and verified.**
+**Wave 2 — Parts A and B, started only after Wave 1 is live and verified.** Part A ✅ DONE. Part B
+⏸ DEFERRED — not yet started; the bullets below are the agreed design to pick up when resumed.
 
 - **backend**: Part B — the shared `waterfall_pair()` extraction, the new metric file, the new
   seeded agent, per its Design/Files section. Write pytest coverage: `_auto_pair_positions`'s
   EXISTING test suite must still pass unmodified after the refactor; the new metric's
   cross-row-join-safety (a hedged short option in the same account as an unhedged one must never
   cross-contaminate).
-- **frontend**: Part A's frontend half — the Hedge checkbox + percent inputs,
+- **frontend** (✅ done): Part A's frontend half — the Hedge checkbox + percent inputs,
   `resolveHedgeStrike()`, `_maybeStageHedgeLeg()`, the removal effect, and the merge/net exclusion
   guard. Write or update Vitest coverage: `resolveHedgeStrike()`'s direction/side-premium/depth-
   rejection/tolerance/tie-break cases; a source-grep wiring test (same convention as
   `optionChainTabSpreadGateWiring.test.js`) confirming `_maybeStageHedgeLeg` calls
   `resolveHedgeStrike`, never calls `_mergeIntoBasket`/`_netAgainstBasket` for a fresh hedge push,
   and that both of those functions' match predicates exclude `_hedgeParentKey` legs.
-- **backend** (sequenced after the Wave-2 frontend agent — needs `hedge_strike.py` to exist):
-  Part A's backend half — the `hedge_pct` grammar param (both tokens), `hedge_strike.py`,
+- **backend** (✅ done, sequenced after the Wave-2 frontend agent — needs `hedge_strike.py` to
+  exist): Part A's backend half — the `hedge_pct` grammar param (both tokens), `hedge_strike.py`,
   `_action_place_order`'s hedge branch with concurrent `asyncio.gather` chasing, and the golden
   baseline regeneration. Write pytest coverage: `resolve_hedge_strike()`'s mirrored test cases; the
   no-`hedge_pct` regression guard (unchanged single-chase behavior); hedge-skipped-on-close-intent;
   hedge-skipped-on-no-match; both chases launched concurrently (not sequentially) when a hedge
   resolves.
-- **doc**: after Wave 2's tests are green, update CLAUDE.md — correct the "Expiry pre-close alert +
-  auto-close" entry's implied-complete state (it currently reads as if the mechanism is done; it
-  wasn't, until Wave 1), add entries for the Hedge-leg feature and the unhedged-short alert agent,
-  and update the Common Tasks table with rows for all three.
+- **doc** (outstanding — depends on Part B): once Part B ships, update CLAUDE.md — correct the
+  "Expiry pre-close alert + auto-close" entry's implied-complete state if still stale, add entries
+  for the Hedge-leg feature (if not already documented from Part A's ship) and the unhedged-short
+  alert agent, and update the Common Tasks table with rows for all three.
 
 ## Tests
 
@@ -379,32 +392,35 @@ the live tree)
 ## Commit messages (separate commits per standing one-issue-at-a-time rule; Wave 1 ships and
 deploys completely before Wave 2's first commit)
 
-**Wave 1 (Part C):**
-1. `fix(expiry): retire the legacy expiry-check task's close call — it staged unreleasable holds with no agent_id`
-2. `feat(expiry): generic hold auto-release policy resolver, reused by any future require-release-shaped action`
-3. `fix(expiry): wire expiry-day-itm-auto-close's holds to the new auto-release resolver and widen the release scan`
-4. `fix(expiry): verify CANCEL_FAILED legs against real broker truth instead of blocking them forever`
-5. `fix(expiry): MCX netting must never use an NTM leg, or a mismatched-expiry future, as a hedge partner`
+**Wave 1 (Part C) — ✅ shipped as `33a2afea` + the 20-finding follow-up audit (`d00a860b` …
+`f010cd02`, `39e9ee05`), all merged to `main`.**
+1. ~~`fix(expiry): retire the legacy expiry-check task's close call — it staged unreleasable holds with no agent_id`~~
+2. ~~`feat(expiry): generic hold auto-release policy resolver, reused by any future require-release-shaped action`~~
+3. ~~`fix(expiry): wire expiry-day-itm-auto-close's holds to the new auto-release resolver and widen the release scan`~~
+4. ~~`fix(expiry): verify CANCEL_FAILED legs against real broker truth instead of blocking them forever`~~
+5. ~~`fix(expiry): MCX netting must never use an NTM leg, or a mismatched-expiry future, as a hedge partner`~~
 
 **Wave 2 (Parts B, A — only after Wave 1 is live):**
-6. `refactor(positions): extract the waterfall pairing algorithm into a shape-agnostic shared helper`
-7. `feat(agents): alert when an unhedged short option captures 75% of its premium`
-8. `feat(order): auto-stage a hedge leg on the Chain tab when the Hedge checkbox is on`
-9. `feat(order): hedge_pct DSL param on order/place_order, concurrent chase for the hedge leg`
+6. `refactor(positions): extract the waterfall pairing algorithm into a shape-agnostic shared helper` — ⏸ not started (Part B deferred)
+7. `feat(agents): alert when an unhedged short option captures 75% of its premium` — ⏸ not started (Part B deferred)
+8. ~~`feat(order): auto-stage a hedge leg on the Chain tab when the Hedge checkbox is on`~~ — ✅ shipped `aa5955d3`
+9. ~~`feat(order): hedge_pct DSL param on order/place_order, concurrent chase for the hedge leg`~~ — ✅ shipped `c013ff7f`
 
 ## Done when
 
-- **Part A**: adding a BUY/SELL option leg on the Chain tab with Hedge on stages a correctly
-  priced, correctly sided second leg at the right tolerance, visible/editable/removable like any
-  manual leg, never on a close, never on MCX; changing/removing the parent makes the hedge leg
-  disappear; the same capability is callable via `order(..., hedge_pct=...)`/`place_order`.
-- **Part B**: a genuinely unhedged short option crossing 75% captured premium fires exactly one
-  alert, reaching telegram + email + ntfy, correctly identified/tagged; a hedged short option at
-  the same gain level never fires it; the existing 90% close agent is untouched.
-- **Part C**: a position staged HELD by `expiry-day-itm-auto-close` and never touched by the
-  operator is released and chased automatically before market close, with a correctly computed
+- **Part A** (✅ done): adding a BUY/SELL option leg on the Chain tab with Hedge on stages a
+  correctly priced, correctly sided second leg at the right tolerance, visible/editable/removable
+  like any manual leg, never on a close, never on MCX; changing/removing the parent makes the
+  hedge leg disappear; the same capability is callable via `order(..., hedge_pct=...)`/`place_order`.
+- **Part B** (⏸ deferred, still outstanding): a genuinely unhedged short option crossing 75%
+  captured premium fires exactly one alert, reaching telegram + email + ntfy, correctly
+  identified/tagged; a hedged short option at the same gain level never fires it; the existing 90%
+  close agent is untouched.
+- **Part C** (✅ done): a position staged HELD by `expiry-day-itm-auto-close` and never touched by
+  the operator is released and chased automatically before market close, with a correctly computed
   deadline; no HELD expiry-close row can ever lack an `agent_id` or `auto_release_at`; the netting
   fix is verified against the devolvement-driven NTM-as-partner failure case (confirmed to fail on
   the pre-fix code) AND the existing guts-hedge test keeps passing unmodified.
 - Full pytest suite green; broker/api coverage gates hold; `_auto_pair_positions`'s existing tests
-  pass unmodified after its refactor; full Vitest suite green.
+  pass unmodified after its refactor; full Vitest suite green. (All confirmed true for Parts A/C as
+  shipped; still to be confirmed for Part B once it's implemented.)
