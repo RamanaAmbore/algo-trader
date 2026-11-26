@@ -1016,11 +1016,22 @@ class TestScrapingRobustness:
     """2026-11-26 — `sync_account()` now pulls BOTH report types
     (tradebook + pnl) per segment, so every test here that used to
     expect exactly ONE scrape attempt for a single-segment plan now
-    expects exactly TWO (one per report type) — "does not retry" means
-    "no retry of the SAME pull", never "only one pull total"."""
+    expects exactly TWO (one per report type) — "retries per chunk" means
+    "up to `_CHUNK_SCRAPE_MAX_ATTEMPTS` retries of the SAME pull before
+    alerting once", never "retries across different pulls".
+
+    2026-11-26, same day, follow-up (sixth/seventh real runs found a
+    genuine Kite Console race a single retry-less attempt could never
+    recover from -- see `_CHUNK_SCRAPE_MAX_ATTEMPTS`'s own comment):
+    each of the 3 pulls below (tradebook, pnl, ledger) now retries
+    internally up to `_CHUNK_SCRAPE_MAX_ATTEMPTS` (3) times before this
+    module alerts even once for that pull -- so every underlying
+    Playwright call this class asserts on now fires 3x per pull, while
+    the alert/diagnostics count per pull stays exactly 1 (3 total for a
+    single-segment plan), unchanged from before this follow-up."""
 
     @pytest.mark.asyncio
-    async def test_reports_page_not_loaded_alerts_and_does_not_retry(self, monkeypatch):
+    async def test_reports_page_not_loaded_alerts_once_after_exhausting_retries(self, monkeypatch):
         conn = _console_conn_bare("ZCONSOLE_SCR1")
         conn._attempt_login_with_cooloff = MagicMock()  # succeeds, no-op
         conn._console_page = MagicMock()
@@ -1044,13 +1055,14 @@ class TestScrapingRobustness:
 
         assert outcome.ok is False
         # One segment x two report types, plus one ledger pull per
-        # account = 3 attempts, never a retry of either individual pull.
-        assert fake_page.navigate_to_reports.call_count == 3
+        # account = 3 pulls, each retried _CHUNK_SCRAPE_MAX_ATTEMPTS
+        # times before this pull's own single alert fires.
+        assert fake_page.navigate_to_reports.call_count == 3 * mod._CHUNK_SCRAPE_MAX_ATTEMPTS
         assert diag_mock.call_count == 3
         assert alert_mock.await_count == 3
 
     @pytest.mark.asyncio
-    async def test_date_range_filter_mismatch_alerts_and_does_not_retry(self, monkeypatch):
+    async def test_date_range_filter_mismatch_alerts_once_after_exhausting_retries(self, monkeypatch):
         conn = _console_conn_bare("ZCONSOLE_SCR2")
         conn._attempt_login_with_cooloff = MagicMock()
         conn._console_page = MagicMock()
@@ -1073,12 +1085,12 @@ class TestScrapingRobustness:
         row = _fake_broker_account_row("ZCONSOLE_SCR2")
         await mod.sync_account(row, plan={"derivatives": (date(2026, 11, 1), date(2026, 11, 30))})
 
-        assert fake_page.set_date_range.call_count == 2
-        assert fake_page.set_ledger_date_range.call_count == 1
+        assert fake_page.set_date_range.call_count == 2 * mod._CHUNK_SCRAPE_MAX_ATTEMPTS
+        assert fake_page.set_ledger_date_range.call_count == 1 * mod._CHUNK_SCRAPE_MAX_ATTEMPTS
         assert alert_mock.await_count == 3
 
     @pytest.mark.asyncio
-    async def test_download_never_fires_alerts_and_does_not_retry(self, monkeypatch):
+    async def test_download_never_fires_alerts_once_after_exhausting_retries(self, monkeypatch):
         conn = _console_conn_bare("ZCONSOLE_SCR3")
         conn._attempt_login_with_cooloff = MagicMock()
         conn._console_page = MagicMock()
@@ -1097,8 +1109,45 @@ class TestScrapingRobustness:
         await mod.sync_account(row, plan={"derivatives": (date(2026, 11, 1), date(2026, 11, 30))})
 
         # tradebook + pnl (per-segment) + ledger (once per account) == 3
-        assert fake_page.trigger_download.call_count == 3
+        # pulls, each retried _CHUNK_SCRAPE_MAX_ATTEMPTS times.
+        assert fake_page.trigger_download.call_count == 3 * mod._CHUNK_SCRAPE_MAX_ATTEMPTS
         assert alert_mock.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_transient_failure_recovers_on_retry_no_alert_fires(self, monkeypatch):
+        """The actual point of the retry: a chunk that fails on its first
+        attempt but succeeds on a later one must ingest normally and
+        never alert at all -- confirms the retry is load-bearing, not
+        just present in the call count."""
+        conn = _console_conn_bare("ZCONSOLE_SCR_RETRY")
+        conn._attempt_login_with_cooloff = MagicMock()
+        conn._console_page = MagicMock()
+        monkeypatch.setattr(mod, "build_console_connection", lambda *a, **k: conn)
+
+        fake_page = MagicMock()
+        fake_page.navigate_to_reports = MagicMock(
+            side_effect=[mod.ConsoleStructuralError("transient"), None, None, None, None, None],
+        )
+        monkeypatch.setattr(mod, "KiteConsoleReportsPage", lambda page: fake_page)
+        monkeypatch.setattr(mod, "capture_diagnostics", MagicMock(return_value={}))
+        alert_mock = AsyncMock()
+        monkeypatch.setattr(mod, "alert_critical", alert_mock)
+        monkeypatch.setattr(
+            mod, "parse_tradebook_csv", lambda raw: [],
+        )
+        monkeypatch.setattr(mod, "parse_pnl_statement_xlsx", lambda raw: [])
+        monkeypatch.setattr(mod, "parse_ledger_csv", lambda raw: [])
+        ingest_mock = AsyncMock(return_value=0)
+        monkeypatch.setattr(mod, "ingest_rows", ingest_mock)
+        monkeypatch.setattr(mod, "ingest_ledger_rows", AsyncMock(return_value=0))
+
+        row = _fake_broker_account_row("ZCONSOLE_SCR_RETRY")
+        outcome = await mod.sync_account(
+            row, plan={"derivatives": (date(2026, 11, 1), date(2026, 11, 30))},
+        )
+
+        assert alert_mock.await_count == 0
+        assert outcome.ok is True
 
     @pytest.mark.asyncio
     async def test_invalid_downloaded_file_is_never_silently_ingested(self, monkeypatch, tmp_path):

@@ -207,7 +207,7 @@ import time as _time_mod
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 # Allow `python scripts/kite_console_pnl_sync.py` (not just `-m
 # scripts.kite_console_pnl_sync`) to resolve `backend.*` imports when run
@@ -1969,92 +1969,162 @@ def _console_login_and_scrape_sync(conn, plan: "dict[str, tuple[date, date]]") -
         page = conn._console_page
         reports = KiteConsoleReportsPage(page)
         chunks: "list[dict]" = []
-        for segment, (start, end) in plan.items():
-            for report_type in ("tradebook", "pnl"):
-                for c_start, c_end in chunk_by_calendar_month(start, end):
-                    # pnl ONLY: floor the request's own start to the 1st
-                    # of c_start's month. Still <= ~1 month wide (c_end
-                    # is already bounded by chunk_by_calendar_month), so
-                    # the Console limit still holds — but this makes
-                    # EVERY pnl request for "this calendar month",
-                    # whichever caller/trigger produced it (a one-time
-                    # backfill's own full-month chunk, a later sync's
-                    # narrower expiry-aligned chunk, or a same-day
-                    # re-run), anchor its requested range at the SAME
-                    # start, so they become directly comparable as
-                    # successive snapshots of one month rather than
-                    # genuinely different, non-comparable ranges. See
-                    # `get_accumulated_pnl()`'s own docstring for why
-                    # that comparability is what makes "pick the latest
-                    # one per month, then sum across months" correct —
-                    # without this floor, two pulls for the same month
-                    # with different `pull_range_start` would get
-                    # DIFFERENT `dedup_key`s and silently SUM instead of
-                    # replacing each other, double-counting the overlap.
-                    # Tradebook needs no such floor — trade_id-based
-                    # dedup already makes any overlapping window safe.
-                    req_start = (
-                        date(c_start.year, c_start.month, 1)
-                        if report_type == "pnl" else c_start
-                    )
-                    label = "tradebook" if report_type == "tradebook" else "pnl"
-                    entry = {
-                        "segment": segment, "report_type": report_type,
-                        "start": req_start, "end": c_end,
-                        "raw_bytes": None, "scrape_error": None,
-                        "diagnostics": None,
-                    }
-                    try:
-                        reports.navigate_to_reports(report_type)
-                        reports.select_segment(segment)
-                        reports.set_date_range(req_start, c_end)
-                        download_path = reports.trigger_download(
-                            report_type=report_type, start=req_start, end=c_end,
-                            masked_account=masked,
-                        )
-                        entry["raw_bytes"] = download_path.read_bytes()
-                    except Exception as e:
-                        entry["scrape_error"] = str(e)
-                        entry["diagnostics"] = capture_diagnostics(
-                            page, masked, f"scrape_{segment}_{label}",
-                        )
-                    chunks.append(entry)
-
-        # Ledger (Funds Statement) — pulled ONCE per account, not once
-        # per segment: this report has no segment dimension at all (its
-        # own Category select is never touched — see parse_ledger_csv's
-        # docstring), so looping it inside the segment loop above would
-        # scrape and ingest the SAME combined ledger three times over.
-        # Its own date range is the UNION across every segment in
-        # `plan` (min start, max end) — a ledger spans every segment's
-        # activity regardless of which segments actually triggered this
-        # sync, so narrowing to one segment's own range would miss
-        # margin events tied to a DIFFERENT segment's positions.
-        if plan:
-            ledger_start = min(s for s, _e in plan.values())
-            ledger_end = max(e for _s, e in plan.values())
-            for c_start, c_end in chunk_by_calendar_month(ledger_start, ledger_end):
-                entry = {
-                    "segment": _LEDGER_SEGMENT, "report_type": "ledger",
-                    "start": c_start, "end": c_end,
-                    "raw_bytes": None, "scrape_error": None,
-                    "diagnostics": None,
-                }
-                try:
-                    reports.navigate_to_reports("ledger")
-                    reports.set_ledger_date_range(c_start, c_end)
-                    download_path = reports.trigger_download(
-                        report_type="ledger", start=c_start, end=c_end,
-                        masked_account=masked,
-                    )
-                    entry["raw_bytes"] = download_path.read_bytes()
-                except Exception as e:
-                    entry["scrape_error"] = str(e)
-                    entry["diagnostics"] = capture_diagnostics(page, masked, "scrape_ledger")
-                chunks.append(entry)
+        chunks.extend(_scrape_segment_chunks(reports, page, masked, plan))
+        chunks.extend(_scrape_ledger_chunks(reports, page, masked, plan))
         return {"login_ok": True, "login_failed": False, "chunks": chunks}
     finally:
         shutdown_console_browser(conn)
+
+
+# Bounded retry count for a single chunk's scrape+validate cycle. Confirmed
+# live, 2026-11-26 (sixth/seventh real runs): Kite Console itself has an
+# internal race between its on-screen "fetched" label (which updates
+# promptly and correctly) and the actual CSV/XLSX export it serves (which
+# sometimes still reflects the PREVIOUS query for a few seconds after) --
+# `_verify_fetched_date_range()` cannot catch this, because the label genuinely
+# shows the right range while the export is still stale underneath. A fresh
+# retry (full re-navigate, re-select, re-date-range, re-submit, re-download)
+# resolves it in practice, since the retry's own later wall-clock timing no
+# longer races the same backend state. 3 total attempts, not unbounded --
+# this must never turn one transient Kite-side race into an indefinite hang
+# during the (also time-bounded) scrape loop.
+_CHUNK_SCRAPE_MAX_ATTEMPTS = 3
+
+
+def _validate_raw_report(report_type: str, segment: str, start: date, end: date,
+                          raw_bytes: bytes) -> None:
+    """Re-used by the retry loop (to decide whether to retry) AND, via
+    `_ingest_one_report()`, by the real ingestion pass. Deliberately the
+    IDENTICAL parse+validate calls in both places -- running the same
+    pure, Playwright-independent functions twice on a successful chunk is
+    cheap, and keeping one implementation (not two copies that could
+    drift) is worth that. Raises `ReportValidationError` on a bad report;
+    returns normally (discarding the parsed rows) on a good one."""
+    if report_type == "tradebook":
+        validate_tradebook_rows(parse_tradebook_csv(raw_bytes), segment=segment, start=start, end=end)
+    elif report_type == "pnl":
+        validate_pnl_rows(parse_pnl_statement_xlsx(raw_bytes), segment=segment)
+    else:
+        validate_ledger_rows(parse_ledger_csv(raw_bytes), start=start, end=end)
+
+
+def _scrape_one_chunk(
+    reports: "KiteConsoleReportsPage", page, masked: str, *,
+    segment: str, report_type: str, start: date, end: date,
+    setup_query: "Callable[[], None]", diag_label: str,
+) -> dict:
+    """Scrape ONE (segment, report_type, date-range) chunk, retrying the
+    whole navigate->setup->submit->download->validate cycle up to
+    `_CHUNK_SCRAPE_MAX_ATTEMPTS` times on either a scrape-level exception
+    or a validation failure -- see `_CHUNK_SCRAPE_MAX_ATTEMPTS`'s own
+    comment for why a retry (not just a longer wait) is the right fix for
+    the specific race this guards against. Diagnostics are captured only
+    on the FINAL failed attempt, not every one, so a transient first
+    failure that the retry recovers from doesn't spam the diagnostics
+    directory. `setup_query` performs whatever this report type needs
+    between `navigate_to_reports()` and `trigger_download()` (segment
+    select + date range for tradebook/pnl; just the ledger date range for
+    ledger, which has no segment selector at all)."""
+    entry: dict = {
+        "segment": segment, "report_type": report_type,
+        "start": start, "end": end,
+        "raw_bytes": None, "scrape_error": None, "diagnostics": None,
+    }
+    last_exc: Exception | None = None
+    for attempt in range(1, _CHUNK_SCRAPE_MAX_ATTEMPTS + 1):
+        try:
+            reports.navigate_to_reports(report_type)
+            setup_query()
+            download_path = reports.trigger_download(
+                report_type=report_type, start=start, end=end, masked_account=masked,
+            )
+            raw_bytes = download_path.read_bytes()
+            _validate_raw_report(report_type, segment, start, end, raw_bytes)
+            entry["raw_bytes"] = raw_bytes
+            return entry
+        except Exception as e:
+            last_exc = e
+            if attempt < _CHUNK_SCRAPE_MAX_ATTEMPTS:
+                logger.warning(
+                    "[KITE-CONSOLE-SYNC] %s attempt %d/%d failed, retrying: %s",
+                    diag_label, attempt, _CHUNK_SCRAPE_MAX_ATTEMPTS, e,
+                )
+    entry["scrape_error"] = (
+        f"failed after {_CHUNK_SCRAPE_MAX_ATTEMPTS} attempts: {last_exc}"
+    )
+    entry["diagnostics"] = capture_diagnostics(page, masked, diag_label)
+    return entry
+
+
+def _scrape_segment_chunks(reports, page, masked: str, plan) -> "list[dict]":
+    chunks: "list[dict]" = []
+    for segment, (start, end) in plan.items():
+        for report_type in ("tradebook", "pnl"):
+            for c_start, c_end in chunk_by_calendar_month(start, end):
+                # pnl ONLY: floor the request's own start to the 1st
+                # of c_start's month. Still <= ~1 month wide (c_end
+                # is already bounded by chunk_by_calendar_month), so
+                # the Console limit still holds — but this makes
+                # EVERY pnl request for "this calendar month",
+                # whichever caller/trigger produced it (a one-time
+                # backfill's own full-month chunk, a later sync's
+                # narrower expiry-aligned chunk, or a same-day
+                # re-run), anchor its requested range at the SAME
+                # start, so they become directly comparable as
+                # successive snapshots of one month rather than
+                # genuinely different, non-comparable ranges. See
+                # `get_accumulated_pnl()`'s own docstring for why
+                # that comparability is what makes "pick the latest
+                # one per month, then sum across months" correct —
+                # without this floor, two pulls for the same month
+                # with different `pull_range_start` would get
+                # DIFFERENT `dedup_key`s and silently SUM instead of
+                # replacing each other, double-counting the overlap.
+                # Tradebook needs no such floor — trade_id-based
+                # dedup already makes any overlapping window safe.
+                req_start = (
+                    date(c_start.year, c_start.month, 1)
+                    if report_type == "pnl" else c_start
+                )
+                label = "tradebook" if report_type == "tradebook" else "pnl"
+                entry = _scrape_one_chunk(
+                    reports, page, masked,
+                    segment=segment, report_type=report_type,
+                    start=req_start, end=c_end,
+                    setup_query=lambda s=segment, rs=req_start, ce=c_end: (
+                        reports.select_segment(s), reports.set_date_range(rs, ce),
+                    ),
+                    diag_label=f"scrape_{segment}_{label}",
+                )
+                chunks.append(entry)
+    return chunks
+
+
+def _scrape_ledger_chunks(reports, page, masked: str, plan) -> "list[dict]":
+    """Ledger (Funds Statement) — pulled ONCE per account, not once per
+    segment: this report has no segment dimension at all (its own
+    Category select is never touched — see parse_ledger_csv's docstring),
+    so looping it inside the segment loop above would scrape and ingest
+    the SAME combined ledger three times over. Its own date range is the
+    UNION across every segment in `plan` (min start, max end) — a ledger
+    spans every segment's activity regardless of which segments actually
+    triggered this sync, so narrowing to one segment's own range would
+    miss margin events tied to a DIFFERENT segment's positions."""
+    if not plan:
+        return []
+    chunks: "list[dict]" = []
+    ledger_start = min(s for s, _e in plan.values())
+    ledger_end = max(e for _s, e in plan.values())
+    for c_start, c_end in chunk_by_calendar_month(ledger_start, ledger_end):
+        entry = _scrape_one_chunk(
+            reports, page, masked,
+            segment=_LEDGER_SEGMENT, report_type="ledger",
+            start=c_start, end=c_end,
+            setup_query=lambda cs=c_start, ce=c_end: reports.set_ledger_date_range(cs, ce),
+            diag_label="scrape_ledger",
+        )
+        chunks.append(entry)
+    return chunks
 
 
 async def _ingest_one_report(
