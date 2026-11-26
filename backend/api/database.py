@@ -107,7 +107,7 @@ async def _migrate_create_tables(conn) -> None:
         GrammarToken, Setting, DailyBook, Watchlist, WatchlistItem, VisitorLog,
         CodeMetricsSnapshot, MarketLifecycleEvent, MarketHoliday,
         MarketSpecialSession, BrokerAccount, PerfSnapshot, AppMessage,
-        ExchangeSchedule, TickerCalendarVerdict,
+        ExchangeSchedule, TickerCalendarVerdict, KiteConsolePnlSync,
     )
     from sqlalchemy import text
     _branch_local_tables = [
@@ -858,6 +858,36 @@ async def _migrate_market_special_sessions_source(conn) -> None:
     ))
 
 
+async def _migrate_kite_console_pnl_sync_columns(conn) -> None:
+    """Add `instrument_type` / `symbol_root` columns + a supporting index
+    to `kite_console_pnl_sync` (idempotent, additive — 2026-11-26).
+
+    The table itself was created very recently (via `_migrate_create_tables`,
+    so no separate migration existed for the table itself), and these two
+    columns were added to the ORM model in the same change that added
+    this function — so on a fresh deploy `create_all` already emits them
+    and this is a no-op. It exists anyway, following this file's own
+    `_migrate_*` convention exactly, so a database that already created
+    the table from an EARLIER version of the model (e.g. a dev box that
+    deployed between the table's creation and this column addition)
+    still picks the columns up on next startup, same as every other
+    additive-column migration in this file.
+    """
+    from sqlalchemy import text
+    await conn.execute(text(
+        "ALTER TABLE kite_console_pnl_sync ADD COLUMN IF NOT EXISTS "
+        "instrument_type VARCHAR(16)"
+    ))
+    await conn.execute(text(
+        "ALTER TABLE kite_console_pnl_sync ADD COLUMN IF NOT EXISTS "
+        "symbol_root VARCHAR(64)"
+    ))
+    await conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_kite_console_pnl_sync_root "
+        "ON kite_console_pnl_sync (account, symbol_root, instrument_type)"
+    ))
+
+
 async def _migrate_drop_position_pairs_table(conn) -> None:
     """One-time drop of the retired `position_pairs` table.
 
@@ -1516,6 +1546,7 @@ async def init_db() -> None:
         await _migrate_agents_strip_notify_from_actions(conn)
         await _migrate_drop_position_pairs_table(conn)
         await _migrate_market_special_sessions_source(conn)
+        await _migrate_kite_console_pnl_sync_columns(conn)
         # MUST run LAST in this transaction — drops order_templates and
         # the 6 AlgoOrder/Agent columns that pointed at it. See the
         # function's own docstring for the full rationale and ordering.

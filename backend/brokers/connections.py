@@ -551,6 +551,21 @@ class KiteConnection:
         # Try to restore from cached token (avoids full login on restart)
         self._try_restore_token()
 
+    def _login_cooloff_path(self) -> str:
+        """Disk path for this connection's login cool-off state.
+
+        Looked up dynamically (not cached on an instance attribute) so
+        test monkeypatching of the module-global `_KITE_LOGIN_COOLOFF_PATH`
+        still works exactly as before, and so a subclass can override this
+        one method to point at an entirely separate file. See
+        `scripts/kite_console_pnl_sync.py`'s `KiteConsoleConnection` —
+        its browser-driven Console login must never share a cool-off file
+        with this class's own sanctioned REST login path for the same
+        account (a failed Console scrape login must never block the live
+        trading account's own re-logins, and vice versa).
+        """
+        return _KITE_LOGIN_COOLOFF_PATH
+
     def _try_restore_token(self):
         """Try to restore access token from cache. If valid, skip full login."""
         token, created = _load_cached_token(self.account)
@@ -570,8 +585,9 @@ class KiteConnection:
         # failed login attempt on another thread/instance for this
         # account) — only ever extends or confirms it.
         try:
-            if os.path.exists(_KITE_LOGIN_COOLOFF_PATH):
-                with open(_KITE_LOGIN_COOLOFF_PATH) as _cf:
+            _cooloff_path = self._login_cooloff_path()
+            if os.path.exists(_cooloff_path):
+                with open(_cooloff_path) as _cf:
                     _cd = json.load(_cf)
                 _blocked = float(_cd.get(self.account, 0.0))
                 if _blocked > _time_mod.time():
@@ -794,15 +810,16 @@ class KiteConnection:
             # Kite's login endpoint — same read-merge-write pattern as
             # DhanConnection._mint_and_build's own cooloff persistence.
             try:
+                _cooloff_path = self._login_cooloff_path()
                 _cooloff_data: dict = {}
-                if os.path.exists(_KITE_LOGIN_COOLOFF_PATH):
+                if os.path.exists(_cooloff_path):
                     try:
-                        with open(_KITE_LOGIN_COOLOFF_PATH) as _cf:
+                        with open(_cooloff_path) as _cf:
                             _cooloff_data = json.load(_cf)
                     except Exception:
                         _cooloff_data = {}
                 _cooloff_data[self.account] = self._login_blocked_until
-                with open(_KITE_LOGIN_COOLOFF_PATH, "w") as _cf:
+                with open(_cooloff_path, "w") as _cf:
                     json.dump(_cooloff_data, _cf)
             except Exception as _persist_err:
                 logger.warning(
@@ -873,11 +890,12 @@ class KiteConnection:
             # Clear persisted cool-off so the next process restart doesn't
             # restore a now-stale block.
             try:
-                if os.path.exists(_KITE_LOGIN_COOLOFF_PATH):
-                    with open(_KITE_LOGIN_COOLOFF_PATH) as _cf:
+                _cooloff_path = self._login_cooloff_path()
+                if os.path.exists(_cooloff_path):
+                    with open(_cooloff_path) as _cf:
                         _cd = json.load(_cf)
                     _cd.pop(self.account, None)
-                    with open(_KITE_LOGIN_COOLOFF_PATH, "w") as _cf:
+                    with open(_cooloff_path, "w") as _cf:
                         json.dump(_cd, _cf)
             except Exception:
                 pass

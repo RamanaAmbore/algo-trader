@@ -2632,3 +2632,113 @@ class LogEvent(Base):
     message: Mapped[str]         = mapped_column(Text)
     tags: Mapped[list]           = mapped_column(PG_ARRAY(String(40)), nullable=False)
     extra: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+
+
+class KiteConsolePnlSync(Base):
+    """Rows ingested from Zerodha Kite Console's web Tradebook / P&L
+    report, via the Playwright-driven scraper
+    (`scripts/kite_console_pnl_sync.py`). Separate from `daily_book` —
+    `daily_book` is the snapshot/settlement table every live route reads
+    from and has its own strict semantics (see CLAUDE.md's "close_price
+    / ltp invariant"); this table is a secondary, broker-reported
+    reconciliation source and is never read by any live route.
+
+    Zerodha's sanctioned Kite Connect API has no historical P&L/trade
+    report endpoint — `orders()`/`order_history()`/`trades()` take no
+    date range, and there is no `get_pnl`/`get_statement` method. The
+    web Console's "Reports" page is the only source for a historical
+    trade/P&L export, so it is reached via browser automation rather
+    than the sanctioned API this app uses everywhere else.
+
+    Idempotency: a given (account, report_type, dedup_key) combination
+    is unique. Re-ingesting an overlapping pull upserts in place rather
+    than creating a duplicate row — see `build_dedup_key()` in the
+    ingestion script for how `dedup_key` is computed per report_type:
+
+      - report_type='tradebook': dedup_key is the broker's own trade_id
+        (or a composite of exchange+order_id+trade_id if trade_id alone
+        isn't guaranteed globally unique) — a genuinely stable row-level
+        key, safe to upsert on across any number of overlapping pulls.
+      - report_type='pnl': the Console P&L statement aggregates each
+        symbol over the REQUESTED date range, so a partial-range pull
+        and a full-range pull are two different numbers for the same
+        symbol — they must never collide under one key (that would let
+        a later partial-range pull silently overwrite a wider aggregate
+        with a narrower one). dedup_key therefore includes the pull's
+        own requested range: f"{symbol}:{expiry}:{range_start}:{range_end}".
+
+    `account` is ALWAYS the masked form (`mask_account()`) — a raw
+    broker account code must never reach this table, same invariant as
+    every log/alert surface in this codebase.
+
+    `raw_row` keeps the full original parsed row (JSONB) for forward
+    compatibility and audit — the typed columns below are the fields
+    this app currently cares about; a Console report schema change that
+    adds/renames a column doesn't lose data even before this model is
+    updated to add a typed column for it.
+
+    `instrument_type` / `symbol_root` (added 2026-11-26): classification
+    derived once at ingestion time via `derivatives.parse_tradingsymbol()`
+    — never re-derived with a bespoke regex, and never an `endswith('CE'/
+    'PE')` check (which would misclassify an equity ticker like RELIANCE
+    or BAJFINANCE as an option). `instrument_type` is 'equity' | 'future'
+    | 'option'; `symbol_root` is the parsed root for F&O symbols (e.g.
+    'GOLDM', 'NIFTY') or the bare symbol itself for equity. See
+    `scripts/kite_console_pnl_sync.py:classify_instrument()`.
+
+    Accumulation (`get_accumulated_pnl()`, same script) deliberately does
+    NOT sum `realized_pnl` across every `report_type='pnl'` row for a
+    given (account, symbol, expiry) — Kite's P&L statement aggregates a
+    symbol over the EXACT requested range, and this app's own sync
+    schedule can produce several overlapping-but-not-identical ranges for
+    the same symbol over time (see `pnl_pull_range()`'s own docstring).
+    Summing those would double-count the overlap. Instead, every pnl pull
+    is designed to always span a fixed anchor date to "today" (never a
+    rolling window), so there is only ever one genuinely "current
+    cumulative" row per (account, symbol, expiry) at a time, and
+    accumulation picks the single MOST RECENT such row per group — never
+    a SUM across that group's own range-rows. Summing is still correct,
+    and happens, ACROSS DIFFERENT symbols within one requested grouping
+    (e.g. multiple strikes under one underlying+expiry).
+    """
+    __tablename__ = "kite_console_pnl_sync"
+
+    id:               Mapped[int]            = mapped_column(primary_key=True, autoincrement=True)
+    account:          Mapped[str]            = mapped_column(String(16), nullable=False)
+    segment:          Mapped[str]            = mapped_column(String(16), nullable=False)  # 'equity' | 'derivatives' | 'commodities'
+    report_type:      Mapped[str]            = mapped_column(String(16), nullable=False)  # 'tradebook' | 'pnl'
+    dedup_key:        Mapped[str]            = mapped_column(String(256), nullable=False)
+    symbol:           Mapped[Optional[str]]  = mapped_column(String(64), nullable=True)
+    exchange:         Mapped[Optional[str]]  = mapped_column(String(16), nullable=True)
+    instrument_type:  Mapped[Optional[str]]  = mapped_column(String(16), nullable=True)  # 'equity' | 'future' | 'option'
+    symbol_root:      Mapped[Optional[str]]  = mapped_column(String(64), nullable=True)
+    expiry:           Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    trade_date:       Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    trade_id:         Mapped[Optional[str]]  = mapped_column(String(64), nullable=True)
+    order_id:         Mapped[Optional[str]]  = mapped_column(String(64), nullable=True)
+    pull_range_start: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    pull_range_end:   Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    buy_qty:          Mapped[Optional[float]] = mapped_column(Numeric(16, 4), nullable=True)
+    sell_qty:         Mapped[Optional[float]] = mapped_column(Numeric(16, 4), nullable=True)
+    buy_value:        Mapped[Optional[float]] = mapped_column(Numeric(18, 4), nullable=True)
+    sell_value:       Mapped[Optional[float]] = mapped_column(Numeric(18, 4), nullable=True)
+    realized_pnl:     Mapped[Optional[float]] = mapped_column(Numeric(18, 4), nullable=True)
+    raw_row:          Mapped[dict]           = mapped_column(JSONB, nullable=False, default=dict)
+    synced_at:        Mapped[datetime]       = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at:       Mapped[datetime]       = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(),
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "account", "report_type", "dedup_key",
+            name="uq_kite_console_pnl_sync_account_type_key",
+        ),
+        Index("ix_kite_console_pnl_sync_account_segment", "account", "segment"),
+        Index("ix_kite_console_pnl_sync_symbol", "symbol"),
+        Index("ix_kite_console_pnl_sync_expiry", "expiry"),
+        Index(
+            "ix_kite_console_pnl_sync_root",
+            "account", "symbol_root", "instrument_type",
+        ),
+    )
