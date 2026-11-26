@@ -92,10 +92,26 @@ test.describe('Chain DRAFT toggle moved onto the Expiry row (source-scan)', () =
   });
 
   test('SymbolPanel suppresses its own shared-row DRAFT copy specifically while Chain is active', () => {
-    const idx = panelSrc.indexOf('{#if _draftToggleVisible');
-    expect(idx, 'DRAFT toggle if-block not found').toBeGreaterThan(-1);
-    const line = panelSrc.slice(idx, panelSrc.indexOf('\n', idx));
-    expect(line).toMatch(/_activeTab !== 'chain'/);
+    // 2026-11-25 (Symbol+Expiry merge) — the per-control `_activeTab !==
+    // 'chain'` guard that used to sit directly on `{#if _draftToggleVisible
+    // ...}` moved to the OUTER `.oes-chase-row` gate, so the whole row
+    // (CHASE + DRAFT) is skipped on Chain instead of rendering an empty
+    // `<div>` there (the dead middle row this same merge also removes).
+    // `_draftToggleVisible` itself carries no Chain exclusion any more —
+    // it doesn't need to, since the entire row is already gone by then.
+    const draftIdx = panelSrc.indexOf('{#if _draftToggleVisible');
+    expect(draftIdx, 'DRAFT toggle if-block not found').toBeGreaterThan(-1);
+    const draftLine = panelSrc.slice(draftIdx, panelSrc.indexOf('\n', draftIdx));
+    expect(draftLine).not.toMatch(/_activeTab !== 'chain'/);
+
+    const rowIdx = panelSrc.indexOf('<div class="oes-chase-row">');
+    expect(rowIdx, '.oes-chase-row div not found').toBeGreaterThan(-1);
+    // The guarding {#if} is the nearest one above the div's own opening tag.
+    const gateIdx = panelSrc.lastIndexOf('{#if', rowIdx);
+    expect(gateIdx).toBeGreaterThan(-1);
+    const gateLine = panelSrc.slice(gateIdx, panelSrc.indexOf('\n', gateIdx));
+    expect(gateLine).toMatch(/_activeTab !== 'chain'/);
+    expect(draftIdx).toBeGreaterThan(gateIdx);
   });
 
   test("SymbolPanel threads _sharedDraftMode/_onSharedDraftToggleChange into <OptionChainTab> as draftMode/onDraftToggleChange", () => {
