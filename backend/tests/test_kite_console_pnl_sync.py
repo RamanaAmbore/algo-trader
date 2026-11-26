@@ -1151,7 +1151,7 @@ class TestScrapingRobustness:
             if segment == "derivatives":
                 raise mod.ConsoleStructuralError("boom on derivatives")
 
-        def _fake_trigger_download(report_type=None, masked_account=None):
+        def _fake_trigger_download(report_type=None, start=None, end=None, masked_account=None):
             if last_report_type[-1] == "tradebook":
                 return tradebook_file
             if last_report_type[-1] == "ledger":
@@ -1393,6 +1393,144 @@ class TestVerifyLoggedInErrAborted:
 
         button.click.assert_not_called()
         reports_link.wait_for.assert_called_once()
+
+
+# ===========================================================================
+# 5c. navigate_to_reports — retry on a slow/blank render
+# ===========================================================================
+
+class TestNavigateToReportsRetry:
+    """2026-11-26 fix (fifth real run found this): a long single-browser
+    backfill session sometimes renders a genuinely BLANK page well past
+    the original 20s landmark wait, confirmed live for commodities/pnl
+    and the ledger report, late in a run. `navigate_to_reports()` now
+    retries once with a longer timeout before raising."""
+
+    def test_succeeds_on_first_attempt_no_retry(self, monkeypatch):
+        page = MagicMock()
+        console = mod.KiteConsoleReportsPage(page)
+        console.navigate_to_reports("tradebook")
+        assert page.locator.return_value.first.wait_for.call_count == 1
+
+    def test_slow_first_render_recovers_on_retry(self, monkeypatch):
+        _patch_playwright_errors(monkeypatch)
+        page = MagicMock()
+        select_locator = page.locator.return_value.first
+        select_locator.wait_for.side_effect = [
+            _FakePlaywrightTimeoutError("first attempt too slow"),
+            None,
+        ]
+
+        console = mod.KiteConsoleReportsPage(page)
+        console.navigate_to_reports("tradebook")  # must not raise
+
+        assert select_locator.wait_for.call_count == 2
+        assert page.goto.call_count == 2
+
+    def test_both_attempts_blank_raises_with_report_type_and_url(self, monkeypatch):
+        _patch_playwright_errors(monkeypatch)
+        page = MagicMock()
+        select_locator = page.locator.return_value.first
+        select_locator.wait_for.side_effect = _FakePlaywrightTimeoutError("blank page")
+
+        console = mod.KiteConsoleReportsPage(page)
+        with pytest.raises(mod.ConsoleStructuralError, match="'pnl' report page"):
+            console.navigate_to_reports("pnl")
+
+        assert select_locator.wait_for.call_count == 2
+
+
+# ===========================================================================
+# 5d. trigger_download — real results-rendered wait, date-range staleness
+# ===========================================================================
+
+class TestTriggerDownloadResultsRendered:
+    """2026-11-26 fix (sixth real run found this): a fixed 2s sleep for
+    "results table render" was too short, so the download control was
+    sometimes clicked against the PREVIOUS chunk's still-rendered table
+    -- surfacing as a download timeout, or a silent download of the
+    wrong date range caught only by this module's own post-parse
+    validation. Replaced with a real landmark wait
+    (`_wait_for_results_rendered`) plus a date-range staleness check
+    (`_verify_fetched_date_range`)."""
+
+    def _page_with_csv_download(self):
+        page = MagicMock()
+        download = MagicMock(suggested_filename="tradebook-ZG0790.csv")
+        cm = MagicMock()
+        cm.__enter__.return_value = MagicMock(value=download)
+        cm.__exit__.return_value = False
+        page.expect_download.return_value = cm
+        return page, download
+
+    def test_waits_for_results_rendered_before_looking_for_download(self, monkeypatch, tmp_path):
+        _patch_playwright_errors(monkeypatch)
+        page, _download = self._page_with_csv_download()
+        monkeypatch.setattr(mod, "_DOWNLOADS_DIR", tmp_path)
+        console = mod.KiteConsoleReportsPage(page)
+        console.trigger_download(report_type="tradebook")
+
+        page.get_by_text.assert_called_once_with(mod.KiteConsoleReportsPage._RESULTS_RENDERED_TEXT)
+        page.get_by_text.return_value.first.wait_for.assert_called_once()
+
+    def test_date_range_verified_when_label_present_and_matches(self, monkeypatch, tmp_path):
+        _patch_playwright_errors(monkeypatch)
+        page, _download = self._page_with_csv_download()
+        label = page.locator.return_value
+        label.count.return_value = 1
+        label.inner_text.return_value = "2026-04-01 to 2026-04-30"
+        monkeypatch.setattr(mod, "_DOWNLOADS_DIR", tmp_path)
+
+        console = mod.KiteConsoleReportsPage(page)
+        console.trigger_download(
+            report_type="tradebook", start=date(2026, 4, 1), end=date(2026, 4, 30),
+        )  # must not raise
+
+    def test_stale_date_range_label_raises_distinct_error(self, monkeypatch):
+        _patch_playwright_errors(monkeypatch)
+        page, _download = self._page_with_csv_download()
+        label = page.locator.return_value
+        label.count.return_value = 1
+        label.inner_text.return_value = "2026-04-01 to 2026-04-30"  # stale, never updates
+
+        console = mod.KiteConsoleReportsPage(page)
+        with pytest.raises(mod.ConsoleStructuralError, match="stale date range"):
+            console.trigger_download(
+                report_type="tradebook", start=date(2026, 5, 1), end=date(2026, 5, 31),
+                timeout_ms=50,
+            )
+
+    def test_date_range_label_absent_is_a_silent_no_op(self, monkeypatch, tmp_path):
+        """The P&L report page has no #date_fetched_label at all --
+        confirmed via a live HTML dump. Absence must never be treated as
+        a staleness failure."""
+        _patch_playwright_errors(monkeypatch)
+        page, _download = self._page_with_csv_download()
+        label = page.locator.return_value
+        label.count.return_value = 0
+        monkeypatch.setattr(mod, "_DOWNLOADS_DIR", tmp_path)
+
+        console = mod.KiteConsoleReportsPage(page)
+        console.trigger_download(
+            report_type="pnl", start=date(2026, 4, 1), end=date(2026, 4, 30),
+        )  # must not raise
+
+        label.inner_text.assert_not_called()
+
+    def test_no_start_end_skips_date_range_verification_entirely(self, monkeypatch, tmp_path):
+        """Optional only so existing direct callers/tests that don't pass
+        start/end keep working -- real callers always pass both."""
+        _patch_playwright_errors(monkeypatch)
+        page, _download = self._page_with_csv_download()
+        label = page.locator.return_value
+        label.count.return_value = 1
+        label.inner_text.return_value = "anything, doesn't matter"
+        monkeypatch.setattr(mod, "_DOWNLOADS_DIR", tmp_path)
+
+        console = mod.KiteConsoleReportsPage(page)
+        console.trigger_download(report_type="tradebook")  # must not raise
+
+        label.inner_text.assert_not_called()
 
 
 # ===========================================================================
@@ -1913,7 +2051,7 @@ class TestHappyPathEndToEnd:
 
         last_report_type: "list[str]" = []
 
-        def _fake_trigger_download(report_type=None, masked_account=None):
+        def _fake_trigger_download(report_type=None, start=None, end=None, masked_account=None):
             if last_report_type[-1] == "tradebook":
                 return tradebook_file
             if last_report_type[-1] == "ledger":
@@ -2432,7 +2570,7 @@ class TestPnlStatementPull:
         last_report_type: "list[str]" = []
         set_date_range_calls: "list[tuple]" = []
 
-        def _fake_trigger_download(report_type=None, masked_account=None):
+        def _fake_trigger_download(report_type=None, start=None, end=None, masked_account=None):
             if last_report_type[-1] == "tradebook":
                 return tradebook_file
             if last_report_type[-1] == "ledger":

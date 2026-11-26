@@ -201,6 +201,7 @@ import csv
 import io
 import json
 import os
+import re
 import sys
 import time as _time_mod
 from dataclasses import dataclass, field
@@ -595,20 +596,37 @@ class KiteConsoleReportsPage:
     }
 
     def navigate_to_reports(self, report_type: str) -> None:
+        """2026-11-26 fix (fifth real run found this): after a long,
+        single-browser-session backfill (many chunks across several
+        segments/report-types), the Vue SPA sometimes takes far longer
+        than 20s to mount its content after a fresh `goto()` -- confirmed
+        live via diagnostics showing a genuinely BLANK page (the app
+        shell/scripts present, no rendered body content at all) for
+        commodities/pnl and the ledger page, late in a run. This is
+        consistent with resource pressure building up in one long-lived
+        browser instance, not a different page structure for those report
+        types. Retried once (bounded) with a longer timeout before
+        raising, rather than failing on the first transient slow render."""
         url = self._REPORT_URL.get(report_type)
         if not url:
             raise ConsoleStructuralError(f"no known Console report URL for {report_type!r}")
-        try:
-            self.page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            # The segment <select> (and, on /reports/pnl, the P&L-view
-            # <select> right next to it) is the one stable landmark that
-            # confirms the real report-builder form loaded, rather than
-            # Console's client-side 404 shell (same HTTP 200 either way).
-            self.page.locator("select").first.wait_for(timeout=20000)
-        except Exception as e:
+        last_exc: Exception | None = None
+        for attempt, timeout_ms in enumerate((20000, 45000)):
+            try:
+                self.page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                # The segment <select> (and, on /reports/pnl, the P&L-view
+                # <select> right next to it) is the one stable landmark that
+                # confirms the real report-builder form loaded, rather than
+                # Console's client-side 404 shell (same HTTP 200 either way).
+                self.page.locator("select").first.wait_for(timeout=timeout_ms)
+                last_exc = None
+                break
+            except Exception as e:
+                last_exc = e
+        if last_exc is not None:
             raise ConsoleStructuralError(
-                f"could not navigate to the {report_type!r} report page ({url}): {e}"
-            ) from e
+                f"could not navigate to the {report_type!r} report page ({url}): {last_exc}"
+            ) from last_exc
         if report_type == "pnl":
             # Second <select> on /reports/pnl only -- Combined / Realised
             # P&L / Unrealised P&L. "realized" is the one whose per-symbol
@@ -697,7 +715,64 @@ class KiteConsoleReportsPage:
                 f"could not find/click the report-builder submit button: {e}"
             ) from e
 
-    def trigger_download(self, *, report_type: str, masked_account: str = "",
+    # Confirmed live, 2026-11-26: once a report-builder query actually
+    # renders (whether rows or an empty result), the page always shows
+    # one of these two phrases -- "Showing page N (rows X - Y out of Z)"
+    # for a populated report, "Report's empty / We couldn't find any
+    # results for your query" for a genuinely empty one. True on
+    # Tradebook AND P&L (confirmed via live screenshots of both). This
+    # is the one landmark common to every report type, so it is the
+    # PRIMARY "has the new query finished rendering" signal -- replacing
+    # a blind fixed sleep, which was too short on a slow response and
+    # the root cause of both the "download never fired" timeouts and the
+    # "rows outside requested range" validation failures (a stale,
+    # previously-rendered table's download link got clicked before the
+    # new query's own result replaced it).
+    _RESULTS_RENDERED_TEXT = re.compile(r"Showing page|Report's empty")
+
+    # Tradebook/ledger ONLY (confirmed absent from /reports/pnl's DOM) --
+    # a second, stronger verification: the exact date range the page
+    # believes it just fetched, independent of whatever `_RESULTS_
+    # RENDERED_TEXT` matched. Used to catch a genuinely stale render
+    # that happens to satisfy the primary wait (e.g. the previous
+    # chunk's own already-"Showing page"-rendered table, if this
+    # landmark's text has not yet updated to the newly requested range).
+    _DATE_FETCHED_LABEL_SELECTOR = "#date_fetched_label"
+
+    def _wait_for_results_rendered(self, timeout_ms: int) -> None:
+        self.page.get_by_text(self._RESULTS_RENDERED_TEXT).first.wait_for(timeout=timeout_ms)
+
+    def _verify_fetched_date_range(self, start: date, end: date, timeout_ms: int) -> None:
+        """Poll `#date_fetched_label` until its text contains BOTH
+        requested ISO dates, or raise a clear, distinct error naming the
+        real cause (stale results) rather than letting a mismatched
+        download proceed silently. No-op when the label doesn't exist on
+        this report type at all (the P&L page) -- `_wait_for_results_
+        rendered()` is this method's only signal there."""
+        label = self.page.locator(self._DATE_FETCHED_LABEL_SELECTOR)
+        try:
+            if label.count() == 0:
+                return
+        except Exception:
+            return
+        start_s, end_s = start.isoformat(), end.isoformat()
+        deadline = _time_mod.monotonic() + (timeout_ms / 1000.0)
+        last_text = ""
+        while _time_mod.monotonic() < deadline:
+            try:
+                last_text = label.inner_text(timeout=1000)
+            except Exception:
+                last_text = ""
+            if start_s in last_text and end_s in last_text:
+                return
+            self.page.wait_for_timeout(500)
+        raise ConsoleStructuralError(
+            f"results still show a stale date range after submit -- requested "
+            f"{start_s}..{end_s}, page's own #date_fetched_label shows {last_text!r}"
+        )
+
+    def trigger_download(self, *, report_type: str, start: date | None = None,
+                          end: date | None = None, masked_account: str = "",
                           timeout_ms: int = 45000) -> Path:
         """Submits the report-builder form (segment + date range must
         already be set), waits for the results to render, then triggers
@@ -724,11 +799,27 @@ class KiteConsoleReportsPage:
         path. Optional (defaults to "") only so existing direct callers/
         tests that don't pass it keep working -- `_console_login_and_
         scrape_sync()` always passes the real masked account.
+
+        `start`/`end` (2026-11-26 fix, sixth real run found this): a
+        fixed 2s sleep for "results table render" was not long enough on
+        a slow response, so the download control sometimes got clicked
+        against the PREVIOUS chunk's still-rendered table -- surfacing
+        either as a download timeout (no new control existed yet where
+        the old one used to be) or, worse, a silent download of the
+        wrong date range (caught only after the fact by this module's
+        own post-parse validation). Replaced with `_wait_for_results_
+        rendered()` (a real landmark wait) plus, when `start`/`end` are
+        given, `_verify_fetched_date_range()` -- optional purely so
+        existing direct callers/tests that don't pass them keep working;
+        every real caller in `_console_login_and_scrape_sync()` passes
+        both.
         """
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
         self._submit_report_form(timeout_ms=timeout_ms)
-        self.page.wait_for_timeout(2000)  # results table render
+        self._wait_for_results_rendered(timeout_ms=timeout_ms)
+        if start is not None and end is not None:
+            self._verify_fetched_date_range(start, end, timeout_ms=timeout_ms)
 
         try:
             if report_type in ("tradebook", "ledger"):
@@ -1918,7 +2009,8 @@ def _console_login_and_scrape_sync(conn, plan: "dict[str, tuple[date, date]]") -
                         reports.select_segment(segment)
                         reports.set_date_range(req_start, c_end)
                         download_path = reports.trigger_download(
-                            report_type=report_type, masked_account=masked,
+                            report_type=report_type, start=req_start, end=c_end,
+                            masked_account=masked,
                         )
                         entry["raw_bytes"] = download_path.read_bytes()
                     except Exception as e:
@@ -1952,7 +2044,8 @@ def _console_login_and_scrape_sync(conn, plan: "dict[str, tuple[date, date]]") -
                     reports.navigate_to_reports("ledger")
                     reports.set_ledger_date_range(c_start, c_end)
                     download_path = reports.trigger_download(
-                        report_type="ledger", masked_account=masked,
+                        report_type="ledger", start=c_start, end=c_end,
+                        masked_account=masked,
                     )
                     entry["raw_bytes"] = download_path.read_bytes()
                 except Exception as e:
