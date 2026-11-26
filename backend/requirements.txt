@@ -19,3 +19,13 @@ debugpy~=1.8
 # browser-binary download on any host that runs this script -- the pip
 # package alone is not sufficient.
 playwright~=1.59
+# scripts/kite_console_pnl_sync.py -- the P&L-statement report (unlike
+# Tradebook, which exports CSV) only offers an XLSX download on Kite
+# Console's own real UI (confirmed live, 2026-11-26: the page's single
+# "Download" control's tooltip reads "Download complete results as
+# Excel", magic bytes PK\x03\x04). openpyxl is small and has a single
+# lightweight transitive dependency (et_xmlfile) -- preferred over a
+# hand-rolled XML cell reader for a financial-data parser, where
+# correctness (shared-string runs, multi-letter columns, numeric vs.
+# inline-string cells) matters more than avoiding one more dependency.
+openpyxl~=3.1

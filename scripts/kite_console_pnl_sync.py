@@ -247,9 +247,9 @@ _SYNC_MARKER_KEY = "task_markers.kite_console_pnl_sync_last_expiry_date"
 # PLACEHOLDER — Kite Console's own segment-selector label text. Verify
 # against a real session; see KiteConsoleReportsPage's docstring.
 _SEGMENT_CONSOLE_VALUE = {
-    "equity": "Equity",
-    "derivatives": "F&O",
-    "commodities": "Commodity",
+    "equity": "EQ",
+    "derivatives": "FO",
+    "commodities": "COM",
 }
 
 # F&O exchange -> which holiday calendar governs its "next market open"
@@ -257,14 +257,21 @@ _SEGMENT_CONSOLE_VALUE = {
 # derivatives.py's own exchange->holiday_exchange mapping for NFO/BFO/CDS).
 _HOLIDAY_EXCHANGE = {"NFO": "NSE", "BFO": "NSE", "CDS": "NSE", "MCX": "MCX"}
 
+# Confirmed live, 2026-11-26, against a real Tradebook CSV export (see
+# parse_tradebook_csv's own docstring for the full real header).
 _REQUIRED_TRADEBOOK_COLUMNS = ("symbol", "trade_date", "quantity", "price", "trade_id")
 
-# PLACEHOLDER — same unverified-against-a-live-session caveat as
-# _REQUIRED_TRADEBOOK_COLUMNS. If the real P&L statement export carries
-# per-row buy/sell value or quantity columns, a future verification pass
-# can widen this; until then only `symbol` and `realized_pnl` are
-# required, and `build_sync_row()` deliberately leaves buy/sell qty/value
-# null for report_type='pnl'.
+# Confirmed live, 2026-11-26, against a real P&L-statement XLSX export
+# (see parse_pnl_statement_xlsx's own docstring). The real export also
+# carries ISIN/Quantity/Buy Value/Sell Value/Realized P&L Pct./Previous
+# Closing Price/Open Quantity/Open Quantity Type/Open Value/Unrealized
+# P&L/Unrealized P&L Pct. columns, deliberately NOT ingested here --
+# `build_sync_row()`'s `_fill_fields_for_row()` leaves buy/sell qty/value
+# null for report_type='pnl' by design (a P&L-statement row is a
+# symbol-level settled aggregate, not a per-trade fill; Quantity/Buy
+# Value/Sell Value there are the realized LEG only, already folded into
+# Realized P&L, and the Open-* / Unrealized-* columns describe a still-
+# live position, which is the broker feed's job, not this table's).
 _REQUIRED_PNL_COLUMNS = ("symbol", "realized_pnl")
 
 # Own, independent cooloff file for the Console browser login path — see
@@ -458,15 +465,28 @@ class KiteConsoleReportsPage:
         )
 
     def verify_logged_in(self) -> None:
-        """Postcondition check for the WHOLE login flow — confirms the
-        Console dashboard/Reports surface actually loaded. Never assume a
-        click/navigation succeeded just because no exception was thrown."""
+        """Postcondition check for the WHOLE login flow. Never assume a
+        click/navigation succeeded just because no exception was thrown.
+
+        2026-11-26 fix (first real run found this): login itself
+        (userid/password/TOTP) genuinely succeeds and lands on
+        `kite.zerodha.com/dashboard` -- confirmed live, real portfolio
+        data rendered -- but that page has NO "Reports" link at all; its
+        own top nav is "Dashboard / Orders / Holdings / Positions / IPO
+        & Bids / Funds". Reports/Tradebook/P&L live on the SIBLING
+        console.zerodha.com subdomain, which this same login session
+        carries over to automatically (confirmed live: navigating there
+        directly, with no separate login step, lands on Console's own
+        authenticated UI). This check now does that navigation itself,
+        then confirms via Console's OWN top-nav "Reports" link -- which
+        genuinely exists there."""
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
         try:
-            # PLACEHOLDER — a stable, resilient locator for Console's own
-            # nav, present only once genuinely authenticated.
-            self.page.get_by_role("link", name="Reports").wait_for(timeout=20000)
+            self.page.goto(
+                "https://console.zerodha.com/", wait_until="domcontentloaded", timeout=20000,
+            )
+            self.page.get_by_role("link", name="Reports", exact=True).wait_for(timeout=20000)
         except PlaywrightTimeoutError as e:
             if self._looks_like_captcha_or_unexpected_challenge():
                 raise ConsoleUnexpectedChallengeError(
@@ -479,67 +499,139 @@ class KiteConsoleReportsPage:
 
     # --- navigation / scraping (post-login; NEVER touches the cooloff) --
 
+    # Real Console report URLs, confirmed live 2026-11-26 (session cookie
+    # carries over from kite.zerodha.com with no separate Console login --
+    # Zerodha's Kite and Console are two distinct web apps on sibling
+    # subdomains, sharing one top-level-domain session). Console's own
+    # 404 page is a client-side-routed SPA shell, so a wrong URL here
+    # would NOT raise on navigation -- `verify_logged_in()`'s own
+    # Console-nav check is what actually catches that case.
+    _REPORT_URL = {
+        "tradebook": "https://console.zerodha.com/reports/tradebook",
+        "pnl": "https://console.zerodha.com/reports/pnl",
+    }
+
     def navigate_to_reports(self, report_type: str) -> None:
+        url = self._REPORT_URL.get(report_type)
+        if not url:
+            raise ConsoleStructuralError(f"no known Console report URL for {report_type!r}")
         try:
-            self.page.get_by_role("link", name="Reports").click()
-        except Exception as e:
-            raise ConsoleStructuralError(f"could not click the Reports nav link: {e}") from e
-        tab_name = "Tradebook" if report_type == "tradebook" else "P&L"
-        try:
-            # PLACEHOLDER
-            self.page.get_by_role("tab", name=tab_name).click()
+            self.page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            # The segment <select> (and, on /reports/pnl, the P&L-view
+            # <select> right next to it) is the one stable landmark that
+            # confirms the real report-builder form loaded, rather than
+            # Console's client-side 404 shell (same HTTP 200 either way).
+            self.page.locator("select").first.wait_for(timeout=20000)
         except Exception as e:
             raise ConsoleStructuralError(
-                f"could not find/click the {tab_name!r} report tab"
+                f"could not navigate to the {report_type!r} report page ({url}): {e}"
             ) from e
+        if report_type == "pnl":
+            # Second <select> on /reports/pnl only -- Combined / Realised
+            # P&L / Unrealised P&L. "realized" is the one whose per-symbol
+            # "Realized P&L" column is this script's actual ingestion
+            # target (see parse_pnl_statement_xlsx()'s own docstring for
+            # why "combined"/"unrealized" are not what's wanted here).
+            try:
+                self.page.locator("select").nth(1).select_option(value="realized")
+            except Exception as e:
+                raise ConsoleStructuralError(
+                    f"could not select the Realised P&L view on the pnl report page: {e}"
+                ) from e
 
     def select_segment(self, segment: str) -> None:
         console_value = _SEGMENT_CONSOLE_VALUE.get(segment, segment)
         try:
-            # PLACEHOLDER
-            self.page.get_by_role("combobox", name="Segment").select_option(label=console_value)
+            self.page.locator("select").first.select_option(value=console_value)
         except Exception as e:
             raise ConsoleStructuralError(
                 f"could not select segment {console_value!r}: {e}"
             ) from e
 
+    # Both report pages' date-range field is ONE combined litepicker-style
+    # text input (not separate from/to inputs) -- confirmed live, real
+    # attributes `name="date" placeholder="Select range" class="mx-input"`
+    # (id differs per page: tradebook-date-range / pnl-date-range, so the
+    # selector below deliberately matches on the shared placeholder, not
+    # the page-specific id). Typing "YYYY-MM-DD ~ YYYY-MM-DD" directly
+    # and pressing Enter is confirmed to register without needing to
+    # drive the calendar popup.
+    _DATE_RANGE_SELECTOR = "input[placeholder='Select range']"
+
     def set_date_range(self, start: date, end: date) -> None:
-        """Sets the from/to date inputs, then re-reads them back to
+        """Sets the combined date-range input, then re-reads it back to
         confirm the value actually registered — never assumes a fill()
         call took effect just because it didn't raise."""
         start_s, end_s = start.isoformat(), end.isoformat()
+        expected = f"{start_s} ~ {end_s}"
+        field = self.page.locator(self._DATE_RANGE_SELECTOR)
         try:
-            # PLACEHOLDER
-            self.page.fill("input[name='from']", start_s)
-            self.page.fill("input[name='to']", end_s)
+            field.fill(expected)
+            self.page.keyboard.press("Enter")
         except Exception as e:
-            raise ConsoleStructuralError(f"could not set date range inputs: {e}") from e
+            raise ConsoleStructuralError(f"could not set the date range input: {e}") from e
         try:
-            actual_start = self.page.input_value("input[name='from']")
-            actual_end = self.page.input_value("input[name='to']")
+            actual = field.input_value()
         except Exception as e:
-            raise ConsoleStructuralError(f"could not read back date range inputs: {e}") from e
-        if actual_start != start_s or actual_end != end_s:
+            raise ConsoleStructuralError(f"could not read back the date range input: {e}") from e
+        if actual != expected:
             raise ConsoleStructuralError(
-                f"date range did not register: requested {start_s}..{end_s}, "
-                f"page shows {actual_start!r}..{actual_end!r}"
+                f"date range did not register: requested {expected!r}, page shows {actual!r}"
             )
 
-    def trigger_download(self, *, timeout_ms: int = 45000) -> Path:
-        """Triggers the report download and waits for Playwright's own
-        `download` event (`expect_download()` is built on `page.on(
-        'download', ...)`) — never polls a filesystem Downloads folder."""
+    # The segment/date-range form only BUILDS the report; the submit
+    # button (confirmed live) is a `.btn-blue` button next to the
+    # date-range field -- `type="submit"` on /reports/tradebook,
+    # `type="button"` on /reports/pnl, so the selector deliberately
+    # matches on the shared class only, not the type attribute.
+    _SUBMIT_SELECTOR = "button.btn-blue"
+
+    def _submit_report_form(self, *, timeout_ms: int) -> None:
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
         try:
-            with self.page.expect_download(timeout=timeout_ms) as download_info:
-                # PLACEHOLDER
-                self.page.get_by_role("button", name="Download").click()
+            self.page.click(self._SUBMIT_SELECTOR, timeout=timeout_ms)
+        except PlaywrightTimeoutError as e:
+            raise ConsoleStructuralError(
+                f"could not find/click the report-builder submit button: {e}"
+            ) from e
+
+    def trigger_download(self, *, report_type: str, timeout_ms: int = 45000) -> Path:
+        """Submits the report-builder form (segment + date range must
+        already be set), waits for the results to render, then triggers
+        the real file download and waits for Playwright's own `download`
+        event (`expect_download()` is built on `page.on('download', ...)`)
+        — never polls a filesystem Downloads folder.
+
+        The two report types use DIFFERENT download controls, confirmed
+        live, 2026-11-26: Tradebook offers two separate "XLSX" / "CSV"
+        text links (CSV is picked); the P&L report offers a single
+        `div[role='button']` labeled "Download" whose tooltip reads
+        "Download complete results as Excel" -- there is no CSV option
+        for the P&L report at all, hence `parse_pnl_statement_xlsx()`.
+        """
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+        self._submit_report_form(timeout_ms=timeout_ms)
+        self.page.wait_for_timeout(2000)  # results table render
+
+        try:
+            if report_type == "tradebook":
+                with self.page.expect_download(timeout=timeout_ms) as download_info:
+                    self.page.get_by_role("link", name="CSV").click(timeout=timeout_ms)
+            elif report_type == "pnl":
+                with self.page.expect_download(timeout=timeout_ms) as download_info:
+                    self.page.locator("div.table-download").click(timeout=timeout_ms)
+            else:
+                raise ConsoleStructuralError(f"unknown report_type for download: {report_type!r}")
             download = download_info.value
         except PlaywrightTimeoutError as e:
             raise ConsoleStructuralError(
-                "download never fired within the timeout after clicking Download"
+                "download never fired within the timeout after clicking the "
+                "report's download control"
             ) from e
+        except ConsoleStructuralError:
+            raise
         except Exception as e:
             raise ConsoleStructuralError(f"download failed: {e}") from e
         _DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
@@ -768,12 +860,12 @@ def _normalize_header(h: str) -> str:
 
 def _parse_report_csv(raw: bytes, required_columns: "tuple[str, ...]",
                        *, report_label: str = "report") -> "list[dict]":
-    """Shared CSV-parsing core for both report types — normalizes headers
-    (lowercased, spaces/hyphens -> underscores) and enforces a
-    required-columns set. Extracted from the original Tradebook-only
-    `parse_tradebook_csv` so `parse_pnl_statement_csv` doesn't duplicate
-    this logic; `parse_tradebook_csv`'s own behaviour (including its
-    error-message wording) is unchanged — it is now a thin wrapper."""
+    """CSV-parsing core, used by `parse_tradebook_csv` only — normalizes
+    headers (lowercased, spaces/hyphens -> underscores) and enforces a
+    required-columns set. The P&L-statement report is XLSX, not CSV (see
+    `parse_pnl_statement_xlsx`'s own docstring for why), so this is no
+    longer shared between the two report types; kept as its own function
+    purely to keep `parse_tradebook_csv` itself small."""
     try:
         text_ = raw.decode("utf-8-sig", errors="strict")
     except UnicodeDecodeError as e:
@@ -799,27 +891,110 @@ def _parse_report_csv(raw: bytes, required_columns: "tuple[str, ...]",
 def parse_tradebook_csv(raw: bytes) -> "list[dict]":
     """Parses a Kite Console Tradebook CSV export into a list of
     normalized-header dicts. Column names are normalized (lowercased,
-    spaces/hyphens -> underscores) so a human-readable header like
-    "Trade ID" resolves to the key `trade_id` this module reads
-    everywhere else — the EXACT header text is a PLACEHOLDER pending
-    verification against a real export; the normalization is intended
-    to be forgiving of minor casing/spacing differences, not of a
-    genuinely different column set (that's `ReportValidationError`'s job).
-    """
+    spaces/hyphens -> underscores), though the real export's own header
+    is already lowercase-with-underscores (confirmed live, 2026-11-26:
+    `symbol,isin,trade_date,exchange,segment,series,trade_type,auction,
+    quantity,price,trade_id,order_id,order_execution_time,expiry_date`),
+    so normalization is a no-op in practice — kept for resilience against
+    a future cosmetic header-casing change on Kite's side, not because
+    the real header needs it today. The normalization is intended to be
+    forgiving of minor casing/spacing differences, not of a genuinely
+    different column set (that's `ReportValidationError`'s job)."""
     return _parse_report_csv(raw, _REQUIRED_TRADEBOOK_COLUMNS, report_label="tradebook")
 
 
-def parse_pnl_statement_csv(raw: bytes) -> "list[dict]":
-    """Parses a Kite Console P&L-statement CSV export into a list of
-    normalized-header dicts. Same PLACEHOLDER caveat as
-    `parse_tradebook_csv` — Kite Console's real P&L-statement header has
-    not been verified against a live session; see
-    `KiteConsoleReportsPage`'s own docstring for what to re-check before
-    the first real run. Shares `_parse_report_csv` with the Tradebook
-    parser; only the required-columns set differs — a P&L-statement row
-    is a symbol-level aggregate over the whole requested range, not an
-    individually-dated trade, so it needs no `trade_date` column."""
-    return _parse_report_csv(raw, _REQUIRED_PNL_COLUMNS, report_label="pnl statement")
+def parse_pnl_statement_xlsx(raw: bytes) -> "list[dict]":
+    """Parses a Kite Console P&L-statement XLSX export into a list of
+    `{"symbol": ..., "realized_pnl": ...}` dicts.
+
+    Confirmed live, 2026-11-26: unlike Tradebook (CSV), the P&L report's
+    own "Download" control offers ONLY Excel — its tooltip literally
+    reads "Download complete results as Excel", and the downloaded
+    file's magic bytes are a ZIP container (XLSX), never CSV. Hence
+    this is a genuinely different parser, not `_parse_report_csv`.
+
+    Real workbook shape, confirmed against a live export (segment=F&O,
+    view=Realised P&L): sheet 0 is named after the segment (e.g. "F&O"),
+    sheet 1 is "Other Debits and Credits" (charges-by-posting-date, not
+    ingested here — `_REQUIRED_PNL_COLUMNS` only asks for `symbol`/
+    `realized_pnl`). Sheet 0 leads with a Client-ID line and a Summary
+    block (Charges / Other Credit & Debit / Realized P&L / Unrealized
+    P&L totals) BEFORE the real per-symbol table, so the header row is
+    located dynamically (by finding "Symbol" + "Realized P&L" as two
+    cell values in the SAME row), never assumed to sit at a fixed row
+    number — the summary block's own row count can vary (segments differ
+    in which charge line-items they carry).
+
+    The "view" selector on the Console page (Combined / Realised P&L /
+    Unrealised P&L, set in `navigate_to_reports()`) is what makes this
+    sheet carry a literal "Realized P&L" column distinct from "Realized
+    P&L Pct." — selecting "Combined" instead would still have a
+    "Realized P&L" column (confirmed: it is the per-symbol settled
+    figure regardless of view), but would also mix in Unrealised P&L
+    columns for still-open positions, which this script has no use for
+    (open positions are the live broker feed's job, not this ground-
+    truth table's)."""
+    import io as _io
+
+    from openpyxl import load_workbook
+
+    # read_only=False (confirmed necessary, not just the default) --
+    # the real Kite Console export's own <dimension ref="A1"> tag is
+    # stale/wrong (declares only cell A1, despite having real data
+    # through row 43+). openpyxl's read_only mode trusts that hint to
+    # decide how much of the sheet to stream, so read_only=True
+    # silently truncated every row past A1 against a real file,
+    # discovered only by testing against the genuine downloaded export,
+    # not against a self-built (and therefore correctly-dimensioned)
+    # fixture -- confirmed live, 2026-11-26.
+    try:
+        wb = load_workbook(_io.BytesIO(raw), data_only=True, read_only=False)
+    except Exception as e:
+        raise ReportValidationError(f"pnl statement file is not a valid XLSX: {e}") from e
+    if not wb.sheetnames:
+        raise ReportValidationError("pnl statement XLSX has no sheets")
+    ws = wb[wb.sheetnames[0]]
+    all_rows = list(ws.iter_rows(values_only=True))
+
+    header_row_idx, symbol_col, pnl_col = _locate_pnl_header_row(all_rows)
+    return _extract_pnl_symbol_rows(all_rows, header_row_idx, symbol_col, pnl_col)
+
+
+def _locate_pnl_header_row(all_rows: "list[tuple]") -> "tuple[int, int, int]":
+    """Finds the per-symbol table's header row (the one row carrying
+    both "Symbol" and "Realized P&L" as cell values) and the column
+    indices of each — extracted out of `parse_pnl_statement_xlsx()` to
+    keep that function under the complexity gate."""
+    for i, row in enumerate(all_rows):
+        values = [str(v).strip() if v is not None else "" for v in row]
+        if "Symbol" in values and "Realized P&L" in values:
+            header_cols = {j: v for j, v in enumerate(values) if v}
+            symbol_col = next(j for j, v in header_cols.items() if v == "Symbol")
+            pnl_col = next(j for j, v in header_cols.items() if v == "Realized P&L")
+            return i, symbol_col, pnl_col
+    raise ReportValidationError(
+        "pnl statement XLSX: could not locate the per-symbol table's "
+        "header row (no row carries both 'Symbol' and 'Realized P&L')"
+    )
+
+
+def _extract_pnl_symbol_rows(all_rows: "list[tuple]", header_row_idx: int,
+                              symbol_col: int, pnl_col: int) -> "list[dict]":
+    """Builds `{"symbol", "realized_pnl"}` dicts from every data row
+    following the header row, stopping at the first blank/missing
+    Symbol cell (the real export's own end-of-table sentinel — see
+    `parse_pnl_statement_xlsx()`'s own docstring). Extracted out of
+    that function to keep it under the complexity gate."""
+    rows: "list[dict]" = []
+    for row in all_rows[header_row_idx + 1:]:
+        if symbol_col >= len(row):
+            break
+        symbol = row[symbol_col]
+        if symbol is None or str(symbol).strip() == "":
+            break  # blank row -- end of the per-symbol table, next section follows
+        realized_pnl = row[pnl_col] if pnl_col < len(row) else None
+        rows.append({"symbol": str(symbol).strip(), "realized_pnl": realized_pnl})
+    return rows
 
 
 def _parse_date_cell(value) -> "date | None":
@@ -1425,7 +1600,7 @@ def _console_login_and_scrape_sync(conn, plan: "dict[str, tuple[date, date]]") -
                         reports.navigate_to_reports(report_type)
                         reports.select_segment(segment)
                         reports.set_date_range(req_start, c_end)
-                        download_path = reports.trigger_download()
+                        download_path = reports.trigger_download(report_type=report_type)
                         entry["raw_bytes"] = download_path.read_bytes()
                     except Exception as e:
                         entry["scrape_error"] = str(e)
@@ -1456,7 +1631,7 @@ async def _ingest_one_report(
             parsed_rows = parse_tradebook_csv(raw_bytes)
             validate_tradebook_rows(parsed_rows, segment=segment, start=start, end=end)
         else:
-            parsed_rows = parse_pnl_statement_csv(raw_bytes)
+            parsed_rows = parse_pnl_statement_xlsx(raw_bytes)
             validate_pnl_rows(parsed_rows, segment=segment)
     except ReportValidationError as e:
         await alert_critical(

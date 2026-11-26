@@ -152,14 +152,31 @@ def _one_tradebook_row(**overrides) -> dict:
     return row
 
 
-def _pnl_csv_bytes(rows: "list[dict]", header: "list[str] | None" = None) -> bytes:
-    header = header or ["Symbol", "Expiry", "Realized Pnl"]
-    buf = io.StringIO()
-    writer = csv.DictWriter(buf, fieldnames=header)
-    writer.writeheader()
+def _pnl_xlsx_bytes(rows: "list[dict]") -> bytes:
+    """Builds a minimal, REAL XLSX matching the live Kite Console P&L
+    export's confirmed shape (see `parse_pnl_statement_xlsx`'s own
+    docstring) -- a header row carrying both "Symbol" and "Realized
+    P&L" (the two cell values `parse_pnl_statement_xlsx` searches for
+    to locate the header dynamically), followed by one data row per
+    `rows` entry, then a blank row (end-of-table sentinel the real
+    parser also relies on). Deliberately skips the real export's
+    Summary-block preamble -- the parser doesn't require a header at
+    any fixed row number, so a fixture without that preamble is still
+    a faithful, minimal real file, not a shortcut around the parser's
+    own logic."""
+    import io as _io
+
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["Symbol", "Realized P&L"])
     for r in rows:
-        writer.writerow({h: r.get(mod._normalize_header(h), "") for h in header})
-    return buf.getvalue().encode("utf-8")
+        ws.append([r.get("symbol", ""), float(r.get("realized_pnl", 0) or 0)])
+    ws.append([])  # blank row -- end-of-table sentinel
+    buf = _io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
 
 
 def _one_pnl_row(**overrides) -> dict:
@@ -212,6 +229,182 @@ class TestParseTradebookCsv:
         raw = _csv_bytes([])
         rows = mod.parse_tradebook_csv(raw)
         assert rows == [], f"expected zero rows for a header-only file, got {rows}"
+
+
+def _realistic_pnl_xlsx_bytes(symbol_rows: "list[tuple[str, float]]") -> bytes:
+    """Mirrors the REAL Kite Console P&L-statement XLSX export, confirmed
+    live 2026-11-26 (segment=F&O, view=Realised P&L) -- including the
+    Client-ID/title/Summary/Charges preamble BEFORE the per-symbol
+    table, and a second "Other Debits and Credits" sheet, so these tests
+    genuinely exercise the dynamic header-row search rather than a
+    trivial two-row fixture. Column order for the per-symbol table
+    matches the real export exactly: Symbol, ISIN, Quantity, Buy Value,
+    Sell Value, Realized P&L, Realized P&L Pct., Previous Closing
+    Price, Open Quantity, Open Quantity Type, Open Value, Unrealized
+    P&L, Unrealized P&L Pct."""
+    import io as _io
+
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "F&O"
+    for _ in range(5):
+        ws.append([])
+    ws.append([None, "Client ID", "ZG0790"])
+    ws.append([])
+    ws.append([None, "P&L Statement for F&O from 2026-04-01 to 2026-04-30"])
+    ws.append([])
+    ws.append([None, "Summary"])
+    ws.append([])
+    ws.append([None, "Charges", 1005.2288])
+    ws.append([None, "Other Credit & Debit", 0.0])
+    ws.append([None, "Realized P&L", sum(v for _, v in symbol_rows)])
+    ws.append([None, "Unrealized P&L", 0.0])
+    ws.append([])
+    ws.append([])
+    ws.append([None, "Charges"])
+    ws.append([])
+    ws.append([None, "Account Head", "Amount"])
+    ws.append([None, "Brokerage - Z", 300.0])
+    ws.append([])
+    ws.append([])
+    ws.append([
+        None, "Symbol", "ISIN", "Quantity", "Buy Value", "Sell Value",
+        "Realized P&L", "Realized P&L Pct.", "Previous Closing Price",
+        "Open Quantity", "Open Quantity Type", "Open Value",
+        "Unrealized P&L", "Unrealized P&L Pct.",
+    ])
+    for symbol, realized_pnl in symbol_rows:
+        ws.append([
+            None, symbol, "", 150.0, 29850.0, 64147.5, realized_pnl,
+            114.8995, 0.0, 0.0, "", 0.0, 0.0, 0.0,
+        ])
+    ws.append([])
+    ws.append([None, "Other Debits and Credits for FO from 2026-04-01 to 2026-04-30"])
+
+    ws2 = wb.create_sheet("Other Debits and Credits")
+    ws2.append([None, "Particulars", "Posting Date", "Debit", "Credit"])
+    ws2.append([None, "Some charge", "2026-04-15", 100.0, 0.0])
+
+    buf = _io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+class TestParsePnlStatementXlsx:
+    """Direct unit tests for `parse_pnl_statement_xlsx()` -- confirmed
+    live, 2026-11-26, against a real Kite Console P&L export (segment=
+    F&O, view=Realised P&L). See that function's own docstring for the
+    full real-workbook-shape writeup this fixture mirrors."""
+
+    def test_well_formed_file_with_realistic_preamble_parses_every_symbol(self):
+        raw = _realistic_pnl_xlsx_bytes([
+            ("INDIGO26APR4150CE", 34297.5),
+            ("INDIGO26APR4250CE", -52365.0),
+        ])
+        rows = mod.parse_pnl_statement_xlsx(raw)
+        assert len(rows) == 2, f"expected 2 rows, got {rows}"
+        assert rows[0] == {"symbol": "INDIGO26APR4150CE", "realized_pnl": 34297.5}
+        assert rows[1] == {"symbol": "INDIGO26APR4250CE", "realized_pnl": -52365.0}
+
+    def test_header_row_located_dynamically_not_at_a_fixed_row_number(self):
+        """The real export's own Summary-block preamble varies in length
+        per segment (different charge line-items) -- the header row must
+        be found by searching for its content, never assumed to sit at a
+        hardcoded row index."""
+        raw = _realistic_pnl_xlsx_bytes([("GOLDM26DECFUT", 12500.5)])
+        rows = mod.parse_pnl_statement_xlsx(raw)
+        assert rows == [{"symbol": "GOLDM26DECFUT", "realized_pnl": 12500.5}]
+
+    def test_second_sheet_other_debits_and_credits_is_never_read(self):
+        """Only sheet 0 (the segment's own per-symbol P&L table) is
+        ingested -- the real second sheet is a charges-by-posting-date
+        breakdown this script has no use for."""
+        raw = _realistic_pnl_xlsx_bytes([("GOLDM26DECFUT", 12500.5)])
+        rows = mod.parse_pnl_statement_xlsx(raw)
+        assert all(r["symbol"] != "Some charge" for r in rows)
+        assert len(rows) == 1
+
+    def test_minimal_file_with_no_preamble_also_parses(self):
+        """`_pnl_xlsx_bytes()` (used by the higher-level sync_account
+        tests) skips the preamble entirely -- confirms the header search
+        works just as well when the header row IS the first row."""
+        raw = _pnl_xlsx_bytes([{"symbol": "GOLDM26DECFUT", "realized_pnl": "12500.50"}])
+        rows = mod.parse_pnl_statement_xlsx(raw)
+        assert rows == [{"symbol": "GOLDM26DECFUT", "realized_pnl": 12500.5}]
+
+    def test_header_only_file_parses_to_zero_rows_not_an_error(self):
+        raw = _pnl_xlsx_bytes([])
+        rows = mod.parse_pnl_statement_xlsx(raw)
+        assert rows == [], f"expected zero rows for a header-only file, got {rows}"
+
+    def test_no_header_row_found_raises_validation_error(self):
+        import io as _io
+
+        from openpyxl import Workbook
+
+        wb = Workbook()
+        ws = wb.active
+        ws.append(["not", "the", "right", "header"])
+        buf = _io.BytesIO()
+        wb.save(buf)
+        with pytest.raises(mod.ReportValidationError, match="could not locate"):
+            mod.parse_pnl_statement_xlsx(buf.getvalue())
+
+    def test_corrupt_file_raises_validation_error(self):
+        with pytest.raises(mod.ReportValidationError, match="not a valid XLSX"):
+            mod.parse_pnl_statement_xlsx(b"this is not a zip file at all")
+
+    def test_stale_dimension_tag_does_not_truncate_rows(self):
+        """Regression guard for a real bug found 2026-11-26 while
+        testing against the genuine downloaded export (not a self-built
+        fixture): Kite Console's own generated XLSX carries a stale
+        `<dimension ref="A1">` tag that declares only cell A1, despite
+        having real data through row 43+. `openpyxl`'s `read_only=True`
+        mode trusts that hint to decide how much of the sheet to
+        stream, so with read_only=True every row past A1 was silently
+        dropped -- confirmed to fail against the real file even though
+        every self-built (and therefore correctly-dimensioned) fixture
+        in this test class passed. This test reproduces that exact
+        defect class by rewriting a normal fixture's own dimension tag
+        to the same wrong "A1" value, without embedding any real
+        account data."""
+        import io as _io
+        import re as _re
+        import zipfile as _zipfile
+
+        raw = _realistic_pnl_xlsx_bytes([("INDIGO26APR4150CE", 34297.5)])
+        zin = _zipfile.ZipFile(_io.BytesIO(raw))
+        sheet_path = next(n for n in zin.namelist() if n.startswith("xl/worksheets/sheet") and n.endswith(".xml"))
+        sheet_xml = zin.read(sheet_path).decode("utf-8")
+        assert "<dimension" in sheet_xml, "fixture sanity check: must have a real dimension tag to corrupt"
+        corrupted_xml = _re.sub(r'<dimension ref="[^"]*"', '<dimension ref="A1"', sheet_xml)
+        assert 'ref="A1"' in corrupted_xml and corrupted_xml != sheet_xml
+
+        buf = _io.BytesIO()
+        with _zipfile.ZipFile(buf, "w") as zout:
+            for name in zin.namelist():
+                data = corrupted_xml.encode("utf-8") if name == sheet_path else zin.read(name)
+                zout.writestr(name, data)
+        corrupted_raw = buf.getvalue()
+
+        rows = mod.parse_pnl_statement_xlsx(corrupted_raw)
+        assert rows == [{"symbol": "INDIGO26APR4150CE", "realized_pnl": 34297.5}], (
+            "a stale dimension tag must never truncate the real rows -- "
+            f"got {rows}"
+        )
+
+    def test_blank_symbol_cell_ends_the_table_even_with_more_rows_below(self):
+        """Mirrors the real export's own structure: a blank row marks the
+        end of the per-symbol table, with unrelated sections (Other
+        Debits and Credits' own title row) following it on the SAME
+        sheet -- those trailing rows must never be mistaken for more
+        symbol rows."""
+        raw = _realistic_pnl_xlsx_bytes([("INDIGO26APR4150CE", 34297.5)])
+        rows = mod.parse_pnl_statement_xlsx(raw)
+        assert len(rows) == 1
+        assert all("Other Debits" not in str(r.get("symbol", "")) for r in rows)
 
 
 class TestValidateTradebookRows:
@@ -704,8 +897,8 @@ class TestScrapingRobustness:
 
         tradebook_file = tmp_path / "tradebook.csv"
         tradebook_file.write_bytes(_csv_bytes([_one_tradebook_row(trade_date="2026-11-15")]))
-        pnl_file = tmp_path / "pnl.csv"
-        pnl_file.write_bytes(_pnl_csv_bytes([_one_pnl_row()]))
+        pnl_file = tmp_path / "pnl.xlsx"
+        pnl_file.write_bytes(_pnl_xlsx_bytes([_one_pnl_row()]))
 
         calls: list[str] = []
         last_report_type: "list[str]" = []
@@ -719,7 +912,7 @@ class TestScrapingRobustness:
             if segment == "derivatives":
                 raise mod.ConsoleStructuralError("boom on derivatives")
 
-        def _fake_trigger_download():
+        def _fake_trigger_download(report_type=None):
             return tradebook_file if last_report_type[-1] == "tradebook" else pnl_file
 
         fake_page = MagicMock()
@@ -1258,8 +1451,8 @@ class TestHappyPathEndToEnd:
             _one_tradebook_row(trade_date="2026-11-10", trade_id="T_E2E_1"),
             _one_tradebook_row(trade_date="2026-11-12", trade_id="T_E2E_2"),
         ]))
-        pnl_file = tmp_path / "pnl.csv"
-        pnl_file.write_bytes(_pnl_csv_bytes([_one_pnl_row()]))
+        pnl_file = tmp_path / "pnl.xlsx"
+        pnl_file.write_bytes(_pnl_xlsx_bytes([_one_pnl_row()]))
 
         last_report_type: "list[str]" = []
         fake_page = MagicMock()
@@ -1267,7 +1460,7 @@ class TestHappyPathEndToEnd:
         fake_page.select_segment = MagicMock()
         fake_page.set_date_range = MagicMock()
         fake_page.trigger_download = MagicMock(
-            side_effect=lambda: tradebook_file if last_report_type[-1] == "tradebook" else pnl_file
+            side_effect=lambda report_type=None: tradebook_file if last_report_type[-1] == "tradebook" else pnl_file
         )
         monkeypatch.setattr(mod, "KiteConsoleReportsPage", lambda page: fake_page)
 
@@ -1717,8 +1910,8 @@ class TestPnlStatementPull:
         conn._console_page = MagicMock()
         monkeypatch.setattr(mod, "build_console_connection", lambda *a, **k: conn)
 
-        pnl_file = tmp_path / "pnl.csv"
-        pnl_file.write_bytes(_pnl_csv_bytes([
+        pnl_file = tmp_path / "pnl.xlsx"
+        pnl_file.write_bytes(_pnl_xlsx_bytes([
             _one_pnl_row(symbol="GOLDM26DECFUT", realized_pnl="45000.00"),
         ]))
 
@@ -1746,7 +1939,10 @@ class TestPnlStatementPull:
         )
         pnl_call = next(c for c in ingest_mock.call_args_list if c[0][3] == "pnl")
         pnl_rows = pnl_call[0][4]
-        assert pnl_rows[0]["realized_pnl"] == "45000.00"
+        # The real XLSX export's P&L cells are genuinely numeric, not
+        # text (confirmed live, 2026-11-26) -- parse_pnl_statement_xlsx
+        # returns the native float, not a string.
+        assert pnl_rows[0]["realized_pnl"] == 45000.0
 
     @pytest.mark.asyncio
     async def test_pnl_chunk_start_is_floored_to_month_1_tradebook_is_not(self, monkeypatch, tmp_path):
@@ -1763,8 +1959,8 @@ class TestPnlStatementPull:
 
         tradebook_file = tmp_path / "tradebook.csv"
         tradebook_file.write_bytes(_csv_bytes([]))
-        pnl_file = tmp_path / "pnl.csv"
-        pnl_file.write_bytes(_pnl_csv_bytes([]))
+        pnl_file = tmp_path / "pnl.xlsx"
+        pnl_file.write_bytes(_pnl_xlsx_bytes([]))
 
         last_report_type: "list[str]" = []
         set_date_range_calls: "list[tuple]" = []
@@ -1775,7 +1971,7 @@ class TestPnlStatementPull:
             side_effect=lambda s, e: set_date_range_calls.append((last_report_type[-1], s, e))
         )
         fake_page.trigger_download = MagicMock(
-            side_effect=lambda: tradebook_file if last_report_type[-1] == "tradebook" else pnl_file
+            side_effect=lambda report_type=None: tradebook_file if last_report_type[-1] == "tradebook" else pnl_file
         )
         monkeypatch.setattr(mod, "KiteConsoleReportsPage", lambda page: fake_page)
 
