@@ -136,8 +136,8 @@ def _render_chase_cancel(rec: dict) -> tuple[str, str, str]:
         f"{x.get('transaction_type')} {x.get('symbol')} — cancel of order {x.get('order_id')} "
         f"on {x.get('account')} could not be confirmed after attempt "
         f"{x.get('attempt')} ({filled_so_far} contracts filled so far). "
-        f"The chase has been ABORTED without placing a replacement order. "
-        f"Manually verify the broker's order book — the old order may still be live."
+        f"Chase ABORTED, no replacement placed — verify the broker's order "
+        f"book; the old order may still be live."
     )
     masked_body = mask_account_in_text(body)
     return "Chase cancel unconfirmed — possible resting duplicate order", masked_body, masked_body

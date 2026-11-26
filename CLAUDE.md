@@ -3612,6 +3612,95 @@ and invents no new proportional metric.
   number unless its members agree. A structured `extra` value that carries an account is masked at its
   producer.
 
+**Per-underlying divergence alert goes signed (not abs); a confirmed cross-underlying cooldown-
+silencing bug fixed; expiry alert and divergence alert both de-noised with per-leg enrichment
+(2026-11-26)** — Operator: "too many alerts on the previous day of expiry of mcx... make it
+informative", then "even divergence alerts need to be reduced", then described the actual rate-
+of-change concept they wanted ("if the rate of change towards exp max profit, that is okay. if it
+is away, that needs to be alerted"), picked replacing `loss-positions-underlying-divergence`
+outright, then asked to replace the "current rate of change alert" (`loss-positions-total`'s
+`pnl_rate_abs`/`pnl_rate_pct` leaves) with the same concept too. A 6-perspective council review
+(architect/risk/perf/ux/devil's-advocate/external research) ran before any implementation —
+see `~/.claude/plans/lovely-stirring-allen.md` for the full review transcript.
+- **The literal "raw intrinsic-value-at-expiry, rate of change" proposal was rejected before
+  shipping.** Research found the industry-standard framing for "is this trajectory benign or
+  adverse" is Greek-attribution (actual P&L vs. a Greeks/theta-predicted path) — not re-deriving
+  intrinsic value across legs. Risk and devil's-advocate independently found the same concrete
+  failure mode: a short-premium position sitting near flat spot reads ~0 on a raw intrinsic-value
+  rate (neither improving nor deteriorating) while genuinely bleeding cash from theta/vega decay —
+  removing the cash `pnl_rate_abs`/`pnl_rate_pct` leaves in favour of that metric would silently
+  stop catching exactly the loss class they exist to catch, and would regress the operator's own
+  earlier, still-standing instruction ("rate of change alert is the most important one... resolve
+  ambiguity toward STILL FIRING, not toward exclusion" — see the "Positions loss guard" entry
+  above). **Decision: `loss-positions-total`'s rate leaves and static `day_val`/`day_pct`
+  thresholds are left completely untouched.** This is a deliberate deviation from the operator's
+  literal instruction, made transparent rather than silently implemented or silently ignored.
+- **`loss-positions-underlying-divergence` redesigned to be SIGNED instead of unsigned (slug
+  kept).** New metric `underlying_loss_divergence_signed`
+  ([`grammar_tokens/metric_underlying_loss_divergence_signed.py`](backend/api/algo/grammar_tokens/metric_underlying_loss_divergence_signed.py))
+  = `market − theoretical` (signed; the unsigned `underlying_loss_divergence` sibling is kept,
+  unchanged, in case a future custom agent reads it). Negative means the underlying's actual day
+  P&L is UNDERPERFORMING its own Greeks/theta-model-predicted path — moving away from the expected
+  decay trajectory, the adverse direction. Positive means outperforming it — benign, never fires,
+  however large the gap. Reuses `_underlying_theoretical_loss`/`_metric_underlying_market_loss`
+  unchanged — zero new per-cycle baseline work, and NOT blind to theta/vega bleed the way the
+  rejected raw-intrinsic-value proposal would have been, because `theoretical` already accounts
+  for elapsed-time decay via the frozen-vol Black-Scholes/Black-76 reprice. Condition:
+  `all[underlying_loss_divergence_signed<=-100000, any[pnl_rate_abs<=-10000, pnl_rate_pct<=-0.25]]`
+  — same magnitude threshold and rate-leaf pairing as before, just signed. Accepted tradeoff: no
+  longer catches a pricing anomaly that happens to make the book look BETTER than the model
+  predicts — rare and low-stakes next to the adverse case, and `loss-positions-total`'s static
+  thresholds remain an independent backstop regardless. Restart migration:
+  `_AE_CONTENT_MATCHED_COND_MIGRATIONS["loss-positions-underlying-divergence"]`
+  ([`agent_engine.py`](backend/api/algo/agent_engine.py)) force-upgrades an already-seeded row
+  still at the exact old unsigned shape; an operator-customised row is left alone.
+- **Separate, confirmed, pre-existing bug fixed: agent-level cooldown silenced a genuinely
+  different underlying's breach.** `_cycle_in_cooldown()` gates at the AGENT level
+  (`agent.status == "cooldown"`, set unconditionally by `_cycle_compute_post_fire_status()` for
+  ANY persistent agent that fires, not only action-executing ones). Once underlying A fired, the
+  WHOLE `loss-positions-underlying-divergence` agent stopped being evaluated for the rest of the
+  cooldown window — silencing underlying B's unrelated, genuinely new breach in that same window,
+  not just re-firing on A. This existed since the agent's creation (2026-10-22) at whatever nonzero
+  cooldown it held. Same defect class `exit-tp-short-option-90` already worked around. Fix:
+  `cooldown_minutes=0` disables only the agent-level gate (`elapsed < 0` is never true);
+  per-underlying dedup still applies via `_v2_apply_escalation_gate`'s own fallback —
+  `agent.cooldown_minutes or get_int('alerts.cooldown_minutes', 30)` — so each underlying gets an
+  independent ~30-min per-leaf cooldown with no cross-underlying silencing. Migration:
+  `_ae_sync_divergence_cooldown()` force-syncs an already-seeded stock `10`-minute row to `0`.
+  Tests: `backend/tests/test_underlying_loss_divergence_tokens.py::TestFixDCrossUnderlyingCooldownSilencing`
+  (drives `_cycle_in_cooldown` and the full `_ae_cycle_eval_and_buffer` dispatch-buffering path
+  directly, confirmed to fail against the old nonzero value).
+- **`expiry-nfo-risk-alert`/`expiry-mcx-risk-alert` cooldown raised 60→240 min, per-leg
+  enrichment added.** Separate fix, same session, same root complaint (too many MCX pre-expiry
+  alerts). `_v2_expiry_risk_alert_enrichment()`
+  ([`agent_engine.py`](backend/api/algo/agent_engine.py)) appends — never replacing — the generic
+  kind/threshold table with a concrete per-leg breakdown: masked account, tradingsymbol, and
+  legs are GROUPED by their real expiry date (not days-to-expiry decimal), stating the date once
+  per group rather than once per leg row (operator follow-up: "no need to repeat expiry date for
+  each symbol row"). A rare mixed-date fire (MCX+NFO legs expiring on different calendar days
+  within the same lookahead window) still gets one header per distinct date, soonest-first.
+- **Alert-text conciseness audit applied** (operator: "audit all alert text for relevant info
+  make it concise without losing consistency and necessary info") — 3 parallel read-only audits
+  across `event_agents.py`, `alert_utils.py`, and the rich-alert table/trailing-tag machinery
+  found the text was already near floor after ~6 prior verbosity-reduction passes this
+  development cycle; 5 concrete, low-risk trims applied: `_render_chase_cancel`'s two-sentence
+  closer collapsed to one; `_v2_expiry_morning_preview`'s tentative-framing closer collapsed to
+  one; `_v2_exit_tp_short_option_enrichment`'s overloaded sentence split into two short ones for
+  scannability; `order_failure_messages()`'s plain-text Telegram/ntfy body dropped a standalone
+  `source: {source}` line that was the third mention of the same already-resolved origin fact in
+  one message (kept in the HTML email table's own "Source" row, where a structured table is
+  expected to enumerate every field). One candidate trim (the scheduled-info-agent body repeating
+  `{agent.name}` alongside the header) was deliberately NOT applied — it is a prior, explicitly
+  tested, operator-driven fix (`test_scheduled_info_agent_renders_name_and_schedule_not_margin_table`,
+  docstring cites the operator's own complaint: "it should clearly tell what the alert is about.
+  it is not clear from the alert.") — removing it risks reintroducing that exact complaint.
+- Invariant: a direction-aware ("toward/away from X") redesign of a rate-of-change alert must
+  reuse a metric that already accounts for time-value/theta decay (the Greeks-model-predicted
+  path), never a raw spot-only intrinsic-value re-derivation — the latter is structurally blind to
+  decay bleed. An agent-level cooldown gate must never be the only noise control on a fan-out
+  (per-underlying/per-account) scope; `cooldown_minutes=0` plus the per-leaf escalation gate's own
+  fallback is the correct shape whenever one key's fire must not silence a different key's breach.
+
 **Fan-out actions (`cancel_all_orders`, `chase_close_positions`) can scope by role/user as well as
 account (2026-10-31, operator: "I should be able to select an account in actions... for accounts,
 roles, users, etc. If the parameters are not mentioned, it should be for all")** — `place_order`/
@@ -5513,6 +5602,7 @@ now caches + returns a `stale` flag; `/api/nav/by-account` masks `errors` for no
 | Change footer | `backend/config/frontend_config.yaml` |
 | Change loss threshold | `/agents` page → edit `loss-*` agent condition |
 | Change `loss-positions-total` floor / rate gate / cooldown | `backend/api/algo/agent_engine.py` (`_LOSS_AGENTS` `loss-positions-total`, `_ae_is_stale_loss_positions_total_cond`) |
+| Change `loss-positions-underlying-divergence` (signed metric, threshold, cooldown) | `backend/api/algo/agent_engine.py` (the agent dict + `_ae_sync_divergence_cooldown`, `_AE_CONTENT_MATCHED_COND_MIGRATIONS["loss-positions-underlying-divergence"]`) + `backend/api/algo/grammar_tokens/metric_underlying_loss_divergence_signed.py` |
 | Grouped rich-alert body (co-firing leaves) | `backend/api/algo/agent_engine.py:_ae_group_alert_rows` + `backend/shared/helpers/alert_utils.py:_tg_rule_line` / `_tg_alert_body` / `_email_alert_body` |
 | Change alert recipients | `backend/config/secrets.yaml` on server |
 | Deploy notification | `backend/config/backend_config.yaml` on server |

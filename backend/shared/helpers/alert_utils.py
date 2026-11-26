@@ -1511,7 +1511,6 @@ def order_failure_messages(
         f"{header_line}\n"
         f"❌ Order rejected  [{origin_label}]  {mode_tag}{sup_note}\n"
         f"{masked}  {side}  {qty}  {symbol}  ({exchange})\n"
-        f"source: {source}\n"
         f"{error_short}"
     )
 

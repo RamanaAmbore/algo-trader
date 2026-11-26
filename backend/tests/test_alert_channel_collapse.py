@@ -223,8 +223,8 @@ async def test_chase_cancel_identical_via_channel_agents(chans):
     body = (f"Source: chase triggered manually\n{_TS}\n"
             "BUY NIFTY26OCTFUT — cancel of order O1 on ZG#### could not be confirmed after attempt "
             "2 (40 contracts filled so far). "
-            "The chase has been ABORTED without placing a replacement order. "
-            "Manually verify the broker's order book — the old order may still be live."
+            "Chase ABORTED, no replacement placed — verify the broker's order "
+            "book; the old order may still be live."
             "\n#manual #chase #via_chase_cancel_alert #critical")
     title = "Chase cancel unconfirmed — possible resting duplicate order"
     assert chans["ntfy"] == [(title, body, "urgent")]
@@ -330,8 +330,11 @@ async def test_order_failure_identical_via_channel_agents(chans):
     # failure triggered manually" instead of "Agent: manual".
     # 2026-11-08 audit fix (item 2) — mode="live" shows no pill, and the
     # subject uses the shared "{label_word}: {detail}... | {ts}" shape.
+    # 2026-11-26 audit trim — standalone "source: {source}" line dropped
+    # from the plain-text body (redundant with the [Manual]/[Agent]
+    # origin label above). Stays in the HTML table's "Source" row.
     tg_body = ('Source: Order failure triggered manually\n10:15:30 IST\n❌ Order rejected  [Manual]    (+2 suppressed)\n'
-              'ZG####  BUY  75  NIFTY26OCTFUT  (NFO)\nsource: ticket\nInsufficient funds <x>'
+              'ZG####  BUY  75  NIFTY26OCTFUT  (NFO)\nInsufficient funds <x>'
               '\n#manual #via_order_failure_alert #warning')
     assert chans["telegram"] == [("Order Rejected: NIFTY26OCTFUT BUY", tg_body, tg_body)]
     assert chans["ntfy"] == [("Order Rejected: NIFTY26OCTFUT BUY", tg_body, "urgent")]

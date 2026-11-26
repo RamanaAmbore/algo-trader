@@ -599,3 +599,145 @@ class TestConditionTreeStructure:
         )
         assert sum(1 for i in items if "all" in i) == 1, (
             "expected exactly one nested all[] branch")
+
+
+# ── divergence-agent cooldown reduction + restart-sync (2026-11-26) ──
+# Operator: "even divergence alerts need to be reduced". Stock cooldown
+# raised 10 -> 45 minutes, matching the precedent already set for the
+# sibling loss-positions-total redesign. Needs its own value-gated
+# restart migration (same contract as _ae_sync_expiry_awareness_cooldown)
+# because cooldown_minutes is never force-synced on an ordinary restart.
+
+class TestDivergenceAgentCooldownReduction:
+    def test_spec_cooldown_is_0(self):
+        """2026-11-26 — superseded from an earlier same-session 45-minute
+        edit. 0 is correct: it fixes a confirmed cross-underlying
+        cooldown-silencing bug (see
+        test_underlying_loss_divergence_tokens.py::TestFixDCrossUnderlyingCooldownSilencing).
+        A nonzero AGENT-level cooldown here would silence a genuinely
+        DIFFERENT underlying's breach for the whole window once any one
+        underlying fires — 45 would have made that window longer, not
+        fixed it. Per-underlying dedup still applies via the per-leaf
+        escalation gate's own fallback to `alerts.cooldown_minutes`."""
+        a = _agent("loss-positions-underlying-divergence")
+        assert a["cooldown_minutes"] == 0
+
+    def test_sync_force_upgrades_a_stale_stock_row(self):
+        from backend.api.algo.agent_engine import _ae_sync_divergence_cooldown
+
+        class _Row:
+            pass
+
+        existing = _Row()
+        existing.cooldown_minutes = 10
+        agent_def = _agent("loss-positions-underlying-divergence")
+
+        _ae_sync_divergence_cooldown(existing, agent_def)
+
+        assert existing.cooldown_minutes == 0
+
+    def test_sync_leaves_an_operator_customized_cooldown_alone(self):
+        from backend.api.algo.agent_engine import _ae_sync_divergence_cooldown
+
+        class _Row:
+            pass
+
+        existing = _Row()
+        existing.cooldown_minutes = 5  # operator's own custom value
+        agent_def = _agent("loss-positions-underlying-divergence")
+
+        _ae_sync_divergence_cooldown(existing, agent_def)
+
+        assert existing.cooldown_minutes == 5
+
+    def test_sync_is_slug_gated_and_no_op_for_other_agents(self):
+        from backend.api.algo.agent_engine import _ae_sync_divergence_cooldown
+
+        class _Row:
+            pass
+
+        existing = _Row()
+        existing.cooldown_minutes = 10
+        agent_def = _agent("loss-rate-acct")  # also stock 10, different slug
+
+        _ae_sync_divergence_cooldown(existing, agent_def)
+
+        assert existing.cooldown_minutes == 10, (
+            "a 10-min cooldown on an unrelated agent must never be "
+            "force-upgraded by this divergence-only migration"
+        )
+
+
+# ── signed-divergence condition-shape restart migration (2026-11-26) ─
+# `_ae_apply_content_matched_cond_migration` (table-driven, keyed by slug
+# in `_AE_CONTENT_MATCHED_COND_MIGRATIONS`) must force-upgrade an
+# already-seeded `loss-positions-underlying-divergence` row still at the
+# OLD unsigned abs() condition shape to the NEW signed shape — otherwise
+# shipping the signed metric in code alone is inert against a live row.
+
+class TestDivergenceAgentSignedConditionMigration:
+    def test_stale_unsigned_abs_row_is_force_upgraded(self):
+        from backend.api.algo.agent_engine import _ae_apply_content_matched_cond_migration
+
+        class _Row:
+            pass
+
+        existing = _Row()
+        existing.conditions = {"all": [
+            {"metric": "underlying_loss_divergence", "scope": "positions.any_underlying",
+             "op": ">", "value": 100000},
+            {"any": [
+                {"metric": "pnl_rate_abs", "scope": "positions.any_underlying", "op": "<=", "value": -10000},
+                {"metric": "pnl_rate_pct", "scope": "positions.any_underlying", "op": "<=", "value": -0.25},
+            ]},
+        ]}
+        agent_def = _agent("loss-positions-underlying-divergence")
+
+        _ae_apply_content_matched_cond_migration(existing, agent_def)
+
+        assert existing.conditions == agent_def["conditions"], (
+            "a stock unsigned-abs row must force-upgrade to the new "
+            "signed condition tree on restart"
+        )
+        assert existing.conditions["all"][0]["metric"] == "underlying_loss_divergence_signed"
+        assert existing.conditions["all"][0]["op"] == "<="
+        assert existing.conditions["all"][0]["value"] == -100000
+
+    def test_operator_customized_row_is_left_alone(self):
+        from backend.api.algo.agent_engine import _ae_apply_content_matched_cond_migration
+
+        class _Row:
+            pass
+
+        existing = _Row()
+        custom = {"all": [
+            {"metric": "underlying_loss_divergence", "scope": "positions.any_underlying",
+             "op": ">", "value": 250000},  # operator raised the threshold
+            {"any": [
+                {"metric": "pnl_rate_abs", "scope": "positions.any_underlying", "op": "<=", "value": -10000},
+                {"metric": "pnl_rate_pct", "scope": "positions.any_underlying", "op": "<=", "value": -0.25},
+            ]},
+        ]}
+        existing.conditions = custom
+        agent_def = _agent("loss-positions-underlying-divergence")
+
+        _ae_apply_content_matched_cond_migration(existing, agent_def)
+
+        assert existing.conditions == custom, (
+            "a row that doesn't byte-for-byte match the old stock shape "
+            "(e.g. an operator-raised threshold) must never be overwritten"
+        )
+
+    def test_already_migrated_row_is_a_no_op(self):
+        from backend.api.algo.agent_engine import _ae_apply_content_matched_cond_migration
+
+        class _Row:
+            pass
+
+        existing = _Row()
+        agent_def = _agent("loss-positions-underlying-divergence")
+        existing.conditions = agent_def["conditions"]
+
+        _ae_apply_content_matched_cond_migration(existing, agent_def)
+
+        assert existing.conditions == agent_def["conditions"]

@@ -50,6 +50,9 @@ from backend.api.algo.grammar_tokens.metric_underlying_theoretical_loss import (
 from backend.api.algo.grammar_tokens.metric_underlying_loss_divergence import (
     _metric_underlying_loss_divergence,
 )
+from backend.api.algo.grammar_tokens.metric_underlying_loss_divergence_signed import (
+    _metric_underlying_loss_divergence_signed,
+)
 from backend.api.algo.grammar_tokens.scope_positions_any_underlying import (
     _scope_positions_any_underlying,
 )
@@ -474,6 +477,123 @@ class TestFixCHydrationRoundTrip:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+#  Fix D — cooldown_minutes=0 stops the AGENT-level cooldown gate from
+#  silencing a genuinely DIFFERENT underlying's breach (2026-11-26)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Confirmed, pre-existing, separate bug: `_cycle_in_cooldown(agent, ...)`
+# gates at the AGENT level (`agent.status == "cooldown"`, set unconditionally
+# by `_cycle_compute_post_fire_status` for ANY persistent agent that fires —
+# not only action-executing ones). Once underlying A fires, the WHOLE agent
+# stops being evaluated for the rest of the cooldown window — silencing a
+# genuinely different underlying B's breach in that same window, not just
+# re-firing on A. `loss-positions-underlying-divergence` carried this latent
+# bug since its creation (2026-10-22) at whatever nonzero cooldown it held.
+# Fix: cooldown_minutes=0 (same precedent as exit-tp-short-option-90's own
+# documented fix for the identical defect class) disables ONLY the
+# agent-level gate; per-underlying dedup still applies via
+# `_v2_apply_escalation_gate`'s own fallback to `alerts.cooldown_minutes`.
+
+class TestFixDCrossUnderlyingCooldownSilencing:
+    def test_old_nonzero_cooldown_reads_as_in_cooldown_after_a_recent_fire(self):
+        """Reproduces the bug directly against `_cycle_in_cooldown`: the
+        OLD stock value (10) correctly-by-its-own-logic reports "still in
+        cooldown" 5 minutes after any fire — which is exactly what
+        silences underlying B's breach in that window, even though B's
+        breach has nothing to do with A."""
+        class _Agent:
+            status = "cooldown"
+            cooldown_minutes = 10
+            # `_cycle_in_cooldown` reads the REAL wall clock internally
+            # (`datetime.now(timezone.utc)`), not a passed-in `now` — so
+            # this must be relative to the real clock, not a fixed date.
+            last_triggered_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+
+        in_cooldown = ae._cycle_in_cooldown(_Agent(), bypass_schedule=False)
+        assert in_cooldown is True, (
+            "with the OLD stock cooldown (10 min), 5 minutes after a fire "
+            "the agent reads as still-in-cooldown — this is the bug: ANY "
+            "other underlying's genuinely new breach is silenced too"
+        )
+
+    def test_fixed_cooldown_zero_never_reads_as_in_cooldown(self):
+        """The fix: cooldown_minutes=0 means `_cycle_in_cooldown` is False
+        immediately after a fire, regardless of elapsed time — so a
+        different underlying's breach the very next tick is never
+        silenced by this gate."""
+        class _Agent:
+            status = "cooldown"
+            cooldown_minutes = 0
+            last_triggered_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+
+        in_cooldown = ae._cycle_in_cooldown(_Agent(), bypass_schedule=False)
+        assert in_cooldown is False, (
+            "with cooldown_minutes=0, the agent must never read as "
+            "in-cooldown, even one second after a fire — otherwise a "
+            "different underlying's breach would still be silenced"
+        )
+
+    def test_real_builtin_agent_spec_carries_the_fixed_value(self):
+        agent = next(a for a in ae.BUILTIN_AGENTS
+                     if a["slug"] == "loss-positions-underlying-divergence")
+        assert agent["cooldown_minutes"] == 0, (
+            f"expected cooldown_minutes=0 on the real spec (the fix for "
+            f"the cross-underlying silencing bug), got "
+            f"{agent['cooldown_minutes']}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_genuinely_different_underlying_is_not_buffered_while_agent_in_old_style_cooldown(self):
+        """End-to-end through `_ae_cycle_eval_and_buffer` (the real
+        dispatch-buffering function, same pattern as
+        TestCooldownDoesNotBlockRecovery in test_agent_latch.py): with
+        `in_cooldown=True` (simulating the OLD nonzero-cooldown bug,
+        underlying A having just fired), a genuine NEW match for
+        underlying B is evaluated but never buffered for dispatch —
+        confirming the silencing, not just a delay."""
+        from unittest.mock import patch
+
+        class _Agent:
+            id = 99
+            slug = "loss-positions-underlying-divergence"
+            name = "test"
+            tier = "critical"
+            topic = "positions_loss"
+            fire_at_time = None
+            events = []
+            actions = []
+            status = "cooldown"
+            last_triggered_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+            cooldown_minutes = 10  # the OLD, buggy value
+
+        match_b = {'metric': 'underlying_loss_divergence_signed', 'scope': 'positions.any_underlying',
+                   'account': None, 'underlying': 'CRUDEOIL', 'op': '<=', 'threshold': -100000,
+                   'value': -200000.0}
+        pending_dispatches: list = []
+
+        with patch.object(ae, "_cycle_evaluate_agent", return_value=([match_b], [match_b])), \
+             patch.object(ae, "_cycle_apply_debounce") as mock_debounce, \
+             patch.object(ae, "_cycle_maybe_buffer_fire") as mock_buffer_fire:
+            await ae._ae_cycle_eval_and_buffer(
+                _Agent(), context={}, cfg={"baseline_offset_min": 15},
+                now=datetime.now(timezone.utc),
+                alert_state={}, sim_mode=False,
+                bypass_schedule=False, bypass_suppression=False,
+                broadcast_fn=None, pending_dispatches=pending_dispatches,
+                in_cooldown=True,
+            )
+
+        mock_debounce.assert_not_called()
+        mock_buffer_fire.assert_not_called()
+        assert pending_dispatches == [], (
+            "underlying B's genuinely new breach must not be buffered for "
+            "dispatch while the agent is in cooldown from underlying A's "
+            "unrelated earlier fire — this is the bug the cooldown_minutes=0 "
+            "fix closes (by ensuring in_cooldown is never True to begin with)"
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 #  End-to-end wiring — _cycle_evaluate_agent, real BUILTIN_AGENTS condition
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -490,6 +610,8 @@ class TestEndToEndWiring:
         monkeypatch.setitem(REGISTRY.metrics, 'underlying_market_loss', _metric_underlying_market_loss)
         monkeypatch.setitem(REGISTRY.metrics, 'underlying_theoretical_loss', _metric_underlying_theoretical_loss)
         monkeypatch.setitem(REGISTRY.metrics, 'underlying_loss_divergence', _metric_underlying_loss_divergence)
+        monkeypatch.setitem(REGISTRY.metrics, 'underlying_loss_divergence_signed',
+                             _metric_underlying_loss_divergence_signed)
         monkeypatch.setitem(REGISTRY.metrics, 'pnl_rate_abs', _metric_pnl_rate_abs)
         monkeypatch.setitem(REGISTRY.metrics, 'pnl_rate_pct', _metric_pnl_rate_pct)
         monkeypatch.setitem(REGISTRY.operators, '>', g.OPERATORS['>'])
@@ -544,7 +666,10 @@ class TestEndToEndWiring:
         assert all(m.get('underlying') == 'A' for m in matches), f"got {matches}"
         assert observations, "tokens must have genuinely resolved — ctx.observations must be non-empty"
         resolved_metrics = {o.get('metric') for o in observations}
-        assert 'underlying_loss_divergence' in resolved_metrics
+        assert 'underlying_loss_divergence_signed' in resolved_metrics, (
+            "2026-11-26 redesign: the real agent's own condition tree "
+            "now uses the SIGNED metric, not the unsigned original"
+        )
         assert 'pnl_rate_abs' in resolved_metrics
 
     def test_all_four_new_tokens_resolve_through_the_registry(self):

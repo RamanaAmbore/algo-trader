@@ -282,8 +282,8 @@ async def test_chase_cancel_golden_text_and_urgent_priority(monkeypatch):
         f"Source: chase triggered manually\n{_FIXED_TS}\n"
         "BUY NIFTY26OCTFUT — cancel of order O1 on ZG#### could not be confirmed after attempt "
         "2 (40 contracts filled so far). "
-        "The chase has been ABORTED without placing a replacement order. "
-        "Manually verify the broker's order book — the old order may still be live."
+        "Chase ABORTED, no replacement placed — verify the broker's order "
+        "book; the old order may still be live."
         "\n#manual #chase #via_chase_cancel_alert #critical",
         "urgent",
     )]
@@ -436,9 +436,14 @@ async def test_order_failure_golden_text_channels_and_html(monkeypatch):
     # also moved onto the shared "{label_word}: {detail}{branch_tag}
     # {mode_sfx} | {ts}" convention — both re-derived by actually
     # running the real dispatch pipeline, not by hand.
-    assert sent["tg"] == ['Source: Order failure triggered manually\n10:15:30 IST\n❌ Order rejected  [Manual]    (+2 suppressed)\nZG####  BUY  75  NIFTY26OCTFUT  (NFO)\nsource: ticket\nInsufficient funds <x>\n#manual #via_order_failure_alert #warning']
+    # 2026-11-26 audit trim — the plain-text body's standalone "source:
+    # {source}" line was dropped (redundant with the already-resolved
+    # [Manual]/[Agent] origin label on the line above). The "Source" row
+    # stays in the HTML table below, where a structured table is expected
+    # to enumerate every field.
+    assert sent["tg"] == ['Source: Order failure triggered manually\n10:15:30 IST\n❌ Order rejected  [Manual]    (+2 suppressed)\nZG####  BUY  75  NIFTY26OCTFUT  (NFO)\nInsufficient funds <x>\n#manual #via_order_failure_alert #warning']
     assert sent["ntfy"] == [("Order Rejected: NIFTY26OCTFUT BUY",
-                             "Source: Order failure triggered manually\n10:15:30 IST\n❌ Order rejected  [Manual]    (+2 suppressed)\nZG####  BUY  75  NIFTY26OCTFUT  (NFO)\nsource: ticket\nInsufficient funds <x>\n#manual #via_order_failure_alert #warning",
+                             "Source: Order failure triggered manually\n10:15:30 IST\n❌ Order rejected  [Manual]    (+2 suppressed)\nZG####  BUY  75  NIFTY26OCTFUT  (NFO)\nInsufficient funds <x>\n#manual #via_order_failure_alert #warning",
                              "urgent")]
     assert len(sent["mail"]) == 1
     _, addr, subj, body = sent["mail"][0]

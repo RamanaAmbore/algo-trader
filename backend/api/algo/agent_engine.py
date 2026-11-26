@@ -1646,9 +1646,8 @@ async def _v2_expiry_morning_preview(context: dict | None, exchange: str) -> str
     if section is None:
         return f"No {exchange} F&O positions are expiring today — nothing to close."
     tentative = (
-        "Tentative — priced at today's opening LTP, not a final "
-        "determination. Final staging for review happens 1 hour before "
-        f"{exchange}'s own close."
+        "Tentative (priced at today's opening LTP) — final staging "
+        f"happens 1 hour before {exchange}'s close."
     )
     return tentative + "\n\n" + section
 
@@ -2086,9 +2085,9 @@ def _v2_exit_tp_short_option_enrichment(agent, matches: list, context: dict | No
         else "stays held until released by hand"
     )
     parts = [
-        f"If staged for review (skipped when already held or cancelled "
-        f"earlier this session), this close {deadline_phrase} — cancel "
-        f"from Held Orders to keep the position open."
+        f"If staged for review, this close {deadline_phrase} — cancel "
+        f"from Held Orders to keep the position open. (Skipped if "
+        f"already held or cancelled this session.)"
     ]
     sibling_lines = _v2_exit_tp_short_option_sibling_lines(matches, context)
     if sibling_lines:
@@ -2118,6 +2117,21 @@ def _v2_expiry_risk_alert_enrichment(agent, matches: list, context: dict | None)
     Returns `None` for an empty `matches` list (same defensive
     convention as the exit-tp sibling above — not expected in practice,
     since this is only ever called from a branch that already fired).
+
+    2026-11-26, same-day follow-up (operator: "in the alert message no
+    need to repeat expiry date for each symbol row") — every leg that
+    fires together typically shares the SAME expiry date (they're all
+    "expiring soon" relative to the same lookahead window), so the
+    original per-row "— expires in X.Xd" suffix repeated the identical
+    date on every line. Legs are now GROUPED by their real expiry date
+    (`datetime.date`, exact — not a repeated decimal day-count), with
+    the date stated once in that group's own header line; the common
+    case (one shared expiry date) therefore reads as one header plus a
+    plain symbol list, with no per-row date repetition at all. A rare
+    mixed-date fire (e.g. MCX+NFO legs expiring on different calendar
+    days within the same lookahead window) still gets one header per
+    distinct date, sorted soonest-first — never a single combined date
+    misattributed to every leg.
     """
     if not matches:
         return None
@@ -2129,7 +2143,9 @@ def _v2_expiry_risk_alert_enrichment(agent, matches: list, context: dict | None)
 
     now = (context or {}).get("now")
 
-    lines: list[str] = []
+    # (expiry_date_or_None) -> list of "- SYMBOL (account)" lines
+    groups: dict = {}
+    group_order: list = []
     seen: set = set()
     for m in matches:
         row = (m or {}).get('row') or {}
@@ -2146,36 +2162,54 @@ def _v2_expiry_risk_alert_enrichment(agent, matches: list, context: dict | None)
             continue
         seen.add(key)
         masked = mask_account(account) if account else '?'
-        dte_phrase = ""
         parsed = _parsed_or_none(sym)
-        if parsed and parsed.get('expiry'):
-            try:
-                close_time = close_time_for_exchange(row.get('exchange'), parsed['expiry'])
-                if close_time is None:
-                    close_time = (15, 30)
-                d = float(days_to_expiry(parsed['expiry'], ref=now, close_time=close_time))
-                dte_phrase = f" — expires in {d:.1f}d"
-            except Exception:
-                # Best-effort only — a DTE formatting failure must
-                # never drop the leg from the list, it just loses the
-                # trailing phrase.
-                pass
-        lines.append(f"- {sym} ({masked}){dte_phrase}")
+        expiry_date = parsed.get('expiry') if parsed else None
+        if expiry_date not in groups:
+            groups[expiry_date] = []
+            group_order.append(expiry_date)
+        groups[expiry_date].append((sym, masked, row.get('exchange')))
 
-    if not lines:
+    if not groups:
         return None
+
     # Header text matches each agent's own real classification — never
     # the generic "unhedged" phrasing for NFO, which fires on ITM
     # options or open futures with no netting/hedge concept at all
     # (see that agent's own `description`).
     slug = getattr(agent, 'slug', None)
     if slug == 'expiry-mcx-risk-alert':
-        header = "Unhedged legs:"
+        label = "Unhedged legs"
     elif slug == 'expiry-nfo-risk-alert':
-        header = "ITM options / open futures needing action:"
+        label = "ITM options / open futures needing action"
     else:
-        header = "Legs needing attention:"
-    return header + "\n" + "\n".join(lines)
+        label = "Legs needing attention"
+
+    # Soonest expiry first; an unparseable (None) date sorts last.
+    def _sort_key(d):
+        return (d is None, d)
+
+    sections: list[str] = []
+    for expiry_date in sorted(group_order, key=_sort_key):
+        rows = groups[expiry_date]
+        date_phrase = ""
+        if expiry_date is not None:
+            try:
+                first_exchange = rows[0][2]
+                close_time = close_time_for_exchange(first_exchange, expiry_date)
+                if close_time is None:
+                    close_time = (15, 30)
+                d = float(days_to_expiry(expiry_date, ref=now, close_time=close_time))
+                date_phrase = f" ({expiry_date.isoformat()}, in {d:.1f}d)"
+            except Exception:
+                # Best-effort only — a DTE formatting failure must
+                # never drop the date header, it just loses the
+                # trailing day-count.
+                date_phrase = f" ({expiry_date.isoformat()})"
+        header = f"{label}{date_phrase}:"
+        lines = [f"- {sym} ({masked})" for sym, masked, _exch in rows]
+        sections.append(header + "\n" + "\n".join(lines))
+
+    return "\n\n".join(sections)
 
 
 async def _v2_reminder_line_with_expiry_breakdown(
@@ -2579,22 +2613,57 @@ _LOSS_AGENTS = [
          status="inactive",
          ),
 
-    # ── Positions: per-underlying burn-rate, gated on theoretical-vs-
-    # market loss divergence (critical tier) ────────────────────────────
+    # ── Positions: per-underlying burn-rate, gated on SIGNED theoretical-
+    # vs-market loss divergence (critical tier) ─────────────────────────
     #
     # A plain rate-of-change alert (loss-rate-acct above) fires on ANY
     # fast burn, including a burn that's just the EXPECTED Greeks-implied
     # move for a big spot swing (e.g. a legit 3% NIFTY dump blowing
-    # through a short-gamma book exactly as priced). Gating on
-    # underlying_loss_divergence first means this agent only fires when
-    # the rate burn is ALSO diverging from what the frozen-vol
-    # Greeks/IV-implied reprice would predict — i.e. something beyond a
-    # plain, already-priced-in spot move (a vol blowup, a stale/bad
-    # quote, a broker pricing anomaly, …). See CLAUDE.md / grammar.py's
+    # through a short-gamma book exactly as priced). Gating on the SIGNED
+    # divergence first means this agent only fires when the underlying is
+    # UNDERPERFORMING what the frozen-vol Greeks/IV-implied reprice (which
+    # already prices in theta/time-value decay) would predict — i.e.
+    # moving AWAY from the expected decay trajectory, not just making the
+    # expected, already-priced-in move. See CLAUDE.md / grammar.py's
     # module comment above `_scope_positions_any_underlying` for the full
     # baseline-reprice design. Per-underlying (not per-account) because a
     # book-wide ₹ threshold means something different for a single-lot
     # collar than a 50-lot straddle.
+    #
+    # 2026-11-26 redesign (operator: "if the rate of change towards exp
+    # max profit, that is okay. if it is away, that needs to be
+    # alerted") — the ORIGINAL design (2026-10-22) used `abs(theoretical -
+    # market)`, which fired on a pricing-anomaly divergence in EITHER
+    # direction, including one where the book was doing BETTER than the
+    # model predicted. A 6-perspective council review (research/risk/
+    # architect/ux/devil's-advocate/perf) confirmed via `~/.claude/plans/
+    # lovely-stirring-allen.md`: a literal "rate of change of raw
+    # intrinsic-value-at-expiry" replacement (the operator's initial
+    # framing, taken literally) would be structurally blind to theta/vega
+    # bleed — a short-premium position sitting near flat spot reads ~0
+    # rate while genuinely bleeding cash. The signed divergence AVOIDS
+    # that blind spot for free: `theoretical` already accounts for
+    # elapsed-time decay via the frozen-vol Black-Scholes/Black-76
+    # reprice, so "underperforming theoretical" correctly catches a
+    # position decaying WORSE than its own expected theta path, not just
+    # a spot move. Metric flips from unsigned `underlying_loss_divergence`
+    # to the new signed `underlying_loss_divergence_signed` (market minus
+    # theoretical; negative = underperforming = adverse). Slug kept —
+    # editing an existing builtin's spec in place preserves its alert
+    # history (CLAUDE.md precedent: prefer in-place edit over a fresh slug
+    # whenever one row's history is worth keeping).
+    #
+    # Accepted tradeoff (confirmed with the architect reviewer): this
+    # agent no longer catches a pricing anomaly that happens to make the
+    # book look BETTER than the model predicts — rare and low-stakes next
+    # to the adverse case, and `loss-positions-total`'s unrelated static
+    # day_val/day_pct thresholds remain as an independent backstop for any
+    # extreme absolute move either way. `loss-positions-total`'s own
+    # pnl_rate_abs/pnl_rate_pct rate leaves are DELIBERATELY left
+    # untouched by this redesign — the same council review found removing
+    # them would regress the operator's own earlier, still-standing
+    # instruction ("rate of change alert is the most important one...
+    # resolve ambiguity toward STILL FIRING, not toward exclusion").
     #
     # Shipped INACTIVE at first (2026-10-22) pending a fix to the
     # reference-point mismatch between this agent's two gate sides — see
@@ -2602,32 +2671,58 @@ _LOSS_AGENTS = [
     # activated the same day; status now defaults to "active" via
     # `_LOSS_AGENT_DEFAULTS` like every other non-destructive loss agent.
     dict(slug="loss-positions-underlying-divergence",
-         long_name="when:positions.any_underlying.divergence>100k AND pnl_rate   alert:critical/tg+ntfy+log   do:notify-only",
+         long_name="when:positions.any_underlying.signed_divergence<=-100k AND pnl_rate   alert:critical/tg+ntfy+log   do:notify-only",
          tier="critical",
          topic="positions_loss",
-         name="Per-underlying loss divergence + burn-rate guardrail",
+         name="Per-underlying adverse divergence + burn-rate guardrail",
          description=(
-             "Fires when an underlying's theoretical-vs-market loss "
-             "divergence exceeds ₹100k AND that same underlying is also "
-             "burning fast (-₹10k/min). Divergence gates out a plain, "
-             "already-priced-in spot move — only a burn that's ALSO "
-             "drifting from the frozen-vol Greeks/IV-implied reprice "
-             "fires this agent. The condition tree also carries a "
-             "pnl_rate_pct (%/min) leaf to match the %/min vs ₹/min "
-             "pairing every other burn-rate agent uses, but it is "
-             "currently INERT for this scope — no per-underlying margin "
-             "denominator exists yet (see pnl_rate_pct's own docstring) — "
-             "so only the ₹/min leaf can fire today."
+             "Fires when an underlying's actual day P&L UNDERPERFORMS its "
+             "own Greeks/theta-model-predicted path by more than ₹100k "
+             "(moving away from the expected decay trajectory, not just "
+             "making the already-priced-in move) AND that same underlying "
+             "is also burning fast (-₹10k/min). Never fires when the "
+             "underlying is OUTPERFORMING the model, however large that "
+             "gap — this is a deliberate, signed, adverse-only redesign "
+             "(2026-11-26) of the agent's original unsigned abs() form. "
+             "The condition tree also carries a pnl_rate_pct (%/min) leaf "
+             "to match the %/min vs ₹/min pairing every other burn-rate "
+             "agent uses, but it is currently INERT for this scope — no "
+             "per-underlying margin denominator exists yet (see "
+             "pnl_rate_pct's own docstring) — so only the ₹/min leaf can "
+             "fire today."
          ),
          conditions={"all": [
-             {"metric": "underlying_loss_divergence", "scope": "positions.any_underlying",
-              "op": ">", "value": 100000},
+             {"metric": "underlying_loss_divergence_signed", "scope": "positions.any_underlying",
+              "op": "<=", "value": -100000},
              {"any": [
                  {"metric": "pnl_rate_abs", "scope": "positions.any_underlying", "op": "<=", "value": -10000},
                  {"metric": "pnl_rate_pct", "scope": "positions.any_underlying", "op": "<=", "value": -0.25},
              ]},
          ]},
-         cooldown_minutes=10,
+         # 2026-11-26 — fixes a confirmed, pre-existing bug independent of
+         # the signed-metric redesign above: ANY nonzero `cooldown_minutes`
+         # here trips the generic AGENT-level cooldown gate
+         # (`_cycle_in_cooldown`, which checks `agent.status == "cooldown"`
+         # — set unconditionally by `_cycle_compute_post_fire_status` for
+         # ANY persistent agent that fires, not only action-executing
+         # ones). Once underlying A fires, the WHOLE agent stops being
+         # evaluated for the cooldown window, silencing a genuinely
+         # different underlying B's breach in that same window — not just
+         # re-firing on A. Same defect class `exit-tp-short-option-90`
+         # already worked around (see that agent's own comment block).
+         # Fix: `cooldown_minutes=0` disables ONLY the agent-level gate
+         # (`elapsed < 0` is never true); per-underlying dedup still
+         # applies via `_v2_apply_escalation_gate`'s own fallback —
+         # `agent.cooldown_minutes or get_int('alerts.cooldown_minutes',
+         # 30)` — so each underlying gets an independent ~30-min per-leaf
+         # cooldown with no cross-underlying silencing. This supersedes an
+         # earlier same-session edit that (wrongly) raised this to 45 —
+         # that value would have made the cross-underlying silencing
+         # window LONGER, the opposite of a fix. Per-underlying latch
+         # keying is unaffected by any of this: two DIFFERENT underlyings
+         # diverging at once still fire independently via their own latch
+         # keys (see test_two_underlyings_breaching_same_tick_get_distinct_latches).
+         cooldown_minutes=0,
          ),
 
     # ── Positions: total guardrail (critical tier) ──────────────────────
@@ -3915,6 +4010,24 @@ _AE_CONTENT_MATCHED_COND_MIGRATIONS: dict[str, dict] = {
             ]}},
         ]},
     ]},
+    # 2026-11-26 — signed-divergence redesign (see the
+    # `loss-positions-underlying-divergence` BUILTIN_AGENTS entry's own
+    # comment block for the full rationale). The shape below is the
+    # EXACT unsigned `abs()`-based tree this agent shipped with since
+    # 2026-10-22 — the one trigger shape an already-seeded row must
+    # byte-for-byte match to force-upgrade to the new signed
+    # `underlying_loss_divergence_signed <= -100000` shape now in
+    # `BUILTIN_AGENTS`. An operator who customized this agent's
+    # conditions in any way is left on their own shape, same safety
+    # contract as every other entry in this table.
+    "loss-positions-underlying-divergence": {"all": [
+        {"metric": "underlying_loss_divergence", "scope": "positions.any_underlying",
+         "op": ">", "value": 100000},
+        {"any": [
+            {"metric": "pnl_rate_abs", "scope": "positions.any_underlying", "op": "<=", "value": -10000},
+            {"metric": "pnl_rate_pct", "scope": "positions.any_underlying", "op": "<=", "value": -0.25},
+        ]},
+    ]},
 }
 
 
@@ -4002,6 +4115,7 @@ def _ae_sync_existing_builtin(existing, agent_def: dict) -> None:
     _ae_apply_content_matched_cond_migration(existing, agent_def)
     _ae_sync_expiry_awareness_cooldown(existing, agent_def)
     _ae_sync_expiry_risk_alert_split(existing, agent_def)
+    _ae_sync_divergence_cooldown(existing, agent_def)
 
 
 def _ae_sync_expiry_awareness_cooldown(existing, agent_def: dict) -> None:
@@ -4019,6 +4133,25 @@ def _ae_sync_expiry_awareness_cooldown(existing, agent_def: dict) -> None:
     agent's cooldown to something else is left alone."""
     if (agent_def.get("slug") in ("expiry-day-preclose-alert", "expiry-day-itm-auto-close")
             and existing.cooldown_minutes == 180):
+        existing.cooldown_minutes = agent_def.get(
+            "cooldown_minutes", existing.cooldown_minutes)
+
+
+def _ae_sync_divergence_cooldown(existing, agent_def: dict) -> None:
+    """One-time cooldown migration — `cooldown_minutes` is never
+    force-synced on an ordinary restart (see `_ae_sync_existing_builtin`'s
+    own docstring), so dropping `loss-positions-underlying-divergence`'s
+    stock 10-min cooldown to 0 in code alone would be inert against an
+    already-seeded row. The 0 value is not a noise tweak — it fixes a
+    confirmed bug (see the BUILTIN_AGENTS entry's own comment): any
+    nonzero cooldown here trips the generic agent-level cooldown gate,
+    which silences a genuinely different underlying's breach for the
+    whole window once any one underlying fires. Value-gated to the exact
+    old stock value — same safety contract as every other migration in
+    this file — so an operator who already customized this agent's
+    cooldown is left alone."""
+    if (agent_def.get("slug") == "loss-positions-underlying-divergence"
+            and existing.cooldown_minutes == 10):
         existing.cooldown_minutes = agent_def.get(
             "cooldown_minutes", existing.cooldown_minutes)
 

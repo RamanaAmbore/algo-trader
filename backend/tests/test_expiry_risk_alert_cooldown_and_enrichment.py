@@ -113,7 +113,10 @@ class TestEnrichmentContent:
         assert text is not None
         assert "GOLDM26DECFUT" in text
         assert "ZG0790" not in text, "raw account must never leak unmasked"
-        assert "expires in" in text
+        assert ", in " in text and "d)" in text, (
+            "expiry date + day-count belongs once in the group header, "
+            "not repeated per leg row"
+        )
 
     def test_multiple_legs_all_listed(self):
         agent = _Agent("expiry-mcx-risk-alert")
@@ -123,6 +126,26 @@ class TestEnrichmentContent:
         )
         assert "GOLDM26DECFUT" in text
         assert "CRUDEOIL26DEC5500CE" in text
+
+    def test_legs_sharing_one_expiry_date_render_under_one_header_not_repeated(self):
+        """2026-11-26 operator follow-up: 'no need to repeat expiry date
+        for each symbol row'. Two legs on the same underlying/month (so
+        they share the exact same real expiry date) must render under
+        ONE header carrying the date once — not once per leg row."""
+        agent = _Agent("expiry-nfo-risk-alert")
+        row_a = {"account": "ZG0790", "tradingsymbol": "NIFTY26DEC24000CE", "exchange": "NFO"}
+        row_b = {"account": "ZJ6294", "tradingsymbol": "NIFTY26DEC25000PE", "exchange": "NFO"}
+        text = _v2_expiry_risk_alert_enrichment(
+            agent, [_match(row_a), _match(row_b)],
+            {"now": _now(), "position_rows": [row_a, row_b]},
+        )
+        assert text.count("in ") == 1 and text.count("d)") == 1, (
+            "same-expiry legs must share one date header, not one per row"
+        )
+        assert "NIFTY26DEC24000CE" in text and "NIFTY26DEC25000PE" in text
+        # Only one header line (the one ending in ":") for both legs.
+        header_lines = [ln for ln in text.splitlines() if ln.endswith(":")]
+        assert len(header_lines) == 1
 
     def test_duplicate_leg_from_a_second_unkeyed_leaf_is_not_repeated(self):
         """The condition's suppression leaf (a second, TOTAL-scoped leaf
@@ -146,7 +169,7 @@ class TestEnrichmentContent:
         text = _v2_expiry_risk_alert_enrichment(
             agent, [_match(_MCX_ROW)], {"now": _now(), "position_rows": [_MCX_ROW]},
         )
-        assert text.startswith("Unhedged legs:")
+        assert text.startswith("Unhedged legs (")
 
     def test_nfo_header_does_not_say_unhedged(self):
         """NFO fires on ITM options or open futures — not a netting/

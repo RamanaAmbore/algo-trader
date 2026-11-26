@@ -575,6 +575,13 @@ system_tokens:
   units: ₹
   description: abs(underlying_theoretical_loss − underlying_market_loss) for this underlying — how far today's real market loss has diverged from what the frozen-vol Greeks/IV-implied move would predict. None when either side is unavailable (never a false 0 divergence).
   resolver: backend.api.algo.grammar_tokens.metric_underlying_loss_divergence._metric_underlying_loss_divergence
+- grammar_kind: condition
+  token_kind: metric
+  token: underlying_loss_divergence_signed
+  value_type: number
+  units: ₹
+  description: (underlying_market_loss − underlying_theoretical_loss) for this underlying, SIGNED — negative means actual day P&L is underperforming the frozen-vol Greeks/theta-model-predicted path (moving away from the expected decay trajectory, alert-worthy); positive means outperforming it (never alert-worthy here). None when either side is unavailable (never a false 0 divergence).
+  resolver: backend.api.algo.grammar_tokens.metric_underlying_loss_divergence_signed._metric_underlying_loss_divergence_signed
 
 # ════════════════════════════════════════════════════════════════════════
 #  CONDITION — SCOPES (row selectors)
