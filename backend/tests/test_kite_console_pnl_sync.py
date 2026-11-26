@@ -136,6 +136,26 @@ def _csv_bytes(rows: "list[dict]", header: "list[str] | None" = None) -> bytes:
     return buf.getvalue().encode("utf-8")
 
 
+_LEDGER_HEADER = "particulars,posting_date,cost_center,voucher_type,debit,credit,net_balance\n"
+
+
+def _ledger_csv_bytes(rows: "list[dict] | None" = None) -> bytes:
+    """Minimal real-shaped ledger CSV -- header-only (zero data rows) by
+    default, matching the real export's own column order. Used by tests
+    whose scenario is about the tradebook/pnl path, not the ledger pull
+    itself -- the ledger pull still runs once per sync_account() call
+    (see _console_login_and_scrape_sync's own ledger loop), so it needs
+    SOME well-formed response to stay out of those tests' way."""
+    lines = [_LEDGER_HEADER]
+    for r in (rows or []):
+        lines.append(
+            f"{r.get('particulars', '')},{r.get('posting_date', '')},"
+            f"{r.get('cost_center', '')},{r.get('voucher_type', '')},"
+            f"{r.get('debit', 0)},{r.get('credit', 0)},{r.get('net_balance', 0)}\n"
+        )
+    return "".join(lines).encode("utf-8")
+
+
 def _one_tradebook_row(**overrides) -> dict:
     row = {
         "symbol": "NIFTY25DEC25000CE",
@@ -562,6 +582,215 @@ class TestIngestRowsSqlShape:
 
 
 # ===========================================================================
+# 2b. Ledger (Funds Statement) — parsing, validation, dedup key, sync row,
+#     and REPLACE-semantics ingestion
+# ===========================================================================
+
+def _one_ledger_row(**overrides) -> dict:
+    row = {
+        "particulars": "Span margin blocked for MCX F&O",
+        "posting_date": "2026-11-02",
+        "cost_center": "MCX-F&O - Z",
+        "voucher_type": "Delivery Voucher",
+        "debit": "790270.000000",
+        "credit": "0.000000",
+        "net_balance": "1043822.913976",
+    }
+    row.update(overrides)
+    return row
+
+
+class TestParseLedgerCsv:
+    def test_well_formed_file_parses_every_data_row(self):
+        raw = _ledger_csv_bytes([_one_ledger_row(), _one_ledger_row(posting_date="2026-11-03")])
+        rows = mod.parse_ledger_csv(raw)
+        assert len(rows) == 2
+        assert rows[0]["particulars"] == "Span margin blocked for MCX F&O"
+        assert rows[0]["cost_center"] == "MCX-F&O - Z"
+
+    def test_header_only_file_parses_to_zero_rows_not_an_error(self):
+        rows = mod.parse_ledger_csv(_ledger_csv_bytes())
+        assert rows == []
+
+    def test_missing_required_column_raises_validation_error(self):
+        raw = b"particulars,posting_date,debit,credit\nfoo,2026-11-02,1,0\n"  # no net_balance
+        with pytest.raises(mod.ReportValidationError, match="missing required column"):
+            mod.parse_ledger_csv(raw)
+
+    def test_empty_file_raises_validation_error(self):
+        with pytest.raises(mod.ReportValidationError, match="no header row"):
+            mod.parse_ledger_csv(b"")
+
+    def test_real_amounts_have_no_thousands_separators(self):
+        """Confirmed live, 2026-11-26: the downloaded CSV's own amounts
+        are plain decimals (e.g. "27579.231718") -- never comma-grouped
+        like the UI's own rendered display. _parse_float_cell must
+        still parse them correctly either way (it strips commas
+        defensively), but this pins what the REAL file actually looks
+        like, so a future change can't silently assume the wrong
+        format."""
+        raw = _ledger_csv_bytes([_one_ledger_row(debit="1241460.000000")])
+        rows = mod.parse_ledger_csv(raw)
+        assert rows[0]["debit"] == "1241460.000000"
+        assert "," not in rows[0]["debit"]
+
+
+class TestValidateLedgerRows:
+    def test_well_formed_rows_pass(self):
+        rows = mod.parse_ledger_csv(_ledger_csv_bytes([_one_ledger_row()]))
+        mod.validate_ledger_rows(rows, start=date(2026, 11, 1), end=date(2026, 11, 30))  # no raise
+
+    def test_empty_report_is_not_an_error_by_default(self):
+        mod.validate_ledger_rows([], start=date(2026, 11, 1), end=date(2026, 11, 30))  # no raise
+
+    def test_empty_report_raises_when_allow_empty_is_false(self):
+        with pytest.raises(mod.ReportValidationError, match="zero rows"):
+            mod.validate_ledger_rows(
+                [], start=date(2026, 11, 1), end=date(2026, 11, 30), allow_empty=False,
+            )
+
+    def test_opening_and_closing_balance_sentinels_are_exempt_not_flagged(self):
+        """The two sentinel rows carry no posting_date at all -- they
+        must never be treated as "a row with a date outside the
+        range", the real failure mode a naive date-range check would
+        produce."""
+        rows = [
+            {"particulars": "Opening Balance", "posting_date": "", "cost_center": "",
+             "voucher_type": "", "debit": "", "credit": "", "net_balance": "1861672.145694"},
+            _one_ledger_row(),
+            {"particulars": "Closing Balance", "posting_date": "", "cost_center": "",
+             "voucher_type": "", "debit": "", "credit": "", "net_balance": "-6331331.418538"},
+        ]
+        mod.validate_ledger_rows(rows, start=date(2026, 11, 1), end=date(2026, 11, 30))  # no raise
+
+    def test_row_date_outside_requested_range_raises(self):
+        rows = [_one_ledger_row(posting_date="2025-01-01")]
+        with pytest.raises(mod.ReportValidationError, match="outside the requested range"):
+            mod.validate_ledger_rows(rows, start=date(2026, 11, 1), end=date(2026, 11, 30))
+
+    def test_missing_particulars_raises(self):
+        rows = [_one_ledger_row(particulars="")]
+        with pytest.raises(mod.ReportValidationError, match="missing particulars"):
+            mod.validate_ledger_rows(rows, start=date(2026, 11, 1), end=date(2026, 11, 30))
+
+    def test_unparsable_debit_raises(self):
+        rows = [_one_ledger_row(debit="not-a-number")]
+        with pytest.raises(mod.ReportValidationError, match="unparsable debit/credit"):
+            mod.validate_ledger_rows(rows, start=date(2026, 11, 1), end=date(2026, 11, 30))
+
+
+class TestBuildDedupKeyLedger:
+    def test_ledger_key_is_range_plus_sequence(self):
+        key = mod.build_dedup_key(
+            "ledger", row=_one_ledger_row(),
+            pull_start=date(2026, 11, 1), pull_end=date(2026, 11, 30), seq=3,
+        )
+        assert key == "2026-11-01:2026-11-30:3"
+
+    def test_two_different_rows_in_the_same_pull_get_different_keys(self):
+        k1 = mod.build_dedup_key("ledger", row=_one_ledger_row(),
+                                  pull_start=date(2026, 11, 1), pull_end=date(2026, 11, 30), seq=0)
+        k2 = mod.build_dedup_key("ledger", row=_one_ledger_row(),
+                                  pull_start=date(2026, 11, 1), pull_end=date(2026, 11, 30), seq=1)
+        assert k1 != k2
+
+
+class TestBuildLedgerSyncRow:
+    def test_builds_the_expected_shape(self):
+        payload = mod.build_ledger_sync_row(
+            "Z1####", _one_ledger_row(), seq=0,
+            pull_start=date(2026, 11, 1), pull_end=date(2026, 11, 30),
+        )
+        assert payload["account"] == "Z1####"
+        assert payload["segment"] == "all"
+        assert payload["report_type"] == "ledger"
+        assert payload["trade_date"] == date(2026, 11, 2)
+        assert payload["symbol"] is None
+        assert payload["exchange"] is None
+        assert payload["trade_id"] is None
+        assert payload["order_id"] is None
+        assert payload["pull_range_start"] == date(2026, 11, 1)
+        assert payload["pull_range_end"] == date(2026, 11, 30)
+        assert payload["raw_row"]["particulars"] == "Span margin blocked for MCX F&O"
+        assert payload["raw_row"]["debit"] == "790270.000000"
+
+    def test_sentinel_row_with_no_posting_date_returns_none(self):
+        sentinel = {"particulars": "Opening Balance", "posting_date": "", "cost_center": "",
+                    "voucher_type": "", "debit": "", "credit": "", "net_balance": "1861672.145694"}
+        payload = mod.build_ledger_sync_row(
+            "Z1####", sentinel, seq=0,
+            pull_start=date(2026, 11, 1), pull_end=date(2026, 11, 30),
+        )
+        assert payload is None
+
+
+class TestIngestLedgerRowsSqlShape:
+    @pytest.mark.asyncio
+    async def test_always_deletes_the_chunk_range_even_with_zero_rows(self):
+        """Confirms the REPLACE half of the contract runs even when the
+        fresh pull is empty — a genuinely no-activity month must clear
+        any stale rows a prior (buggy or since-corrected) pull left
+        behind, not leave them in place forever."""
+        session = AsyncMock()
+        n = await mod.ingest_ledger_rows(
+            session, "Z1####", [], pull_start=date(2026, 11, 1), pull_end=date(2026, 11, 30),
+        )
+        assert n == 0
+        session.execute.assert_awaited_once()  # delete only, no insert
+        session.commit.assert_awaited_once()
+        stmt = session.execute.call_args[0][0]
+        from sqlalchemy.dialects import postgresql
+        compiled = str(stmt.compile(dialect=postgresql.dialect()))
+        assert "DELETE" in compiled.upper()
+        assert "kite_console_pnl_sync" in compiled
+
+    @pytest.mark.asyncio
+    async def test_deletes_then_inserts_when_rows_are_present(self):
+        session = AsyncMock()
+        rows = [_one_ledger_row(), _one_ledger_row(posting_date="2026-11-05")]
+        n = await mod.ingest_ledger_rows(
+            session, "Z1####", rows, pull_start=date(2026, 11, 1), pull_end=date(2026, 11, 30),
+        )
+        assert n == 2
+        assert session.execute.await_count == 2
+        from sqlalchemy.dialects import postgresql
+        delete_stmt = session.execute.call_args_list[0][0][0]
+        insert_stmt = session.execute.call_args_list[1][0][0]
+        assert "DELETE" in str(delete_stmt.compile(dialect=postgresql.dialect())).upper()
+        insert_compiled = str(insert_stmt.compile(dialect=postgresql.dialect()))
+        assert "INSERT" in insert_compiled.upper()
+        assert "ON CONFLICT" not in insert_compiled.upper(), (
+            "ledger ingestion is delete-then-plain-insert, never an upsert "
+            "(see ingest_ledger_rows's own docstring for why)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_sentinel_rows_are_silently_dropped_not_inserted(self):
+        session = AsyncMock()
+        rows = [
+            {"particulars": "Opening Balance", "posting_date": "", "cost_center": "",
+             "voucher_type": "", "debit": "", "credit": "", "net_balance": "1861672.145694"},
+            _one_ledger_row(),
+        ]
+        n = await mod.ingest_ledger_rows(
+            session, "Z1####", rows, pull_start=date(2026, 11, 1), pull_end=date(2026, 11, 30),
+        )
+        assert n == 1  # only the real entry, sentinel dropped
+
+    @pytest.mark.asyncio
+    async def test_account_in_stored_payload_is_masked_form(self):
+        session = AsyncMock()
+        await mod.ingest_ledger_rows(
+            session, "Z1####", [_one_ledger_row()],
+            pull_start=date(2026, 11, 1), pull_end=date(2026, 11, 30),
+        )
+        insert_stmt = session.execute.call_args_list[1][0][0]
+        payload = insert_stmt.compile().params
+        account_values = [v for k, v in payload.items() if k.startswith("account")]
+        assert all(v == "Z1####" for v in account_values)
+
+
+# ===========================================================================
 # 3. Account masking
 # ===========================================================================
 
@@ -814,11 +1043,11 @@ class TestScrapingRobustness:
         )
 
         assert outcome.ok is False
-        # One segment x two report types = 2 attempts, never a retry of
-        # either individual pull.
-        assert fake_page.navigate_to_reports.call_count == 2
-        assert diag_mock.call_count == 2
-        assert alert_mock.await_count == 2
+        # One segment x two report types, plus one ledger pull per
+        # account = 3 attempts, never a retry of either individual pull.
+        assert fake_page.navigate_to_reports.call_count == 3
+        assert diag_mock.call_count == 3
+        assert alert_mock.await_count == 3
 
     @pytest.mark.asyncio
     async def test_date_range_filter_mismatch_alerts_and_does_not_retry(self, monkeypatch):
@@ -828,9 +1057,14 @@ class TestScrapingRobustness:
         monkeypatch.setattr(mod, "build_console_connection", lambda *a, **k: conn)
 
         fake_page = MagicMock()
-        fake_page.set_date_range = MagicMock(
-            side_effect=mod.ConsoleStructuralError("date range did not register")
-        )
+        _date_range_error = mod.ConsoleStructuralError("date range did not register")
+        fake_page.set_date_range = MagicMock(side_effect=_date_range_error)
+        # The ledger pull uses a SEPARATE method (different page, different
+        # selector) but shares the same underlying fill-then-confirm logic
+        # in production (`_set_date_range_on()`) -- a real date-range
+        # regression would plausibly hit both, so extending the mock to
+        # cover both is the honest way to widen this scenario to 3 pulls.
+        fake_page.set_ledger_date_range = MagicMock(side_effect=_date_range_error)
         monkeypatch.setattr(mod, "KiteConsoleReportsPage", lambda page: fake_page)
         monkeypatch.setattr(mod, "capture_diagnostics", MagicMock(return_value={}))
         alert_mock = AsyncMock()
@@ -840,7 +1074,8 @@ class TestScrapingRobustness:
         await mod.sync_account(row, plan={"derivatives": (date(2026, 11, 1), date(2026, 11, 30))})
 
         assert fake_page.set_date_range.call_count == 2
-        assert alert_mock.await_count == 2
+        assert fake_page.set_ledger_date_range.call_count == 1
+        assert alert_mock.await_count == 3
 
     @pytest.mark.asyncio
     async def test_download_never_fires_alerts_and_does_not_retry(self, monkeypatch):
@@ -861,8 +1096,9 @@ class TestScrapingRobustness:
         row = _fake_broker_account_row("ZCONSOLE_SCR3")
         await mod.sync_account(row, plan={"derivatives": (date(2026, 11, 1), date(2026, 11, 30))})
 
-        assert fake_page.trigger_download.call_count == 2
-        assert alert_mock.await_count == 2
+        # tradebook + pnl (per-segment) + ledger (once per account) == 3
+        assert fake_page.trigger_download.call_count == 3
+        assert alert_mock.await_count == 3
 
     @pytest.mark.asyncio
     async def test_invalid_downloaded_file_is_never_silently_ingested(self, monkeypatch, tmp_path):
@@ -885,7 +1121,8 @@ class TestScrapingRobustness:
         outcome = await mod.sync_account(row, plan={"derivatives": (date(2026, 11, 1), date(2026, 11, 30))})
 
         ingest_mock.assert_not_called()
-        assert alert_mock.await_count == 2  # tradebook pull + pnl pull, both empty/corrupt
+        # tradebook pull + pnl pull + ledger pull, all empty/corrupt
+        assert alert_mock.await_count == 3
         assert outcome.ok is False
 
     @pytest.mark.asyncio
@@ -899,6 +1136,8 @@ class TestScrapingRobustness:
         tradebook_file.write_bytes(_csv_bytes([_one_tradebook_row(trade_date="2026-11-15")]))
         pnl_file = tmp_path / "pnl.xlsx"
         pnl_file.write_bytes(_pnl_xlsx_bytes([_one_pnl_row()]))
+        ledger_file = tmp_path / "ledger.csv"
+        ledger_file.write_bytes(_ledger_csv_bytes())  # header-only, 0 rows
 
         calls: list[str] = []
         last_report_type: "list[str]" = []
@@ -912,19 +1151,26 @@ class TestScrapingRobustness:
             if segment == "derivatives":
                 raise mod.ConsoleStructuralError("boom on derivatives")
 
-        def _fake_trigger_download(report_type=None):
-            return tradebook_file if last_report_type[-1] == "tradebook" else pnl_file
+        def _fake_trigger_download(report_type=None, masked_account=None):
+            if last_report_type[-1] == "tradebook":
+                return tradebook_file
+            if last_report_type[-1] == "ledger":
+                return ledger_file
+            return pnl_file
 
         fake_page = MagicMock()
         fake_page.navigate_to_reports = MagicMock(side_effect=_fake_navigate)
         fake_page.select_segment = MagicMock(side_effect=_fake_select_segment)
         fake_page.set_date_range = MagicMock()
+        fake_page.set_ledger_date_range = MagicMock()
         fake_page.trigger_download = MagicMock(side_effect=_fake_trigger_download)
         monkeypatch.setattr(mod, "KiteConsoleReportsPage", lambda page: fake_page)
         monkeypatch.setattr(mod, "capture_diagnostics", MagicMock(return_value={}))
         monkeypatch.setattr(mod, "alert_critical", AsyncMock())
         ingest_mock = AsyncMock(return_value=1)
         monkeypatch.setattr(mod, "ingest_rows", ingest_mock)
+        ingest_ledger_mock = AsyncMock(return_value=0)
+        monkeypatch.setattr(mod, "ingest_ledger_rows", ingest_ledger_mock)
 
         monkeypatch.setattr("backend.api.database.async_session", _FakeSessionCtx())
         row = _fake_broker_account_row("ZCONSOLE_SCR5")
@@ -1453,19 +1699,29 @@ class TestHappyPathEndToEnd:
         ]))
         pnl_file = tmp_path / "pnl.xlsx"
         pnl_file.write_bytes(_pnl_xlsx_bytes([_one_pnl_row()]))
+        ledger_file = tmp_path / "ledger.csv"
+        ledger_file.write_bytes(_ledger_csv_bytes())  # header-only, 0 rows
 
         last_report_type: "list[str]" = []
+
+        def _fake_trigger_download(report_type=None, masked_account=None):
+            if last_report_type[-1] == "tradebook":
+                return tradebook_file
+            if last_report_type[-1] == "ledger":
+                return ledger_file
+            return pnl_file
+
         fake_page = MagicMock()
         fake_page.navigate_to_reports = MagicMock(side_effect=lambda rt: last_report_type.append(rt))
         fake_page.select_segment = MagicMock()
         fake_page.set_date_range = MagicMock()
-        fake_page.trigger_download = MagicMock(
-            side_effect=lambda report_type=None: tradebook_file if last_report_type[-1] == "tradebook" else pnl_file
-        )
+        fake_page.set_ledger_date_range = MagicMock()
+        fake_page.trigger_download = MagicMock(side_effect=_fake_trigger_download)
         monkeypatch.setattr(mod, "KiteConsoleReportsPage", lambda page: fake_page)
 
         ingest_mock = AsyncMock(return_value=2)
         monkeypatch.setattr(mod, "ingest_rows", ingest_mock)
+        monkeypatch.setattr(mod, "ingest_ledger_rows", AsyncMock(return_value=0))
         monkeypatch.setattr("backend.api.database.async_session", lambda: _FakeSessionCtx())
 
         row = _fake_broker_account_row("ZCONSOLE_E2E1")
@@ -1961,22 +2217,32 @@ class TestPnlStatementPull:
         tradebook_file.write_bytes(_csv_bytes([]))
         pnl_file = tmp_path / "pnl.xlsx"
         pnl_file.write_bytes(_pnl_xlsx_bytes([]))
+        ledger_file = tmp_path / "ledger.csv"
+        ledger_file.write_bytes(_ledger_csv_bytes())  # header-only, 0 rows
 
         last_report_type: "list[str]" = []
         set_date_range_calls: "list[tuple]" = []
+
+        def _fake_trigger_download(report_type=None, masked_account=None):
+            if last_report_type[-1] == "tradebook":
+                return tradebook_file
+            if last_report_type[-1] == "ledger":
+                return ledger_file
+            return pnl_file
+
         fake_page = MagicMock()
         fake_page.navigate_to_reports = MagicMock(side_effect=lambda rt: last_report_type.append(rt))
         fake_page.select_segment = MagicMock()
         fake_page.set_date_range = MagicMock(
             side_effect=lambda s, e: set_date_range_calls.append((last_report_type[-1], s, e))
         )
-        fake_page.trigger_download = MagicMock(
-            side_effect=lambda report_type=None: tradebook_file if last_report_type[-1] == "tradebook" else pnl_file
-        )
+        fake_page.set_ledger_date_range = MagicMock()
+        fake_page.trigger_download = MagicMock(side_effect=_fake_trigger_download)
         monkeypatch.setattr(mod, "KiteConsoleReportsPage", lambda page: fake_page)
 
         ingest_mock = AsyncMock(return_value=0)
         monkeypatch.setattr(mod, "ingest_rows", ingest_mock)
+        monkeypatch.setattr(mod, "ingest_ledger_rows", AsyncMock(return_value=0))
         monkeypatch.setattr("backend.api.database.async_session", lambda: _FakeSessionCtx())
 
         row = _fake_broker_account_row("ZCONSOLE_PNLFLOOR1")

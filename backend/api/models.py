@@ -2666,6 +2666,30 @@ class KiteConsolePnlSync(Base):
         a later partial-range pull silently overwrite a wider aggregate
         with a narrower one). dedup_key therefore includes the pull's
         own requested range: f"{symbol}:{expiry}:{range_start}:{range_end}".
+      - report_type='ledger' (added 2026-11-26): the Funds Statement
+        (margin block/reversal, net-obligation, and other cash-ledger
+        events; debit/credit/running net_balance). Unlike the other two
+        types, ledger rows are NEVER upserted by dedup_key — a running
+        `net_balance` shifts whenever Zerodha posts a back-dated
+        voucher into an already-pulled range, so a content-addressed
+        key would accumulate stale duplicates instead of replacing
+        them. `ingest_ledger_rows()` (the ingestion script) instead
+        DELETES every existing ledger row for the account whose
+        `trade_date` falls in the chunk's own range, then inserts the
+        fresh pull, in one transaction — `dedup_key` there is only
+        `f"{range_start}:{range_end}:{seq}"` (a per-pull positional
+        index), since it only needs to be unique WITHIN one insert
+        batch, never stable across pulls. No `symbol`/`exchange`/
+        `trade_id`/`order_id` — a ledger entry isn't tied to an
+        instrument. `segment` is the literal `'all'` (not 'equity' /
+        'derivatives' / 'commodities') because the Funds Statement has
+        no segment dimension — it reports Zerodha's one shared margin
+        pool across every segment for the account, confirmed live from
+        a real export that mixed NSE-EQ and MCX-F&O cost centers in one
+        file with no category filter applied. `particulars`/
+        `cost_center`/`voucher_type`/`debit`/`credit`/`net_balance` all
+        live in `raw_row` only — no new typed columns, so no schema
+        migration was needed to add this report type.
 
     `account` is ALWAYS the masked form (`mask_account()`) — a raw
     broker account code must never reach this table, same invariant as
@@ -2726,7 +2750,7 @@ class KiteConsolePnlSync(Base):
     id:               Mapped[int]            = mapped_column(primary_key=True, autoincrement=True)
     account:          Mapped[str]            = mapped_column(String(16), nullable=False)
     segment:          Mapped[str]            = mapped_column(String(16), nullable=False)  # 'equity' | 'derivatives' | 'commodities'
-    report_type:      Mapped[str]            = mapped_column(String(16), nullable=False)  # 'tradebook' | 'pnl'
+    report_type:      Mapped[str]            = mapped_column(String(16), nullable=False)  # 'tradebook' | 'pnl' | 'ledger'
     dedup_key:        Mapped[str]            = mapped_column(String(256), nullable=False)
     symbol:           Mapped[Optional[str]]  = mapped_column(String(64), nullable=True)
     exchange:         Mapped[Optional[str]]  = mapped_column(String(16), nullable=True)

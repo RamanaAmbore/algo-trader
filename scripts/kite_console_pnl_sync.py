@@ -274,6 +274,13 @@ _REQUIRED_TRADEBOOK_COLUMNS = ("symbol", "trade_date", "quantity", "price", "tra
 # live position, which is the broker feed's job, not this table's).
 _REQUIRED_PNL_COLUMNS = ("symbol", "realized_pnl")
 
+# Confirmed live, 2026-11-26, against a real Funds Statement (ledger)
+# CSV export, downloaded with NO category selected on
+# console.zerodha.com/funds/statement (see parse_ledger_csv's own
+# docstring for the full real header and why the category select is
+# never touched).
+_REQUIRED_LEDGER_COLUMNS = ("particulars", "posting_date", "debit", "credit", "net_balance")
+
 # Own, independent cooloff file for the Console browser login path — see
 # the module docstring's "Cooloff INDEPENDENCE" section and
 # `KiteConsoleConnection._login_cooloff_path()`. Deliberately NOT
@@ -509,6 +516,11 @@ class KiteConsoleReportsPage:
     _REPORT_URL = {
         "tradebook": "https://console.zerodha.com/reports/tradebook",
         "pnl": "https://console.zerodha.com/reports/pnl",
+        # Confirmed live, 2026-11-26 -- "Funds Statement" / ledger, the
+        # one Console report carrying margin-block/reversal and cash
+        # events (debit/credit/running balance), neither Tradebook nor
+        # the P&L statement carry anything like this.
+        "ledger": "https://console.zerodha.com/funds/statement",
     }
 
     def navigate_to_reports(self, report_type: str) -> None:
@@ -558,13 +570,20 @@ class KiteConsoleReportsPage:
     # drive the calendar popup.
     _DATE_RANGE_SELECTOR = "input[placeholder='Select range']"
 
-    def set_date_range(self, start: date, end: date) -> None:
-        """Sets the combined date-range input, then re-reads it back to
-        confirm the value actually registered — never assumes a fill()
-        call took effect just because it didn't raise."""
+    # The Funds Statement (ledger) page's date-range field is a DIFFERENT
+    # element than Tradebook/P&L's -- confirmed live, 2026-11-26:
+    # `name="date" placeholder="Date" id="ledger-date-range"`, same
+    # litepicker-style combined-range input mechanics otherwise.
+    _LEDGER_DATE_RANGE_SELECTOR = "input[name='date']"
+
+    def _set_date_range_on(self, selector: str, start: date, end: date) -> None:
+        """Shared fill-then-confirm logic for `set_date_range()` and
+        `set_ledger_date_range()` — extracted so the Tradebook/P&L and
+        ledger selectors can each fail with their own, clearer error
+        without duplicating the readback check."""
         start_s, end_s = start.isoformat(), end.isoformat()
         expected = f"{start_s} ~ {end_s}"
-        field = self.page.locator(self._DATE_RANGE_SELECTOR)
+        field = self.page.locator(selector)
         try:
             field.fill(expected)
             self.page.keyboard.press("Enter")
@@ -578,6 +597,17 @@ class KiteConsoleReportsPage:
             raise ConsoleStructuralError(
                 f"date range did not register: requested {expected!r}, page shows {actual!r}"
             )
+
+    def set_date_range(self, start: date, end: date) -> None:
+        """Sets the combined date-range input, then re-reads it back to
+        confirm the value actually registered — never assumes a fill()
+        call took effect just because it didn't raise."""
+        self._set_date_range_on(self._DATE_RANGE_SELECTOR, start, end)
+
+    def set_ledger_date_range(self, start: date, end: date) -> None:
+        """Same fill-then-confirm mechanics as `set_date_range()`, on the
+        Funds Statement page's own differently-selectored date input."""
+        self._set_date_range_on(self._LEDGER_DATE_RANGE_SELECTOR, start, end)
 
     # The segment/date-range form only BUILDS the report; the submit
     # button (confirmed live) is a `.btn-blue` button next to the
@@ -596,19 +626,33 @@ class KiteConsoleReportsPage:
                 f"could not find/click the report-builder submit button: {e}"
             ) from e
 
-    def trigger_download(self, *, report_type: str, timeout_ms: int = 45000) -> Path:
+    def trigger_download(self, *, report_type: str, masked_account: str = "",
+                          timeout_ms: int = 45000) -> Path:
         """Submits the report-builder form (segment + date range must
         already be set), waits for the results to render, then triggers
         the real file download and waits for Playwright's own `download`
         event (`expect_download()` is built on `page.on('download', ...)`)
         — never polls a filesystem Downloads folder.
 
-        The two report types use DIFFERENT download controls, confirmed
-        live, 2026-11-26: Tradebook offers two separate "XLSX" / "CSV"
-        text links (CSV is picked); the P&L report offers a single
-        `div[role='button']` labeled "Download" whose tooltip reads
-        "Download complete results as Excel" -- there is no CSV option
-        for the P&L report at all, hence `parse_pnl_statement_xlsx()`.
+        The three report types use DIFFERENT download controls, confirmed
+        live, 2026-11-26: Tradebook and the ledger/Funds Statement report
+        each offer two separate "XLSX" / "CSV" text links (CSV is
+        picked); the P&L report offers a single `div[role='button']`
+        labeled "Download" whose tooltip reads "Download complete
+        results as Excel" -- there is no CSV option for the P&L report
+        at all, hence `parse_pnl_statement_xlsx()`.
+
+        `masked_account` (2026-11-26 fix): Kite's own `download.
+        suggested_filename` embeds the RAW, unmasked account code (e.g.
+        `ledger-ZG0790.csv`, confirmed live) -- using it verbatim as the
+        saved local filename would put an unmasked account code on disk,
+        violating this codebase's mask-everywhere invariant (see
+        CLAUDE.md's account-masking campaign). The destination filename
+        is built from `masked_account` + the real suggested name's own
+        extension instead; the raw suggested name is never used for the
+        path. Optional (defaults to "") only so existing direct callers/
+        tests that don't pass it keep working -- `_console_login_and_
+        scrape_sync()` always passes the real masked account.
         """
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
@@ -616,7 +660,7 @@ class KiteConsoleReportsPage:
         self.page.wait_for_timeout(2000)  # results table render
 
         try:
-            if report_type == "tradebook":
+            if report_type in ("tradebook", "ledger"):
                 with self.page.expect_download(timeout=timeout_ms) as download_info:
                     self.page.get_by_role("link", name="CSV").click(timeout=timeout_ms)
             elif report_type == "pnl":
@@ -635,7 +679,9 @@ class KiteConsoleReportsPage:
         except Exception as e:
             raise ConsoleStructuralError(f"download failed: {e}") from e
         _DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
-        dest = _DOWNLOADS_DIR / download.suggested_filename
+        suffix = Path(download.suggested_filename or "").suffix or ".csv"
+        safe_account = masked_account.replace("#", "X") or "unknown"
+        dest = _DOWNLOADS_DIR / f"{report_type}_{safe_account}_{int(_time_mod.time())}{suffix}"
         download.save_as(str(dest))
         return dest
 
@@ -997,6 +1043,40 @@ def _extract_pnl_symbol_rows(all_rows: "list[tuple]", header_row_idx: int,
     return rows
 
 
+def parse_ledger_csv(raw: bytes) -> "list[dict]":
+    """Parses a Kite Console Funds Statement (ledger) CSV export.
+
+    Confirmed live, 2026-11-26, downloaded from console.zerodha.com/
+    funds/statement with the Category select left UNTOUCHED (its
+    options are EQ/MTF/COM -- no F&O entry at all, unlike Tradebook/P&L's
+    EQ/FO/COM) and only the date range set. Real header:
+    `particulars,posting_date,cost_center,voucher_type,debit,credit,
+    net_balance`. Leaving Category unselected shows the CONSOLIDATED
+    ledger across segments -- confirmed from the real downloaded CSV
+    itself, which carries both "NSE-EQ - Z" and "MCX-F&O - Z" cost
+    centers in the same file with no filter applied. This is the
+    correct, complete view: Zerodha's margin pool is shared across
+    segments for one account, so a per-segment ledger would be an
+    artificial split this script has no need to make.
+
+    Two sentinel rows bookend every real export -- `Opening Balance`
+    and `Closing Balance` -- both carrying a `net_balance` but no
+    `posting_date`/`cost_center`/`voucher_type`/`debit`/`credit`
+    (confirmed live: `Opening Balance,,,,,,1861672.145694`). These are
+    NOT real transactions -- they describe the pull's own requested
+    range, not a dated event, and their own `net_balance` value shifts
+    depending on which range was requested. `validate_ledger_rows()`/
+    `build_ledger_sync_row()` skip any row with no parseable
+    `posting_date`, which filters both sentinels out without a special
+    case keyed on the literal text "Opening Balance"/"Closing Balance".
+
+    Unlike Tradebook, the real export's CSV amounts are already plain
+    decimals with no thousands separators (e.g. `27579.231718`) -- the
+    UI's comma-grouped display (e.g. "27,579.23") is a rendering-only
+    artifact, never present in the downloaded file."""
+    return _parse_report_csv(raw, _REQUIRED_LEDGER_COLUMNS, report_label="ledger")
+
+
 def _parse_date_cell(value) -> "date | None":
     if not value:
         return None
@@ -1073,6 +1153,44 @@ def validate_pnl_rows(rows: "list[dict]", *, segment: str,
         )
 
 
+def validate_ledger_rows(rows: "list[dict]", *, start: date, end: date,
+                          allow_empty: bool = True) -> None:
+    """Raises `ReportValidationError` on a malformed/implausible ledger
+    export. The two Opening/Closing Balance sentinel rows (no
+    `posting_date` at all — see `parse_ledger_csv()`'s own docstring)
+    are deliberately exempt from the date-range check, not flagged as
+    bad: they describe the pull's own boundary, not a dated event, so
+    they have no date to range-check in the first place. A row that
+    HAS some non-empty `particulars` text but neither a sentinel label
+    nor a parseable `posting_date` is genuinely malformed and IS
+    flagged — this only exempts the two known, expected sentinel
+    shapes, not every dateless row."""
+    if not rows:
+        if allow_empty:
+            return
+        raise ReportValidationError(f"ledger has zero rows for {start}..{end}")
+    bad: "list[object]" = []
+    for r in rows:
+        particulars = (r.get("particulars") or "").strip()
+        if not particulars:
+            bad.append(r)
+            continue
+        if particulars in ("Opening Balance", "Closing Balance"):
+            continue
+        d = _parse_date_cell(r.get("posting_date"))
+        if d is None or d < start or d > end:
+            bad.append(r.get("posting_date"))
+            continue
+        if _parse_float_cell(r.get("debit")) is None or _parse_float_cell(r.get("credit")) is None:
+            bad.append(r)
+    if bad:
+        raise ReportValidationError(
+            f"ledger: {len(bad)} row(s) have a missing particulars, an "
+            f"unparsable debit/credit, or a posting_date outside the "
+            f"requested range {start}..{end}: {bad[:5]}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Instrument classification (pure, no I/O) — reuses derivatives.py's
 # existing F&O symbol parser, never a bespoke regex.
@@ -1116,11 +1234,23 @@ def classify_instrument(symbol: "str | None") -> "tuple[str, str]":
 
 def build_dedup_key(report_type: str, *, row: dict,
                      pull_start: "date | None" = None,
-                     pull_end: "date | None" = None) -> str:
+                     pull_end: "date | None" = None,
+                     seq: "int | None" = None) -> str:
     """Stable idempotency key per report_type — see
     `KiteConsolePnlSync`'s own docstring (backend/api/models.py) for the
     full reasoning behind why tradebook and pnl need DIFFERENT key
-    shapes."""
+    shapes.
+
+    `seq` is ledger-only: a ledger entry carries no natural stable
+    identifier (no trade_id/order_id, and `net_balance` is a RUNNING
+    total that shifts on re-pull whenever Zerodha posts a back-dated
+    voucher — see `ingest_ledger_rows()`'s own docstring for why that
+    rules out a content-addressed key). `seq` is the row's 0-based
+    position within THIS pull's own parsed list, which only needs to
+    be unique WITHIN one ingest call — `ingest_ledger_rows()` always
+    deletes the whole (account, chunk) bucket before inserting, so
+    this key's stability ACROSS pulls is irrelevant, only its
+    uniqueness WITHIN one."""
     if report_type == "tradebook":
         trade_id = (row.get("trade_id") or "").strip()
         order_id = (row.get("order_id") or "").strip()
@@ -1135,6 +1265,8 @@ def build_dedup_key(report_type: str, *, row: dict,
         )
     if report_type == "pnl":
         return f"{row.get('symbol')}:{row.get('expiry')}:{pull_start}:{pull_end}"
+    if report_type == "ledger":
+        return f"{pull_start}:{pull_end}:{seq}"
     raise ValueError(f"unknown report_type: {report_type!r}")
 
 
@@ -1247,6 +1379,110 @@ async def ingest_rows(session, masked_account: str, segment: str, report_type: s
         set_=update_cols,
     )
     await session.execute(stmt)
+    await session.commit()
+    return len(payloads)
+
+
+_LEDGER_SEGMENT = "all"  # ledger has no segment dimension — see build_ledger_sync_row()
+
+
+def build_ledger_sync_row(masked_account: str, row: dict, *, seq: int,
+                           pull_start: date, pull_end: date) -> "dict | None":
+    """Builds one `kite_console_pnl_sync` row payload for a ledger entry.
+    A SEPARATE function from `build_sync_row()`, not a third branch
+    inside it — a ledger row shares almost none of the other two report
+    types' shape (no symbol/exchange/trade_id/order_id/buy-sell-qty-
+    value at all).
+
+    Returns `None` for a sentinel row (no parseable `posting_date` —
+    see `parse_ledger_csv()`'s own docstring) rather than a row with a
+    null date, so the caller can filter it out before counting/
+    inserting, matching `validate_ledger_rows()`'s own exemption.
+
+    `particulars`/`cost_center`/`voucher_type`/`debit`/`credit`/
+    `net_balance` live ONLY in `raw_row` (JSONB) — deliberately no new
+    TYPED columns on `KiteConsolePnlSync` for this report type. Adding
+    one would need an idempotent `ALTER TABLE ... ADD COLUMN` wired
+    into `init_db()` before the first real ingest could succeed against
+    the already-existing prod/dev table; `raw_row` already exists,
+    already nullable-safe, and the model's own docstring explicitly
+    sanctions this ("the typed columns... are the fields this app
+    currently cares about... doesn't lose data even before this model
+    is updated to add a typed column for it")."""
+    posting_date = _parse_date_cell(row.get("posting_date"))
+    if posting_date is None:
+        return None
+    return {
+        "account": masked_account,
+        "segment": _LEDGER_SEGMENT,
+        "report_type": "ledger",
+        "dedup_key": build_dedup_key(
+            "ledger", row=row, pull_start=pull_start, pull_end=pull_end, seq=seq,
+        ),
+        "symbol": None,
+        "exchange": None,
+        "instrument_type": None,
+        "symbol_root": None,
+        "expiry": None,
+        "trade_date": posting_date,
+        "trade_id": None,
+        "order_id": None,
+        "pull_range_start": pull_start,
+        "pull_range_end": pull_end,
+        "buy_qty": None, "sell_qty": None,
+        "buy_value": None, "sell_value": None,
+        "realized_pnl": None,
+        "raw_row": row,
+        "updated_at": datetime.now(timezone.utc),
+    }
+
+
+async def ingest_ledger_rows(session, masked_account: str, rows: "list[dict]", *,
+                              pull_start: date, pull_end: date) -> int:
+    """REPLACES (delete-then-insert, one transaction) every existing
+    `report_type='ledger'` row for this account whose `trade_date`
+    falls in `[pull_start, pull_end]`, then inserts the freshly parsed
+    rows — NOT the per-row upsert-by-`dedup_key` convention `ingest_
+    rows()` uses for tradebook/pnl.
+
+    Why replace, not upsert: a ledger entry's own `net_balance` is a
+    RUNNING total. Zerodha posts genuinely back-dated vouchers (the
+    real sample this was built against has a charge for "October"
+    posted on 2026-11-04) — re-pulling the SAME month after one lands
+    shifts `net_balance` on every row dated AFTER the back-dated entry,
+    even though their particulars/debit/credit are unchanged. A
+    content-addressed dedup key (as tradebook uses) would then mint a
+    NEW key for every shifted row on each re-pull, accumulating stale
+    duplicates forever rather than replacing them. Deleting the whole
+    chunk's own date range first and inserting the fresh pull is the
+    only correct way to keep this report type idempotent across
+    re-pulls. `pull_start`/`pull_end` are always calendar-month-aligned
+    (via `chunk_by_calendar_month()`, same as every other report type),
+    so this never deletes outside the exact window just pulled.
+
+    Sentinel rows (Opening/Closing Balance — no `posting_date`) are
+    silently dropped by `build_ledger_sync_row()` returning `None` for
+    them; they were never meant to become rows in this table."""
+    from sqlalchemy import delete as sa_delete
+    from backend.api.models import KiteConsolePnlSync
+
+    await session.execute(sa_delete(KiteConsolePnlSync).where(
+        KiteConsolePnlSync.account == masked_account,
+        KiteConsolePnlSync.report_type == "ledger",
+        KiteConsolePnlSync.trade_date >= pull_start,
+        KiteConsolePnlSync.trade_date <= pull_end,
+    ))
+    payloads = [
+        p for p in (
+            build_ledger_sync_row(masked_account, r, seq=i,
+                                   pull_start=pull_start, pull_end=pull_end)
+            for i, r in enumerate(rows)
+        )
+        if p is not None
+    ]
+    if payloads:
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+        await session.execute(pg_insert(KiteConsolePnlSync).values(payloads))
     await session.commit()
     return len(payloads)
 
@@ -1600,7 +1836,9 @@ def _console_login_and_scrape_sync(conn, plan: "dict[str, tuple[date, date]]") -
                         reports.navigate_to_reports(report_type)
                         reports.select_segment(segment)
                         reports.set_date_range(req_start, c_end)
-                        download_path = reports.trigger_download(report_type=report_type)
+                        download_path = reports.trigger_download(
+                            report_type=report_type, masked_account=masked,
+                        )
                         entry["raw_bytes"] = download_path.read_bytes()
                     except Exception as e:
                         entry["scrape_error"] = str(e)
@@ -1608,6 +1846,38 @@ def _console_login_and_scrape_sync(conn, plan: "dict[str, tuple[date, date]]") -
                             page, masked, f"scrape_{segment}_{label}",
                         )
                     chunks.append(entry)
+
+        # Ledger (Funds Statement) — pulled ONCE per account, not once
+        # per segment: this report has no segment dimension at all (its
+        # own Category select is never touched — see parse_ledger_csv's
+        # docstring), so looping it inside the segment loop above would
+        # scrape and ingest the SAME combined ledger three times over.
+        # Its own date range is the UNION across every segment in
+        # `plan` (min start, max end) — a ledger spans every segment's
+        # activity regardless of which segments actually triggered this
+        # sync, so narrowing to one segment's own range would miss
+        # margin events tied to a DIFFERENT segment's positions.
+        if plan:
+            ledger_start = min(s for s, _e in plan.values())
+            ledger_end = max(e for _s, e in plan.values())
+            for c_start, c_end in chunk_by_calendar_month(ledger_start, ledger_end):
+                entry = {
+                    "segment": _LEDGER_SEGMENT, "report_type": "ledger",
+                    "start": c_start, "end": c_end,
+                    "raw_bytes": None, "scrape_error": None,
+                    "diagnostics": None,
+                }
+                try:
+                    reports.navigate_to_reports("ledger")
+                    reports.set_ledger_date_range(c_start, c_end)
+                    download_path = reports.trigger_download(
+                        report_type="ledger", masked_account=masked,
+                    )
+                    entry["raw_bytes"] = download_path.read_bytes()
+                except Exception as e:
+                    entry["scrape_error"] = str(e)
+                    entry["diagnostics"] = capture_diagnostics(page, masked, "scrape_ledger")
+                chunks.append(entry)
         return {"login_ok": True, "login_failed": False, "chunks": chunks}
     finally:
         shutdown_console_browser(conn)
@@ -1625,20 +1895,30 @@ async def _ingest_one_report(
     see that function's own docstring."""
     from backend.api.database import async_session
 
-    label = "tradebook" if report_type == "tradebook" else "pnl"
+    label = {"tradebook": "tradebook", "pnl": "pnl", "ledger": "ledger"}.get(report_type, report_type)
     try:
         if report_type == "tradebook":
             parsed_rows = parse_tradebook_csv(raw_bytes)
             validate_tradebook_rows(parsed_rows, segment=segment, start=start, end=end)
-        else:
+        elif report_type == "pnl":
             parsed_rows = parse_pnl_statement_xlsx(raw_bytes)
             validate_pnl_rows(parsed_rows, segment=segment)
+        else:
+            parsed_rows = parse_ledger_csv(raw_bytes)
+            validate_ledger_rows(parsed_rows, start=start, end=end)
     except ReportValidationError as e:
         await alert_critical(
             f"Kite Console report failed validation ({segment}/{label})", masked,
             detail=str(e),
         )
         return 0, [f"{segment}/{label}: validation failed: {e}"]
+
+    if report_type == "ledger":
+        async with async_session() as session:
+            n = await ingest_ledger_rows(
+                session, masked, parsed_rows, pull_start=start, pull_end=end,
+            )
+        return n, []
 
     # Pull range is stored on the row (and feeds dedup_key) only for the
     # pnl report type — tradebook rows have never carried it (their
@@ -1709,7 +1989,9 @@ async def sync_account(row, *, plan: "dict[str, tuple[date, date]]") -> SyncOutc
     segment_errors: "list[str]" = []
     for c in result["chunks"]:
         segment, report_type = c["segment"], c["report_type"]
-        label = "tradebook" if report_type == "tradebook" else "pnl"
+        label = {"tradebook": "tradebook", "pnl": "pnl", "ledger": "ledger"}.get(
+            report_type, report_type,
+        )
         if c["scrape_error"] is not None:
             await alert_critical(
                 f"Kite Console scraping failed ({segment}/{label})", masked,
