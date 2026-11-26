@@ -1,6 +1,7 @@
-"""Tests for `_v2_expiry_position_breakdown()` (agent_engine.py) — the
-per-exchange root/position breakdown appended to the expiry-day
-pre-close alert. Covers the council-mandated wording rules:
+"""Tests for `_v2_expiry_preclose_alert_section()` / `_v2_expiry_exchange_
+breakdown_or_empty()` (agent_engine.py) — the per-exchange root/position
+breakdown appended to the expiry-day pre-close alert. Covers the
+council-mandated wording rules:
   - MCX: unnetted (needs_close) legs first, masked account, lots, the
     real close_reason; fully-netted roots demoted/last, NEUTRAL wording
     only (never "safe"/"hedged").
@@ -11,6 +12,17 @@ pre-close alert. Covers the council-mandated wording rules:
   - Multi-account rows for the same root are never pooled.
   - A lot-size resolution failure falls back to raw contracts with an
     explicit unit label.
+
+2026-11-26 split: `_v2_expiry_position_breakdown()` (which re-derived,
+internally, which exchange(s) were in-window) is DELETED. Its render
+core is extracted into `_v2_expiry_exchange_breakdown_or_empty(exchange)`,
+and `_v2_expiry_preclose_alert_section(context, exchange)` is its thin
+wrapper for the pre-close alert — the caller's own agent condition
+(now exchange-pure) already confirmed the window, so this function
+takes an EXPLICIT single exchange and never re-derives a set, mirroring
+`_v2_expiry_morning_preview(context, exchange)`'s own, already-proven
+shape exactly. See `agent_engine.py`'s history comment above
+`_EXPIRY_DAY_AWARENESS_AGENTS` for the live incident this fixes.
 
 Shares `ExpiryEngine.scan_positions()` (mocked here) with the sibling
 order-placing action — this file does not re-implement any netting
@@ -23,21 +35,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from backend.api.algo.agent_engine import _v2_expiry_position_breakdown
+from backend.api.algo.agent_engine import _v2_expiry_preclose_alert_section
 from backend.api.algo.expiry import OptionPosition
-
-# `_v2_expiry_position_breakdown` re-derives, independently, which
-# exchange(s) are currently within their own pre-close window (2026-10-29
-# audit fix — the agent's single flat condition carries no exchange
-# identity) via `_expiry_preclose_exchanges`. These tests are about the
-# RENDERING logic given a fabricated ExpiryEngine result, not the window
-# computation itself (covered by test_expiry_day_and_preclose_agents.py),
-# so every test here patches it to report "both exchanges in window"
-# unless it's specifically testing the exchange filter.
-_WINDOW_PATCH_TARGET = (
-    "backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window."
-    "_expiry_preclose_exchanges"
-)
 
 
 def _pos(**kw) -> OptionPosition:
@@ -67,9 +66,8 @@ async def test_mcx_unnetted_root_renders_first_with_masked_account_and_reason():
              close_reason="MCX unhedged ITM after 4-rule netting (residual qty +1; theta=-1.200)"),
     ]
     with patch("backend.api.algo.expiry.ExpiryEngine", return_value=_mock_engine(positions)), \
-         patch(_WINDOW_PATCH_TARGET, return_value={"MCX", "NFO"}), \
          patch("backend.api.algo.agent_engine._v2_expiry_qty_display", new=AsyncMock(return_value="1 lot")):
-        text = await _v2_expiry_position_breakdown({})
+        text = await _v2_expiry_preclose_alert_section({}, "MCX")
     assert text is not None
     assert "MCX:" in text
     assert "GOLD" in text
@@ -88,9 +86,8 @@ async def test_mcx_fully_netted_root_is_demoted_and_neutral_never_safe_language(
         _pos(account="ZG0790", tradingsymbol="CRUDEOIL26OCT6000PE", underlying="CRUDEOIL",
              exchange="MCX", quantity=-1, residual_qty=0, needs_close=False),
     ]
-    with patch("backend.api.algo.expiry.ExpiryEngine", return_value=_mock_engine(positions)), \
-         patch(_WINDOW_PATCH_TARGET, return_value={"MCX", "NFO"}):
-        text = await _v2_expiry_position_breakdown({})
+    with patch("backend.api.algo.expiry.ExpiryEngine", return_value=_mock_engine(positions)):
+        text = await _v2_expiry_preclose_alert_section({}, "MCX")
     assert text is not None
     assert "netted: CRUDEOIL" in text
     for banned in ("safe", "hedged, no action needed", "no action needed"):
@@ -107,9 +104,8 @@ async def test_mcx_unnetted_sorts_before_netted_root():
              close_reason="MCX unhedged ITM"),
     ]
     with patch("backend.api.algo.expiry.ExpiryEngine", return_value=_mock_engine(positions)), \
-         patch(_WINDOW_PATCH_TARGET, return_value={"MCX", "NFO"}), \
          patch("backend.api.algo.agent_engine._v2_expiry_qty_display", new=AsyncMock(return_value="1 lot")):
-        text = await _v2_expiry_position_breakdown({})
+        text = await _v2_expiry_preclose_alert_section({}, "MCX")
     assert text is not None
     assert text.index("GOLD") < text.index("netted: CRUDEOIL"), \
         "action-needed root must render before the demoted netted root"
@@ -125,9 +121,8 @@ async def test_nfo_itm_leg_renders_first_never_says_netted():
              exchange="NFO", quantity=50, needs_close=False),
     ]
     with patch("backend.api.algo.expiry.ExpiryEngine", return_value=_mock_engine(positions)), \
-         patch(_WINDOW_PATCH_TARGET, return_value={"MCX", "NFO"}), \
          patch("backend.api.algo.agent_engine._v2_expiry_qty_display", new=AsyncMock(return_value="50 (contracts)")):
-        text = await _v2_expiry_position_breakdown({})
+        text = await _v2_expiry_preclose_alert_section({}, "NFO")
     assert text is not None
     assert "NSE/NFO:" in text
     assert "no action (OTM): NIFTY" in text
@@ -136,12 +131,15 @@ async def test_nfo_itm_leg_renders_first_never_says_netted():
 
 
 @pytest.mark.asyncio
-async def test_exchange_filter_excludes_out_of_window_exchange():
-    """2026-10-29 audit fix regression — when only ONE exchange is in its
-    pre-close window, the other exchange's section must not render at all,
-    even though `ExpiryEngine.scan_positions()` always returns both.
-    This is the primary bug the fix addressed: before it, an NFO-only
-    window would still render MCX's (stale, hours-old) moneyness."""
+async def test_preclose_alert_renders_only_the_requested_exchange():
+    """2026-11-26 split regression (replaces the old `_expiry_preclose_
+    exchanges`-patch-based "exchange filter" test — that internal
+    re-derivation no longer exists in this function; the caller's own
+    agent condition is exchange-pure now, so the renderer only ever
+    gets ONE exchange name and must never let the OTHER exchange's data
+    leak in, even though `ExpiryEngine.scan_positions()` always returns
+    both in these fabricated fixtures). Mirrors `_v2_expiry_morning_
+    preview`'s own already-proven single-exchange isolation test."""
     positions = [
         _pos(account="ZG0790", tradingsymbol="GOLD26OCT75000CE", underlying="GOLD",
              exchange="MCX", quantity=1, residual_qty=1, needs_close=True,
@@ -151,32 +149,16 @@ async def test_exchange_filter_excludes_out_of_window_exchange():
              close_reason="Equity ITM — must close before expiry"),
     ]
     with patch("backend.api.algo.expiry.ExpiryEngine", return_value=_mock_engine(positions)), \
-         patch(_WINDOW_PATCH_TARGET, return_value={"NFO"}), \
          patch("backend.api.algo.agent_engine._v2_expiry_qty_display", new=AsyncMock(return_value="1 lot")):
-        text = await _v2_expiry_position_breakdown({})
-    assert text is not None
-    assert "NSE/NFO:" in text
-    assert "NIFTY" in text
-    assert "MCX:" not in text, "MCX section must not render when only NFO is in its pre-close window"
-    assert "GOLD" not in text
+        nfo_text = await _v2_expiry_preclose_alert_section({}, "NFO")
+        mcx_text = await _v2_expiry_preclose_alert_section({}, "MCX")
 
-
-@pytest.mark.asyncio
-async def test_no_exchange_in_window_returns_none():
-    """When neither exchange is currently in its own pre-close window, the
-    breakdown must return None (no scan, no stale render) rather than a
-    blank or misleading section."""
-    positions = [
-        _pos(account="ZG0790", tradingsymbol="GOLD26OCT75000CE", underlying="GOLD",
-             exchange="MCX", quantity=1, residual_qty=1, needs_close=True,
-             close_reason="MCX unhedged ITM"),
-    ]
-    engine = _mock_engine(positions)
-    with patch("backend.api.algo.expiry.ExpiryEngine", return_value=engine), \
-         patch(_WINDOW_PATCH_TARGET, return_value=set()):
-        text = await _v2_expiry_position_breakdown({})
-    assert text is None
-    engine.scan_positions.assert_not_called()
+    assert nfo_text is not None and "NIFTY" in nfo_text and "GOLD" not in nfo_text, (
+        f"the NFO call must render only the NFO section, got: {nfo_text}"
+    )
+    assert mcx_text is not None and "GOLD" in mcx_text and "NIFTY" not in mcx_text, (
+        f"the MCX call must render only the MCX section, got: {mcx_text}"
+    )
 
 
 @pytest.mark.asyncio
@@ -190,9 +172,8 @@ async def test_multi_account_same_root_never_pooled():
              close_reason="MCX unhedged ITM"),
     ]
     with patch("backend.api.algo.expiry.ExpiryEngine", return_value=_mock_engine(positions)), \
-         patch(_WINDOW_PATCH_TARGET, return_value={"MCX", "NFO"}), \
          patch("backend.api.algo.agent_engine._v2_expiry_qty_display", new=AsyncMock(return_value="1 lot")):
-        text = await _v2_expiry_position_breakdown({})
+        text = await _v2_expiry_preclose_alert_section({}, "MCX")
     assert text is not None
     assert text.count("GOLD") == 2, \
         "two different accounts holding the same root must render as two separate lines, never pooled"
@@ -203,9 +184,8 @@ async def test_multi_account_same_root_never_pooled():
 async def test_scan_failure_renders_explicit_degraded_note_never_blank():
     broken_engine = MagicMock()
     broken_engine.scan_positions.side_effect = RuntimeError("broker fetch failed")
-    with patch("backend.api.algo.expiry.ExpiryEngine", return_value=broken_engine), \
-         patch(_WINDOW_PATCH_TARGET, return_value={"MCX", "NFO"}):
-        text = await _v2_expiry_position_breakdown({})
+    with patch("backend.api.algo.expiry.ExpiryEngine", return_value=broken_engine):
+        text = await _v2_expiry_preclose_alert_section({}, "MCX")
     assert text is not None
     assert "unavailable" in text.lower()
 
@@ -216,11 +196,11 @@ async def test_no_expiring_positions_states_nothing_to_close_explicitly():
     clearly") — a scan finding nothing must say so explicitly, never
     return None (which used to make the caller fall back to the bare
     one-line reminder with no real information)."""
-    with patch("backend.api.algo.expiry.ExpiryEngine", return_value=_mock_engine([])), \
-         patch(_WINDOW_PATCH_TARGET, return_value={"MCX", "NFO"}):
-        text = await _v2_expiry_position_breakdown({})
+    with patch("backend.api.algo.expiry.ExpiryEngine", return_value=_mock_engine([])):
+        text = await _v2_expiry_preclose_alert_section({}, "MCX")
     assert text is not None
     assert "nothing to close" in text.lower()
+    assert "MCX" in text
 
 
 @pytest.mark.asyncio
@@ -232,9 +212,8 @@ async def test_lot_size_resolution_failure_falls_back_to_raw_contracts():
              close_reason="MCX unhedged ITM"),
     ]
     with patch("backend.api.algo.expiry.ExpiryEngine", return_value=_mock_engine(positions)), \
-         patch(_WINDOW_PATCH_TARGET, return_value={"MCX", "NFO"}), \
          patch("backend.brokers.adapters.kite.get_lot_size", new=AsyncMock(return_value=0)):
-        text = await ae_mod._v2_expiry_position_breakdown({})
+        text = await ae_mod._v2_expiry_preclose_alert_section({}, "MCX")
     assert text is not None
     assert "200 (contracts)" in text, \
         f"lot_size=0 (unknown sentinel) must fall back to raw contracts with an explicit label, got: {text}"
@@ -242,10 +221,13 @@ async def test_lot_size_resolution_failure_falls_back_to_raw_contracts():
 
 # ---------------------------------------------------------------------------
 # `_v2_expiry_morning_preview()` — morning-side sibling, 2026-11-22. Takes
-# an explicit single `exchange` (not a re-derived set like the pre-close
-# function above), so these tests confirm it renders ONLY the requested
-# exchange even when both have positions, and carries the "Tentative"
-# framing line the pre-close breakdown deliberately does not have.
+# an explicit single `exchange` (not a re-derived set), so these tests
+# confirm it renders ONLY the requested exchange even when both have
+# positions, and carries the "Tentative" framing line the pre-close
+# breakdown deliberately does not have. Unaffected by the 2026-11-26
+# split — it already shared this shape; it now also shares the same
+# `_v2_expiry_exchange_breakdown_or_empty()` core the pre-close alert
+# function above uses.
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio

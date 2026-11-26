@@ -2284,12 +2284,17 @@ def _al_expiry_context_shim(context: dict | None):
 
 async def _action_live_expiry_auto_close(agent, context: dict, params: dict):
     """
-    Expiry-day surgical close, both exchanges in one scan+close pass
-    (2026-10-29 consolidation — was restricted to one exchange per call,
-    requiring two separate agents; `expiry-day-itm-auto-close` now fires
-    once and this covers MCX + NFO together via a single `scan_positions()`
-    call, matching the single-agent design the alert sibling
-    `expiry-day-preclose-alert` also uses).
+    Expiry-day surgical close. One shared action, called by both
+    `expiry-day-mcx-itm-auto-close` and `expiry-day-nse-itm-auto-close`
+    (2026-11-26 exchange-pure split of what was briefly one combined
+    `expiry-day-itm-auto-close` agent, 2026-10-29 to 2026-11-26 — see
+    `agent_engine.py`'s own history comment above
+    `_EXPIRY_DAY_AWARENESS_AGENTS` for the live incident that fixed).
+    Each caller passes its own `params.exchange` ("MCX" or "NFO"), so
+    this single function never has to guess which exchange it should
+    act on — see the `params.exchange` paragraph below, which was
+    already built to support this and needed no code change for the
+    split.
 
     Wraps the legacy ExpiryEngine so the agent path inherits the
     battle-tested rules (`ExpiryEngine.classify_prepared()` is the
@@ -2333,18 +2338,21 @@ async def _action_live_expiry_auto_close(agent, context: dict, params: dict):
     `scan_positions()` is synchronous and makes real, blocking broker
     calls (positions/instruments/LTP) — run via `asyncio.to_thread` so
     it cannot stall the event loop (chase polls, postbacks, SSE) for
-    its duration, matching the alert sibling's own `_v2_expiry_
-    position_breakdown()`.
+    its duration, matching the alert siblings' own
+    `_v2_expiry_exchange_breakdown_or_empty()` (agent_engine.py).
 
-    `params.exchange` (2026-11-24 fix, audit finding #4): when a custom
-    agent sets it explicitly, the live path now intersects it with the
-    real pre-close window check above — never bypassing that check, only
-    narrowing it — so `expiry_auto_close(exchange='NFO')` behaves the
-    same way across live/paper/sim, instead of live silently closing
-    whatever OTHER exchange happens to be in-window too. Omitted
-    (the common case, including the default `expiry-day-itm-auto-close`
-    agent), it processes every exchange currently in-window, unchanged
-    from before this fix.
+    `params.exchange` (2026-11-24 fix, audit finding #4): when set, the
+    live path intersects it with the real pre-close window check above
+    — never bypassing that check, only narrowing it — so
+    `expiry_auto_close(exchange='NFO')` behaves the same way across
+    live/paper/sim, instead of live silently closing whatever OTHER
+    exchange happens to be in-window too. Since the 2026-11-26
+    exchange-pure split, BOTH default agents (`expiry-day-mcx-itm-auto-
+    close`, `expiry-day-nse-itm-auto-close`) now set this explicitly —
+    no code change was needed here to support the split, only the
+    agent definitions. Omitted (e.g. a bare custom agent with no
+    `exchange` param), it processes every exchange currently
+    in-window, unchanged from before the 2026-11-24 fix.
 
     2026-11-23 fix (Part C — the expiry-close hold/auto-release
     mechanism): every HELD row this action's `close_positions()` call
@@ -2391,10 +2399,11 @@ async def _action_live_expiry_auto_close(agent, context: dict, params: dict):
         # configured, see `_fetch_underlying_ltps`) is never flagged
         # `needs_close` by `classify_prepared()`, so `to_close` reads
         # identically empty whether the book is genuinely clean OR the
-        # spot-price fetch just failed. The alert-renderer sibling
-        # (`_v2_expiry_position_breakdown`) surfaces UNKNOWN lines
-        # loudly on this same data gap — this action must not stay
-        # silent on it ("never a false all-clear"). It still does NOT
+        # spot-price fetch just failed. The alert-renderer siblings
+        # (`_v2_expiry_preclose_alert_section` / `_v2_expiry_exchange_
+        # section`) surface UNKNOWN lines loudly on this same data gap
+        # — this action must not stay silent on it ("never a false
+        # all-clear"). It still does NOT
         # close anything on unresolved data; it only stops claiming
         # "nothing to close" when the real answer is "don't know".
         unresolved = [

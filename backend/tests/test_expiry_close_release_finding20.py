@@ -434,11 +434,8 @@ class TestDstSeasonPrecloseWindowTiming:
         assert flags["minutes_until_mcx_close"] <= 60
 
         with patch(
-            "backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window._metric_is_mcx_expiry_today",
-            return_value=1.0,
-        ), patch(
-            "backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window._metric_is_nse_expiry_today",
-            return_value=0.0,
+            "backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window._is_exchange_expiring_exactly_today",
+            side_effect=lambda ctx, exchange: exchange == "MCX",
         ):
             ctx = self._ctx(flags)
             assert self._window_bool(60, ctx) is True
@@ -455,11 +452,8 @@ class TestDstSeasonPrecloseWindowTiming:
         assert flags["minutes_until_mcx_close"] > 60
 
         with patch(
-            "backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window._metric_is_mcx_expiry_today",
-            return_value=1.0,
-        ), patch(
-            "backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window._metric_is_nse_expiry_today",
-            return_value=0.0,
+            "backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window._is_exchange_expiring_exactly_today",
+            side_effect=lambda ctx, exchange: exchange == "MCX",
         ):
             ctx = self._ctx(flags)
             assert self._window_bool(60, ctx) is False
@@ -476,11 +470,8 @@ class TestDstSeasonPrecloseWindowTiming:
         assert 60 < flags["minutes_until_mcx_close"] <= 65
 
         with patch(
-            "backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window._metric_is_mcx_expiry_today",
-            return_value=1.0,
-        ), patch(
-            "backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window._metric_is_nse_expiry_today",
-            return_value=0.0,
+            "backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window._is_exchange_expiring_exactly_today",
+            side_effect=lambda ctx, exchange: exchange == "MCX",
         ):
             ctx = self._ctx(flags)
             assert self._window_bool(65, ctx) is True
@@ -505,11 +496,8 @@ class TestDstSeasonPrecloseWindowTiming:
         )
 
         with patch(
-            "backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window._metric_is_mcx_expiry_today",
-            return_value=1.0,
-        ), patch(
-            "backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window._metric_is_nse_expiry_today",
-            return_value=0.0,
+            "backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window._is_exchange_expiring_exactly_today",
+            side_effect=lambda ctx, exchange: exchange == "MCX",
         ):
             ctx = self._ctx(flags)
             assert self._window_bool(60, ctx) is False

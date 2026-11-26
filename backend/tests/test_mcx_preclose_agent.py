@@ -583,24 +583,31 @@ class TestFireAtTimeTierGating:
 
 class TestExpiryAutoCloseAgentBuiltins:
     """expiry-day-equity-itm-auto-close/expiry-day-commodity-itm-auto-close
-    were retired 2026-10-29, consolidated into the single
+    were retired 2026-10-29, consolidated into a single
     expiry-day-itm-auto-close (covers both exchanges, condition-token
-    driven, no fire_at_time) — see
-    test_expiry_day_and_preclose_agents.py::TestExpiryDayItmAutoCloseAgent
+    driven, no fire_at_time) — itself retired 2026-11-26, split
+    exchange-pure into expiry-day-mcx-itm-auto-close /
+    expiry-day-nse-itm-auto-close (live incident: the combined agent's
+    shared, no-exchange-identity condition let a self-contradicting
+    alert render). See
+    test_expiry_day_and_preclose_agents.py::TestExpiryDayItmAutoCloseAgents
     and ::TestRetiredSlugs for the current coverage."""
 
-    def test_critical_tier_agent_has_no_fire_at_time_scheduled_label(self):
-        """expiry-day-itm-auto-close is tier='critical' with no
-        fire_at_time — confirms it correctly does NOT hit the
-        'Scheduled — …' bypass (that bypass requires BOTH fire_at_time
-        set AND tier in (info, low); critical agents must render their
-        real condition text/breakdown, not a generic scheduled line)."""
+    @pytest.mark.parametrize("slug", [
+        "expiry-day-mcx-itm-auto-close", "expiry-day-nse-itm-auto-close",
+    ])
+    def test_critical_tier_agent_has_no_fire_at_time_scheduled_label(self, slug):
+        """Each is tier='critical' with no fire_at_time — confirms it
+        correctly does NOT hit the 'Scheduled — …' bypass (that bypass
+        requires BOTH fire_at_time set AND tier in (info, low); critical
+        agents must render their real condition text/breakdown, not a
+        generic scheduled line)."""
         from backend.api.algo.agent_engine import BUILTIN_AGENTS
         agent = next(
-            (a for a in BUILTIN_AGENTS if a.get('slug') == 'expiry-day-itm-auto-close'),
+            (a for a in BUILTIN_AGENTS if a.get('slug') == slug),
             None,
         )
-        assert agent is not None, "expiry-day-itm-auto-close not found in BUILTIN_AGENTS"
+        assert agent is not None, f"{slug} not found in BUILTIN_AGENTS"
         assert agent.get('tier') == 'critical'
         assert agent.get('fire_at_time') is None
 

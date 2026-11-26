@@ -2,13 +2,22 @@
 
 Covers:
   - market-preclose-nonmcx (NSE counterpart of market-preclose-mcx-v2)
-  - expiry-day-mcx-v2 / expiry-day-nse-v2 (held F&O expiring today, retimed
-    2026-10-29 to fire within 30 min of that exchange's own close, per
-    operator instruction — see agent_engine.py's own comment above
-    `_EXPIRY_DAY_AWARENESS_AGENTS`)
-  - market-preclose-mcx / expiry-day-mcx / expiry-day-nse (retired slugs)
-    are absent, so the boot-time `_ae_prune_retired_builtins` sweep has a
-    real row to delete for each
+  - expiry-day-{mcx,nse}-preclose-alert / expiry-day-{mcx,nse}-itm-auto-close
+    (exchange-pure, split 2026-11-26 from a single combined
+    expiry-day-preclose-alert/expiry-day-itm-auto-close pair that existed
+    2026-10-29 to 2026-11-26 — see agent_engine.py's own history comment
+    above `_EXPIRY_DAY_AWARENESS_AGENTS` for the live incident this fixes:
+    a self-contradicting alert body caused by a shared, no-exchange-identity
+    condition combined with a day-early false trigger)
+  - expiry-day-mcx-morning-preview / expiry-day-nse-morning-preview
+    (already exchange-pure since 2026-11-22; unaffected by the split, but
+    shares the same day-early-fix infrastructure)
+  - market-preclose-mcx / expiry-day-mcx / expiry-day-nse / expiry-day-mcx-v2
+    / expiry-day-nse-v2 / expiry-day-equity-itm-auto-close /
+    expiry-day-commodity-itm-auto-close / expiry-day-preclose-alert /
+    expiry-day-itm-auto-close (all retired slugs) are absent, so the
+    boot-time `_ae_prune_retired_builtins` sweep has a real row to delete
+    for each
 
 The pruning mechanism itself is DB-backed and covered by
 test_bracket_agent_unification.py; here we only assert the registry side
@@ -17,9 +26,13 @@ test_bracket_agent_unification.py; here we only assert the registry side
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
+import pandas as pd
 import pytest
 
 from backend.api.algo.agent_engine import BUILTIN_AGENTS
+from backend.api.algo.agent_evaluator import Context
 
 
 def _by_slug(slug: str) -> dict | None:
@@ -28,6 +41,15 @@ def _by_slug(slug: str) -> dict | None:
 
 def _channels(agent: dict) -> set[str]:
     return {e["channel"] for e in agent.get("events", [])}
+
+
+def _ctx(*, position_rows=None, segment_flags=None, now=None) -> Context:
+    return Context(
+        sum_positions=pd.DataFrame(),
+        position_rows=position_rows or [],
+        segment_flags=segment_flags or {},
+        now=now or datetime.now(timezone.utc),
+    )
 
 
 class TestMarketPrecloseNonMcx:
@@ -46,9 +68,11 @@ class TestMarketPrecloseNonMcx:
     def test_condition_is_nse_close_within_30_minutes(self):
         """2026-11 same-window consolidation added a second leaf — this
         generic reminder now also requires NOT being an NSE expiry day,
-        since expiry-day-preclose-alert already covers that same moment
-        with richer content. See test_expiry_same_window_consolidation.py
-        for the suppression-behavior coverage."""
+        since expiry-day-nse-preclose-alert (exchange-pure split of what
+        was briefly a combined expiry-day-preclose-alert, 2026-10-29 to
+        2026-11-26) already covers that same moment with richer content.
+        See test_expiry_same_window_consolidation.py for the
+        suppression-behavior coverage."""
         agent = _by_slug('market-preclose-nonmcx')
         assert agent is not None
         assert agent.get('conditions') == {"all": [
@@ -85,173 +109,209 @@ class TestMarketPrecloseNonMcx:
             f"Expected shared info channels {{telegram,log,ntfy}}, got {channels}"
 
 
-class TestExpiryDayPrecloseAlertAgent:
-    """expiry-day-preclose-alert: ONE agent covering both MCX and NFO,
-    firing within 65 minutes of whichever exchange's own close applies
-    (2026-10-29 consolidation — operator: "can you create one agent for
-    order placing and one agent for alert instead of two" / "why can't
-    you have one agent for nfo and mcx"; retimed 30→65 on 2026-11-22,
-    operator: "unnetted in the money positions closed... one hour
-    before market close")."""
+class TestExpiryDayPrecloseAlertAgents:
+    """expiry-day-{mcx,nse}-preclose-alert: exchange-pure pair, split
+    2026-11-26 from a single combined expiry-day-preclose-alert (live
+    incident: a shared, no-exchange-identity condition let an MCX-only
+    fire render "No MCX F&O positions are expiring today" under a title
+    naming "MCX or NFO" — confirming via the sibling that the real cause
+    was the exchange-pure NFO window not being involved at all that
+    evening). Same consolidation history as before (2026-10-29,
+    operator: "can you create one agent for order placing and one agent
+    for alert instead of two" / "why can't you have one agent for nfo
+    and mcx"; retimed 30→65 on 2026-11-22) — the split preserves the
+    Python-side exchange-loop/lead-time logic (no DSL compound tree),
+    just binds the factory twice instead of once."""
 
-    SLUG = "expiry-day-preclose-alert"
-
-    def test_exists_in_builtin_agents(self):
-        assert _by_slug(self.SLUG) is not None, f"{self.SLUG} not found in BUILTIN_AGENTS"
-
-    def test_is_token_driven_not_scheduled(self):
-        agent = _by_slug(self.SLUG)
-        assert agent is not None
+    @pytest.mark.parametrize("slug,metric", [
+        ("expiry-day-mcx-preclose-alert", "is_mcx_expiry_preclose_alert_window"),
+        ("expiry-day-nse-preclose-alert", "is_nse_expiry_preclose_alert_window"),
+    ])
+    def test_exists_with_exchange_pure_flat_condition(self, slug, metric):
+        agent = _by_slug(slug)
+        assert agent is not None, f"{slug} not found in BUILTIN_AGENTS"
         assert agent.get('fire_at_time') is None
-
-    def test_condition_is_one_flat_leaf_not_a_compound_tree(self):
-        """Operator: "let the function that you register identify the
-        positions, 30 mins before market close, etc." — the exchange
-        loop and lead-time check live in the metric resolver, not a
-        per-exchange all[]/any[] DSL tree."""
-        agent = _by_slug(self.SLUG)
-        assert agent is not None
         assert agent.get('conditions') == {
-            "op": "==", "scope": "funds.total",
-            "metric": "is_expiry_preclose_alert_window", "value": 1.0,
+            "op": "==", "scope": "funds.total", "metric": metric, "value": 1.0,
         }, f"unexpected conditions {agent.get('conditions')}"
 
-    def test_is_high_tier(self):
-        agent = _by_slug(self.SLUG)
+    @pytest.mark.parametrize("slug", [
+        "expiry-day-mcx-preclose-alert", "expiry-day-nse-preclose-alert",
+    ])
+    def test_is_high_tier(self, slug):
+        agent = _by_slug(slug)
         assert agent is not None
         assert agent.get('tier') == "high"
 
-    def test_cooldown_is_30_minutes(self):
-        """30 min (changed from 180 on 2026-11-22) — short enough that
-        the operator is re-notified of a newly-staged leg within the
-        65-min window (matching the sibling close-action agent's own
-        periodic re-scan cadence), yet short enough that it never
-        risks NFO's own fire suppressing MCX's fire hours later the
-        same day either. See the comment above
-        _EXPIRY_DAY_AWARENESS_AGENTS for the full reasoning."""
-        agent = _by_slug(self.SLUG)
+    @pytest.mark.parametrize("slug", [
+        "expiry-day-mcx-preclose-alert", "expiry-day-nse-preclose-alert",
+    ])
+    def test_cooldown_is_30_minutes(self, slug):
+        """30 min, unchanged from the combined shape's own 2026-11-22
+        retime — short enough that the operator is re-notified of a
+        newly-staged leg within the 65-min window (matching the sibling
+        close-action agent's own periodic re-scan cadence)."""
+        agent = _by_slug(slug)
         assert agent is not None
         assert agent.get('cooldown_minutes') == 30, \
             f"expected cooldown_minutes=30, got {agent.get('cooldown_minutes')}"
 
-    def test_events_cover_all_four_channels_with_high_ntfy(self):
-        agent = _by_slug(self.SLUG)
+    @pytest.mark.parametrize("slug", [
+        "expiry-day-mcx-preclose-alert", "expiry-day-nse-preclose-alert",
+    ])
+    def test_events_cover_all_four_channels_with_high_ntfy(self, slug):
+        agent = _by_slug(slug)
         assert agent is not None
         assert _channels(agent) == {"telegram", "email", "log", "ntfy"}
         ntfy = next(e for e in agent["events"] if e["channel"] == "ntfy")
         assert ntfy.get("priority") == "high"
 
+    def test_topics_are_distinct_from_each_other_and_from_risk_alerts(self):
+        """A shared topic merges same-tick co-fires' match data into one
+        winner's alert body (`_compute_topic_suppression`) — exactly the
+        cross-exchange conflation this split exists to fix. Each new
+        agent's topic must be distinct from its sibling AND from the
+        already-split expiry-{nfo,mcx}-risk-alert pair's own topics, and
+        from the shared `expiry_warning` the morning-preview/generic
+        reminder agents still use."""
+        mcx = _by_slug("expiry-day-mcx-preclose-alert")
+        nse = _by_slug("expiry-day-nse-preclose-alert")
+        reserved = {"expiry_warning", "expiry_warning_mcx", "expiry_warning_nfo"}
+        assert mcx["topic"] != nse["topic"]
+        assert mcx["topic"] not in reserved
+        assert nse["topic"] not in reserved
 
-class TestExpiryDayItmAutoCloseAgent:
-    """expiry-day-itm-auto-close: ONE order-placing agent covering both
-    MCX and NFO, firing starting 60 minutes before each exchange's own
-    close (5 min after the alert sibling's 65-min window), then
-    re-firing every 30 minutes while still in that window (2026-11-22
-    retime — closes the gap where a leg could turn unnetted-ITM in the
-    last hour with no periodic re-scan, matching NFO's own pre-existing
-    re-scan cadence)."""
 
-    SLUG = "expiry-day-itm-auto-close"
+class TestExpiryDayItmAutoCloseAgents:
+    """expiry-day-{mcx,nse}-itm-auto-close: exchange-pure order-placing
+    pair, split 2026-11-26 from a single combined expiry-day-itm-auto-
+    close, firing starting 60 minutes before each exchange's own close
+    (5 min after the alert sibling's 65-min window), then re-firing
+    every 30 minutes while still in that window."""
 
-    def test_exists_in_builtin_agents(self):
-        assert _by_slug(self.SLUG) is not None, f"{self.SLUG} not found in BUILTIN_AGENTS"
-
-    def test_is_token_driven_not_scheduled(self):
-        agent = _by_slug(self.SLUG)
-        assert agent is not None
+    @pytest.mark.parametrize("slug,metric,exchange", [
+        ("expiry-day-mcx-itm-auto-close", "is_mcx_expiry_preclose_close_window", "MCX"),
+        ("expiry-day-nse-itm-auto-close", "is_nse_expiry_preclose_close_window", "NFO"),
+    ])
+    def test_condition_and_action_exchange_are_the_same_exchange(self, slug, metric, exchange):
+        """The condition's own exchange and the action's params.exchange
+        must name the SAME exchange — a drift between the two would
+        silently reproduce the cross-exchange conflation this split
+        fixes (e.g. an MCX-triggered agent whose action closes NFO)."""
+        agent = _by_slug(slug)
+        assert agent is not None, f"{slug} not found in BUILTIN_AGENTS"
         assert agent.get('fire_at_time') is None
-
-    def test_condition_is_one_flat_leaf_at_60_minutes(self):
-        agent = _by_slug(self.SLUG)
-        assert agent is not None
         assert agent.get('conditions') == {
-            "op": "==", "scope": "funds.total",
-            "metric": "is_expiry_preclose_close_window", "value": 1.0,
+            "op": "==", "scope": "funds.total", "metric": metric, "value": 1.0,
         }, f"unexpected conditions {agent.get('conditions')}"
+        actions = agent.get('actions') or []
+        assert len(actions) == 1
+        assert actions[0]["type"] == "expiry_auto_close"
+        assert actions[0]["params"] == {"exchange": exchange}, (
+            f"{slug}: action params must narrow to exactly {exchange!r} — "
+            f"got {actions[0]['params']!r}. _action_live_expiry_auto_close "
+            "already supported this narrowing before the split; only the "
+            "agent definitions needed to set it."
+        )
 
-    def test_is_critical_tier(self):
-        agent = _by_slug(self.SLUG)
+    @pytest.mark.parametrize("slug", [
+        "expiry-day-mcx-itm-auto-close", "expiry-day-nse-itm-auto-close",
+    ])
+    def test_is_critical_tier(self, slug):
+        agent = _by_slug(slug)
         assert agent is not None
         assert agent.get('tier') == "critical"
 
-    def test_cooldown_is_30_minutes(self):
-        """30 min (changed from 180 on 2026-11-22) — lets this agent
-        re-fire ~2x inside its own 60-min window (T-60, T-30),
-        re-running ExpiryEngine.scan_positions() each time. Safe to
-        repeat: record_held_order()'s per-leg dedup guard returns the
-        existing HELD row's id for an already-staged leg instead of
-        duplicating it."""
-        agent = _by_slug(self.SLUG)
+    @pytest.mark.parametrize("slug", [
+        "expiry-day-mcx-itm-auto-close", "expiry-day-nse-itm-auto-close",
+    ])
+    def test_cooldown_is_30_minutes(self, slug):
+        agent = _by_slug(slug)
         assert agent is not None
         assert agent.get('cooldown_minutes') == 30
 
-    def test_status_is_active(self):
-        """New slug, not bound by the _ae_guard_seed_status fail-safe
+    @pytest.mark.parametrize("slug", [
+        "expiry-day-mcx-itm-auto-close", "expiry-day-nse-itm-auto-close",
+    ])
+    def test_status_is_active(self, slug):
+        """New slugs, not bound by the _ae_guard_seed_status fail-safe
         (which only triggers on a literal 'Ships INACTIVE' phrase in the
         description — this agent's real safety net is the order-level
         hold-by-default in ExpiryEngine.close_positions(), not agent
         deactivation)."""
-        agent = _by_slug(self.SLUG)
+        agent = _by_slug(slug)
         assert agent is not None
         assert agent.get('status') == "active"
         assert "Ships INACTIVE" not in (agent.get('description') or ""), \
             "this phrase would force status back to inactive on every restart " \
             "via _ae_guard_seed_status — must not appear here"
 
-    def test_action_is_expiry_auto_close_with_no_exchange_param(self):
-        agent = _by_slug(self.SLUG)
-        assert agent is not None
-        actions = agent.get('actions') or []
-        assert len(actions) == 1
-        assert actions[0]["type"] == "expiry_auto_close"
-        assert actions[0]["params"] == {}, \
-            "params must be empty — the action processes both exchanges from one scan"
-
-    def test_events_include_ntfy_high(self):
-        """ntfy(high) added 2026-11-22 (operator: a real-money milestone
-        — positions staged HELD and waiting for release need an urgent
-        mobile push), matching the sibling alert agent's own channel
-        set."""
-        agent = _by_slug(self.SLUG)
+    @pytest.mark.parametrize("slug", [
+        "expiry-day-mcx-itm-auto-close", "expiry-day-nse-itm-auto-close",
+    ])
+    def test_events_include_ntfy_high(self, slug):
+        agent = _by_slug(slug)
         assert agent is not None
         assert _channels(agent) == {"telegram", "email", "log", "ntfy"}
         ntfy = next(e for e in agent["events"] if e["channel"] == "ntfy")
         assert ntfy.get("priority") == "high"
 
-    def test_trade_mode_is_live(self):
-        """2026-10-31 live-incident fix: without an explicit trade_mode
-        here, this agent silently inherited execution.default_agent_
-        trade_mode ('paper') and every real close on its first live
-        trading day ran through PaperTradeEngine instead of the real
-        hold-gate path — confirmed via prod algo_orders rows written
-        mode='paper'/engine='paper' for a genuine ExpiryEngine-identified
-        close. The real safety net (HoldCategory.EXPIRY_CLOSE, held by
-        default) only engages once this reaches the live action path at
-        all."""
-        agent = _by_slug(self.SLUG)
+    @pytest.mark.parametrize("slug", [
+        "expiry-day-mcx-itm-auto-close", "expiry-day-nse-itm-auto-close",
+    ])
+    def test_trade_mode_is_live(self, slug):
+        """2026-10-31 live-incident fix, preserved across the split:
+        without an explicit trade_mode here, this agent silently
+        inherits execution.default_agent_trade_mode ('paper') and the
+        real hold-gate path (HoldCategory.EXPIRY_CLOSE, held by default)
+        never engages."""
+        agent = _by_slug(slug)
         assert agent is not None
         assert agent.get('trade_mode') == "live", \
             "must explicitly set trade_mode='live' — omitting it silently " \
             "falls back to the paper default and the hold-gate never engages"
 
+    def test_topics_are_distinct_from_each_other_and_from_the_alert_pair(self):
+        mcx_close = _by_slug("expiry-day-mcx-itm-auto-close")
+        nse_close = _by_slug("expiry-day-nse-itm-auto-close")
+        mcx_alert = _by_slug("expiry-day-mcx-preclose-alert")
+        nse_alert = _by_slug("expiry-day-nse-preclose-alert")
+        topics = {mcx_close["topic"], nse_close["topic"], mcx_alert["topic"], nse_alert["topic"]}
+        assert len(topics) == 4, f"all 4 topics must be pairwise distinct, got {topics}"
 
-class TestExpiryDayAgentsSameDayNoSuppression:
-    """Regression test for the one real risk the consolidation
-    introduced: both agents now share ONE metric name across MCX and
-    NFO, so the per-fire latch (keyed on agent_slug+metric+scope+account,
-    no exchange dimension) must not let one exchange's fire suppress
-    the other's on the same day. cooldown_minutes=30 (changed from 180
-    on 2026-11-22, to enable periodic re-scanning within each
-    exchange's own window) is short enough that this was never a risk
-    to begin with — this test pins both the periodic-re-fire behaviour
-    AND the cross-exchange independence, not just the config value."""
+
+class TestExpiryDayAgentsExchangePurity:
+    """Regression coverage for the real design property the split
+    establishes: the 4 new agents' conditions each name a DIFFERENT
+    metric, so there is no shared latch key, no cross-exchange
+    suppression risk, and no DSL-level way for one exchange's fire to
+    render or act on the other's data — structurally, not just by
+    convention. (The combined shape's old same-metric cross-exchange
+    no-suppression regression test is now moot: there is no shared
+    metric left to test for collision.)"""
+
+    def test_all_four_metrics_are_pairwise_distinct(self):
+        slugs = [
+            "expiry-day-mcx-preclose-alert", "expiry-day-nse-preclose-alert",
+            "expiry-day-mcx-itm-auto-close", "expiry-day-nse-itm-auto-close",
+        ]
+        metrics = {_by_slug(s)["conditions"]["metric"] for s in slugs}
+        assert len(metrics) == 4, f"all 4 metrics must be pairwise distinct, got {metrics}"
 
     @pytest.mark.parametrize("slug,metric", [
-        ("expiry-day-preclose-alert", "is_expiry_preclose_alert_window"),
-        ("expiry-day-itm-auto-close", "is_expiry_preclose_close_window"),
+        ("expiry-day-mcx-preclose-alert", "is_mcx_expiry_preclose_alert_window"),
+        ("expiry-day-nse-preclose-alert", "is_nse_expiry_preclose_alert_window"),
+        ("expiry-day-mcx-itm-auto-close", "is_mcx_expiry_preclose_close_window"),
+        ("expiry-day-nse-itm-auto-close", "is_nse_expiry_preclose_close_window"),
     ])
-    def test_nfo_fire_then_mcx_fire_same_day_both_pass_escalation_gate(self, slug, metric):
-        from datetime import datetime, timedelta, timezone
+    def test_periodic_refire_within_one_exchanges_own_window(self, slug, metric):
+        """Single-exchange version of the old cross-exchange latch
+        test — 30-min cooldown blocks an immediate re-fire but still
+        allows the periodic re-scan (>30 min later, same window) the
+        2026-11-22 retime exists for. Nothing cross-exchange to test
+        here any more — each metric's own latch is exchange-scoped by
+        construction."""
+        from datetime import timedelta
         from backend.api.algo.agent_engine import _v2_apply_escalation_gate
 
         class _Agent:
@@ -260,45 +320,20 @@ class TestExpiryDayAgentsSameDayNoSuppression:
         agent.slug = slug
 
         store: dict = {}  # isolated — never the shared module-level _V2_LATCH
-        now0 = datetime(2026, 10, 30, 9, 30, 0, tzinfo=timezone.utc)  # ~15:00 IST
-        nfo_match = [{"metric": metric, "scope": "funds.total", "op": "==",
-                      "value": 1.0, "threshold": 1.0, "row": {}}]
-        # NFO fires at t=0 (its own ~15:00 window).
-        effective = _v2_apply_escalation_gate(agent, nfo_match, now0, 30, store=store)
-        assert effective, "NFO's own fire must pass the gate"
+        now0 = datetime(2026, 10, 30, 9, 30, 0, tzinfo=timezone.utc)
+        match = [{"metric": metric, "scope": "funds.total", "op": "==",
+                  "value": 1.0, "threshold": 1.0, "row": {}}]
+        assert _v2_apply_escalation_gate(agent, match, now0, 30, store=store), \
+            "the first fire must pass the gate"
 
-        # A SECOND fire 5 minutes later (still well inside the 30-min
-        # cooldown) must be suppressed.
         now_dup = now0 + timedelta(minutes=5)
-        dup_match = [{"metric": metric, "scope": "funds.total", "op": "==",
-                      "value": 1.0, "threshold": 1.0, "row": {}}]
-        effective_dup = _v2_apply_escalation_gate(agent, dup_match, now_dup, 30, store=store)
-        assert not effective_dup, \
+        assert not _v2_apply_escalation_gate(agent, match, now_dup, 30, store=store), \
             "a re-fire 5 min later (same window) must be suppressed by the cooldown"
 
-        # A THIRD fire 31 minutes after the FIRST (cooldown elapsed,
-        # still well inside NFO's own ~65-min window) must now be
-        # ALLOWED — this IS the periodic re-scan this retime exists to
-        # provide (a leg that turns unnetted-ITM in the last hour must
-        # get a fresh chance to be flagged/staged, not wait for
-        # next-day review).
         now_rescan = now0 + timedelta(minutes=31)
-        rescan_match = [{"metric": metric, "scope": "funds.total", "op": "==",
-                         "value": 1.0, "threshold": 1.0, "row": {}}]
-        effective_rescan = _v2_apply_escalation_gate(agent, rescan_match, now_rescan, 30, store=store)
-        assert effective_rescan, \
+        assert _v2_apply_escalation_gate(agent, match, now_rescan, 30, store=store), \
             "a re-fire >30 min later, still inside the same window, must be " \
             "ALLOWED — this is the periodic re-scan the 2026-11-22 retime exists for"
-
-        # MCX fires ~7.5h later the SAME day (its own ~23:00 window) —
-        # must NOT be suppressed by NFO's 30-min cooldown, which has
-        # long since cleared (trivially, given it's only 30 min).
-        now1 = now0 + timedelta(hours=7.5)
-        mcx_match = [{"metric": metric, "scope": "funds.total", "op": "==",
-                      "value": 1.0, "threshold": 1.0, "row": {}}]
-        effective2 = _v2_apply_escalation_gate(agent, mcx_match, now1, 30, store=store)
-        assert effective2, \
-            "MCX's fire 7.5h later the same day must not be suppressed by NFO's cooldown"
 
 
 class TestRetiredSlugs:
@@ -310,6 +345,8 @@ class TestRetiredSlugs:
         "market-preclose-mcx", "expiry-day-mcx", "expiry-day-nse",
         "expiry-day-mcx-v2", "expiry-day-nse-v2",
         "expiry-day-equity-itm-auto-close", "expiry-day-commodity-itm-auto-close",
+        # 2026-11-26 exchange-pure split — the combined shape is retired.
+        "expiry-day-preclose-alert", "expiry-day-itm-auto-close",
     ])
     def test_old_slug_absent_from_builtin_agents(self, slug):
         assert _by_slug(slug) is None, \
@@ -396,78 +433,34 @@ class TestReminderOnlyLine:
 
         assert _v2_reminder_only_line(_Agent(), []) is None
 
-
-class TestCooldownMigrationOnSync:
-    """2026-11-22 retime regression: `cooldown_minutes` is an
-    operator-editable field and is NEVER force-synced on an ordinary
-    restart (see `_ae_sync_existing_builtin`'s own docstring) — so
-    shipping the new 30-min value in BUILTIN_AGENTS alone left an
-    already-seeded prod/dev row stuck at its old 180-min value,
-    confirmed live on dev right after deploying the lead-time retime
-    (the conditions migration for the sibling expiry-nfo-risk-alert
-    correctly ran; cooldown silently did not, because nothing in
-    `_ae_sync_existing_builtin` touched it for these two slugs). This
-    pins the dedicated, value-gated migration added to fix that gap."""
-
-    @pytest.mark.parametrize("slug", [
-        "expiry-day-preclose-alert", "expiry-day-itm-auto-close",
+    @pytest.mark.parametrize("metric,expected_exchange_word,unexpected_word", [
+        ("is_mcx_expiry_preclose_alert_window", "MCX", "NFO"),
+        ("is_nse_expiry_preclose_alert_window", "NSE", None),
+        ("is_mcx_expiry_preclose_close_window", "MCX", "NFO"),
+        ("is_nse_expiry_preclose_close_window", "NSE", None),
     ])
-    def test_stale_180_row_migrates_to_30(self, slug):
-        from types import SimpleNamespace
-        from backend.api.algo.agent_engine import _ae_sync_existing_builtin
+    def test_new_per_exchange_labels_name_only_their_own_exchange(
+        self, metric, expected_exchange_word, unexpected_word,
+    ):
+        """2026-11-26 split regression — the whole point: the rendered
+        reminder line for a per-exchange token must name ONLY that
+        exchange, never the other one, unlike the old combined labels
+        ("a held MCX or NFO position expires today...") this split
+        replaces at the agent level."""
+        from backend.api.algo.agent_engine import _v2_reminder_only_line
 
-        agent_def = _by_slug(slug)
-        existing = SimpleNamespace(
-            conditions=agent_def["conditions"], long_name=None,
-            schedule="always", tier=agent_def["tier"], topic="expiry_warning",
-            status="active", events=list(agent_def["events"]), actions=[],
-            cooldown_minutes=180, fire_at_time=None, last_fired=None,
-        )
-        _ae_sync_existing_builtin(existing, agent_def)
-        assert existing.cooldown_minutes == 30, (
-            f"{slug}: a stock row still at the old 180-min cooldown must "
-            f"migrate to 30 on restart, got {existing.cooldown_minutes}"
-        )
+        class _Agent:
+            name = "whatever"
 
-    @pytest.mark.parametrize("slug", [
-        "expiry-day-preclose-alert", "expiry-day-itm-auto-close",
-    ])
-    def test_operator_customized_cooldown_is_left_alone(self, slug):
-        """Value-gated, not slug-only — an operator who already set a
-        different cooldown (not the exact old stock 180) must never be
-        silently overwritten."""
-        from types import SimpleNamespace
-        from backend.api.algo.agent_engine import _ae_sync_existing_builtin
-
-        agent_def = _by_slug(slug)
-        existing = SimpleNamespace(
-            conditions=agent_def["conditions"], long_name=None,
-            schedule="always", tier=agent_def["tier"], topic="expiry_warning",
-            status="active", events=list(agent_def["events"]), actions=[],
-            cooldown_minutes=45, fire_at_time=None, last_fired=None,
-        )
-        _ae_sync_existing_builtin(existing, agent_def)
-        assert existing.cooldown_minutes == 45, (
-            "an operator-customized cooldown (not the exact old stock "
-            "180 value) must never be overwritten by this migration"
-        )
-
-    @pytest.mark.parametrize("slug", [
-        "expiry-day-preclose-alert", "expiry-day-itm-auto-close",
-    ])
-    def test_already_migrated_row_is_a_noop(self, slug):
-        from types import SimpleNamespace
-        from backend.api.algo.agent_engine import _ae_sync_existing_builtin
-
-        agent_def = _by_slug(slug)
-        existing = SimpleNamespace(
-            conditions=agent_def["conditions"], long_name=None,
-            schedule="always", tier=agent_def["tier"], topic="expiry_warning",
-            status="active", events=list(agent_def["events"]), actions=[],
-            cooldown_minutes=30, fire_at_time=None, last_fired=None,
-        )
-        _ae_sync_existing_builtin(existing, agent_def)
-        assert existing.cooldown_minutes == 30
+        line = _v2_reminder_only_line(_Agent(), [{"metric": metric}])
+        assert line is not None
+        assert line.startswith("Expiry pre-close — ")
+        assert expected_exchange_word in line
+        if unexpected_word:
+            assert unexpected_word not in line, (
+                f"{metric}'s label must never name {unexpected_word} — "
+                f"got: {line!r}"
+            )
 
 
 class TestExpiryMorningPreviewAgents:
@@ -476,11 +469,13 @@ class TestExpiryMorningPreviewAgents:
     morning mcx or nfo message, instead of just showing it is market
     close day, it should show the positions that need to be closed at
     that time"). Deliberately NOT one shared agent like the pre-close
-    pair — see `metric_is_expiry_morning_preview_window.py`'s own
-    module docstring: MCX opens 09:00, NSE 09:15 (only ~15 min apart),
-    and `_cycle_in_cooldown` gates at the AGENT level, so a single
-    shared agent firing for one exchange would block it from ever
-    evaluating the other exchange's own branch on a dual-expiry day."""
+    pair used to be — see `metric_is_expiry_morning_preview_window.py`'s
+    own module docstring: MCX opens 09:00, NSE 09:15 (only ~15 min
+    apart), and `_cycle_in_cooldown` gates at the AGENT level, so a
+    single shared agent firing for one exchange would block it from
+    ever evaluating the other exchange's own branch on a dual-expiry
+    day. Unaffected by the 2026-11-26 preclose-pair split; shares only
+    the exact-today fix infrastructure."""
 
     @pytest.mark.parametrize("slug,metric,name", [
         ("expiry-day-mcx-morning-preview", "is_mcx_expiry_morning_preview_window", "MCX morning preview"),
@@ -499,11 +494,11 @@ class TestExpiryMorningPreviewAgents:
         "expiry-day-mcx-morning-preview", "expiry-day-nse-morning-preview",
     ])
     def test_cooldown_is_1320_minutes_once_per_day(self, slug):
-        """1320 min (22h) is SAFE here, unlike the pre-close pair's
-        180/30-min designs — each agent's own metric is exchange-
-        specific, so there is no cross-exchange collision to design
-        around. Matches the exact market-preclose-mcx-v2/
-        market-preclose-nonmcx precedent (two agents, each 1320)."""
+        """1320 min (22h) is SAFE here, unlike the pre-close pair's own
+        30-min design — each agent's own metric is exchange-specific,
+        so there is no cross-exchange collision to design around.
+        Matches the exact market-preclose-mcx-v2/market-preclose-nonmcx
+        precedent (two agents, each 1320)."""
         agent = _by_slug(slug)
         assert agent is not None
         assert agent.get('cooldown_minutes') == 1320
@@ -545,31 +540,36 @@ class TestExpiryMorningPreviewFactory:
 
     def test_factory_boundary_logic_with_fake_resolvers(self, monkeypatch):
         """Tests the factory's own gating logic directly — not expiring
-        today AND open long enough, independent of the real symbol-
-        parsing/calendar machinery `is_mcx_expiry_today`/`minutes_since_
-        mcx_open` depend on (which would make a test depend on today's
-        real date). Monkeypatches the factory's own resolver-lookup
-        dicts so a FRESH factory call (made here, after patching) binds
-        fake resolvers, leaving the two real module-level bindings
-        (`_metric_is_mcx_expiry_morning_preview_window` etc., already
-        bound at import time against the real resolvers) untouched."""
+        EXACTLY today (2026-11-26 fix: `_is_exchange_expiring_exactly_
+        today`, not the old ≤1.5-day `is_{mcx,nse}_expiry_today`) AND
+        open long enough, independent of the real symbol-parsing/
+        calendar machinery (which would make a test depend on today's
+        real date). Monkeypatches the factory module's own `_is_
+        exchange_expiring_exactly_today` name (imported into this
+        module's namespace) so a FRESH factory call (made here, after
+        patching) binds against the fake, leaving the two real
+        module-level bindings (already bound at import time against the
+        real helper) untouched."""
         import backend.api.algo.grammar_tokens.metric_is_expiry_morning_preview_window as mod
 
         cases = [
-            # (expiry_today, minutes_since_open, expected)
-            (0.0, 10, 0.0),    # not expiring today -> never fires regardless of open time
-            (1.0, 2, 0.0),     # expiring today, but open <5 min -> too early
-            (1.0, None, 0.0),  # expiring today, but segment closed (None) -> not in window
-            (1.0, 5, 1.0),     # expiring today, open exactly at the buffer -> fires
-            (1.0, 30, 1.0),    # expiring today, well past the buffer -> fires
+            # (expiring_exactly_today, minutes_since_open, expected)
+            (False, 10, 0.0),  # not expiring exactly today -> never fires regardless of open time
+            (True, 2, 0.0),    # expiring exactly today, but open <5 min -> too early
+            (True, None, 0.0),  # expiring exactly today, but segment closed (None) -> not in window
+            (True, 5, 1.0),    # expiring exactly today, open exactly at the buffer -> fires
+            (True, 30, 1.0),   # expiring exactly today, well past the buffer -> fires
         ]
-        for expiry_today, minutes_since_open, expected in cases:
-            monkeypatch.setitem(mod._EXPIRY_TODAY_RESOLVERS, "MCX", lambda ctx, row: expiry_today)
+        for expiring_today, minutes_since_open, expected in cases:
+            monkeypatch.setattr(
+                mod, "_is_exchange_expiring_exactly_today",
+                lambda ctx, exchange: expiring_today,
+            )
             monkeypatch.setitem(mod._MINUTES_SINCE_OPEN_RESOLVERS, "MCX", lambda ctx, row: minutes_since_open)
             resolver = mod._metric_factory_is_expiry_morning_preview_window("MCX", 5)
             result = resolver(None, None)
             assert result == expected, (
-                f"expiry_today={expiry_today}, minutes_since_open={minutes_since_open}: "
+                f"expiring_today={expiring_today}, minutes_since_open={minutes_since_open}: "
                 f"expected {expected}, got {result}"
             )
 
@@ -582,3 +582,120 @@ class TestExpiryMorningPreviewFactory:
             _metric_is_nse_expiry_morning_preview_window,
         )
         assert _metric_is_mcx_expiry_morning_preview_window is not _metric_is_nse_expiry_morning_preview_window
+
+
+class TestIsExchangeExpiringExactlyToday:
+    """`_is_exchange_expiring_exactly_today` — the 2026-11-26 root-cause
+    fix. Live incident: the pre-close window gate used to read `is_mcx_
+    expiry_today`/`is_nse_expiry_today` (a ≤1.5-day lookahead, correct
+    for THEIR other callers), so it could go true for an exchange purely
+    because a position expires TOMORROW, while `ExpiryEngine.scan_
+    positions()`'s own exact `expiry == today` filter then found nothing
+    — producing a self-contradicting alert. This fixes it by requiring
+    `days_to_expiry < 1.0`, reusing the SAME NFO symbol/expiry pair
+    `test_scope_positions_expiring_today.py` already confirms parses to
+    2025-04-24, only varying `now` — the day before (tomorrow case) vs.
+    the day of (exactly-today case)."""
+
+    SYMBOL_ROW = {"tradingsymbol": "NIFTY25APR22000CE", "exchange": "NFO", "quantity": 50}
+
+    def test_position_expiring_tomorrow_is_not_exactly_today(self):
+        from backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window import (
+            _is_exchange_expiring_exactly_today,
+        )
+        # 2025-04-23 10:00 IST = 04:30 UTC -- one day before the real
+        # 2025-04-24 15:30 IST NSE close. days_to_expiry ~= 1.229, which
+        # satisfies the OLD <=1.5-day buffer (the live incident's actual
+        # cause) but must NOT satisfy this tighter <1.0 check.
+        now = datetime(2025, 4, 23, 4, 30, 0, tzinfo=timezone.utc)
+        ctx = _ctx(now=now, position_rows=[self.SYMBOL_ROW])
+        assert _is_exchange_expiring_exactly_today(ctx, "NFO") is False, (
+            "a position expiring TOMORROW must not read as expiring exactly "
+            "today -- this is the exact live-incident false trigger"
+        )
+
+    def test_position_expiring_today_is_exactly_today(self):
+        from backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window import (
+            _is_exchange_expiring_exactly_today,
+        )
+        # 2025-04-24 10:00 IST = 04:30 UTC -- the expiry day itself,
+        # hours before the 15:30 IST close. days_to_expiry ~= 0.229.
+        now = datetime(2025, 4, 24, 4, 30, 0, tzinfo=timezone.utc)
+        ctx = _ctx(now=now, position_rows=[self.SYMBOL_ROW])
+        assert _is_exchange_expiring_exactly_today(ctx, "NFO") is True
+
+    def test_wrong_exchange_never_matches(self):
+        from backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window import (
+            _is_exchange_expiring_exactly_today,
+        )
+        now = datetime(2025, 4, 24, 4, 30, 0, tzinfo=timezone.utc)
+        ctx = _ctx(now=now, position_rows=[self.SYMBOL_ROW])
+        assert _is_exchange_expiring_exactly_today(ctx, "MCX") is False, (
+            "an NFO position must never make the MCX check true -- this is "
+            "the cross-exchange-conflation half of the live incident"
+        )
+
+    def test_empty_position_rows_is_false(self):
+        from backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window import (
+            _is_exchange_expiring_exactly_today,
+        )
+        ctx = _ctx(position_rows=[])
+        assert _is_exchange_expiring_exactly_today(ctx, "NFO") is False
+
+    def test_unparseable_symbol_is_skipped_not_raised(self):
+        from backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window import (
+            _is_exchange_expiring_exactly_today,
+        )
+        ctx = _ctx(position_rows=[{"tradingsymbol": "RELIANCE", "exchange": "NSE", "quantity": 10}])
+        assert _is_exchange_expiring_exactly_today(ctx, "NSE") is False
+
+
+class TestExpiryPrecloseExchangePurityAtTokenLevel:
+    """Direct regression for the cross-exchange-conflation half of the
+    live incident, at the resolver level (not just the agent-config
+    level above): with ONLY a genuinely in-window NFO position, the
+    MCX-named per-exchange token must stay 0.0, and vice versa."""
+
+    def test_nfo_only_in_window_mcx_token_stays_zero(self):
+        from backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window import (
+            _metric_is_mcx_expiry_preclose_alert_window,
+            _metric_is_nse_expiry_preclose_alert_window,
+        )
+        # 2025-04-24 14:30 IST = 09:00 UTC -- 60 min before the 15:30 IST
+        # NSE close, well inside the 65-min alert lead time. segment_
+        # flags is set directly (minutes_until_nse_close is flag-driven,
+        # not derived from days_to_expiry) so this test is deterministic
+        # regardless of real market-hours machinery.
+        now = datetime(2025, 4, 24, 9, 0, 0, tzinfo=timezone.utc)
+        ctx = _ctx(
+            now=now,
+            position_rows=[{"tradingsymbol": "NIFTY25APR22000CE", "exchange": "NFO", "quantity": 50}],
+            segment_flags={"nse_open": True, "minutes_until_nse_close": 60,
+                           "mcx_open": False},
+        )
+        assert _metric_is_nse_expiry_preclose_alert_window(ctx, None) == 1.0
+        assert _metric_is_mcx_expiry_preclose_alert_window(ctx, None) == 0.0, (
+            "an NFO-only breach must never make the MCX-named token read "
+            "1.0 -- this is the exact live incident (an alert titled about "
+            "MCX firing on nothing but NFO activity, or vice versa)"
+        )
+
+    def test_mcx_only_in_window_nse_token_stays_zero(self):
+        from backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window import (
+            _metric_is_mcx_expiry_preclose_alert_window,
+            _metric_is_nse_expiry_preclose_alert_window,
+        )
+        # GOLD26NOV123000PE's real expiry is 2026-11-27 (confirmed by
+        # test_scope_positions_expiring_today.py's own DST-aware-close
+        # test against the same symbol) -- "now" must be ON that date,
+        # close to its 23:55 IST winter close, for days_to_expiry to
+        # read "exactly today".
+        now = datetime(2026, 11, 27, 18, 0, 0, tzinfo=timezone.utc)  # 23:30 IST, 25 min before close
+        ctx = _ctx(
+            now=now,
+            position_rows=[{"tradingsymbol": "GOLD26NOV123000PE", "exchange": "MCX", "quantity": -100}],
+            segment_flags={"mcx_open": True, "minutes_until_mcx_close": 25,
+                           "nse_open": False},
+        )
+        assert _metric_is_mcx_expiry_preclose_alert_window(ctx, None) == 1.0
+        assert _metric_is_nse_expiry_preclose_alert_window(ctx, None) == 0.0

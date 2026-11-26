@@ -116,12 +116,16 @@ def test_index_ltp_key_maps_nifty():
 def test_expiry_auto_close_agents_ship_inactive():
     """2026-10-29: the two per-exchange expiry auto-close built-in agents
     (expiry-day-equity-itm-auto-close/expiry-day-commodity-itm-auto-close,
-    both status='inactive') were retired and consolidated into the single
-    expiry-day-itm-auto-close, which covers both exchanges in one agent.
-    It deliberately ships status='active' — its safety net is the
-    order-level hold-by-default in ExpiryEngine.close_positions()
+    both status='inactive') were retired and consolidated into a single
+    expiry-day-itm-auto-close covering both exchanges in one agent —
+    itself retired 2026-11-26 and re-split into exchange-pure
+    expiry-day-mcx-itm-auto-close / expiry-day-nse-itm-auto-close (live
+    incident: the combined shape's shared, no-exchange-identity
+    condition let a self-contradicting alert render). Both of today's
+    agents still deliberately ship status='active' — their safety net is
+    the order-level hold-by-default in ExpiryEngine.close_positions()
     (HoldCategory.EXPIRY_CLOSE), not agent deactivation. See
-    test_expiry_day_and_preclose_agents.py::TestExpiryDayItmAutoCloseAgent
+    test_expiry_day_and_preclose_agents.py::TestExpiryDayItmAutoCloseAgents
     and test_seed_ships_inactive_guard.py for the current coverage of
     both halves of this invariant.
     """
@@ -129,7 +133,9 @@ def test_expiry_auto_close_agents_ship_inactive():
     slugs = {a["slug"]: a for a in BUILTIN_AGENTS}
     assert "expiry-day-equity-itm-auto-close" not in slugs, "retired slug must be gone"
     assert "expiry-day-commodity-itm-auto-close" not in slugs, "retired slug must be gone"
-    assert slugs["expiry-day-itm-auto-close"]["status"] == "active"
+    assert "expiry-day-itm-auto-close" not in slugs, "retired combined slug must be gone"
+    assert slugs["expiry-day-mcx-itm-auto-close"]["status"] == "active"
+    assert slugs["expiry-day-nse-itm-auto-close"]["status"] == "active"
 
 
 # ---------------------------------------------------------------------------

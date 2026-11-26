@@ -216,11 +216,17 @@ async def _e2e_seed_agent_and_context(factory, _Agent):
     from backend.api.algo.derivatives import parse_tradingsymbol
 
     option_symbol = "CRUDEOIL26NOV5500CE"
-    # Real parser gives 2026-11-27 for this symbol's month token — pick
-    # `frozen_now` so days_to_expiry(ref=frozen_now) is genuinely <= 1.5
-    # (verified: ~1.08 days), so the REAL (now-fixed) condition-window
-    # derivation includes this row without any patching.
-    today = parse_tradingsymbol(option_symbol)["expiry"] - timedelta(days=1)
+    # Real parser gives 2026-11-27 for this symbol's month token.
+    # 2026-11-26 fix: the pre-close window gate now requires EXACTLY
+    # today (days_to_expiry < 1.0), not the old <= 1.5-day lookahead a
+    # position expiring TOMORROW used to satisfy (see
+    # metric_is_expiry_preclose_alert_window.py's module docstring for
+    # the live incident that fix closed). `frozen_now` is pinned to the
+    # symbol's OWN real expiry date at 16:00 UTC (21:30 IST) -- genuinely
+    # expiring today, days_to_expiry well under 1.0 -- so the REAL
+    # (now-fixed) condition-window derivation includes this row without
+    # any patching.
+    today = parse_tradingsymbol(option_symbol)["expiry"]
     frozen_now = datetime(today.year, today.month, today.day, 16, 0, 0, tzinfo=timezone.utc)
 
     from backend.api.algo.expiry import OptionPosition

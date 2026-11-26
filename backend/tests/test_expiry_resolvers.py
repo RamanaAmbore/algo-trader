@@ -52,40 +52,52 @@ def test_new_tokens_registered_in_system_catalog():
 
 def test_expiry_agents_seeded_with_correct_shape():
     """2026-10-29: the two per-exchange auto-close agents were retired
-    and consolidated into expiry-day-itm-auto-close, covering both
-    exchanges with no exchange param and a flat, token-driven condition
-    (no fire_at_time, no per-row scope — the position identification
-    moved into ExpiryEngine.scan_positions(), called from the action).
-    See test_expiry_day_and_preclose_agents.py for the full shape
-    coverage of the current agent."""
+    and consolidated into a single expiry-day-itm-auto-close, covering
+    both exchanges with no exchange param and a flat, token-driven
+    condition (no fire_at_time, no per-row scope — the position
+    identification moved into ExpiryEngine.scan_positions(), called from
+    the action). Split exchange-pure 2026-11-26 (live incident: the
+    combined, no-exchange-identity condition let a self-contradicting
+    alert render) into expiry-day-mcx-itm-auto-close /
+    expiry-day-nse-itm-auto-close, each flat/token-driven and now ALSO
+    narrowing the action via `params.exchange`. See
+    test_expiry_day_and_preclose_agents.py for the full shape coverage
+    of the current agents."""
     from backend.api.algo.agent_engine import BUILTIN_AGENTS
     by_slug = {a["slug"]: a for a in BUILTIN_AGENTS}
     for slug in ("expiry-day-equity-itm-auto-close",
-                 "expiry-day-commodity-itm-auto-close"):
+                 "expiry-day-commodity-itm-auto-close",
+                 "expiry-day-itm-auto-close"):
         assert slug not in by_slug, f"retired slug still present: {slug}"
-    for slug in ("expiry-day-itm-auto-close", "expiry-day-positions-alert"):
+    for slug in ("expiry-day-mcx-itm-auto-close", "expiry-day-nse-itm-auto-close",
+                 "expiry-day-positions-alert"):
         assert slug in by_slug, f"missing seeded agent: {slug}"
 
-    combined = by_slug["expiry-day-itm-auto-close"]
-    assert combined.get("fire_at_time") is None
-    assert combined["conditions"] == {
-        "op": "==", "scope": "funds.total",
-        "metric": "is_expiry_preclose_close_window", "value": 1.0,
-    }
-    assert combined["actions"][0]["type"] == "expiry_auto_close"
-    assert combined["actions"][0]["params"] == {}
-    # Deliberately active — see the comment above
-    # _EXPIRY_DAY_AWARENESS_AGENTS in agent_engine.py: its safety net is
-    # the order-level hold-by-default in ExpiryEngine.close_positions(),
-    # not agent deactivation.
-    assert combined["status"] == "active"
+    for slug, metric, exchange in (
+        ("expiry-day-mcx-itm-auto-close", "is_mcx_expiry_preclose_close_window", "MCX"),
+        ("expiry-day-nse-itm-auto-close", "is_nse_expiry_preclose_close_window", "NFO"),
+    ):
+        agent = by_slug[slug]
+        assert agent.get("fire_at_time") is None
+        assert agent["conditions"] == {
+            "op": "==", "scope": "funds.total",
+            "metric": metric, "value": 1.0,
+        }
+        assert agent["actions"][0]["type"] == "expiry_auto_close"
+        assert agent["actions"][0]["params"] == {"exchange": exchange}
+        # Deliberately active — see the comment above
+        # _EXPIRY_DAY_AWARENESS_AGENTS in agent_engine.py: its safety net
+        # is the order-level hold-by-default in
+        # ExpiryEngine.close_positions(), not agent deactivation.
+        assert agent["status"] == "active"
 
 
 def test_expiry_auto_close_action_token_has_exchange_param():
-    """The grammar token's `exchange` param is now optional (2026-10-29
-    — omitting it, the built-in agent's own params, processes both
-    exchanges from one scan). An explicit exchange still restricts to
-    just that one."""
+    """The grammar token's `exchange` param is optional (2026-10-29 —
+    omitting it processes both exchanges from one scan; 2026-11-26 —
+    both built-in agents now set it explicitly, one per exchange, but
+    the schema itself stays optional for any custom agent that still
+    wants the omit-and-process-both shape)."""
     tok = next(t for t in grammar.SYSTEM_TOKENS
                if t['grammar_kind'] == 'action'
                and t['token'] == 'expiry_auto_close')

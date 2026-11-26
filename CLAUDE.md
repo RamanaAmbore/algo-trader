@@ -5329,10 +5329,78 @@ that was supposed to be the backstop silently no-op'd the whole time.
   row. The existing DB row (id 98 on both dev and prod) was corrected with a one-time manual
   `UPDATE agents SET trade_mode='live' WHERE id=98`.
 - Tests: `test_builtin_status_sync_preserves_operator_choice.py::TestBuildAgentRowReadsTradeModeFromSpec`,
-  `test_expiry_day_and_preclose_agents.py::TestExpiryDayItmAutoCloseAgent::test_trade_mode_is_live`.
+  `test_expiry_day_and_preclose_agents.py::TestExpiryDayItmAutoCloseAgents::test_trade_mode_is_live`
+  (class renamed, now parametrized across both exchange-pure agents — see the 2026-11-26
+  amendment below).
 - Invariant: a builtin agent spec that explicitly needs `trade_mode: "live"` to reach its own
   real safety-gate path (hold-by-default, or any other live-only gate) must say so explicitly in
   its own spec dict — never rely on the system-wide default, which is paper for every new agent.
+
+**Amended 2026-11-26 — split exchange-pure, same failure class as the risk-alert pair above.**
+Live incident: "Expiry pre-close" (agent #97, slug `expiry-day-preclose-alert`) fired at 22:50 IST
+with a self-contradicting body — title "a held MCX or NFO position expires today, within 65
+minutes of that exchange's close", body "No MCX F&O positions are expiring today — nothing to
+close." Operator: "this is alert is confusing... check all alerts for the issue." Two compounding
+defects, both fixed:
+- **Cross-exchange conflation** — the shared, no-exchange-identity condition is the exact failure
+  class `expiry-nfo-risk-alert`/`expiry-mcx-risk-alert` were split for earlier that same day (see
+  the entry below). A full audit of every `BUILTIN_AGENTS` entry confirmed this pair was the ONLY
+  remaining combined-exchange agent in the system.
+- **Day-early false trigger** (the proximate cause of this specific message) — the window gate read
+  `is_mcx_expiry_today`/`is_nse_expiry_today`, a ≤1.5-day lookahead (deliberately loose for OTHER
+  callers, e.g. a possible future T-1 warning), so it could go true for MCX purely because a
+  position expires TOMORROW, while `ExpiryEngine.scan_positions()`'s own exact `expiry == today`
+  filter then correctly found nothing. New `_is_exchange_expiring_exactly_today()`
+  ([metric_is_expiry_preclose_alert_window.py](backend/api/algo/grammar_tokens/metric_is_expiry_preclose_alert_window.py))
+  requires `days_to_expiry < 1.0`, reusing `_scope_positions_expiring_today`'s own parsing/close-time
+  primitives without touching that function's ≤1.5-day semantic for its other callers.
+  `metric_is_expiry_morning_preview_window.py`'s own per-exchange factory switched to the same
+  exact-today check — it was already exchange-pure (no conflation risk) but shared the same
+  day-early self-contradiction risk.
+- **Retire + reship**, matching this section's own stated convention for a condition-SHAPE change:
+  `expiry-day-preclose-alert`/`expiry-day-itm-auto-close` (agent ids 97/98 on prod, 178/179 on dev,
+  confirmed via direct query to carry zero currently-HELD orders before the cutover) are retired,
+  replaced by four exchange-pure agents — `expiry-day-mcx-preclose-alert`,
+  `expiry-day-nse-preclose-alert`, `expiry-day-mcx-itm-auto-close`, `expiry-day-nse-itm-auto-close`
+  — each with its own metric
+  (`_metric_factory_is_expiry_preclose_window_for_exchange(exchange, lead_minutes)`, bound twice per
+  lead time, mirroring the morning-preview factory's own precedent) and its own `topic`
+  (`expiry_warning_{mcx,nse}_{preclose,close}` — distinct from `expiry_warning_mcx`/
+  `expiry_warning_nfo` and the shared `expiry_warning`, so a same-tick co-fire between any two of
+  these agents can never merge match data into one winner's body).
+- **The action needed zero code changes.** `_action_live_expiry_auto_close`
+  ([actions_live.py](backend/api/algo/actions_live.py)) already supported narrowing to one exchange
+  via `params.exchange` (the 2026-11-24 audit-finding-#4 fix) — each new itm-auto-close agent simply
+  sets it (`{"exchange": "MCX"}` / `{"exchange": "NFO"}`), reusing the action's own pre-existing
+  intersection-with-the-real-window logic unchanged.
+- **The render function is now single-exchange**, mirroring `_v2_expiry_morning_preview`'s own
+  already-proven shape: `_v2_expiry_exchange_breakdown_or_empty(exchange)` is the shared core (scan,
+  render, or an explicit "no positions" fallback — never blank), and `_v2_expiry_preclose_alert_section
+  (context, exchange)` is its thin pre-close wrapper. The old `_v2_expiry_position_breakdown()`
+  (which re-derived an exchange SET internally) is deleted.
+- **Devil's-advocate finding, resolved before shipping, not merely assumed:** retiring the old agent
+  rows could in principle orphan a HELD order's `agent_id`. Traced end to end —
+  `resolve_origin()`/`_fetch_agent_name_map()` degrade to a generic `"Agent #{id}"` label, never
+  raise, confirming this is cosmetic-only for display. The ONE place a missing agent row has a real
+  functional effect is `_agent_close_auto_release_sweep_once()`'s kill-switch
+  ([background.py](backend/api/background.py)): `agent is None` skips auto-release for that row
+  (it stays HELD, needing a manual release) rather than raising. Confirmed via direct query on both
+  prod and dev before this shipped: zero currently-HELD rows reference either retired agent id, so
+  this residual risk was real in principle but did not apply to tonight's cutover.
+- **Deploy timing, non-negotiable per the same devil's-advocate review:** this must not reach
+  dev/main while MCX's own pre-close window is still open the night it ships — restarting mid-window
+  would cold-start the new agents' cooldown/latch state. Held on `workshop` until after that night's
+  MCX close.
+- Tests: `test_expiry_day_and_preclose_agents.py` (rewritten: `TestExpiryDayPrecloseAlertAgents`,
+  `TestExpiryDayItmAutoCloseAgents`, `TestExpiryDayAgentsExchangePurity`,
+  `TestIsExchangeExpiringExactlyToday`, `TestExpiryPrecloseExchangePurityAtTokenLevel`, plus updated
+  `TestRetiredSlugs`/`TestReminderOnlyLine`/`TestExpiryMorningPreviewFactory`);
+  `test_expiry_position_breakdown.py` (migrated from the deleted combined function to
+  `_v2_expiry_preclose_alert_section`); `test_expiry_logic.py` and
+  `test_expiry_close_release_e2e.py` updated for the new slugs/exact-today semantics.
+- Invariant: a per-exchange pre-close/auto-close agent's own window check must agree with
+  `ExpiryEngine.scan_positions()`'s exact `expiry == today` filter — never a looser lookahead buffer
+  borrowed from a different caller's own, deliberately wider, semantic.
 
 **Expiry risk alerts re-based onto the expiry classifier; three expiry-day alerts de-duplicated in
 the 30-minute pre-close window (2026-11-12, uncommitted)** — Two linked changes to the expiry-day
@@ -5610,7 +5678,7 @@ now caches + returns a `stale` flag; `/api/nav/by-account` masks `errors` for no
 | Summary timing | `backend/config/backend_config.yaml` |
 | Order-entry grammar | `backend/config/grammars/orders.yaml` |
 | Toggle agent default status | `backend/api/algo/agent_engine.py` |
-| Expiry pre-close alert + auto-close (one agent each, both exchanges) | `backend/api/algo/agent_engine.py` (`expiry-day-preclose-alert`/`expiry-day-itm-auto-close`, `_v2_expiry_position_breakdown`) + `backend/api/algo/actions_live.py:_action_live_expiry_auto_close` + `backend/api/algo/grammar_tokens/metric_is_expiry_preclose_{alert,close}_window.py` |
+| Expiry pre-close alert + auto-close (exchange-pure, one agent per exchange per role, 4 total) | `backend/api/algo/agent_engine.py` (`expiry-day-{mcx,nse}-preclose-alert`/`expiry-day-{mcx,nse}-itm-auto-close`, `_v2_expiry_preclose_alert_section`, `_v2_expiry_exchange_breakdown_or_empty`) + `backend/api/algo/actions_live.py:_action_live_expiry_auto_close` (unchanged — narrows via `params.exchange`) + `backend/api/algo/grammar_tokens/metric_is_expiry_preclose_{alert,close}_window.py` (`_metric_factory_is_expiry_preclose_window_for_exchange`, `_is_exchange_expiring_exactly_today`) |
 | Expiry morning preview (two agents, one per exchange) | `backend/api/algo/agent_engine.py` (`expiry-day-mcx-morning-preview`/`expiry-day-nse-morning-preview`, `_v2_expiry_morning_preview`) + `backend/api/algo/grammar_tokens/metric_is_expiry_morning_preview_window.py` (`_metric_factory_is_expiry_morning_preview_window`) |
 | Double-close-prevention guard for expiry closes | `backend/api/algo/expiry.py:_exp_leg_in_flight_this_session` (called from `close_positions()`) |
 | Expiry risk alert (`expiry-nfo-risk-alert`, since 2026-11-19 covers NFO+MCX in one `any[]` — `expiry-mcx-risk-alert` is retired) — classifier and pre-close window suppression | `backend/api/algo/grammar_tokens/scope_positions_expiring_today_mcx_unhedged.py` (`classify_from_context`) + `backend/api/algo/grammar_tokens/scope_positions_expiring_today_nfo.py` (`qty != 0` filter) + `backend/api/algo/agent_engine.py` (`_EXPIRY_RISK_AGENTS`, `_AE_CONTENT_MATCHED_COND_MIGRATIONS`) + `backend/api/algo/expiry.py` (`classify_prepared`) |

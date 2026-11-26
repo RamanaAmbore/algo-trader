@@ -179,7 +179,7 @@ class TestShipsInactiveSafetyCaseStillForceCorrected:
 class TestBuildAgentRowReadsTradeModeFromSpec:
     """2026-10-31 live-incident fix: _ae_build_agent_row() never read
     `trade_mode` from the seed spec at all, so a builtin explicitly
-    wanting `trade_mode: "live"` (e.g. expiry-day-itm-auto-close) got
+    wanting `trade_mode: "live"` (e.g. expiry-day-mcx-itm-auto-close) got
     the ORM column default ("paper") instead on first insert — confirmed
     via prod: every real close on that agent's first live trading day
     silently ran through PaperTradeEngine. Only passed through when the
@@ -187,7 +187,7 @@ class TestBuildAgentRowReadsTradeModeFromSpec:
     specify trade_mode today) keeps the exact same default behaviour."""
 
     def test_expiry_day_itm_auto_close_spec_requests_live(self):
-        agent_def = _by_slug("expiry-day-itm-auto-close")
+        agent_def = _by_slug("expiry-day-mcx-itm-auto-close")
         assert agent_def.get("trade_mode") == "live", (
             "this agent's own design relies on reaching the real "
             "hold-gate path — omitting trade_mode here silently falls "
@@ -195,7 +195,7 @@ class TestBuildAgentRowReadsTradeModeFromSpec:
         )
 
     def test_build_agent_row_passes_through_explicit_trade_mode(self):
-        agent_def = _by_slug("expiry-day-itm-auto-close")
+        agent_def = _by_slug("expiry-day-mcx-itm-auto-close")
         row = _ae_build_agent_row(agent_def)
         assert row.trade_mode == "live", (
             f"_ae_build_agent_row() must read trade_mode from the spec "
@@ -232,7 +232,7 @@ class TestTradeModeRestartFailSafe:
         from types import SimpleNamespace
         from backend.api.algo.agent_engine import _ae_sync_existing_builtin
 
-        agent_def = _by_slug("expiry-day-itm-auto-close")
+        agent_def = _by_slug("expiry-day-mcx-itm-auto-close")
         existing = SimpleNamespace(
             conditions=agent_def["conditions"], long_name=None,
             schedule=agent_def.get("schedule", "always"),
@@ -252,7 +252,7 @@ class TestTradeModeRestartFailSafe:
         from types import SimpleNamespace
         from backend.api.algo.agent_engine import _ae_sync_existing_builtin
 
-        agent_def = _by_slug("expiry-day-itm-auto-close")
+        agent_def = _by_slug("expiry-day-mcx-itm-auto-close")
         existing = SimpleNamespace(
             conditions=agent_def["conditions"], long_name=None,
             schedule=agent_def.get("schedule", "always"),

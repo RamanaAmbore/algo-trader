@@ -637,6 +637,42 @@
     {
       "grammar_kind": "condition",
       "token_kind": "metric",
+      "token": "is_mcx_expiry_preclose_alert_window",
+      "value_type": "number",
+      "units": "binary",
+      "description": "1.0 when MCX, and only MCX, is expiring exactly today and within 65 minutes of its own close, else 0.0. Never None. Split 2026-11-26 from the combined is_expiry_preclose_alert_window.",
+      "resolver": "backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window._metric_is_mcx_expiry_preclose_alert_window"
+    },
+    {
+      "grammar_kind": "condition",
+      "token_kind": "metric",
+      "token": "is_nse_expiry_preclose_alert_window",
+      "value_type": "number",
+      "units": "binary",
+      "description": "1.0 when NSE, and only NSE, is expiring exactly today and within 65 minutes of its own close, else 0.0. Never None. Split 2026-11-26 from the combined is_expiry_preclose_alert_window.",
+      "resolver": "backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window._metric_is_nse_expiry_preclose_alert_window"
+    },
+    {
+      "grammar_kind": "condition",
+      "token_kind": "metric",
+      "token": "is_mcx_expiry_preclose_close_window",
+      "value_type": "number",
+      "units": "binary",
+      "description": "1.0 when MCX, and only MCX, is expiring exactly today and within 60 minutes of its own close, else 0.0. Never None. Split 2026-11-26 from the combined is_expiry_preclose_close_window.",
+      "resolver": "backend.api.algo.grammar_tokens.metric_is_expiry_preclose_close_window._metric_is_mcx_expiry_preclose_close_window"
+    },
+    {
+      "grammar_kind": "condition",
+      "token_kind": "metric",
+      "token": "is_nse_expiry_preclose_close_window",
+      "value_type": "number",
+      "units": "binary",
+      "description": "1.0 when NSE, and only NSE, is expiring exactly today and within 60 minutes of its own close, else 0.0. Never None. Split 2026-11-26 from the combined is_expiry_preclose_close_window.",
+      "resolver": "backend.api.algo.grammar_tokens.metric_is_expiry_preclose_close_window._metric_is_nse_expiry_preclose_close_window"
+    },
+    {
+      "grammar_kind": "condition",
+      "token_kind": "metric",
       "token": "underlying_market_loss",
       "value_type": "number",
       "units": "₹",

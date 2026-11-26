@@ -19,10 +19,23 @@ from __future__ import annotations
 
 from backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window import (
     _metric_factory_is_expiry_preclose_window,
+    _metric_factory_is_expiry_preclose_window_for_exchange,
 )
 
 CLOSE_LEAD_MINUTES = 60
 
 _metric_is_expiry_preclose_close_window = _metric_factory_is_expiry_preclose_window(
     CLOSE_LEAD_MINUTES
+)
+
+# Per-exchange split (2026-11-26) — powers the exchange-pure
+# `expiry-day-{mcx,nse}-itm-auto-close` agents. Same factory the alert
+# window's own per-exchange split uses, bound at this module's own lead
+# time — see `metric_is_expiry_preclose_alert_window.py`'s module
+# docstring for the live incident this fixes.
+_metric_is_mcx_expiry_preclose_close_window = _metric_factory_is_expiry_preclose_window_for_exchange(
+    "MCX", CLOSE_LEAD_MINUTES
+)
+_metric_is_nse_expiry_preclose_close_window = _metric_factory_is_expiry_preclose_window_for_exchange(
+    "NFO", CLOSE_LEAD_MINUTES
 )

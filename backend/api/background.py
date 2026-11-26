@@ -3024,11 +3024,13 @@ async def _task_expiry_check() -> None:
         try:
             # 2026-11-24 fix (audit finding #16): no broker call here
             # any more — see this function's own docstring. Real
-            # detection/alerting is owned by `expiry-day-preclose-alert`
-            # and the morning-preview agents, which already run on the
+            # detection/alerting is owned by the expiry-day-{mcx,nse}-
+            # preclose-alert pair (exchange-pure split 2026-11-26) and
+            # the morning-preview agents, which already run on the
             # agent engine's own cycle.
             logger.info("Background: daily expiry-check tick — no broker call; "
-                        "see expiry-day-preclose-alert for real-time status")
+                        "see expiry-day-mcx-preclose-alert / expiry-day-nse-preclose-alert "
+                        "for real-time status")
             today = timestamp_indian().date()
             _expiry_last_run_date = today
         except Exception as e:

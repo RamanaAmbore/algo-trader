@@ -83,15 +83,21 @@ class TestRealExpiryAgentsShipInactive:
             f"{_SEED_SHIPS_INACTIVE_PHRASE!r}"
         )
 
-    def test_new_consolidated_auto_close_agent_does_not_carry_the_phrase(self):
-        """expiry-day-itm-auto-close (2026-10-29) is a brand-new slug and
-        deliberately does NOT carry "Ships INACTIVE" — its safety net is
-        the order-level hold-by-default in ExpiryEngine.close_positions(),
-        not agent deactivation. Pins that deliberate choice so a future
-        edit doesn't silently reintroduce the phrase (which would force
-        status back to inactive on every restart via _ae_guard_seed_status,
-        defeating the design)."""
-        agent_def = _by_slug("expiry-day-itm-auto-close")
+    @pytest.mark.parametrize("slug", [
+        "expiry-day-mcx-itm-auto-close", "expiry-day-nse-itm-auto-close",
+    ])
+    def test_new_consolidated_auto_close_agent_does_not_carry_the_phrase(self, slug):
+        """The original expiry-day-itm-auto-close (2026-10-29) was a
+        brand-new slug that deliberately did NOT carry "Ships INACTIVE"
+        — its safety net is the order-level hold-by-default in
+        ExpiryEngine.close_positions(), not agent deactivation. Split
+        exchange-pure 2026-11-26 into expiry-day-mcx-itm-auto-close /
+        expiry-day-nse-itm-auto-close, both brand-new slugs that
+        preserve the same deliberate choice. Pins that choice so a
+        future edit doesn't silently reintroduce the phrase (which would
+        force status back to inactive on every restart via
+        _ae_guard_seed_status, defeating the design)."""
+        agent_def = _by_slug(slug)
         assert _SEED_SHIPS_INACTIVE_PHRASE not in agent_def.get("description", "")
         assert agent_def["status"] == "active"
 

@@ -1332,6 +1332,16 @@ _V2_REMINDER_METRIC_LABELS = {
     # for any pre-existing row shape.
     "is_expiry_preclose_alert_window": "a held MCX or NFO position expires today, within 65 minutes of that exchange's close",
     "is_expiry_preclose_close_window": "a held MCX or NFO position expires today, within 60 minutes of that exchange's close",
+    # Per-exchange split (2026-11-26) — the combined labels above stay
+    # registered (no live BUILTIN_AGENTS consumer, but not verified dead
+    # for every custom agent — see metric_is_expiry_preclose_alert_
+    # window.py's own docstring). Each new label names ITS OWN exchange
+    # only — the whole point of the split was to stop a rendered line
+    # naming an exchange that isn't the one that actually fired.
+    "is_mcx_expiry_preclose_alert_window": "a held MCX position expires today, within 65 minutes of MCX's close",
+    "is_nse_expiry_preclose_alert_window": "a held NSE/NFO position expires today, within 65 minutes of NSE's close",
+    "is_mcx_expiry_preclose_close_window": "a held MCX position expires today, within 60 minutes of MCX's close",
+    "is_nse_expiry_preclose_close_window": "a held NSE/NFO position expires today, within 60 minutes of NSE's close",
     # Deliberately NOT in `_V2_EXPIRY_DAY_METRICS` below — that set drives
     # the "Expiry pre-close" PREFIX, which would be misleading on a
     # morning snapshot (implies close is imminent). Omitting both means
@@ -1352,6 +1362,8 @@ _V2_REMINDER_METRIC_LABELS = {
 _V2_EXPIRY_DAY_METRICS = {
     "is_mcx_expiry_today", "is_nse_expiry_today",
     "is_expiry_preclose_alert_window", "is_expiry_preclose_close_window",
+    "is_mcx_expiry_preclose_alert_window", "is_nse_expiry_preclose_alert_window",
+    "is_mcx_expiry_preclose_close_window", "is_nse_expiry_preclose_close_window",
 }
 
 
@@ -1505,136 +1517,35 @@ def _v2_expiry_context_shim(context: dict | None):
     return expiry_context_shim(context)
 
 
-async def _v2_expiry_position_breakdown(context: dict | None) -> str | None:
-    """Render the MCX + NFO expiry position breakdown for
-    `expiry-day-preclose-alert` — which roots are affected, and which
-    positions are genuinely unnetted (MCX, after ExpiryEngine's real
-    4-rule netting) or ITM/NTM (NFO, no netting exception) and need
-    closing before settlement.
+async def _v2_expiry_exchange_breakdown_or_empty(exchange: str) -> str:
+    """Shared core: run `ExpiryEngine.scan_positions()`, then render
+    ONE exchange's breakdown, or an explicit "no positions" fallback —
+    never a blank/`None` (a silent blank reads as a false "all clear").
+    Shared by `_v2_expiry_preclose_alert_section()` and
+    `_v2_expiry_morning_preview()` (which adds its own tentative-framing
+    prefix on top) — one scan+render implementation, not two.
 
-    Deliberately the SAME read-only identification the order-placing
-    sibling agent (`expiry-day-itm-auto-close` → `_action_live_
-    expiry_auto_close`) uses — one `ExpiryEngine().scan_positions()`
-    call, never a second, possibly-drifting classification. Council
-    finding (2026-10-29): never render an assurance like "safe"/
-    "hedged, no action needed" for a netted MCX root — state the neutral
-    fact only. Never reuse "netted" wording for NFO — different
-    mechanism (OTM just means "no action", not "paired"). A scan
-    failure returns an explicit degraded note, never a silent blank
-    (which would read as a false "all clear").
+    2026-11-26 split: extracted from the old combined `_v2_expiry_
+    position_breakdown()` (deleted — see `metric_is_expiry_preclose_
+    alert_window.py`'s module docstring for the live incident: a single
+    flat condition spanning both exchanges let an MCX-only fire render
+    this exact fallback text while the alert's own title claimed
+    something was expiring today, when the real cause was a day-early
+    false trigger AND no exchange identity in the condition to begin
+    with). Every caller now already knows its own single exchange from
+    its own agent's condition — this function never re-derives a set.
 
-    Audit fix (2026-10-29): only renders exchanges that are ACTUALLY
-    within their own pre-close window right now (65 minutes, since
-    2026-11-22), re-derived
-    via `_expiry_preclose_exchanges()` — the agent's own condition is a
-    single flat boolean with no exchange identity, so without this an
-    NFO-only fire would also render whatever MCX residual happened to
-    exist at that moment (and vice versa), using the wrong exchange's
-    timing context. See `_expiry_preclose_exchanges`'s own docstring.
-
-    Called only when the firing agent is the expiry pre-close alert
-    (see the call site in `_v2_send_rich_alert`) — `scan_positions()`
-    makes real (cached, read-only) broker calls, so this must never run
-    on every cycle tick, only once the cheap calendar/clock condition
-    has already matched.
-
-    2026-11-22 fix (operator: "if no positions to close, mention that
-    clearly") — the agent's own condition fires on a <=1.5-day buffer
-    (`_scope_positions_expiring_today`), one day wider than
-    `scan_positions()`'s own `expiry == today` filter, so a real first
-    fire can land a day before anything is actually closeable. Both
-    "nothing found at all" and "something's expiring but not for the
-    in-window exchange(s)" now return an explicit statement instead of
-    `None` — `None` here used to make the caller fall back to the bare
-    one-line reminder with no detail, reading as an uninformative
-    non-answer rather than a confirmed "nothing to close."
-    """
-    from backend.api.algo.expiry import ExpiryEngine
-    from backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window import (
-        ALERT_LEAD_MINUTES, _expiry_preclose_exchanges,
-    )
-
-    shim = _v2_expiry_context_shim(context)
-    exchanges_in_window = _expiry_preclose_exchanges(shim, None, ALERT_LEAD_MINUTES)
-    if not exchanges_in_window:
-        logger.warning(
-            "_v2_expiry_position_breakdown: fired but no exchange is currently "
-            "within its own pre-close window (stale context or a race) — "
-            "rendering nothing rather than guessing"
-        )
-        return None
-
-    engine = ExpiryEngine()
-    try:
-        await asyncio.to_thread(engine.scan_positions)
-    except Exception as e:
-        logger.warning(f"_v2_expiry_position_breakdown: scan failed: {e}")
-        return "(position detail unavailable this cycle — check the Positions grid or Exp-close tab)"
-
-    exch_label = " and ".join(sorted(exchanges_in_window))
-    all_expiring = engine.state.positions or []
-    if not all_expiring:
-        return f"No {exch_label} F&O positions are expiring today — nothing to close."
-
-    sections = [
-        section for exch, label in (("MCX", "MCX"), ("NFO", "NSE/NFO"))
-        if exch in exchanges_in_window
-        and (section := await _v2_expiry_exchange_section(exch, label, all_expiring)) is not None
-    ]
-    if not sections:
-        return f"No {exch_label} F&O positions are expiring today — nothing to close."
-    return "\n\n".join(sections)
-
-
-async def _v2_expiry_morning_preview(context: dict | None, exchange: str) -> str | None:
-    """Render ONE exchange's expiry morning preview for
-    `expiry-day-mcx-morning-preview` / `expiry-day-nse-morning-preview`
-    — same identification as the pre-close sibling
-    (`_v2_expiry_position_breakdown`, reused section-by-section via
-    `_v2_expiry_exchange_section`), framed as TENTATIVE: priced at
-    today's opening LTP, not a final determination. Final staging for
-    operator review happens later via `expiry-day-itm-auto-close`'s own
-    60-minute-before-close window.
-
-    Operator: "the morning mcx or nfo message, instead of just showing
-    it is market close day, it should show the positions that need to
-    be closed at that time" — "at that time" means at THIS message's own
-    firing time/price, not a promise about what will still be true by
-    close. The tentative framing line makes that explicit so the
-    operator never mistakes a morning snapshot for a final determination.
-
-    Takes an explicit single `exchange` ("MCX" or "NFO"), NOT a
-    re-derived set like the pre-close sibling — this is deliberately
-    per-exchange (see `metric_is_expiry_morning_preview_window.py`'s own
-    module docstring for why: two independent agents, one per exchange,
-    because `_cycle_in_cooldown` gates at the agent level, so a shared
-    agent firing for one exchange would block it from ever evaluating
-    the other on a dual-expiry day). Rendering only the CALLER's own
-    named exchange — never re-deriving "which exchange(s) currently
-    qualify" from scratch — means this function can never render the
-    wrong exchange's section even if both happen to qualify at the
-    same instant.
-
-    2026-11-22 fix (operator: "if no positions to close, mention that
-    clearly") — this agent's own condition only requires the session to
-    have been open 5 minutes; it says nothing about whether
-    `scan_positions()` (which filters to `expiry == today` exactly)
-    will find anything at all. A position within the <=1.5-day scope
-    token's own buffer but expiring TOMORROW, not today, is a real,
-    expected case on the day before expiry. Both "nothing found at
-    all" and "this exchange's own section has nothing" now return an
-    explicit "no positions" statement instead of `None` — `None` used
-    to make the caller fall back to the bare one-line reminder with no
-    detail, which reads as an uninformative non-answer, not a
-    confirmed "nothing to close."
-    """
+    Council finding (2026-10-29, preserved): never render an assurance
+    like "safe"/"hedged, no action needed" for a netted MCX root — state
+    the neutral fact only. Never reuse "netted" wording for NFO —
+    different mechanism (OTM just means "no action", not "paired")."""
     from backend.api.algo.expiry import ExpiryEngine
 
     engine = ExpiryEngine()
     try:
         await asyncio.to_thread(engine.scan_positions)
     except Exception as e:
-        logger.warning(f"_v2_expiry_morning_preview: scan failed: {e}")
+        logger.warning(f"_v2_expiry_exchange_breakdown_or_empty: scan failed: {e}")
         return "(position detail unavailable this cycle — check the Positions grid or Exp-close tab)"
 
     all_expiring = engine.state.positions or []
@@ -1645,11 +1556,58 @@ async def _v2_expiry_morning_preview(context: dict | None, exchange: str) -> str
     section = await _v2_expiry_exchange_section(exchange, label, all_expiring)
     if section is None:
         return f"No {exchange} F&O positions are expiring today — nothing to close."
+    return section
+
+
+async def _v2_expiry_preclose_alert_section(context: dict | None, exchange: str) -> str | None:
+    """Render ONE exchange's expiry pre-close breakdown for
+    `expiry-day-mcx-preclose-alert` / `expiry-day-nse-preclose-alert` —
+    split 2026-11-26 from the single combined `expiry-day-preclose-
+    alert` (see `metric_is_expiry_preclose_alert_window.py`'s module
+    docstring for the live incident this fixes). Mirrors `_v2_expiry_
+    morning_preview()`'s own shape exactly: takes an explicit single
+    `exchange`, never a re-derived set, because the caller's own agent
+    condition (`is_{mcx,nse}_expiry_preclose_alert_window`) already
+    confirmed this exchange, and only this exchange, is genuinely
+    within its own pre-close window right now — this function does not
+    re-check that.
+
+    `scan_positions()` (inside `_v2_expiry_exchange_breakdown_or_empty`)
+    makes real (cached, read-only) broker calls, so this must never run
+    on every cycle tick, only once the cheap calendar/clock condition
+    has already matched — same constraint the deleted combined function
+    documented, unchanged by the split."""
+    return await _v2_expiry_exchange_breakdown_or_empty(exchange)
+
+
+async def _v2_expiry_morning_preview(context: dict | None, exchange: str) -> str | None:
+    """Render ONE exchange's expiry morning preview for
+    `expiry-day-mcx-morning-preview` / `expiry-day-nse-morning-preview`
+    — same identification as the pre-close sibling
+    (`_v2_expiry_exchange_breakdown_or_empty`), framed as TENTATIVE:
+    priced at today's opening LTP, not a final determination. Final
+    staging for operator review happens later via the itm-auto-close
+    sibling's own 60-minute-before-close window.
+
+    Operator: "the morning mcx or nfo message, instead of just showing
+    it is market close day, it should show the positions that need to
+    be closed at that time" — "at that time" means at THIS message's own
+    firing time/price, not a promise about what will still be true by
+    close. The tentative framing line makes that explicit so the
+    operator never mistakes a morning snapshot for a final determination.
+
+    Takes an explicit single `exchange` ("MCX" or "NFO"), NOT a
+    re-derived set — this is deliberately per-exchange (see
+    `metric_is_expiry_morning_preview_window.py`'s own module docstring
+    for why: two independent agents, one per exchange, because
+    `_cycle_in_cooldown` gates at the agent level, so a shared agent
+    firing for one exchange would block it from ever evaluating the
+    other on a dual-expiry day)."""
     tentative = (
         "Tentative (priced at today's opening LTP) — final staging "
         f"happens 1 hour before {exchange}'s close."
     )
-    return tentative + "\n\n" + section
+    return tentative + "\n\n" + await _v2_expiry_exchange_breakdown_or_empty(exchange)
 
 
 def _v2_derive_kind(metric: str, op: str = '') -> str:
@@ -2225,8 +2183,10 @@ async def _v2_reminder_line_with_expiry_breakdown(
     tg_body = reminder_line
     email_html = f"<p>{html.escape(reminder_line)}</p>"
     slug = getattr(agent, 'slug', None)
-    if slug == 'expiry-day-preclose-alert':
-        breakdown = await _v2_expiry_position_breakdown(context)
+    if slug == 'expiry-day-mcx-preclose-alert':
+        breakdown = await _v2_expiry_preclose_alert_section(context, "MCX")
+    elif slug == 'expiry-day-nse-preclose-alert':
+        breakdown = await _v2_expiry_preclose_alert_section(context, "NFO")
     elif slug == 'expiry-day-mcx-morning-preview':
         breakdown = await _v2_expiry_morning_preview(context, "MCX")
     elif slug == 'expiry-day-nse-morning-preview':
@@ -3097,7 +3057,7 @@ _EXPIRY_RISK_AGENTS = [
         "slug": "expiry-nfo-risk-alert",
         "name": "NFO expiry risk — ITM options or open futures",
         "long_name": "when:positions.expiring_today.nfo.pnl>=-inf AND NOT(nse_preclose_window)   alert:high/tg+email+ntfy(high)+log   do:notify-only",
-        "description": "Fires on expiry day when any NFO position is ITM (option) or is an open future — both require active management before the exchange settles the contract. Suppressed during NSE's own 65-min pre-close window (retimed 2026-11-22, was 30), where expiry-day-preclose-alert already reports the same thing. Exchange-pure: never fires on an MCX-only match — see `expiry-mcx-risk-alert` for that (split 2026-11-26, was briefly merged into this one row 2026-11-19 to 2026-11-26).",
+        "description": "Fires on expiry day when any NFO position is ITM (option) or is an open future — both require active management before the exchange settles the contract. Suppressed during NSE's own 65-min pre-close window (retimed 2026-11-22, was 30), where expiry-day-nse-preclose-alert already reports the same thing (split exchange-pure from expiry-day-preclose-alert, 2026-11-26). Exchange-pure: never fires on an MCX-only match — see `expiry-mcx-risk-alert` for that (split 2026-11-26, was briefly merged into this one row 2026-11-19 to 2026-11-26).",
         "topic": "expiry_warning_nfo",
         "conditions": {"all": [
             # 2026-11-24 fix (audit finding #14): the NFO leaf used to
@@ -3122,7 +3082,7 @@ _EXPIRY_RISK_AGENTS = [
         "slug": "expiry-mcx-risk-alert",
         "name": "MCX expiry risk — unhedged options",
         "long_name": "when:positions.expiring_today.mcx_unhedged.pnl>=-inf AND NOT(mcx_preclose_window)   alert:high/tg+email+ntfy(high)+log   do:notify-only",
-        "description": "Fires on expiry day when any MCX option position is unhedged after the real engine's 4-rule netting (or UNKNOWN-moneyness) — this additionally risks an unfavourable broker auto-settlement. A lone expiring MCX future with no option leg is never itself flagged (futures are netting partners only, never a needs_close candidate in their own right). Suppressed during MCX's own 65-min pre-close window (retimed 2026-11-22, was 30), where expiry-day-preclose-alert already reports the same thing. Exchange-pure: never fires on an NFO-only match — see `expiry-nfo-risk-alert` for that (split 2026-11-26, was briefly merged into that one row 2026-11-19 to 2026-11-26).",
+        "description": "Fires on expiry day when any MCX option position is unhedged after the real engine's 4-rule netting (or UNKNOWN-moneyness) — this additionally risks an unfavourable broker auto-settlement. A lone expiring MCX future with no option leg is never itself flagged (futures are netting partners only, never a needs_close candidate in their own right). Suppressed during MCX's own 65-min pre-close window (retimed 2026-11-22, was 30), where expiry-day-mcx-preclose-alert already reports the same thing (split exchange-pure from expiry-day-preclose-alert, 2026-11-26). Exchange-pure: never fires on an NFO-only match — see `expiry-nfo-risk-alert` for that (split 2026-11-26, was briefly merged into that one row 2026-11-19 to 2026-11-26).",
         "topic": "expiry_warning_mcx",
         "conditions": {"all": [
             {"op": ">=", "scope": "positions.expiring_today.mcx_unhedged", "metric": "pnl", "value": -999999999},
@@ -3141,110 +3101,125 @@ for _a in _EXPIRY_RISK_AGENTS:
 BUILTIN_AGENTS.extend(_EXPIRY_RISK_AGENTS)
 
 
-# ── Expiry-day agents, consolidated to one alert + one order-placer
-# (2026-10-28, retimed 2026-10-29, consolidated 2026-10-29) ───────────
+# ── Expiry-day agents (2026-10-28, retimed 2026-10-29, consolidated
+# 2026-10-29, split exchange-pure 2026-11-26) ─────────────────────────
 #
 # History: `expiry-day-mcx`/`expiry-day-nse` (bare `is_{mcx,nse}_
 # expiry_today==1` leaf) fired at the first tick of the expiry day,
 # hours before close. Retimed same day to `expiry-day-mcx-v2`/
 # `expiry-day-nse-v2` (compound `all[]`, 30-min-before-close window) —
-# itself retired a few hours later by THIS consolidation, per three
-# direct operator instructions in the same session: (1) "can you create
-# one agent for order placing and one agent for alert instead of two"
-# (collapses the legacy `expiry-day-equity-itm-auto-close`/
-# `expiry-day-commodity-itm-auto-close` pair the same way), (2) "why
-# can't you have one agent for nfo and mcx" / "let the function that you
+# retired a few hours later by a 2026-10-29 consolidation into ONE alert
+# + ONE order-placer spanning both exchanges, per three direct operator
+# instructions that same session: (1) "can you create one agent for
+# order placing and one agent for alert instead of two", (2) "why can't
+# you have one agent for nfo and mcx" / "let the function that you
 # register identify the positions, 30 mins before market close, etc." —
 # move the exchange-loop and lead-time check OUT of the DSL condition
-# tree and INTO the registered Python function, so each agent's own
-# `conditions` is one flat leaf, not a per-exchange compound tree, and
-# (3) "alert agent 30 mins before expiry market closure, close agents 25
-# mins before".
+# tree and INTO the registered Python function, and (3) "alert agent 30
+# mins before expiry market closure, close agents 25 mins before".
+#
+# SPLIT BACK exchange-pure, 2026-11-26 — live incident: the combined
+# `expiry-day-preclose-alert` fired with a self-contradicting body ("a
+# position expires today, within 65 minutes of that exchange's close" +
+# "No MCX F&O positions are expiring today — nothing to close"), because
+# its shared condition carried no exchange identity AND the underlying
+# gate used a ≤1.5-day lookahead (fixed too — see
+# `metric_is_expiry_preclose_alert_window.py`'s module docstring). Same
+# failure class, same fix shape, as the `expiry-nfo-risk-alert`/
+# `expiry-mcx-risk-alert` split earlier that same day (see
+# `_EXPIRY_RISK_AGENTS` above). The 2026-10-29 consolidation's OWN
+# stated reasons (fewer agents, Python-side exchange loop instead of a
+# DSL compound tree) are preserved: the exchange-loop/lead-time logic
+# still lives in Python (`_expiry_preclose_exchanges()`), just bound
+# twice via a per-exchange factory — mirroring `metric_is_expiry_
+# morning_preview_window.py`'s own precedent — rather than duplicated.
+# Only the DSL-visible shape changes: 2 combined agents become 4
+# exchange-pure ones.
 #
 # RETIRE + RESHIP, not an in-place edit (same reasoning as every prior
-# round in this file): `_ae_should_reset_conditions()` only recognizes a
-# stale 'pnl'/'pnl_pct' leaf, so an in-place edit to a DIFFERENT shape
-# change (compound tree → flat leaf, or legacy per-exchange → combined)
-# would leave an already-seeded row stuck on its OLD condition forever.
-# New slugs let `_ae_prune_retired_builtins` delete the stale rows and
-# `seed_agents` insert these fresh.
+# round in this file): a condition-SHAPE change (combined flat leaf →
+# per-exchange flat leaf) is exactly the case `_ae_should_reset_
+# conditions()` does not recognize, so an in-place edit would leave an
+# already-seeded row stuck on its OLD combined condition forever. New
+# slugs let `_ae_prune_retired_builtins` delete the 2 stale rows
+# (`expiry-day-preclose-alert`, `expiry-day-itm-auto-close`) and
+# `seed_agents` insert these 4 fresh. Accepted tradeoff, same as the
+# risk-alert split: the old rows' alert history/trigger_count is lost,
+# not carried over — a HELD order an old agent already staged is
+# unaffected (`AlgoOrder.agent_id` is a plain stored value, never a live
+# FK with cascade-on-delete; release/auto-release reads it directly).
 #
-# Both agents read ONE flat leaf condition —
-# `is_expiry_preclose_alert_window`/`is_expiry_preclose_close_window`
-# (grammar_tokens/metric_is_expiry_preclose_{alert,close}_window.py) —
-# each of which internally loops MCX+NFO and does the lead-time check in
-# Python, not DSL. schedule="always" + no fire_at_time, since these
-# tokens are already clock-derived.
+# Each new agent reads ONE flat, per-exchange leaf condition —
+# `is_{mcx,nse}_expiry_preclose_{alert,close}_window`
+# (grammar_tokens/metric_is_expiry_preclose_{alert,close}_window.py,
+# `_metric_factory_is_expiry_preclose_window_for_exchange`). schedule=
+# "always" + no fire_at_time, since these tokens are already
+# clock-derived. Each agent gets its OWN `topic`
+# (`expiry_warning_{mcx,nse}_{preclose,close}`) — distinct from
+# `expiry_warning_mcx`/`expiry_warning_nfo` (the risk-alert pair) and
+# the shared `expiry_warning` the morning-preview/generic-reminder
+# agents still use — a shared topic merges same-tick co-fires' match
+# data into one winner's alert body (see `_compute_topic_suppression`),
+# which would reproduce the exact cross-exchange conflation this split
+# exists to fix the first time two of these four agents genuinely
+# co-fire in one cycle.
 #
-# Cooldown is 30 min (changed from 180 on 2026-11-22), NOT the 22h used
-# elsewhere in this file. Both agents share ONE metric name across both
-# exchanges, and the per-fire latch key is (agent_slug, metric, scope,
-# account) with NO exchange dimension (this `funds.total`-scoped leaf
-# carries no account/underlying to key on) — but a SHORT cooldown here
-# is deliberate, not a leftover: at 65/60-minute windows (was 30/25),
-# a single scan at T-60 has no periodic re-scan of its own before
-# close for EITHER exchange (2026-11-24 fix, audit finding #15: the
-# OLD rationale here cited a "legacy ExpiryEngine.run() loop" that
-# re-scanned NFO every `algo.expiry_rescan_minutes` — that loop and
-# both settings are now fully dead code, removed; neither exchange has
-# had a standalone re-scan mechanism since Part C). A leg that turns
-# genuinely unnetted-ITM in that last hour (price moves against it
-# after the T-60 scan) would go unflagged until next-day review
-# without this agent's OWN periodic re-fire covering the gap. 30 min
-# lets `expiry-day-itm-auto-close` re-fire ~2 times inside its own
-# 60-min window (T-60, T-30), re-running `ExpiryEngine.scan_positions()`
-# each time. A re-fire is safe for an already-HELD leg (the per-leg
-# dedup guard inside `record_held_order()`,
+# Cooldown is 30 min per agent (unchanged from the combined shape's own
+# 2026-11-22 retime), NOT the 22h used elsewhere in this file — now also
+# genuinely exchange-scoped (each agent's own metric/latch never
+# overlaps the sibling exchange's), on top of the periodic-re-scan
+# reasoning that justified 30 min in the first place: at 65/60-minute
+# windows, a single scan at T-60 has no periodic re-scan of its own
+# before close, so a leg that turns genuinely unnetted-ITM in that last
+# hour (price moves against it after the T-60 scan) would go unflagged
+# until next-day review without each agent's OWN periodic re-fire
+# covering the gap. 30 min lets each itm-auto-close agent re-fire ~2
+# times inside its own 60-min window (T-60, T-30), re-running
+# `ExpiryEngine.scan_positions()` each time. A re-fire is safe for an
+# already-HELD leg (the per-leg dedup guard inside `record_held_order()`,
 # order_hold_gate.py, returns the existing HELD row's id instead of
 # duplicating it) AND for a leg the operator already released and is
 # still chasing (`_exp_leg_in_flight_this_session()`, expiry.py, skips
 # any leg with an unresolved order — HELD, OPEN, or CANCEL_FAILED —
-# already open this session, closing a real double-close risk the
-# first version of this comment did not account for: a released row
-# still mid-chase is no longer HELD, so the dedup guard alone could not
-# see it). So a re-fire only ever stages a genuinely NEW unnetted-ITM
-# leg. `expiry-day-preclose-alert` gets the same 30-min cooldown so the
-# operator is re-notified of a newly-staged leg too, not left to notice
-# only from the Held Orders card.
+# already open this session). So a re-fire only ever stages a genuinely
+# NEW unnetted-ITM leg. Each preclose-alert agent gets the same 30-min
+# cooldown so the operator is re-notified of a newly-staged leg too,
+# not left to notice only from the Held Orders card.
 #
-# The SAME short cooldown also removes the cross-exchange-suppression
-# concern a long cooldown would have created: by the time MCX's window
-# opens hours after NFO's own window closes, many 30-min cooldown
-# cycles have already elapsed regardless of NFO's last fire — there is
-# no gap for NFO to "use up" that could ever reach into MCX's window.
-# See `test_expiry_day_and_preclose_agents.py`'s same-day NFO-then-MCX
-# regression test, which pins this.
-#
-# The real timing+identification work (which exchange(s) currently
-# qualify, and what ExpiryEngine finds) lives in the registered
-# functions, not the condition: `_v2_expiry_position_breakdown()`
-# (render, called from `_v2_send_rich_alert`'s reminder-only branch) for
-# the alert; `_action_live_expiry_auto_close` (actions_live.py,
-# generalized to both exchanges in one scan) for the order-placer.
+# The real timing+identification work (what ExpiryEngine finds) lives
+# in the registered functions, not the condition:
+# `_v2_expiry_preclose_alert_section(context, exchange)` (render, called
+# from `_v2_send_rich_alert`'s reminder-only branch, one call per
+# exchange) for the alert pair; `_action_live_expiry_auto_close`
+# (actions_live.py, unchanged — already supported narrowing to one
+# exchange via `params.exchange`, which each itm-auto-close agent below
+# now sets) for the order-placer pair.
 _EXPIRY_DAY_AWARENESS_AGENTS = [
     {
-        "slug": "expiry-day-preclose-alert",
-        "name": "Expiry pre-close",
-        "long_name": "when:is_expiry_preclose_alert_window==1   schedule:always/cooldown:30   alert:high/tg+email+ntfy(high)+log   do:notify-only",
+        "slug": "expiry-day-mcx-preclose-alert",
+        "name": "MCX expiry pre-close",
+        "long_name": "when:is_mcx_expiry_preclose_alert_window==1   schedule:always/cooldown:30   alert:high/tg+email+ntfy(high)+log   do:notify-only",
         "description": (
-            "Fires per exchange per expiry day starting 65 minutes before "
-            "that exchange's own close, then re-fires every 30 minutes "
-            "while still in that window, when a held MCX or NFO F&O "
-            "position expires today. Lists the affected underlying roots "
-            "and which positions are genuinely unnetted (MCX, after the "
-            "real 4-rule netting pass) or ITM/NTM (NFO, no netting "
-            "exception) and need closing — via "
-            "ExpiryEngine.scan_positions(), the same read-only "
-            "identification the order-placing sibling agent uses."
+            "Fires starting 65 minutes before MCX's own close, then "
+            "re-fires every 30 minutes while still in that window, when "
+            "a held MCX F&O position expires exactly today. Lists the "
+            "affected underlying roots and which positions are genuinely "
+            "unnetted after the real 4-rule netting pass and need closing "
+            "— via ExpiryEngine.scan_positions(), the same read-only "
+            "identification the order-placing sibling agent uses. "
+            "Exchange-pure: never fires on an NFO-only match — see "
+            "expiry-day-nse-preclose-alert for that (split 2026-11-26, "
+            "was briefly a single combined expiry-day-preclose-alert "
+            "2026-10-29 to 2026-11-26)."
         ),
         "schedule": "always",
         "cooldown_minutes": 30,
         "tier": "high",
-        "topic": "expiry_warning",
+        "topic": "expiry_warning_mcx_preclose",
         "status": "active",
         "actions": [],
         "conditions": {"op": "==", "scope": "funds.total",
-                        "metric": "is_expiry_preclose_alert_window", "value": 1.0},
+                        "metric": "is_mcx_expiry_preclose_alert_window", "value": 1.0},
         "events": [
             {"channel": "telegram", "enabled": True},
             {"channel": "email",    "enabled": True},
@@ -3253,18 +3228,49 @@ _EXPIRY_DAY_AWARENESS_AGENTS = [
         ],
     },
     {
-        "slug": "expiry-day-itm-auto-close",
-        "name": "Expiry ITM/unnetted auto-close",
-        "long_name": "when:is_expiry_preclose_close_window==1   schedule:always/cooldown:30   alert:critical/tg+email+ntfy(high)+log   do:expiry-auto-close",
+        "slug": "expiry-day-nse-preclose-alert",
+        "name": "NSE expiry pre-close",
+        "long_name": "when:is_nse_expiry_preclose_alert_window==1   schedule:always/cooldown:30   alert:high/tg+email+ntfy(high)+log   do:notify-only",
         "description": (
-            "Fires per exchange per expiry day starting 60 minutes before "
-            "that exchange's own close (5 min after the sibling alert's "
-            "65-min window), then re-scans and re-fires every 30 minutes "
-            "while still in that window — closing the gap where a leg "
-            "could turn unnetted-ITM in the last hour and go unflagged. "
-            "Chase-closes MCX's unnetted ITM/NTM residual and every NFO "
-            "ITM/NTM leg via ExpiryEngine.scan_positions()+"
-            "close_positions(), covering both exchanges in one scan. Each "
+            "Fires starting 65 minutes before NSE's own close, then "
+            "re-fires every 30 minutes while still in that window, when "
+            "a held NSE/NFO F&O position expires exactly today. Lists "
+            "the affected underlying roots and which positions are "
+            "ITM/NTM (no netting exception) and need closing — via "
+            "ExpiryEngine.scan_positions(), the same read-only "
+            "identification the order-placing sibling agent uses. "
+            "Exchange-pure: never fires on an MCX-only match — see "
+            "expiry-day-mcx-preclose-alert for that (split 2026-11-26, "
+            "was briefly a single combined expiry-day-preclose-alert "
+            "2026-10-29 to 2026-11-26)."
+        ),
+        "schedule": "always",
+        "cooldown_minutes": 30,
+        "tier": "high",
+        "topic": "expiry_warning_nse_preclose",
+        "status": "active",
+        "actions": [],
+        "conditions": {"op": "==", "scope": "funds.total",
+                        "metric": "is_nse_expiry_preclose_alert_window", "value": 1.0},
+        "events": [
+            {"channel": "telegram", "enabled": True},
+            {"channel": "email",    "enabled": True},
+            {"channel": "log",      "enabled": True},
+            {"channel": "ntfy",     "enabled": True, "priority": "high"},
+        ],
+    },
+    {
+        "slug": "expiry-day-mcx-itm-auto-close",
+        "name": "MCX expiry unnetted auto-close",
+        "long_name": "when:is_mcx_expiry_preclose_close_window==1   schedule:always/cooldown:30   alert:critical/tg+email+ntfy(high)+log   do:expiry-auto-close",
+        "description": (
+            "Fires starting 60 minutes before MCX's own close (5 min "
+            "after the sibling alert's 65-min window), then re-scans and "
+            "re-fires every 30 minutes while still in that window — "
+            "closing the gap where a leg could turn unnetted-ITM in the "
+            "last hour and go unflagged. Chase-closes MCX's unnetted "
+            "ITM/NTM residual (per the real 4-rule netting pass) via "
+            "ExpiryEngine.scan_positions()+close_positions(). Each "
             "re-fire only ever acts on a genuinely NEW unnetted-ITM leg — "
             "close_positions() skips any leg that already has an "
             "unresolved order this session (HELD, OPEN from an operator "
@@ -3272,29 +3278,39 @@ _EXPIRY_DAY_AWARENESS_AGENTS = [
             "already-HELD one. Every close is HELD by default "
             "(HoldCategory.EXPIRY_CLOSE, "
             "hold.expiry_close_released=False) — this agent stages orders "
-            "for review, it does not place live trades unless the operator "
-            "explicitly releases that category from /admin/settings."
+            "for review, it does not place live trades unless the "
+            "operator explicitly releases that category from "
+            "/admin/settings. Exchange-pure: never closes an NFO-only "
+            "match — see expiry-day-nse-itm-auto-close for that (split "
+            "2026-11-26, was briefly a single combined "
+            "expiry-day-itm-auto-close 2026-10-29 to 2026-11-26)."
         ),
         "schedule": "always",
         "cooldown_minutes": 30,
         "tier": "critical",
-        "topic": "expiry_warning",
+        "topic": "expiry_warning_mcx_close",
         "status": "active",
-        # trade_mode (2026-10-31 fix, live-incident): never set here before,
-        # so this agent silently inherited execution.default_agent_trade_
-        # mode ('paper') — every real close on its first live trading day
-        # ran through PaperTradeEngine instead of the real hold-gate path
-        # (HoldCategory.EXPIRY_CLOSE, see the docstring above), so the
-        # staged-for-review HELD order this agent's whole design depends
-        # on never actually got created. The real safety net stays intact
-        # regardless of this field — a close still only reaches the broker
-        # if the operator explicitly releases hold.expiry_close_released.
+        # trade_mode (2026-10-31 fix, live-incident, preserved across the
+        # split): never set here before, so this agent silently inherited
+        # execution.default_agent_trade_mode ('paper') — every real close
+        # on its first live trading day ran through PaperTradeEngine
+        # instead of the real hold-gate path (HoldCategory.EXPIRY_CLOSE,
+        # see the docstring above), so the staged-for-review HELD order
+        # this agent's whole design depends on never actually got
+        # created. The real safety net stays intact regardless of this
+        # field — a close still only reaches the broker if the operator
+        # explicitly releases hold.expiry_close_released.
         "trade_mode": "live",
+        # params.exchange narrows `_action_live_expiry_auto_close` to
+        # MCX only — that action already intersects this with its own
+        # re-derived in-window exchange set before closing anything
+        # (actions_live.py, unchanged by this split; see its own
+        # docstring for the 2026-11-24 fix that added this param).
         "actions": [
-            {"type": "expiry_auto_close", "params": {}},
+            {"type": "expiry_auto_close", "params": {"exchange": "MCX"}},
         ],
         "conditions": {"op": "==", "scope": "funds.total",
-                        "metric": "is_expiry_preclose_close_window", "value": 1.0},
+                        "metric": "is_mcx_expiry_preclose_close_window", "value": 1.0},
         # ntfy(high) added 2026-11-22 (operator: real-money milestone,
         # orders staged HELD and waiting for release need an urgent
         # mobile push, matching the sibling alert agent's own channel
@@ -3302,6 +3318,49 @@ _EXPIRY_DAY_AWARENESS_AGENTS = [
         # this to an already-seeded prod/dev row on next restart with
         # no migration needed; it never removes an operator-added
         # channel.
+        "events": [
+            {"channel": "telegram", "enabled": True},
+            {"channel": "email",    "enabled": True},
+            {"channel": "log",      "enabled": True},
+            {"channel": "ntfy",     "enabled": True, "priority": "high"},
+        ],
+    },
+    {
+        "slug": "expiry-day-nse-itm-auto-close",
+        "name": "NSE expiry ITM auto-close",
+        "long_name": "when:is_nse_expiry_preclose_close_window==1   schedule:always/cooldown:30   alert:critical/tg+email+ntfy(high)+log   do:expiry-auto-close",
+        "description": (
+            "Fires starting 60 minutes before NSE's own close (5 min "
+            "after the sibling alert's 65-min window), then re-scans and "
+            "re-fires every 30 minutes while still in that window — "
+            "closing the gap where a leg could turn ITM in the last hour "
+            "and go unflagged. Chase-closes every NFO ITM/NTM leg (no "
+            "netting exception) via ExpiryEngine.scan_positions()+"
+            "close_positions(). Each re-fire only ever acts on a "
+            "genuinely NEW ITM leg — close_positions() skips any leg "
+            "that already has an unresolved order this session (HELD, "
+            "OPEN from an operator release still chasing, or "
+            "CANCEL_FAILED), never just an already-HELD one. Every close "
+            "is HELD by default (HoldCategory.EXPIRY_CLOSE, "
+            "hold.expiry_close_released=False) — this agent stages orders "
+            "for review, it does not place live trades unless the "
+            "operator explicitly releases that category from "
+            "/admin/settings. Exchange-pure: never closes an MCX-only "
+            "match — see expiry-day-mcx-itm-auto-close for that (split "
+            "2026-11-26, was briefly a single combined "
+            "expiry-day-itm-auto-close 2026-10-29 to 2026-11-26)."
+        ),
+        "schedule": "always",
+        "cooldown_minutes": 30,
+        "tier": "critical",
+        "topic": "expiry_warning_nse_close",
+        "status": "active",
+        "trade_mode": "live",
+        "actions": [
+            {"type": "expiry_auto_close", "params": {"exchange": "NFO"}},
+        ],
+        "conditions": {"op": "==", "scope": "funds.total",
+                        "metric": "is_nse_expiry_preclose_close_window", "value": 1.0},
         "events": [
             {"channel": "telegram", "enabled": True},
             {"channel": "email",    "enabled": True},
@@ -3628,7 +3687,7 @@ _INFO_AGENTS = [
         "slug": "market-preclose-nonmcx",
         "name": "NSE pre-close",
         "long_name": "when:minutes_until_nse_close<=30 AND NOT(nse_expiry_today)   schedule:always/cooldown:1320   alert:info/tg+ntfy(default)+log   do:notify-only",
-        "description": "Fires once 30 minutes before NSE's own session closes today, on a non-expiry day. On an NSE expiry day, expiry-day-preclose-alert already covers this same moment with the real position breakdown.",
+        "description": "Fires once 30 minutes before NSE's own session closes today, on a non-expiry day. On an NSE expiry day, expiry-day-nse-preclose-alert already covers this same moment with the real position breakdown.",
         "conditions": {"all": [
             {"op": "<=", "scope": "funds.total", "metric": "minutes_until_nse_close", "value": 30},
             {"op": "==", "scope": "funds.total", "metric": "is_nse_expiry_today",     "value": 0.0},
@@ -4113,28 +4172,17 @@ def _ae_sync_existing_builtin(existing, agent_def: dict) -> None:
     # 2026-11 same-window consolidation — see
     # `_AE_CONTENT_MATCHED_COND_MIGRATIONS`'s own docstring.
     _ae_apply_content_matched_cond_migration(existing, agent_def)
-    _ae_sync_expiry_awareness_cooldown(existing, agent_def)
     _ae_sync_expiry_risk_alert_split(existing, agent_def)
+    _ae_sync_expiry_risk_alert_preclose_ref(existing, agent_def)
     _ae_sync_divergence_cooldown(existing, agent_def)
-
-
-def _ae_sync_expiry_awareness_cooldown(existing, agent_def: dict) -> None:
-    """One-time cooldown migration (2026-11-22 retime), extracted to
-    keep `_ae_sync_existing_builtin` under the CC gate. `cooldown_
-    minutes` is an operator-editable field and is NEVER force-synced on
-    an ordinary restart (see `_ae_sync_existing_builtin`'s own
-    docstring), so shipping the new 30-min value in code alone left an
-    already-seeded row stuck at its old 180-min value — confirmed live
-    on dev right after this exact deploy (the conditions migration for
-    the sibling `expiry-nfo-risk-alert` correctly ran; cooldown
-    silently did not, because nothing touched it). Value-gated to the
-    EXACT old stock value, same safety contract as every other
-    migration in this file: an operator who already customized this
-    agent's cooldown to something else is left alone."""
-    if (agent_def.get("slug") in ("expiry-day-preclose-alert", "expiry-day-itm-auto-close")
-            and existing.cooldown_minutes == 180):
-        existing.cooldown_minutes = agent_def.get(
-            "cooldown_minutes", existing.cooldown_minutes)
+    # NOTE: `_ae_sync_expiry_awareness_cooldown()` (the 2026-11-22
+    # 180->30 cooldown migration for the OLD combined `expiry-day-
+    # preclose-alert`/`expiry-day-itm-auto-close` slugs) was removed
+    # 2026-11-26 alongside the exchange-pure split above — those two
+    # slugs are retired from BUILTIN_AGENTS entirely, so this call
+    # could never match again regardless (seed_agents iterates the
+    # CURRENT BUILTIN_AGENTS list; the old slugs are gone from it, and
+    # `_ae_prune_retired_builtins` deletes the stale DB rows separately).
 
 
 def _ae_sync_divergence_cooldown(existing, agent_def: dict) -> None:
@@ -4215,6 +4263,29 @@ def _ae_sync_expiry_risk_alert_split(existing, agent_def: dict) -> None:
         existing.name = agent_def["name"]
         existing.description = agent_def.get("description", existing.description)
         existing.topic = agent_def.get("topic", existing.topic)
+
+
+# Stale cross-reference, same session, a few hours later — `expiry-
+# nfo-risk-alert`/`expiry-mcx-risk-alert`'s own description named the
+# combined `expiry-day-preclose-alert` by slug ("where expiry-day-
+# preclose-alert already reports the same thing"). That slug is
+# retired by the exchange-pure split below `_EXPIRY_DAY_AWARENESS_
+# AGENTS`, so the already-seeded row (migrated once already today by
+# `_ae_sync_expiry_risk_alert_split` above, so its value-gate on the
+# ORIGINAL pre-split name/topic no longer matches) needs its own,
+# separate, narrower re-sync — value-gated on the stale SUBSTRING
+# itself, not a slug/name/topic combination, so an operator who already
+# edited this description is left alone.
+_AE_EXPIRY_RISK_ALERT_STALE_PRECLOSE_REF = "where expiry-day-preclose-alert already reports the same thing."
+
+
+def _ae_sync_expiry_risk_alert_preclose_ref(existing, agent_def: dict) -> None:
+    """One-time description-only migration — see the module comment
+    immediately above this function for the full rationale."""
+    if (agent_def.get("slug") in ("expiry-nfo-risk-alert", "expiry-mcx-risk-alert")
+            and existing.description
+            and _AE_EXPIRY_RISK_ALERT_STALE_PRECLOSE_REF in existing.description):
+        existing.description = agent_def.get("description", existing.description)
 
 
 def _ae_build_agent_row(agent_def: dict) -> 'Agent':

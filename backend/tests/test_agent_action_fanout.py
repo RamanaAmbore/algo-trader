@@ -248,32 +248,33 @@ class TestBackwardCompatRealAgentShapes:
 
     @pytest.mark.asyncio
     async def test_expiry_auto_close_fires_once_even_with_multiple_matches(self):
-        """Real agent `expiry-day-itm-auto-close` (2026-10-29 consolidation
-        — covers MCX+NFO in one agent, replacing the old
+        """Real agent `expiry-day-mcx-itm-auto-close` (2026-10-29
+        consolidation, split exchange-pure 2026-11-26 — replacing the old
         expiry-day-equity-itm-auto-close/expiry-day-commodity-itm-auto-close
-        pair): expiry_auto_close action (NO $row — the action scans+closes
-        both exchanges in one call, via ExpiryEngine.scan_positions()).
-        The agent's real condition is a single flat `funds.total` leaf
-        (never multiple rows in practice), but the fan-out guard itself —
-        a whole-exchange sweep action must fire ONCE regardless of match
-        count, never N times — is a general engine invariant worth
-        pinning independent of what this specific agent's condition shape
-        can produce. Re-invoking a whole-exchange sweep N times would be
-        actively harmful (redundant races), not N correct partial
-        actions."""
-        spec = _builtin("expiry-day-itm-auto-close")
-        assert spec["actions"] == [{"type": "expiry_auto_close", "params": {}}]
+        pair, then the combined expiry-day-itm-auto-close): expiry_auto_close
+        action (NO $row — the action scans+closes its own exchange in one
+        call, via ExpiryEngine.scan_positions(), narrowed by `params.
+        exchange`). The agent's real condition is a single flat
+        `funds.total` leaf (never multiple rows in practice), but the
+        fan-out guard itself — a whole-exchange sweep action must fire
+        ONCE regardless of match count, never N times — is a general
+        engine invariant worth pinning independent of what this specific
+        agent's condition shape can produce. Re-invoking a whole-exchange
+        sweep N times would be actively harmful (redundant races), not N
+        correct partial actions."""
+        spec = _builtin("expiry-day-mcx-itm-auto-close")
+        assert spec["actions"] == [{"type": "expiry_auto_close", "params": {"exchange": "MCX"}}]
         agent = _Agent(id=103, slug=spec["slug"], tier=spec["tier"], topic=spec["topic"],
                        actions=spec["actions"])
         # Synthetic multi-match set — the real condition is a single flat
         # leaf and never produces more than one match in practice, but the
         # fan-out guard itself must hold regardless of match count.
         matches = [
-            _m(metric="is_expiry_preclose_close_window", scope="funds.total",
+            _m(metric="is_mcx_expiry_preclose_close_window", scope="funds.total",
                op="==", threshold=1.0, value=1.0, row={}),
-            _m(metric="is_expiry_preclose_close_window", scope="funds.total",
+            _m(metric="is_mcx_expiry_preclose_close_window", scope="funds.total",
                op="==", threshold=1.0, value=1.0, row={}),
-            _m(metric="is_expiry_preclose_close_window", scope="funds.total",
+            _m(metric="is_mcx_expiry_preclose_close_window", scope="funds.total",
                op="==", threshold=1.0, value=1.0, row={}),
         ]
 
