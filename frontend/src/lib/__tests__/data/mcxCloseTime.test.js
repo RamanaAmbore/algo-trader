@@ -40,6 +40,7 @@ import {
   isUsEasternDst,
   mcxNonAgriCloseTime,
   mcxNonAgriCloseMinuteOfDay,
+  resolveExpiryCloseDateTime,
 } from '../../data/mcxCloseTime.js';
 
 /** Independent reference oracle for a given UTC-noon-anchored date,
@@ -192,6 +193,51 @@ describe('isUsEasternDst', () => {
   it('agrees with the reference oracle at the two live-incident anchors', () => {
     expect(isUsEasternDst(new Date(Date.UTC(2026, 10, 17, 12, 0, 0)))).toBe(false);
     expect(isUsEasternDst(new Date(Date.UTC(2026, 5, 1, 12, 0, 0)))).toBe(true);
+  });
+});
+
+describe('resolveExpiryCloseDateTime', () => {
+  it('live-reported bug (2026-11-26): MCX GOLD expiring Friday must not show "0 days" at Thursday 18:00 IST', () => {
+    // Confirmed live against the real server: GOLD26NOV124000CE (MCX) parses
+    // to a real expiry of 2026-11-27 (Friday) with days_to_expiry ~1.5 at
+    // 2026-11-26 11:42 IST. The frontend chip, checked later the same
+    // Thursday evening (after the OLD hardcoded 15:30 cutoff but hours
+    // before MCX's real ~23:55 winter close), incorrectly floored to 0
+    // ("expires today") a full day early.
+    const now = new Date('2026-11-26T18:00:00+05:30').getTime();
+    const origNow = Date.now;
+    Date.now = () => now;
+    try {
+      const expiryIso = '2026-11-27';
+      const mcxExpiry = resolveExpiryCloseDateTime(expiryIso, true);
+      const mcxDays = Math.max(0, Math.floor((mcxExpiry.getTime() - Date.now()) / 86_400_000));
+      expect(mcxDays).toBe(1); // tomorrow, not today
+
+      // The pre-fix behavior (flat 15:30 for every exchange) reproduces
+      // the bug -- pinned here as a negative control so this test would
+      // have failed against the old code, not just passed by construction.
+      const oldBuggyExpiry = new Date(`${expiryIso}T15:30:00+05:30`);
+      const oldBuggyDays = Math.max(0, Math.floor((oldBuggyExpiry.getTime() - Date.now()) / 86_400_000));
+      expect(oldBuggyDays).toBe(0);
+    } finally {
+      Date.now = origNow;
+    }
+  });
+
+  it('non-MCX (NSE/NFO) contracts still close at 15:30 IST, unaffected by the MCX fix', () => {
+    const d = resolveExpiryCloseDateTime('2026-11-27', false);
+    expect(d.getUTCHours()).toBe(10); // 15:30 IST == 10:00 UTC
+    expect(d.getUTCMinutes()).toBe(0);
+  });
+
+  it('MCX close resolves to the DST-aware time, not a flat 23:30', () => {
+    const winter = resolveExpiryCloseDateTime('2026-11-27', true); // winter window -> 23:55
+    expect(winter.getUTCHours()).toBe(18); // 23:55 IST == 18:25 UTC
+    expect(winter.getUTCMinutes()).toBe(25);
+
+    const summer = resolveExpiryCloseDateTime('2026-06-26', true); // DST window -> 23:30
+    expect(summer.getUTCHours()).toBe(18); // 23:30 IST == 18:00 UTC
+    expect(summer.getUTCMinutes()).toBe(0);
   });
 });
 

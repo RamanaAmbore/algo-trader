@@ -141,3 +141,29 @@ export function mcxNonAgriCloseMinuteOfDay(year, month, day) {
   const t = mcxNonAgriCloseTime(year, month, day);
   return t.hour * 60 + t.minute;
 }
+
+/**
+ * Resolve the real IST close-moment for an expiry date, given which
+ * exchange the contract is on. NSE/NFO/BSE/CDS close at 15:30 IST;
+ * MCX non-agri commodities close at the DST-aware time above (23:30/
+ * 23:55), never a flat 15:30.
+ *
+ * Extracted as its own small, directly-testable function because a
+ * caller that hardcodes 15:30 for an MCX contract truncates its real
+ * trading day by up to ~8 hours — checking between 15:30 and midnight
+ * IST on the day BEFORE the contract's real expiry then floors
+ * "days to expiry" to 0 a full day early, i.e. "expires today" when
+ * the real expiry is tomorrow (confirmed live-reported bug, 2026-11-26,
+ * in `OptionChainTab.svelte`'s own DTE chip).
+ *
+ * @param {string} expiryIso YYYY-MM-DD
+ * @param {boolean} isMcx
+ * @returns {Date}
+ */
+export function resolveExpiryCloseDateTime(expiryIso, isMcx) {
+  const [y, m, d] = expiryIso.split('-').map(Number);
+  const { hour, minute } = isMcx ? mcxNonAgriCloseTime(y, m, d) : { hour: 15, minute: 30 };
+  const hh = String(hour).padStart(2, '0');
+  const mm = String(minute).padStart(2, '0');
+  return new Date(`${expiryIso}T${hh}:${mm}:00+05:30`);
+}
