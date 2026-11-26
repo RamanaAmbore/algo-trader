@@ -1095,12 +1095,19 @@ def test_generic_notice_agents_are_every_spec_in_the_shared_table():
     # Reusing `generic_notice` here was tried and confirmed wrong
     # (empty body, generic "Deploy out of sync" title) before this
     # dedicated renderer was written.
+    #
+    # 2026-11-26 — `pnl-reconciliation-alert` joins this set, a FOURTH
+    # standalone `generic_notice` user. Its producer
+    # (`scripts/kite_console_pnl_sync.py:
+    # alert_pnl_reconciliation_disagreement()`) sets `extra["title"]`/
+    # `extra["body"]` directly, so the generic renderer applies cleanly
+    # — same shape as `draft-sweep-alert`.
     standalone_generic_notice_slugs = {
         spec["slug"] for spec in ea.SEEDED_AGENTS
         if any(isinstance(a, dict) and a.get("render") == "generic_notice" for a in spec.get("actions") or [])
     } - {ea.UNROUTED_ALERT_AGENT["slug"], ea.USER_REGISTERED_AGENT["slug"]}
     assert standalone_generic_notice_slugs == {
-        "visitor-report-alert", "draft-sweep-alert",
+        "visitor-report-alert", "draft-sweep-alert", "pnl-reconciliation-alert",
     }
     for alert_event, source_slug in [
         ("gtt_asymmetric", "gtt-asymmetric-alert"), ("oco_double_fire", "oco-double-fire-alert"),
@@ -1156,6 +1163,50 @@ async def test_draft_sweep_agent_is_seeded_and_dispatches_to_telegram_info_only(
     assert title == "Drafts cleared"
     assert "Source: Draft sweep" in body
     assert "3 draft(s) cleared" in body
+
+
+@pytest.mark.asyncio
+async def test_pnl_reconciliation_agent_is_seeded_and_dispatches_to_telegram_info_only(monkeypatch):
+    """2026-11-26 Part 3 — `scripts/kite_console_pnl_sync.py` logs a
+    tagged `pnl_reconciliation_disagreement` record rather than sending
+    directly. Standalone `PNL_RECONCILIATION_AGENT` matches its
+    producer's tagged log record and delivers it on the dedicated
+    `telegram_info` channel only, via `alert_routing._PER_SLUG_OVERRIDES
+    ['pnl-reconciliation-alert']` — never `telegram`/`ntfy`."""
+    import backend.shared.helpers.utils as u
+    from backend.api.algo import event_agents as ea
+
+    assert ea.PNL_RECONCILIATION_AGENT in ea.SEEDED_AGENTS
+    assert ea.validate_seed_spec(ea.PNL_RECONCILIATION_AGENT) == []
+
+    sent = {"info": [], "tg": [], "ntfy": []}
+    monkeypatch.setattr(u, "is_enabled", lambda cap: True)
+    monkeypatch.setattr(ea, "_channel_enabled", lambda cap: True)
+    monkeypatch.setitem(ea.CHANNELS, "telegram_info",
+                        ("telegram_info", lambda t, b, tg=None, **k: sent["info"].append((t, b))))
+    monkeypatch.setitem(ea.CHANNELS, "telegram",
+                        ("telegram", lambda t, b, tg=None, **k: sent["tg"].append((t, b))))
+    monkeypatch.setitem(ea.CHANNELS, "ntfy",
+                        ("ntfy", lambda t, b, tg=None, priority=None, **k: sent["ntfy"].append((t, b))))
+
+    rec = {"ts": datetime(2026, 11, 26, 2, 30, 0, tzinfo=timezone.utc), "level": "WARNING",
+           "tags": ["alert"],
+           "extra": {"tags": ["alert"], "alert_event": "pnl_reconciliation_disagreement",
+                     "title": "Kite Console P&L reconciliation — 1 group(s) disagree",
+                     "body": "Z1#### GOLDM (2026-12-31): ground truth 367,000.00 "
+                              "vs daily_book -444,000.00 (delta 811,000.00)",
+                     "source_type": "process", "source_name": "Kite Console P&L sync"}}
+    spec = ea.PNL_RECONCILIATION_AGENT
+    agent = SimpleNamespace(slug=spec["slug"], **{k: spec.get(k, []) for k in ("conditions", "events", "actions")})
+    await ea.dispatch([rec], [agent])
+
+    assert len(sent["info"]) == 1
+    assert sent["tg"] == []
+    assert sent["ntfy"] == []
+    title, body = sent["info"][0]
+    assert title == "Kite Console P&L reconciliation — 1 group(s) disagree"
+    assert "Source: Kite Console P&L sync" in body
+    assert "GOLDM" in body
 
 
 # ── Item 3 — SEED_VERSION no longer silently overwrites an operator edit ──

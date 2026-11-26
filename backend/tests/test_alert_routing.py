@@ -222,6 +222,7 @@ def test_frozen_oracle_covers_every_migrated_agent_exactly():
             event_agents.DRAFT_SWEEP_AGENT["slug"],
             event_agents.APP_MESSAGE_AGENT["slug"],
             event_agents.BROKER_LOGIN_BLOCKED_AGENT["slug"],
+            event_agents.PNL_RECONCILIATION_AGENT["slug"],
         )
     }
     assert migrated_slugs == set(_FROZEN_ORACLE)
@@ -304,6 +305,22 @@ def test_draft_sweep_alert_resolves_via_per_slug_override():
     own channel exactly — same "good news, FYI only" shape as
     `visitor-report-alert`."""
     spec = event_agents.DRAFT_SWEEP_AGENT
+    resolved = alert_routing.resolve_channels(
+        name=spec["slug"], priority=spec.get("priority"), agent_events=spec.get("events", []))
+    assert resolved == [
+        {"channel": "telegram_info", "enabled": True, "gate": False},
+    ]
+
+
+def test_pnl_reconciliation_alert_resolves_via_per_slug_override():
+    """2026-11-26 Part 3 — `scripts/kite_console_pnl_sync.py` logs a
+    tagged `pnl_reconciliation_disagreement` record rather than sending
+    directly. Brand-new dedicated `PNL_RECONCILIATION_AGENT`; `events`
+    deliberately omitted on the spec, so this per-slug override row is
+    the real, sole channel source. `telegram_info`-only — a data-quality
+    finding, not action-required, same "FYI only" shape as
+    `draft-sweep-alert`/`visitor-report-alert`."""
+    spec = event_agents.PNL_RECONCILIATION_AGENT
     resolved = alert_routing.resolve_channels(
         name=spec["slug"], priority=spec.get("priority"), agent_events=spec.get("events", []))
     assert resolved == [

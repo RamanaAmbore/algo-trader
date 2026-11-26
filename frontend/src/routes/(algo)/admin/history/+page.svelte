@@ -18,14 +18,18 @@
   import { userRole, userCaps, userCapsReady, hasCap } from '$lib/rbac';
   import {
     fetchHistoryOrders, fetchHistoryTrades, fetchHistoryFunds,
-    backfillHistoryFunds,
+    backfillHistoryFunds, fetchHistoryRealizedPnl,
   } from '$lib/api';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
   import LoadingSkeleton from '$lib/LoadingSkeleton.svelte';
   import EmptyState from '$lib/EmptyState.svelte';
+  import Select from '$lib/Select.svelte';
   import { toast } from '$lib/data/toastStore.svelte.js';
+  import {
+    buildRealizedPnlParams, normalizeRealizedPnlRows, sumRealizedPnl,
+  } from '$lib/data/realizedPnlHistory.js';
 
   /** @typedef {{
    *   id:number, created_at:string, account:string, symbol:string,
@@ -46,9 +50,14 @@
    *   debits_today:number, realised_m2m:number|null,
    *   net:number|null, cash_delta:number|null
    * }} FundsRow */
+  /** @typedef {{
+   *   account:string, segment:string,
+   *   instrument_type:'equity'|'future'|'option', symbol_root:string,
+   *   expiry:string|null, realized_pnl:number
+   * }} RealizedPnlRow */
 
-  // Tab state — 'orders' | 'trades' | 'funds'.
-  let tab = $state(/** @type {'orders'|'trades'|'funds'} */ ('orders'));
+  // Tab state — 'orders' | 'trades' | 'funds' | 'pnl'.
+  let tab = $state(/** @type {'orders'|'trades'|'funds'|'pnl'} */ ('orders'));
 
   // Filters — shared across all three tabs.
   function _today() { return new Date().toISOString().slice(0, 10); }
@@ -64,9 +73,37 @@
   let fStatus   = $state('');
   let fMode     = $state('');
 
+  // Realized P&L (pnl tab) filters — separate state from the shared
+  // date-range filters above, because expiry_from/expiry_to are NOT
+  // trade dates and this endpoint takes a single `account`, not a
+  // comma-separated list. Expiry range defaults to empty (not the
+  // 30-day default the other tabs use) — a 30-day default would hide
+  // most of the history this section exists to show.
+  let pAccount        = $state('');
+  let pSegment        = $state('');
+  let pInstrumentType = $state('');
+  let pSymbolRoot     = $state('');
+  let pExpiryFrom     = $state('');
+  let pExpiryTo       = $state('');
+
+  const SEGMENT_OPTIONS = [
+    { value: '', label: 'All segments' },
+    { value: 'equity',      label: 'Equity' },
+    { value: 'derivatives', label: 'Derivatives' },
+    { value: 'commodities', label: 'Commodities' },
+  ];
+  const INSTRUMENT_TYPE_OPTIONS = [
+    { value: '', label: 'All types' },
+    { value: 'equity', label: 'Equity' },
+    { value: 'future', label: 'Future' },
+    { value: 'option', label: 'Option' },
+  ];
+
   /** @type {OrderRow[]} */  let orderRows = $state([]);
   /** @type {TradeRow[]} */  let tradeRows = $state([]);
   /** @type {FundsRow[]} */  let fundsRows = $state([]);
+  /** @type {RealizedPnlRow[]} */ let pnlRows = $state([]);
+  const pnlTotal = $derived(sumRealizedPnl(pnlRows));
 
   let total = $state(0);
   let orderCounts = $state(/** @type {Record<string, number>} */ ({}));
@@ -101,11 +138,24 @@
         tradeRows = r?.rows  ?? [];
         total     = r?.total ?? 0;
         tradeNotional = Number(r?.summary?.total_notional ?? 0);
-      } else {
+      } else if (tab === 'funds') {
         const r = await fetchHistoryFunds(params);
         fundsRows     = r?.rows ?? [];
         total         = r?.total ?? 0;
         fundsEarliest = r?.earliest_date ?? null;
+      } else {
+        // pnl tab — separate param shape (account/segment/instrument_type/
+        // symbol_root/expiry_from/expiry_to), not the shared date-range
+        // `params` object the other three tabs use. No server-side
+        // pagination on this endpoint, so `total`/`offset` are untouched;
+        // the pager is hidden for this tab (see the explicit allowlist
+        // on the pager's own {#if} below).
+        const pnlParams = buildRealizedPnlParams({
+          account: pAccount, segment: pSegment, instrumentType: pInstrumentType,
+          symbolRoot: pSymbolRoot, expiryFrom: pExpiryFrom, expiryTo: pExpiryTo,
+        });
+        const r = await fetchHistoryRealizedPnl(pnlParams);
+        pnlRows = normalizeRealizedPnlRows(r);
       }
     } catch (e) {
       error = e?.message || 'Load failed';
@@ -114,7 +164,7 @@
     finally { loading = false; }
   }
 
-  function setTab(/** @type {'orders'|'trades'|'funds'} */ t) {
+  function setTab(/** @type {'orders'|'trades'|'funds'|'pnl'} */ t) {
     if (t === tab) return;
     tab = t;
     offset = 0;
@@ -256,21 +306,49 @@
     { id: 'orders', label: 'Orders', badge: tab === 'orders' ? total : undefined },
     { id: 'trades', label: 'Trades', badge: tab === 'trades' ? total : undefined },
     { id: 'funds',  label: 'Funds',  badge: tab === 'funds'  ? total : undefined },
+    { id: 'pnl',    label: 'Realized P&L', badge: tab === 'pnl' ? pnlRows.length : undefined },
   ]}
 />
 
 <div class="hist-filters">
-  <label class="hist-flbl">From
-    <input type="date" bind:value={fFromDate} class="field-input hist-finput" />
-  </label>
-  <label class="hist-flbl">To
-    <input type="date" bind:value={fToDate}   class="field-input hist-finput" />
-  </label>
-  <label class="hist-flbl">Accounts
-    <input bind:value={fAccounts} placeholder="ZG0790,DH3747"
-           class="field-input hist-finput" />
-  </label>
-  {#if tab !== 'funds'}
+  {#if tab !== 'pnl'}
+    <label class="hist-flbl">From
+      <input type="date" bind:value={fFromDate} class="field-input hist-finput" />
+    </label>
+    <label class="hist-flbl">To
+      <input type="date" bind:value={fToDate}   class="field-input hist-finput" />
+    </label>
+    <label class="hist-flbl">Accounts
+      <input bind:value={fAccounts} placeholder="ZG0790,DH3747"
+             class="field-input hist-finput" />
+    </label>
+  {:else}
+    <label class="hist-flbl">Account
+      <input bind:value={pAccount} placeholder="ZG0790"
+             class="field-input hist-finput" />
+    </label>
+    <label class="hist-flbl">Segment
+      <div class="hist-select-wrap">
+        <Select id="rpnl-segment-select" bind:value={pSegment} options={SEGMENT_OPTIONS} />
+      </div>
+    </label>
+    <label class="hist-flbl">Type
+      <div class="hist-select-wrap">
+        <Select id="rpnl-instrument-select" bind:value={pInstrumentType} options={INSTRUMENT_TYPE_OPTIONS} />
+      </div>
+    </label>
+    <label class="hist-flbl">Root
+      <input bind:value={pSymbolRoot} placeholder="NIFTY,GOLDM"
+             class="field-input hist-finput" />
+    </label>
+    <label class="hist-flbl">Expiry from
+      <input type="date" bind:value={pExpiryFrom} class="field-input hist-finput" />
+    </label>
+    <label class="hist-flbl">Expiry to
+      <input type="date" bind:value={pExpiryTo}   class="field-input hist-finput" />
+    </label>
+  {/if}
+  {#if tab !== 'funds' && tab !== 'pnl'}
     <label class="hist-flbl">Symbols
       <input bind:value={fSymbols} placeholder="NIFTY,GOLDM"
              class="field-input hist-finput" />
@@ -391,7 +469,7 @@
       </tbody>
     </table>
   </div>
-{:else}
+{:else if tab === 'funds'}
   <div class="hist-summary">
     {#if fundsEarliest}
       <span class="hist-pill hist-pill-info">
@@ -457,9 +535,49 @@
       </tbody>
     </table>
   </div>
+{:else}
+  <!-- pnl tab — "Realized P&L by Expiry". Read-only, no live polling
+       (this is closed/historical data), no server-side pagination —
+       the endpoint returns the full filtered set in one shot. -->
+  <div class="hist-summary">
+    <span class="hist-pill hist-pill-info {pnlTotal > 0 ? 'cell-pos' : pnlTotal < 0 ? 'cell-neg' : ''}">
+      Total realized: {_fmtInr(pnlTotal)}
+    </span>
+  </div>
+  {#if !loading && pnlRows.length === 0}
+    <EmptyState title="No realized P&L rows match" hint="Try widening the expiry range or clearing filters." icon="search" />
+  {/if}
+  <div class="hist-table-wrap algo-grid-chrome" style:display={!loading && pnlRows.length === 0 ? 'none' : undefined}>
+    <table class="algo-table hist-table">
+      <thead>
+        <tr>
+          <th>Account</th>
+          <th>Segment</th>
+          <th>Type</th>
+          <th>Symbol root</th>
+          <th>Expiry</th>
+          <th class="th-num">Realized P&L</th>
+        </tr>
+      </thead>
+      <tbody>
+        {#each pnlRows as r, i (`${r.account}|${r.segment}|${r.instrument_type}|${r.symbol_root}|${r.expiry}|${i}`)}
+          <tr>
+            <td class="td-mono">{r.account}</td>
+            <td class="td-mono">{r.segment}</td>
+            <td class="td-mono">{r.instrument_type}</td>
+            <td class="td-mono">{r.symbol_root}</td>
+            <td class="td-mono">{_fmtDate(r.expiry)}</td>
+            <td class="algo-table-num {(r.realized_pnl ?? 0) > 0 ? 'cell-pos' : (r.realized_pnl ?? 0) < 0 ? 'cell-neg' : ''}">
+              {_fmtInr(r.realized_pnl)}
+            </td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
+  </div>
 {/if}
 
-{#if tab !== 'funds' && total > LIMIT}
+{#if (tab === 'orders' || tab === 'trades') && total > LIMIT}
   <div class="hist-pager">
     <button class="btn-secondary text-[0.65rem]" disabled={offset === 0} onclick={pagePrev}>← Prev</button>
     <span class="text-[0.65rem]">Showing {offset + 1}–{Math.min(offset + LIMIT, total)} of {total}</span>
@@ -496,6 +614,10 @@
     font-family: var(--font-numeric);
     font-size: var(--fs-lg);
   }
+  /* Sizes the Select.svelte dropdowns (Segment / Type, pnl tab) to the
+     same width as the plain .hist-finput text inputs in this same
+     filter row — Select's own root is width:100% of its parent. */
+  .hist-select-wrap { width: 9rem; }
 
   .hist-summary {
     display: flex; gap: 0.4rem; flex-wrap: wrap;

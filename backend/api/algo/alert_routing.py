@@ -218,6 +218,13 @@ _PER_SLUG_OVERRIDES: dict[str, list[dict]] = {
         {"channel": "ntfy", "enabled": True, "gate": False, "priority": "urgent"},
         {"channel": "email", "enabled": True, "gate": False},
     ],
+    # A data-quality finding (Kite Console CSV ground truth disagrees
+    # with daily_book), not a trading-risk alert — FYI, telegram_info
+    # only, same "good news/FYI, nothing urgent" shape as
+    # `draft-sweep-alert`/`visitor-report-alert` above.
+    "pnl-reconciliation-alert": [
+        {"channel": "telegram_info", "enabled": True, "gate": False},
+    ],
     # High, not urgent: a new-account registration needs a look (the
     # operator must approve/reject it), not a 3x-repeat push.
     "user-registered-alert": [

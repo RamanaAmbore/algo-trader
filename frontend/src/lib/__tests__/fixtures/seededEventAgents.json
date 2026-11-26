@@ -263,6 +263,26 @@
     ]
   },
   {
+    "slug": "pnl-reconciliation-alert",
+    "name": "P&L reconciliation disagreement",
+    "conditions": {
+      "log": {
+        "tag": "alert",
+        "min_level": "WARNING",
+        "where": {
+          "alert_event": "pnl_reconciliation_disagreement"
+        }
+      }
+    },
+    "events": [],
+    "actions": [
+      {
+        "type": "render",
+        "render": "generic_notice"
+      }
+    ]
+  },
+  {
     "slug": "alert-channel-telegram",
     "name": "Alert channel: Telegram",
     "conditions": {

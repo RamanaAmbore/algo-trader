@@ -11,3 +11,11 @@ requests>=2.34.0
 maxminddb~=2.6
 pyasn1>=0.6.4
 debugpy~=1.8
+# scripts/kite_console_pnl_sync.py -- Kite Console has no historical P&L
+# API endpoint, so that script drives the web Console via Playwright
+# instead. Version pinned to match frontend/package.json's
+# @playwright/test (^1.59.1) so both ecosystems target the same browser
+# protocol version. Requires a one-time `playwright install chromium`
+# browser-binary download on any host that runs this script -- the pip
+# package alone is not sufficient.
+playwright~=1.59

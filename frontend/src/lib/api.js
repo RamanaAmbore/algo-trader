@@ -494,6 +494,13 @@ export const fetchHistoryFunds  = (params = {}) =>
   _get(`/admin/history/funds${_toQs(params)}`,  { auth: true });
 export const backfillHistoryFunds = (/** @type {{account:string, from_date:string, to_date:string}} */ body) =>
   _post('/admin/history/funds/backfill', body, { auth: true });
+/** Realized P&L by expiry cycle — sourced from the Kite Console P&L-
+ *  statement sync (kite_console_pnl_sync table). Params: account,
+ *  segment, instrument_type, symbol_root, expiry_from, expiry_to (all
+ *  optional). See $lib/data/realizedPnlHistory.js for the param builder
+ *  + response normalizer this is paired with. */
+export const fetchHistoryRealizedPnl = (params = {}) =>
+  _get(`/admin/history/realized-pnl${_toQs(params)}`, { auth: true });
 
 /** GET /api/admin/audit — paginated audit log with filters. Gated
  *  by the `view_audit` cap server-side (admin / risk / ops). */

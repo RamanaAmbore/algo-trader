@@ -2686,20 +2686,40 @@ class KiteConsolePnlSync(Base):
     'GOLDM', 'NIFTY') or the bare symbol itself for equity. See
     `scripts/kite_console_pnl_sync.py:classify_instrument()`.
 
-    Accumulation (`get_accumulated_pnl()`, same script) deliberately does
-    NOT sum `realized_pnl` across every `report_type='pnl'` row for a
-    given (account, symbol, expiry) — Kite's P&L statement aggregates a
-    symbol over the EXACT requested range, and this app's own sync
-    schedule can produce several overlapping-but-not-identical ranges for
-    the same symbol over time (see `pnl_pull_range()`'s own docstring).
-    Summing those would double-count the overlap. Instead, every pnl pull
-    is designed to always span a fixed anchor date to "today" (never a
-    rolling window), so there is only ever one genuinely "current
-    cumulative" row per (account, symbol, expiry) at a time, and
-    accumulation picks the single MOST RECENT such row per group — never
-    a SUM across that group's own range-rows. Summing is still correct,
-    and happens, ACROSS DIFFERENT symbols within one requested grouping
-    (e.g. multiple strikes under one underlying+expiry).
+    Accumulation (`get_accumulated_pnl()`, same script) picks, per
+    (account, segment, symbol, expiry, `pull_range_start`), only the row
+    with the LATEST `pull_range_end` — then SUMS across the resulting
+    per-month "latest" rows, grouped by (account, segment,
+    instrument_type, symbol_root, expiry).
+
+    2026-11-26 redesign, reason stated explicitly (not a migration — the
+    table held 0 rows in prod at the time this changed): Kite Console's
+    Tradebook/P&L-statement CSV export does not reliably support a
+    requested date range wider than ~1 month. Every real PNL pull is
+    therefore forced through `chunk_by_calendar_month()` into non-
+    overlapping, calendar-month-aligned chunks, and
+    `scripts/kite_console_pnl_sync.py:sync_account()` additionally
+    floors every PNL chunk's own requested START to the 1st of its
+    calendar month (never the tradebook chunk's own, possibly-clipped
+    start) — so `pull_range_start` is a stable, month-level anchor
+    shared by EVERY pull that ever touched "this symbol, this expiry,
+    this calendar month", regardless of which caller (a one-time
+    backfill, a later ongoing sync, or a same-month re-run) produced it.
+
+    A bare `SUM(realized_pnl)` across every matching row — the first,
+    simpler version of this redesign — was found to double-count on two
+    realistic paths before it ever ran for real: re-running the SAME
+    month produces a DIFFERENT `pull_range_end` (today's date moves),
+    hence a genuinely different `dedup_key`, hence a SECOND row for a
+    month already covered; and the FIRST ongoing sync after a one-time
+    backfill can genuinely overlap the backfill's own last month (an
+    expiry essentially never lands on a calendar-month boundary). The
+    per-month-bucket "latest wins" step exists specifically to absorb
+    both without a second write ever needing to replace the first one
+    in place. Summing across DIFFERENT symbols, and across DIFFERENT
+    months for the same symbol+expiry (a position spanning more than
+    one calendar month), is correct once each month's own latest-pull
+    value has been picked — those are genuinely non-overlapping facts.
     """
     __tablename__ = "kite_console_pnl_sync"
 

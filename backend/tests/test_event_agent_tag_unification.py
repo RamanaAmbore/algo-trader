@@ -366,7 +366,7 @@ def test_all_23_pre_collapse_specs_still_accounted_for():
         ea.MARKET_STATUS_ALERT_AGENT["slug"], ea.AGENT_CLOSE_HOLD_ALERT_AGENT["slug"],
         ea.ORDER_CANCELLED_AGENT["slug"], ea.GTT_ORPHAN_CANCELLED_AGENT["slug"],
         ea.DRAFT_SWEEP_AGENT["slug"], ea.APP_MESSAGE_AGENT["slug"],
-        ea.BROKER_LOGIN_BLOCKED_AGENT["slug"],
+        ea.BROKER_LOGIN_BLOCKED_AGENT["slug"], ea.PNL_RECONCILIATION_AGENT["slug"],
     }
     all_pre_collapse_slugs = {
         spec["slug"] for spec in ea.SEEDED_AGENTS + ea._COLLAPSED_DETECTOR_SPECS
@@ -402,10 +402,11 @@ def test_seeded_agents_is_exactly_the_post_collapse_13():
         ea.ORDER_CANCELLED_AGENT["slug"],
         ea.DRAFT_SWEEP_AGENT["slug"],
         ea.BROKER_LOGIN_BLOCKED_AGENT["slug"],
+        ea.PNL_RECONCILIATION_AGENT["slug"],
     }
     actual = {spec["slug"] for spec in ea.SEEDED_AGENTS}
     assert actual == expected
-    assert len(ea.SEEDED_AGENTS) == 15
+    assert len(ea.SEEDED_AGENTS) == 16
     assert ea.ACTION_NOTIFY_AGENT["slug"] not in actual, (
         "action-notify-alert must be retired from SEEDED_AGENTS"
     )

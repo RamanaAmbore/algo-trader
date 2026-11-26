@@ -2885,8 +2885,41 @@ BROKER_LOGIN_BLOCKED_AGENT = {
     "actions": [{"type": "render", "render": "broker_login_blocked"}],
 }
 
+PNL_RECONCILIATION_AGENT = {
+    "slug": "pnl-reconciliation-alert",
+    "name": "P&L reconciliation disagreement",
+    "description": "A Kite Console P&L backfill/sync run found at least "
+                    "one (account, symbol root, expiry) group where the "
+                    "broker-authoritative CSV figure disagrees with "
+                    "daily_book's own realized P&L beyond tolerance. A "
+                    "data-quality finding, not a trading-risk alert.",
+    # Producer: `scripts/kite_console_pnl_sync.py:
+    # alert_pnl_reconciliation_disagreement()`, logged through that
+    # script's own module logger (standalone, short-lived process — see
+    # that function's own docstring for why that's safe) at WARNING,
+    # never ERROR+ — a WARNING is never auto-tagged "error" by
+    # `tags_for()`, so it can never double-fire through ERROR_AGENT's
+    # `min_level="ERROR"` catch-all. Fires AT MOST once per
+    # backfill/sync run (one summary record covering every disagreeing
+    # group that run found), only when at least one group's status is
+    # "disagree" — a "missing"/"match" group is never alert-worthy on
+    # its own and never reaches this condition. Standalone dedicated
+    # agent (same shape as DRAFT_SWEEP_AGENT/BROKER_LOGIN_BLOCKED_AGENT)
+    # rather than folded into the 3 generic channel agents — its real
+    # channel is `telegram_info` only (an FYI data-quality finding, not
+    # action-required), which the generic channel agents' `only_channel`
+    # exact-match filter cannot route to.
+    "conditions": {"log": {"tag": "alert", "min_level": "WARNING",
+                           "where": {"alert_event": "pnl_reconciliation_disagreement"}}},
+    "priority": "medium",
+    # `events` deliberately omitted — channel list comes from
+    # `alert_routing._PER_SLUG_OVERRIDES["pnl-reconciliation-alert"]`
+    # (telegram_info only — FYI, not action-required).
+    "actions": [{"type": "render", "render": "generic_notice"}],
+}
 
-SEED_VERSION = 12
+
+SEED_VERSION = 13
 # Bump this whenever an EXISTING seeded row's `conditions`/`events`/
 # `actions` shape changes (so already-seeded prod/dev rows get
 # re-synced) — a brand-new slug doesn't strictly need a bump, since
@@ -3144,7 +3177,7 @@ SEEDED_AGENTS = (
     ERROR_AGENT, DEPLOY_SYNC_AGENT, RICH_ALERT_AGENT, SUMMARY_AGENT, BREACH_AGENT,
     VISITOR_REPORT_AGENT, UNROUTED_ALERT_AGENT, MARKET_STATUS_ALERT_AGENT,
     ORDER_CANCELLED_AGENT, AGENT_CLOSE_HOLD_ALERT_AGENT,
-    DRAFT_SWEEP_AGENT, BROKER_LOGIN_BLOCKED_AGENT,
+    DRAFT_SWEEP_AGENT, BROKER_LOGIN_BLOCKED_AGENT, PNL_RECONCILIATION_AGENT,
     TELEGRAM_CHANNEL_AGENT, NTFY_CHANNEL_AGENT, EMAIL_CHANNEL_AGENT,
 )
 # `GTT_ORPHAN_CANCELLED_AGENT`/`APP_MESSAGE_AGENT` are deliberately absent

@@ -4,13 +4,21 @@ History — multi-day forensic surface for orders, trades, and funds.
 GET /api/admin/history/orders  — AlgoOrder table, date + account + symbol + status filters
 GET /api/admin/history/trades  — daily_book where kind='trades'
 GET /api/admin/history/funds   — daily_book where kind='funds' (per-account ledger)
+GET /api/admin/history/realized-pnl — Kite Console P&L reconciliation ground truth
 
-All three are paginated (default 50/page, cap 500). Cap-gated by
-`view_audit` — same gate as the audit log; designated / risk / admin only.
+All four are cap-gated by `view_audit` — same gate as the audit log;
+designated / risk / admin only (broader than "admin-only" in the strict
+sense — intentional, matching this file's existing convention for a
+read-only surface).
 
 Operator workflow: pick a date range + accounts + status pill, scan
 the table, drill via the Audit log for the request_id of any row that
-looks suspicious.
+looks suspicious. `realized-pnl` is a lookup surface for the Kite
+Console backfill/sync's own accumulated ground truth (see
+`scripts/kite_console_pnl_sync.py`) — a genuine reconciliation
+disagreement reaches the operator separately, through the standard
+alert pipeline (`event_agents.PNL_RECONCILIATION_AGENT`), not through
+this endpoint.
 """
 
 from __future__ import annotations
@@ -123,6 +131,15 @@ class FundsBackfillResponse(msgspec.Struct):
     rows_skipped:int
     broker_id:   str
     detail:      str       # short status / error string
+
+
+class _RealizedPnlRow(msgspec.Struct):
+    account:         str              # masked form, e.g. 'Z1####'
+    segment:         str              # 'equity' | 'derivatives' | 'commodities'
+    instrument_type: str              # 'equity' | 'future' | 'option'
+    symbol_root:     str
+    expiry:          Optional[str]    # ISO date, or null for equity
+    realized_pnl:    float
 
 
 # ---------------------------------------------------------------------------
@@ -388,6 +405,89 @@ async def _hist_upsert_entry(s, account: str, e: dict, now_utc: datetime) -> Non
     """), params)
 
 
+def _hist_realized_pnl_account_candidates(account: Optional[str]) -> "Optional[set[str]]":
+    """Returns the set of strings that should be treated as matching a
+    caller-supplied `account` filter, or `None` for "no filter".
+
+    Double-mask guard: `KiteConsolePnlSync.account` (and therefore every
+    key `get_accumulated_pnl()` returns) stores the MASKED form — but
+    this endpoint has no way to know whether the caller passed a raw
+    broker account code or the already-masked form it itself returns in
+    every row (a round-tripped display value). `mask_account()` is NOT
+    idempotent — re-masking an already-masked code (e.g. 'Z1####')
+    produces a DIFFERENT, wrong string ('Z#####') — so this matches
+    against BOTH the literal param and its `mask_account()`-translated
+    form, never re-masking blindly. `mask_account()` itself is wrapped
+    in try/except: it's a process-local registry lookup
+    (`register_accounts()`), and a failure there must degrade to
+    exact-string matching, never raise."""
+    if not account:
+        return None
+    candidates = {account}
+    try:
+        from backend.shared.helpers.utils import mask_account
+        candidates.add(mask_account(account))
+    except Exception:
+        pass
+    return candidates
+
+
+def _hist_realized_pnl_rows(
+    result: dict, *,
+    account: Optional[str] = None,
+    segment: Optional[str] = None,
+    expiry_from: Optional[_date] = None,
+    expiry_to: Optional[_date] = None,
+) -> "list[_RealizedPnlRow]":
+    """Pure flattener/filter — reshapes
+    `scripts.kite_console_pnl_sync.get_accumulated_pnl()`'s own
+    `groups: {(account, segment, instrument_type, symbol_root, expiry): pnl}`
+    dict into this endpoint's flat row-list contract, sorted by
+    `expiry` descending (most recent cycle first; a null expiry, i.e.
+    an equity row, always sorts last).
+
+    `account`/`segment`/`expiry_from`/`expiry_to` are applied HERE, in
+    Python, over the already-fetched `groups` — `get_accumulated_pnl()`
+    itself has no `segment` or expiry-RANGE kwarg (only an exact-match
+    `expiry`), and its own `account` kwarg would double-mask an already-
+    masked caller value (see `_hist_realized_pnl_account_candidates()`),
+    so this endpoint never passes `account=` to it either.
+
+    A null-expiry (equity) group is excluded whenever `expiry_from` or
+    `expiry_to` is set — a range filter implies "I'm asking about a
+    specific expiry window", which an equity row has no expiry to
+    compare against. With neither bound set, an equity row is included
+    (sorted last, per the rule above)."""
+    account_candidates = _hist_realized_pnl_account_candidates(account)
+
+    rows: "list[_RealizedPnlRow]" = []
+    for (acct, seg, itype, root, exp), pnl in (result.get("groups") or {}).items():
+        if account_candidates is not None and acct not in account_candidates:
+            continue
+        if segment and seg != segment:
+            continue
+        if expiry_from or expiry_to:
+            if exp is None:
+                continue
+            if expiry_from and exp < expiry_from:
+                continue
+            if expiry_to and exp > expiry_to:
+                continue
+        rows.append(_RealizedPnlRow(
+            account=acct, segment=seg, instrument_type=itype, symbol_root=root,
+            expiry=(exp.isoformat() if exp else None),
+            realized_pnl=float(pnl or 0.0),
+        ))
+
+    # Descending by expiry; a null expiry ('') sorts last under
+    # reverse=True since '' < any real ISO date string. account/
+    # symbol_root as a deterministic tiebreak for equal/null expiries —
+    # `sorted()` raises on a bare `date | None` mix, so every key here
+    # is string-shaped.
+    rows.sort(key=lambda r: (r.expiry or "", r.account, r.symbol_root), reverse=True)
+    return rows
+
+
 # ---------------------------------------------------------------------------
 # Controller
 # ---------------------------------------------------------------------------
@@ -564,6 +664,51 @@ class HistoryController(Controller):
             rows=[_hist_funds_row(r, delta_by_row_id) for r in rows],
             total=len(rows),
             earliest_date=(earliest.isoformat() if earliest else None),
+        )
+
+    @get("/realized-pnl", guards=[cap_guard("view_audit")])
+    async def list_realized_pnl(
+        self,
+        account:         Optional[str] = None,
+        segment:         Optional[str] = None,
+        instrument_type: Optional[str] = None,
+        symbol_root:     Optional[str] = None,
+        expiry_from:     Optional[str] = None,
+        expiry_to:       Optional[str] = None,
+    ) -> "list[_RealizedPnlRow]":
+        """Kite Console P&L reconciliation ground truth — wraps
+        `scripts.kite_console_pnl_sync.get_accumulated_pnl()`. A bare
+        list of rows (not the `{rows, total, ...}` wrapper shape the
+        other three endpoints in this file use) — this surface has no
+        pagination need today (the underlying table is grouped/summed
+        server-side, not a raw per-trade feed).
+
+        `account`/`instrument_type`/`symbol_root` map onto the
+        underlying function's own filter kwargs. `segment` and an
+        expiry RANGE (`expiry_from`/`expiry_to`, inclusive, 'YYYY-MM-DD')
+        have no equivalent there, so they're applied in Python over its
+        already-grouped output — see `_hist_realized_pnl_rows()`.
+        `account` is deliberately NEVER forwarded to
+        `get_accumulated_pnl()` itself (which would double-mask an
+        already-masked caller value); it's matched post-hoc against
+        both the raw and `mask_account()`-translated form instead.
+
+        Sorted by `expiry` descending by default (most recent cycle
+        first); a null expiry (equity) sorts last.
+
+        Read-only — a genuine reconciliation disagreement reaches the
+        operator separately, through the Alerts tab
+        (`event_agents.PNL_RECONCILIATION_AGENT`), not through this
+        endpoint."""
+        from scripts.kite_console_pnl_sync import get_accumulated_pnl
+
+        ef = _parse_date(expiry_from)
+        et = _parse_date(expiry_to)
+        result = await get_accumulated_pnl(
+            instrument_type=instrument_type, symbol_root=symbol_root,
+        )
+        return _hist_realized_pnl_rows(
+            result, account=account, segment=segment, expiry_from=ef, expiry_to=et,
         )
 
     @post("/funds/backfill", guards=[admin_guard])

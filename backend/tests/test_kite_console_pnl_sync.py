@@ -896,27 +896,215 @@ class TestBackfillVsSyncPlans:
             assert start == mod._BACKFILL_START
             assert end == today
 
-    def test_sync_plan_excludes_equity(self):
-        today = date(2026, 11, 24)
-        plan = mod.sync_plan(today)
-        assert "equity" not in plan, "ongoing sync must never pull equity"
-        assert set(plan.keys()) == {"derivatives", "commodities"}
+    def test_backfill_start_is_april_1_2026(self):
+        """2026-11-26 operator instruction — was 2026-03-01."""
+        assert mod._BACKFILL_START == date(2026, 4, 1)
 
-    def test_sync_plan_is_a_trailing_window_not_the_full_backfill_range(self):
-        today = date(2026, 11, 24)
-        plan = mod.sync_plan(today, lookback_days=10)
+
+# ===========================================================================
+# 8b. chunk_by_calendar_month — the ~1-month Kite Console CSV export cap
+# ===========================================================================
+
+class TestChunkByCalendarMonth:
+    def test_matches_the_operators_own_worked_example(self):
+        chunks = mod.chunk_by_calendar_month(date(2026, 4, 1), date(2026, 11, 26))
+        assert chunks == [
+            (date(2026, 4, 1), date(2026, 4, 30)),
+            (date(2026, 5, 1), date(2026, 5, 31)),
+            (date(2026, 6, 1), date(2026, 6, 30)),
+            (date(2026, 7, 1), date(2026, 7, 31)),
+            (date(2026, 8, 1), date(2026, 8, 31)),
+            (date(2026, 9, 1), date(2026, 9, 30)),
+            (date(2026, 10, 1), date(2026, 10, 31)),
+            (date(2026, 11, 1), date(2026, 11, 26)),
+        ]
+
+    def test_single_day_range_yields_one_chunk(self):
+        assert mod.chunk_by_calendar_month(date(2026, 11, 20), date(2026, 11, 20)) == [
+            (date(2026, 11, 20), date(2026, 11, 20)),
+        ]
+
+    def test_exact_calendar_month_range_yields_one_chunk(self):
+        assert mod.chunk_by_calendar_month(date(2026, 11, 1), date(2026, 11, 30)) == [
+            (date(2026, 11, 1), date(2026, 11, 30)),
+        ]
+
+    def test_range_spanning_a_december_year_boundary(self):
+        chunks = mod.chunk_by_calendar_month(date(2026, 12, 15), date(2027, 1, 10))
+        assert chunks == [
+            (date(2026, 12, 15), date(2026, 12, 31)),
+            (date(2027, 1, 1), date(2027, 1, 10)),
+        ]
+
+    def test_inverted_range_returns_empty_list_not_an_error(self):
+        assert mod.chunk_by_calendar_month(date(2026, 11, 20), date(2026, 11, 1)) == []
+
+    def test_every_chunk_is_non_overlapping_and_contiguous(self):
+        chunks = mod.chunk_by_calendar_month(date(2026, 4, 1), date(2026, 11, 26))
+        for (_, prev_end), (cur_start, _) in zip(chunks, chunks[1:]):
+            assert cur_start == prev_end + mod.timedelta(days=1)
+
+
+# ===========================================================================
+# 8c. compute_trigger_map / resolve_sync_plan — the 2026-11-26 "previous
+# expiry -> current expiry" ongoing-sync redesign
+# ===========================================================================
+
+async def _fake_next_open_plus_one_day(after_date, exchange="MCX"):
+    return datetime(after_date.year, after_date.month, after_date.day, 8, 0, tzinfo=timezone.utc) + mod.timedelta(days=1)
+
+
+class TestComputeTriggerMap:
+    @pytest.mark.asyncio
+    async def test_maps_each_pair_to_its_own_trigger(self, monkeypatch):
+        monkeypatch.setattr(
+            "backend.api.algo.expiry_freeze.next_market_open_ist",
+            _fake_next_open_plus_one_day,
+        )
+        pairs = {("MCX", date(2026, 10, 20)), ("NFO", date(2026, 11, 20))}
+        trigger_map = await mod.compute_trigger_map(pairs)
+        assert trigger_map == {
+            ("MCX", date(2026, 10, 20)): date(2026, 10, 21),
+            ("NFO", date(2026, 11, 20)): date(2026, 11, 21),
+        }
+
+    @pytest.mark.asyncio
+    async def test_compute_trigger_dates_is_the_flat_value_set(self, monkeypatch):
+        monkeypatch.setattr(
+            "backend.api.algo.expiry_freeze.next_market_open_ist",
+            _fake_next_open_plus_one_day,
+        )
+        pairs = {("MCX", date(2026, 10, 20)), ("NFO", date(2026, 11, 20))}
+        assert await mod.compute_trigger_dates(pairs) == {
+            date(2026, 10, 21), date(2026, 11, 21),
+        }
+
+
+class TestResolveSyncPlan:
+    """`resolve_sync_plan()` resolves each exchange's OWN due set via
+    `compute_trigger_map()` — which calls the REAL `next_market_open_
+    ist()` — so every test here monkeypatches it the same way
+    `TestComputeTriggerDatesAndCollection` already does, rather than
+    hitting a real DB-backed holiday lookup."""
+
+    @pytest.mark.asyncio
+    async def test_excludes_equity_always(self, monkeypatch):
+        monkeypatch.setattr(
+            "backend.api.algo.expiry_freeze.next_market_open_ist",
+            _fake_next_open_plus_one_day,
+        )
+        pairs = {("MCX", date(2026, 11, 20)), ("NFO", date(2026, 11, 20))}
+        plan = await mod.resolve_sync_plan(pairs, date(2026, 11, 24), None)
+        assert "equity" not in plan
+
+    @pytest.mark.asyncio
+    async def test_range_is_previous_expiry_plus_one_to_current_expiry(self, monkeypatch):
+        """Exactly one cycle due — `last_synced_through` sits strictly
+        between the Oct cycle's own trigger (10-21) and the Nov cycle's
+        (11-21), so only Nov is due and Oct serves purely as the
+        previous-expiry anchor, never itself as a due cycle."""
+        monkeypatch.setattr(
+            "backend.api.algo.expiry_freeze.next_market_open_ist",
+            _fake_next_open_plus_one_day,
+        )
+        pairs = {("MCX", date(2026, 10, 20)), ("MCX", date(2026, 11, 20))}
+        plan = await mod.resolve_sync_plan(
+            pairs, date(2026, 11, 24), date(2026, 10, 21),
+        )
+        assert plan["commodities"] == (date(2026, 10, 21), date(2026, 11, 20))
+
+    @pytest.mark.asyncio
+    async def test_no_previous_expiry_falls_back_to_conservative_window(self, monkeypatch):
+        monkeypatch.setattr(
+            "backend.api.algo.expiry_freeze.next_market_open_ist",
+            _fake_next_open_plus_one_day,
+        )
+        pairs = {("MCX", date(2026, 11, 20))}
+        plan = await mod.resolve_sync_plan(pairs, date(2026, 11, 24), None)
+        start, end = plan["commodities"]
+        assert end == date(2026, 11, 20)
+        assert start == date(2026, 11, 20) - mod.timedelta(days=mod._SYNC_RANGE_FALLBACK_DAYS)
+
+    @pytest.mark.asyncio
+    async def test_exchange_with_no_due_trigger_is_excluded(self, monkeypatch):
+        monkeypatch.setattr(
+            "backend.api.algo.expiry_freeze.next_market_open_ist",
+            _fake_next_open_plus_one_day,
+        )
+        # trigger for 2026-10-01 is 2026-10-02 (via the fake), already
+        # covered by last_synced_through — nothing new for NFO today.
+        pairs = {("NFO", date(2026, 10, 1))}
+        plan = await mod.resolve_sync_plan(
+            pairs, date(2026, 11, 24), date(2026, 10, 2),
+        )
+        assert plan == {}
+
+    @pytest.mark.asyncio
+    async def test_segment_shared_by_two_exchanges_takes_the_union(self, monkeypatch):
+        """`last_synced_through` (11-06) is chosen so exactly one cycle
+        is due per exchange: NFO's Oct cycle (trigger 10-21) and BFO's
+        first Nov cycle (trigger 11-06) both predate it and serve only
+        as previous-expiry anchors."""
+        monkeypatch.setattr(
+            "backend.api.algo.expiry_freeze.next_market_open_ist",
+            _fake_next_open_plus_one_day,
+        )
+        pairs = {
+            ("NFO", date(2026, 10, 20)), ("NFO", date(2026, 11, 20)),
+            ("BFO", date(2026, 11, 5)), ("BFO", date(2026, 11, 25)),
+        }
+        plan = await mod.resolve_sync_plan(
+            pairs, date(2026, 11, 27), date(2026, 11, 6),
+        )
         start, end = plan["derivatives"]
-        assert start == today - mod.timedelta(days=10)
-        assert start > mod._BACKFILL_START, (
-            "sync mode must not silently replay the entire backfill range"
+        assert start == date(2026, 10, 21)  # NFO's own previous+1 (the earlier)
+        assert end == date(2026, 11, 25)    # BFO's own current (the later)
+
+    @pytest.mark.asyncio
+    async def test_expiry_landing_exactly_today_is_not_yet_due(self, monkeypatch):
+        """The naive 'latest expiry <= today' rule (the bug this fix
+        closes) would wrongly pick an expiry landing on TODAY — common
+        for a weekly NFO expiry — even though that cycle's own trigger
+        (next market open strictly after it) is tomorrow, not yet
+        reached. The correct per-expiry trigger check excludes it and
+        picks the PRIOR week's already-settled cycle instead."""
+        monkeypatch.setattr(
+            "backend.api.algo.expiry_freeze.next_market_open_ist",
+            _fake_next_open_plus_one_day,
+        )
+        pairs = {("NFO", date(2026, 11, 19)), ("NFO", date(2026, 11, 26))}
+        plan = await mod.resolve_sync_plan(pairs, date(2026, 11, 26), None)
+        assert plan["derivatives"] == (
+            date(2026, 11, 19) - mod.timedelta(days=mod._SYNC_RANGE_FALLBACK_DAYS),
+            date(2026, 11, 19),
+        ), (
+            "the cycle expiring TODAY must be excluded (its own trigger "
+            "is tomorrow) — only the already-settled prior week's cycle "
+            "is due"
         )
 
-    def test_backfill_and_sync_plans_are_independent_functions(self):
-        """Not the same function parameterised by a flag that's easy to
-        get backwards — two distinct call sites in main()."""
-        import inspect
-        assert mod.backfill_plan is not mod.sync_plan
-        assert inspect.signature(mod.backfill_plan).parameters.keys() == {"today"}
+    @pytest.mark.asyncio
+    async def test_two_missed_cycles_catch_up_covers_the_full_span(self, monkeypatch):
+        """A run missed for more than one cycle must pull the FULL
+        missed span — end = the latest due cycle, start = (the expiry
+        immediately before the EARLIEST due cycle) + 1 — never only the
+        newest cycle's own narrow window, which would silently lose the
+        middle cycle(s)."""
+        monkeypatch.setattr(
+            "backend.api.algo.expiry_freeze.next_market_open_ist",
+            _fake_next_open_plus_one_day,
+        )
+        pairs = {
+            ("MCX", date(2026, 9, 20)),    # anchor — serves as "previous" only
+            ("MCX", date(2026, 10, 20)),   # missed cycle 1
+            ("MCX", date(2026, 11, 20)),   # missed cycle 2 (the most recent)
+        }
+        # last_synced predates the Oct cycle's own trigger (10-21), so
+        # BOTH Oct and Nov are due. Sep must never itself be due.
+        plan = await mod.resolve_sync_plan(
+            pairs, date(2026, 11, 24), date(2026, 9, 25),
+        )
+        assert plan["commodities"] == (date(2026, 9, 21), date(2026, 11, 20))
 
 
 # ===========================================================================
@@ -1067,10 +1255,12 @@ class TestHappyPathEndToEnd:
         assert len(ingested_rows) == 2
         assert {r["trade_id"] for r in ingested_rows} == {"T_E2E_1", "T_E2E_2"}
         pnl_call = next(c for c in ingest_mock.call_args_list if c[0][3] == "pnl")
-        assert pnl_call[1]["pull_start"] == mod._BACKFILL_START, (
-            "the pnl pull must always use the fixed-anchor range, never "
-            "the plan's own (rolling) range"
-        )
+        # 2026-11-26 redesign — the pnl pull no longer uses a separate
+        # fixed-anchor-to-today range; it now uses the SAME `plan`
+        # range as the tradebook pull (here, a single calendar-month
+        # chunk, since the plan's own range IS one calendar month).
+        assert pnl_call[1]["pull_start"] == date(2026, 11, 1)
+        assert pnl_call[1]["pull_end"] == date(2026, 11, 30)
 
 
 # ===========================================================================
@@ -1376,30 +1566,14 @@ class TestMainEntrypoint:
 
 
 # ===========================================================================
-# 15. pnl_pull_range — the fixed-anchor fix for the double-counting trap
+# 15. pnl_pull_range / sync_plan() — REMOVED, 2026-11-26. Both report
+# types now pull `plan`'s own range (see `sync_account()`), chunked by
+# `chunk_by_calendar_month()` — there is no separate fixed-anchor pnl
+# range any more, and the ongoing-sync plan comes from
+# `resolve_sync_plan()` (see `TestResolveSyncPlan` above), not a
+# generic trailing lookback window. See `TestChunkByCalendarMonth` /
+# `TestResolveSyncPlan` for this area's current coverage.
 # ===========================================================================
-
-class TestPnlPullRange:
-    def test_always_anchors_at_backfill_start_regardless_of_today(self):
-        start, end = mod.pnl_pull_range(date(2026, 11, 20))
-        assert start == mod._BACKFILL_START
-        assert end == date(2026, 11, 20)
-
-    def test_two_different_sync_days_produce_two_different_but_both_fixed_anchor_ranges(self):
-        """The whole point: unlike sync_plan()'s rolling window, both
-        calls share the SAME start — only `end` (today) moves."""
-        r1 = mod.pnl_pull_range(date(2026, 11, 20))
-        r2 = mod.pnl_pull_range(date(2026, 11, 21))
-        assert r1[0] == r2[0] == mod._BACKFILL_START
-        assert r1[1] != r2[1]
-
-    def test_differs_from_sync_plans_rolling_window(self):
-        today = date(2026, 11, 20)
-        tradebook_range = mod.sync_plan(today)["derivatives"]
-        pnl_range = mod.pnl_pull_range(today)
-        assert tradebook_range != pnl_range
-        assert tradebook_range[0] == today - mod.timedelta(days=mod._SYNC_LOOKBACK_DAYS)
-        assert pnl_range[0] == mod._BACKFILL_START
 
 
 # ===========================================================================
@@ -1540,6 +1714,61 @@ class TestPnlStatementPull:
         pnl_call = next(c for c in ingest_mock.call_args_list if c[0][3] == "pnl")
         pnl_rows = pnl_call[0][4]
         assert pnl_rows[0]["realized_pnl"] == "45000.00"
+
+    @pytest.mark.asyncio
+    async def test_pnl_chunk_start_is_floored_to_month_1_tradebook_is_not(self, monkeypatch, tmp_path):
+        """THE important wiring test for the backfill/sync seam fix —
+        when the plan's own range does NOT start on the 1st (the
+        ongoing-sync case: previous_expiry + 1), the PNL request must
+        still be floored to the 1st of that month, while the tradebook
+        request keeps the real, clipped start. Confirms the request
+        sent to `set_date_range()` AND the stored `pull_start` agree."""
+        conn = _console_conn_bare("ZCONSOLE_PNLFLOOR1")
+        conn._attempt_login_with_cooloff = MagicMock()
+        conn._console_page = MagicMock()
+        monkeypatch.setattr(mod, "build_console_connection", lambda *a, **k: conn)
+
+        tradebook_file = tmp_path / "tradebook.csv"
+        tradebook_file.write_bytes(_csv_bytes([]))
+        pnl_file = tmp_path / "pnl.csv"
+        pnl_file.write_bytes(_pnl_csv_bytes([]))
+
+        last_report_type: "list[str]" = []
+        set_date_range_calls: "list[tuple]" = []
+        fake_page = MagicMock()
+        fake_page.navigate_to_reports = MagicMock(side_effect=lambda rt: last_report_type.append(rt))
+        fake_page.select_segment = MagicMock()
+        fake_page.set_date_range = MagicMock(
+            side_effect=lambda s, e: set_date_range_calls.append((last_report_type[-1], s, e))
+        )
+        fake_page.trigger_download = MagicMock(
+            side_effect=lambda: tradebook_file if last_report_type[-1] == "tradebook" else pnl_file
+        )
+        monkeypatch.setattr(mod, "KiteConsoleReportsPage", lambda page: fake_page)
+
+        ingest_mock = AsyncMock(return_value=0)
+        monkeypatch.setattr(mod, "ingest_rows", ingest_mock)
+        monkeypatch.setattr("backend.api.database.async_session", lambda: _FakeSessionCtx())
+
+        row = _fake_broker_account_row("ZCONSOLE_PNLFLOOR1")
+        # Mid-month start — the shape `resolve_sync_plan()` produces
+        # (previous_expiry + 1 day), never the 1st of a month.
+        await mod.sync_account(
+            row, plan={"commodities": (date(2026, 11, 15), date(2026, 11, 20))},
+        )
+
+        tradebook_calls = [c for c in set_date_range_calls if c[0] == "tradebook"]
+        pnl_calls = [c for c in set_date_range_calls if c[0] == "pnl"]
+        assert tradebook_calls == [("tradebook", date(2026, 11, 15), date(2026, 11, 20))], (
+            "tradebook keeps the real, clipped start — no flooring"
+        )
+        assert pnl_calls == [("pnl", date(2026, 11, 1), date(2026, 11, 20))], (
+            "pnl floors its own start to the 1st of the month"
+        )
+        # The stored pull_range must match what was actually requested.
+        pnl_ingest_call = next(c for c in ingest_mock.call_args_list if c[0][3] == "pnl")
+        assert pnl_ingest_call[1]["pull_start"] == date(2026, 11, 1)
+        assert pnl_ingest_call[1]["pull_end"] == date(2026, 11, 20)
 
 
 # ===========================================================================
@@ -1739,60 +1968,115 @@ async def _insert_daily_book_row(session, **kwargs):
     await session.execute(_DAILY_BOOK_INSERT_SQL, defaults)
 
 
-class TestGetAccumulatedPnlNoDoubleCounting:
-    """THE important test — ingest TWO DIFFERENT, OVERLAPPING pnl
-    pulls for the SAME (account, symbol, expiry) and confirm the
-    accumulation picks the latest/widest one, never SUMs them."""
+class TestGetAccumulatedPnlCalendarMonthChunking:
+    """2026-11-26 redesign — real-world constraint discovered before any
+    real data existed in this table (confirmed 0 rows in prod at the
+    time): Kite Console's Tradebook/P&L-statement CSV export does not
+    reliably support a date range wider than ~1 month, so every real
+    PNL pull now floors its own requested start to the 1st of its
+    calendar month (`sync_account()`) and is chunked via
+    `chunk_by_calendar_month()`. `get_accumulated_pnl()` picks, per
+    (account, segment, symbol, expiry, `pull_range_start`), only the
+    row with the LATEST `pull_range_end` — then SUMS across the
+    resulting per-month 'latest' rows. A bare SUM across every matching
+    row (an earlier, simpler version of this redesign) double-counts
+    both a same-month re-run and a backfill/sync seam — see the two
+    dedicated tests below, which are confirmed to fail against that
+    bare-SUM version."""
 
     @pytest.mark.asyncio
-    async def test_overlapping_pulls_do_not_double_count(self, recon_session_factory):
+    async def test_two_distinct_calendar_months_correctly_sum(self, recon_session_factory):
         async with recon_session_factory() as session:
-            # Narrower, earlier pull: Mar 1 -> Jun 1, realized_pnl=50000.
             await _insert_pnl_row(
                 session,
-                pull_range_start=date(2026, 3, 1), pull_range_end=date(2026, 6, 1),
+                pull_range_start=date(2026, 10, 1), pull_range_end=date(2026, 10, 31),
                 realized_pnl=50000.0,
-                updated_at=datetime(2026, 6, 1, 10, 0, tzinfo=timezone.utc),
             )
-            # Wider, later pull (same anchor, further "today"):
-            # Mar 1 -> Nov 1, realized_pnl=120000 (the correct cumulative
-            # total as of that later pull).
             await _insert_pnl_row(
                 session,
-                pull_range_start=date(2026, 3, 1), pull_range_end=date(2026, 11, 1),
-                realized_pnl=120000.0,
-                updated_at=datetime(2026, 11, 1, 10, 0, tzinfo=timezone.utc),
+                pull_range_start=date(2026, 11, 1), pull_range_end=date(2026, 11, 26),
+                realized_pnl=70000.0,
             )
             await session.commit()
 
         result = await mod.get_accumulated_pnl(symbol_root="GOLDM")
 
         assert result["overall_total"] == pytest.approx(120000.0), (
-            f"expected the LATEST pull's cumulative total (120000), got "
-            f"{result['overall_total']} — a naive SUM would wrongly give 170000"
+            "two DISTINCT, non-overlapping calendar MONTHS for the same "
+            "symbol+expiry must SUM, not pick one"
         )
 
     @pytest.mark.asyncio
-    async def test_identical_range_reingestion_also_does_not_double_count(self, recon_session_factory):
-        """Base idempotency case — same (account, report_type, dedup_key)
-        re-ingested (same range, updated value) must still collapse to
-        ONE row's worth of P&L, not two."""
+    async def test_same_month_rerun_with_a_later_end_picks_latest_not_sum(self, recon_session_factory):
+        """THE important same-month case — a retried/re-triggered pull
+        for a month already pulled gets a DIFFERENT `pull_range_end`
+        (today's date moved), hence a genuinely different `dedup_key`,
+        hence a SECOND row rather than an upsert in place. A bare SUM
+        would wrongly add both; the real rule picks only the latest
+        (widest) one per month bucket."""
         async with recon_session_factory() as session:
             await _insert_pnl_row(
                 session,
-                pull_range_start=date(2026, 3, 1), pull_range_end=date(2026, 6, 1),
-                realized_pnl=30000.0,
+                pull_range_start=date(2026, 10, 1), pull_range_end=date(2026, 10, 20),
+                realized_pnl=50000.0,
+                updated_at=datetime(2026, 10, 20, 10, 0, tzinfo=timezone.utc),
+            )
+            await _insert_pnl_row(
+                session,
+                pull_range_start=date(2026, 10, 1), pull_range_end=date(2026, 10, 25),
+                realized_pnl=52000.0,
+                updated_at=datetime(2026, 10, 25, 10, 0, tzinfo=timezone.utc),
             )
             await session.commit()
 
         result = await mod.get_accumulated_pnl(symbol_root="GOLDM")
-        assert result["overall_total"] == pytest.approx(30000.0)
+
+        assert result["overall_total"] == pytest.approx(52000.0), (
+            f"expected the LATEST pull's value for this month (52000), "
+            f"got {result['overall_total']} — a naive SUM would wrongly give 102000"
+        )
+
+    @pytest.mark.asyncio
+    async def test_backfill_then_sync_seam_for_the_same_month_picks_latest_not_sum(self, recon_session_factory):
+        """The FIRST ongoing sync after a one-time backfill can overlap
+        the backfill's own last month — an expiry essentially never
+        lands on a calendar-month boundary. Because `sync_account()`
+        floors every PNL chunk's own start to the 1st of the month,
+        BOTH the backfill's row and the sync's row for that shared
+        month land in the SAME bucket (same `pull_range_start`), so
+        this resolves the same way as a same-month re-run: latest
+        `pull_range_end` wins, never summed."""
+        async with recon_session_factory() as session:
+            # Backfill's own chunk for November, as of the day it ran.
+            await _insert_pnl_row(
+                session,
+                pull_range_start=date(2026, 11, 1), pull_range_end=date(2026, 11, 20),
+                realized_pnl=100000.0,
+                updated_at=datetime(2026, 11, 20, 10, 0, tzinfo=timezone.utc),
+            )
+            # The first ongoing sync's own chunk for the SAME month,
+            # a few days later, now fully covering a later cycle.
+            await _insert_pnl_row(
+                session,
+                pull_range_start=date(2026, 11, 1), pull_range_end=date(2026, 11, 25),
+                realized_pnl=130000.0,
+                updated_at=datetime(2026, 11, 25, 10, 0, tzinfo=timezone.utc),
+            )
+            await session.commit()
+
+        result = await mod.get_accumulated_pnl(symbol_root="GOLDM")
+
+        assert result["overall_total"] == pytest.approx(130000.0), (
+            f"expected the sync row's later total (130000), got "
+            f"{result['overall_total']} — a naive SUM would wrongly give 230000"
+        )
 
     @pytest.mark.asyncio
     async def test_different_symbols_within_one_group_are_correctly_summed(self, recon_session_factory):
-        """Summing IS correct, and must still happen, across DIFFERENT
-        symbols sharing one (account, symbol_root, expiry) group — e.g.
-        two option strikes under the same underlying+expiry."""
+        """Summing across DIFFERENT symbols sharing one (account,
+        symbol_root, expiry) group — e.g. two option strikes under the
+        same underlying+expiry — was already correct before this
+        redesign and remains so."""
         async with recon_session_factory() as session:
             await _insert_pnl_row(
                 session, symbol="NIFTY25DEC25000CE", symbol_root="NIFTY",
@@ -1872,3 +2156,247 @@ class TestReconcileAgainstDailyBook:
         assert summary["discrepancy_count"] == 0
         key = (_RECON_MASKED_ACCOUNT, "GOLDM", date(2026, 12, 31))
         assert summary["groups"][key]["status"] == "match"
+
+
+# ===========================================================================
+# 21. Part 3 — surfacing a reconciliation "disagree" finding through the
+# standard log-then-dispatch alert pipeline. Never a direct send.
+# ===========================================================================
+
+class TestBuildReconciliationAlert:
+    """Pure builder — `_build_reconciliation_alert()`."""
+
+    def test_no_disagree_groups_returns_none(self):
+        summary = {
+            "groups": {
+                ("Z1####", "GOLDM", date(2026, 12, 31)): {
+                    "ground_truth_pnl": 100000.0, "daily_book_pnl": 100100.0,
+                    "delta": -100.0, "status": "match",
+                },
+                ("Z1####", "SILVER", None): {
+                    "ground_truth_pnl": 5000.0, "daily_book_pnl": None,
+                    "delta": None, "status": "missing",
+                },
+            },
+            "groups_compared": 2, "missing_count": 1, "disagree_count": 0,
+        }
+        assert mod._build_reconciliation_alert(summary) is None
+
+    def test_empty_summary_returns_none(self):
+        assert mod._build_reconciliation_alert({}) is None
+        assert mod._build_reconciliation_alert({"groups": {}}) is None
+
+    def test_only_disagree_groups_are_included(self):
+        summary = {
+            "groups": {
+                ("Z1####", "GOLDM", date(2026, 12, 31)): {
+                    "ground_truth_pnl": 367000.0, "daily_book_pnl": -444000.0,
+                    "delta": 811000.0, "status": "disagree",
+                },
+                ("Z1####", "SILVER", date(2026, 12, 31)): {
+                    "ground_truth_pnl": 5000.0, "daily_book_pnl": 5100.0,
+                    "delta": -100.0, "status": "match",
+                },
+                ("Z2####", "NIFTY", None): {
+                    "ground_truth_pnl": 2000.0, "daily_book_pnl": None,
+                    "delta": None, "status": "missing",
+                },
+            },
+            "groups_compared": 3, "missing_count": 1, "disagree_count": 1,
+        }
+        built = mod._build_reconciliation_alert(summary)
+        assert built is not None
+        title, body, extra = built
+        assert "1 group(s) disagree" in title
+        assert "GOLDM" in body
+        assert "SILVER" not in body
+        assert "NIFTY" not in body
+        assert extra["disagree_count"] == 1
+        assert len(extra["groups"]) == 1
+        assert extra["groups"][0]["symbol_root"] == "GOLDM"
+        assert extra["groups"][0]["expiry"] == "2026-12-31"
+        assert extra["groups"][0]["account"] == "Z1####"
+
+    def test_extra_is_json_safe(self):
+        import json
+        summary = {
+            "groups": {
+                ("Z1####", "GOLDM", date(2026, 12, 31)): {
+                    "ground_truth_pnl": 367000.0, "daily_book_pnl": -444000.0,
+                    "delta": 811000.0, "status": "disagree",
+                },
+            },
+            "groups_compared": 1, "missing_count": 0, "disagree_count": 1,
+        }
+        _, _, extra = mod._build_reconciliation_alert(summary)
+        json.dumps(extra)  # must not raise
+
+    def test_null_expiry_disagree_group_renders_as_n_a(self):
+        summary = {
+            "groups": {
+                ("Z1####", "RELIANCE", None): {
+                    "ground_truth_pnl": 1000.0, "daily_book_pnl": 9000.0,
+                    "delta": -8000.0, "status": "disagree",
+                },
+            },
+            "groups_compared": 1, "missing_count": 0, "disagree_count": 1,
+        }
+        title, body, extra = mod._build_reconciliation_alert(summary)
+        assert "n/a" in body
+        assert extra["groups"][0]["expiry"] is None
+
+    def test_sorted_by_abs_delta_descending_and_truncated_with_remainder_note(self):
+        groups = {}
+        for i in range(20):
+            groups[(f"Z{i}####", f"ROOT{i}", date(2026, 12, 31))] = {
+                "ground_truth_pnl": float(i * 1000), "daily_book_pnl": 0.0,
+                "delta": float(i * 1000), "status": "disagree",
+            }
+        summary = {"groups": groups, "groups_compared": 20, "missing_count": 0, "disagree_count": 20}
+        title, body, extra = mod._build_reconciliation_alert(summary)
+        assert len(extra["groups"]) == 20, "full detail always survives in extra, even truncated"
+        assert "ROOT19" in body, "the largest |delta| is listed first"
+        assert f"+{20 - mod._RECONCILE_ALERT_TOP_N} more" in body
+
+
+class TestAlertPnlReconciliationDisagreement:
+    @pytest.mark.asyncio
+    async def test_no_disagree_never_logs_or_flushes(self, monkeypatch):
+        summary = {"groups": {}, "groups_compared": 0, "missing_count": 0, "disagree_count": 0}
+        log_mock = MagicMock()
+        monkeypatch.setattr(mod.logger, "warning", log_mock)
+        flush_mock = AsyncMock()
+        monkeypatch.setattr(mod, "_flush_and_dispatch_once", flush_mock)
+
+        await mod.alert_pnl_reconciliation_disagreement(summary)
+
+        log_mock.assert_not_called()
+        flush_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_match_and_missing_only_never_logs(self, monkeypatch):
+        """THE important test — a mix of match/missing groups (no
+        disagree) must never fire the alert, confirming the gate is
+        genuinely `disagree_count > 0`, not merely `discrepancy_count`
+        (which also counts 'missing')."""
+        summary = {
+            "groups": {
+                ("Z1####", "GOLDM", date(2026, 12, 31)): {
+                    "ground_truth_pnl": 100000.0, "daily_book_pnl": 100100.0,
+                    "delta": -100.0, "status": "match",
+                },
+                ("Z1####", "SILVER", None): {
+                    "ground_truth_pnl": 5000.0, "daily_book_pnl": None,
+                    "delta": None, "status": "missing",
+                },
+            },
+            "groups_compared": 2, "missing_count": 1, "disagree_count": 0,
+        }
+        log_mock = MagicMock()
+        monkeypatch.setattr(mod.logger, "warning", log_mock)
+        flush_mock = AsyncMock()
+        monkeypatch.setattr(mod, "_flush_and_dispatch_once", flush_mock)
+
+        await mod.alert_pnl_reconciliation_disagreement(summary)
+
+        log_mock.assert_not_called()
+        flush_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_disagree_group_logs_exactly_one_tagged_record_and_flushes(self, monkeypatch):
+        summary = {
+            "groups": {
+                ("Z1####", "GOLDM", date(2026, 12, 31)): {
+                    "ground_truth_pnl": 367000.0, "daily_book_pnl": -444000.0,
+                    "delta": 811000.0, "status": "disagree",
+                },
+                ("Z1####", "SILVER", date(2026, 12, 31)): {
+                    "ground_truth_pnl": 5000.0, "daily_book_pnl": 5100.0,
+                    "delta": -100.0, "status": "match",
+                },
+            },
+            "groups_compared": 2, "missing_count": 0, "disagree_count": 1,
+        }
+        log_mock = MagicMock()
+        monkeypatch.setattr(mod.logger, "warning", log_mock)
+        flush_mock = AsyncMock()
+        monkeypatch.setattr(mod, "_flush_and_dispatch_once", flush_mock)
+
+        await mod.alert_pnl_reconciliation_disagreement(summary)
+
+        log_mock.assert_called_once()
+        _, kwargs = log_mock.call_args
+        extra = kwargs["extra"]
+        assert extra["alert_event"] == "pnl_reconciliation_disagreement"
+        assert extra["tags"] == ["alert"]
+        assert extra["source_type"] == "process"
+        assert extra["source_name"] == "Kite Console P&L sync"
+        assert "GOLDM" in extra["body"]
+        assert "SILVER" not in extra["body"], "only the disagreeing group is listed"
+        flush_mock.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_logged_at_warning_never_error_or_above(self, monkeypatch):
+        """WARNING, not ERROR+ — an ERROR+/CRITICAL record is
+        auto-tagged "error" by `tags_for()` and would double-fire
+        through `ERROR_AGENT`'s `min_level='ERROR'` catch-all alongside
+        the dedicated `pnl-reconciliation-alert` agent this record is
+        meant for."""
+        summary = {
+            "groups": {
+                ("Z1####", "GOLDM", date(2026, 12, 31)): {
+                    "ground_truth_pnl": 367000.0, "daily_book_pnl": -444000.0,
+                    "delta": 811000.0, "status": "disagree",
+                },
+            },
+            "groups_compared": 1, "missing_count": 0, "disagree_count": 1,
+        }
+        warning_mock = MagicMock()
+        critical_mock = MagicMock()
+        error_mock = MagicMock()
+        monkeypatch.setattr(mod.logger, "warning", warning_mock)
+        monkeypatch.setattr(mod.logger, "critical", critical_mock)
+        monkeypatch.setattr(mod.logger, "error", error_mock)
+        monkeypatch.setattr(mod, "_flush_and_dispatch_once", AsyncMock())
+
+        await mod.alert_pnl_reconciliation_disagreement(summary)
+
+        warning_mock.assert_called_once()
+        critical_mock.assert_not_called()
+        error_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_runs_the_real_flush_and_dispatch_once_function(self, monkeypatch):
+        """Confirms the WIRING, not just that SOME flush function was
+        called — `alert_pnl_reconciliation_disagreement()` must call the
+        real, unmocked `_flush_and_dispatch_once()`, which in turn calls
+        `log_store.flush_once` with the SAME `HANDLER` singleton and
+        `event_agents.dispatch_rows` — matching `alert_critical()`'s own
+        already-shipped pattern (one real flush+dispatch cycle before a
+        standalone, short-lived process exits). The queue is seeded
+        directly (same technique as
+        `test_flush_and_dispatch_once_calls_the_real_flush_once` above)
+        so `HANDLER.pending()` is already True and the wait loop exits
+        on its first check, regardless of the real `logger.warning()`
+        call this function also makes."""
+        summary = {
+            "groups": {
+                ("Z1####", "GOLDM", date(2026, 12, 31)): {
+                    "ground_truth_pnl": 367000.0, "daily_book_pnl": -444000.0,
+                    "delta": 811000.0, "status": "disagree",
+                },
+            },
+            "groups_compared": 1, "missing_count": 0, "disagree_count": 1,
+        }
+        from backend.shared.helpers import log_store
+        from backend.api.algo.event_agents import dispatch_rows
+        flush_once_mock = AsyncMock(return_value=0)
+        monkeypatch.setattr(log_store, "flush_once", flush_once_mock)
+        log_store.HANDLER._q.put_nowait({"fake": "row"})  # make pending() True immediately
+
+        await mod.alert_pnl_reconciliation_disagreement(summary)
+
+        flush_once_mock.assert_awaited_once()
+        args, kwargs = flush_once_mock.call_args
+        assert args[0] is log_store.HANDLER
+        assert kwargs.get("dispatch") is dispatch_rows

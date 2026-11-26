@@ -97,8 +97,11 @@ class TestIsBuiltinSeededEventAgent:
         # standalone `SEEDED_AGENTS` entries. 2026-11-20 fix (SEED_VERSION
         # 11 -> 12): 14 -> 15 — `broker-login-blocked-alert`, a brand-new
         # standalone critical-tier agent (live ZG0790 CAPTCHA incident).
-        assert len(_SEEDED_SLUGS) == 15
-        assert len(set(_SEEDED_SLUGS)) == 15  # no duplicate slugs
+        # 2026-11-26 (SEED_VERSION 12 -> 13): 15 -> 16 —
+        # `pnl-reconciliation-alert`, a brand-new standalone medium-tier
+        # agent (Kite Console P&L reconciliation Part 3).
+        assert len(_SEEDED_SLUGS) == 16
+        assert len(set(_SEEDED_SLUGS)) == 16  # no duplicate slugs
 
     @pytest.mark.parametrize("slug", _SEEDED_SLUGS)
     def test_true_for_every_seeded_event_agent_slug(self, slug):

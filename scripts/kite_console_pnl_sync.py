@@ -222,9 +222,19 @@ logger = get_logger(__name__)
 _DIAGNOSTICS_DIR = _REPO_ROOT / ".log" / "kite_console_diagnostics"
 _DOWNLOADS_DIR = _REPO_ROOT / ".log" / "kite_console_downloads"
 
-_BACKFILL_START = date(2026, 3, 1)
-_SYNC_LOOKBACK_DAYS = 35
+_BACKFILL_START = date(2026, 4, 1)  # was 2026-03-01; operator instruction, 2026-11-26
 _EXPIRY_LOOKBACK_DAYS = 10
+# Wide enough to span two consecutive monthly F&O expiry cycles (with
+# buffer) in daily_book position history, so `resolve_sync_plan()` can
+# see both the "current" (just-triggered) and "previous" expiry for an
+# exchange — never a second, independent expiry calculation, just a
+# wider window over the SAME `collect_recent_fo_expiry_dates()` query
+# `should_sync_today()`'s own trigger-date detection already uses.
+_SYNC_RANGE_LOOKBACK_DAYS = 70
+# Conservative start bound used ONLY when an exchange's PREVIOUS expiry
+# can't be resolved from recent daily_book history (nothing was held
+# that cycle) — never a silent narrowing to just the trigger day.
+_SYNC_RANGE_FALLBACK_DAYS = 35
 _SYNC_MARKER_KEY = "task_markers.kite_console_pnl_sync_last_expiry_date"
 
 # PLACEHOLDER — Kite Console's own segment-selector label text. Verify
@@ -1098,19 +1108,34 @@ async def collect_recent_fo_expiry_dates(session, *, lookback_days: int = _EXPIR
     return out
 
 
-async def compute_trigger_dates(expiry_pairs: "set[tuple[str, date]]") -> "set[date]":
+async def compute_trigger_map(
+    expiry_pairs: "set[tuple[str, date]]",
+) -> "dict[tuple[str, date], date]":
     """Maps each (exchange, expiry_date) pair to the first genuine
     trading day strictly after that expiry, via the existing,
     holiday-aware `next_market_open_ist()` — never a hand-rolled weekday
-    walk."""
+    walk. Exposed per-pair (not just as a flat date set) so
+    `resolve_sync_plan()` can tell WHICH specific expiry(ies) are
+    genuinely due today, not merely "some trigger is due" — the flat
+    set `compute_trigger_dates()` returns loses the (exchange, expiry)
+    association that distinction needs."""
     from backend.api.algo.expiry_freeze import next_market_open_ist
 
-    out: "set[date]" = set()
+    out: "dict[tuple[str, date], date]" = {}
     for exchange, expiry in expiry_pairs:
         holiday_exchange = _HOLIDAY_EXCHANGE.get(exchange, "NSE")
         dt = await next_market_open_ist(expiry, exchange=holiday_exchange)
-        out.add(dt.date())
+        out[(exchange, expiry)] = dt.date()
     return out
+
+
+async def compute_trigger_dates(expiry_pairs: "set[tuple[str, date]]") -> "set[date]":
+    """Thin wrapper over `compute_trigger_map()` — kept for the overall
+    "is anything due today at all" gate in `main()`/`should_sync_today()`,
+    which only needs the flat trigger-date set, never the per-pair
+    mapping. Calls the SAME `next_market_open_ist()` loop, not a second
+    one."""
+    return set((await compute_trigger_map(expiry_pairs)).values())
 
 
 def should_sync_today(today_ist: date, trigger_dates: "set[date]",
@@ -1140,12 +1165,61 @@ async def mark_synced_through(d: date) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Calendar-month chunking — Kite Console's Tradebook/P&L-statement CSV
+# export does not reliably support a requested date range wider than
+# ~1 month (direct operator testimony, 2026-11-26 — discovered before
+# any real data existed in `kite_console_pnl_sync`: confirmed 0 rows in
+# prod at the time, so this is a design correction, not a migration).
+# `chunk_by_calendar_month()` is the ONE place a wide range is split
+# into a fixed set of calendar-month-ALIGNED, non-overlapping pieces —
+# applied uniformly to BOTH report types (tradebook and pnl-statement)
+# in `sync_account()` below, never a per-report-type special case.
+# Over-chunking (more, narrower requests) is always safe; under-
+# chunking risks a hard failure against the real Console site.
+# ---------------------------------------------------------------------------
+
+def _month_end(d: date) -> date:
+    """Pure — the last calendar day of `d`'s own month."""
+    if d.month == 12:
+        return date(d.year, 12, 31)
+    return date(d.year, d.month + 1, 1) - timedelta(days=1)
+
+
+def chunk_by_calendar_month(start: date, end: date) -> "list[tuple[date, date]]":
+    """Splits [start, end] (inclusive) into consecutive calendar-month-
+    aligned sub-ranges. Every chunk is a full calendar month EXCEPT the
+    first (clipped to `start` when `start` isn't the 1st) and the last
+    (clipped to `end` when `end` isn't a month-end). Pure, no I/O.
+
+    Example: (2026-04-01, 2026-11-26) ->
+        [(04-01,04-30), (05-01,05-31), (06-01,06-30), (07-01,07-31),
+         (08-01,08-31), (09-01,09-30), (10-01,10-31), (11-01,11-26)]
+
+    Returns `[]` for an inverted range (`start > end`) rather than
+    raising — callers (e.g. a `resolve_sync_plan()` edge case) should
+    treat an empty chunk list as "nothing to pull", not an error."""
+    if start > end:
+        return []
+    chunks: "list[tuple[date, date]]" = []
+    cur_start = start
+    while cur_start <= end:
+        cur_end = min(_month_end(cur_start), end)
+        chunks.append((cur_start, cur_end))
+        cur_start = cur_end + timedelta(days=1)
+    return chunks
+
+
+# ---------------------------------------------------------------------------
 # Backfill vs sync date-range plans — genuinely distinct code paths
 # ---------------------------------------------------------------------------
 
 def backfill_plan(today: date) -> "dict[str, tuple[date, date]]":
     """One-time backfill — equity + derivatives + commodities,
-    `_BACKFILL_START` (2026-03-01) -> today."""
+    `_BACKFILL_START` (2026-04-01) -> today. Each segment's own range is
+    later split into calendar-month chunks by `chunk_by_calendar_month()`
+    inside `sync_account()`, for BOTH report types (tradebook and pnl) —
+    this function itself still returns the one wide logical range per
+    segment; chunking is applied uniformly at the pull site, not here."""
     return {
         "equity": (_BACKFILL_START, today),
         "derivatives": (_BACKFILL_START, today),
@@ -1153,47 +1227,86 @@ def backfill_plan(today: date) -> "dict[str, tuple[date, date]]":
     }
 
 
-def sync_plan(today: date, *, lookback_days: int = _SYNC_LOOKBACK_DAYS) -> "dict[str, tuple[date, date]]":
-    """Ongoing post-expiry sync — derivatives + commodities ONLY, never
-    equity. Pulls a trailing `lookback_days`-wide window ending today
-    (not the whole backfill range), so a routine run stays a small
-    incremental pull.
-
-    This range governs the TRADEBOOK pull only. A rolling window is safe
-    there — `build_dedup_key('tradebook', ...)` keys on the broker's own
-    `trade_id`, so re-ingesting an overlapping window just re-upserts the
-    same trade rows, never a duplicate. It is NOT safe for the P&L
-    statement — see `pnl_pull_range()`'s own docstring for why that
-    report type always uses a different, fixed-anchor range regardless
-    of mode."""
-    start = today - timedelta(days=lookback_days)
-    return {
-        "derivatives": (start, today),
-        "commodities": (start, today),
-    }
+# Exchange -> this script's own Console segment bucket. BFO/CDS share
+# the 'derivatives' (equity F&O) segment with NFO for the purposes of
+# this script's Console pull — there is no dedicated currency-
+# derivatives segment modelled here.
+_SEGMENT_FOR_EXCHANGE: "dict[str, str]" = {
+    "NFO": "derivatives", "BFO": "derivatives", "CDS": "derivatives",
+    "MCX": "commodities",
+}
 
 
-def pnl_pull_range(today: date) -> "tuple[date, date]":
-    """The date range ALWAYS used for a report_type='pnl' pull, in BOTH
-    backfill and sync mode — `_BACKFILL_START` -> today, never a rolling
-    window.
+async def resolve_sync_plan(
+    expiry_pairs: "set[tuple[str, date]]", today: date,
+    last_synced_through: "date | None",
+) -> "dict[str, tuple[date, date]]":
+    """Builds the ongoing-sync plan — per operator instruction
+    (2026-11-26): the range is (previous expiry date + 1 day) -> (current
+    /most recent expiry date), NOT a generic trailing lookback window,
+    for whichever exchange(s) genuinely have a due sync today.
 
-    This is the real fix for a double-counting trap, not a workaround:
-    Kite's P&L statement aggregates each symbol's realized P&L over the
-    EXACT requested range. `sync_plan()`'s rolling `lookback_days` window
-    shifts by one day on every run, so two different sync runs produce
-    two DIFFERENT, non-nested ranges for the same symbol+expiry — neither
-    containing the other — and summing (or arbitrarily picking) either
-    number would misstate the overlap. By always pulling the full
-    cumulative range from a fixed anchor instead, every pull for a given
-    (account, symbol, expiry) is already the complete lifetime total as
-    of "today" — so there is only ever one genuinely "current" row per
-    group, and `get_accumulated_pnl()` only ever needs the MOST RECENT
-    such row per group, never a SUM across that group's own range-rows.
-    See `KiteConsolePnlSync`'s own model docstring for the full
-    reasoning, and `get_accumulated_pnl()` below for the query that
-    depends on this invariant."""
-    return (_BACKFILL_START, today)
+    Per exchange, resolves each of ITS OWN expiry dates' real trigger
+    (next market open strictly after it) via `compute_trigger_map()` —
+    the SAME `next_market_open_ist()` the overall gate already uses,
+    never a second, independently-invented derivation — then takes
+    `due = {expiry : floor < trigger <= today}` (`floor` = last_synced_
+    through, or `date.min`). This is deliberately NOT "the latest
+    expiry date <= today": that naive rule breaks for an expiry landing
+    exactly on `today` (common for a weekly NFO expiry) — such an
+    expiry's own trigger is tomorrow, so it is correctly excluded from
+    `due`, and the PRIOR cycle's trigger (which may genuinely be due
+    today) is picked up instead.
+
+    `due` can hold MORE than one expiry when a run was missed for more
+    than one cycle — `end = max(due)` (the latest due cycle),
+    `start = (the expiry immediately before min(due)) + 1` (falling back
+    to a conservative window when nothing older is visible), so a
+    multi-cycle catch-up pulls the FULL missed span, never only the
+    newest cycle's own narrow window.
+
+    A segment covered by more than one triggering exchange (e.g.
+    NFO + BFO, both 'derivatives') gets the UNION of their ranges (min
+    start, max end) — a conservative widening, consistent with this
+    script's own 'over-chunking is always safe' principle; never a
+    narrowing.
+
+    This range is still forced through `chunk_by_calendar_month()` in
+    `sync_account()` — in the normal, no-downtime case this yields a
+    SINGLE chunk well under a month (F&O expiry cycles are monthly-or-
+    shorter by construction), but a multi-cycle catch-up after downtime
+    still chunks safely. See `get_accumulated_pnl()`'s own docstring for
+    why an overlap between this range and an earlier backfill's own
+    calendar-month chunks is safe (latest-per-month-bucket wins), not a
+    double-count."""
+    plan: "dict[str, tuple[date, date]]" = {}
+    floor = last_synced_through or date.min
+    for exchange, segment in _SEGMENT_FOR_EXCHANGE.items():
+        exch_pairs = {(e, d) for (e, d) in expiry_pairs if e == exchange}
+        if not exch_pairs:
+            continue
+        trigger_map = await compute_trigger_map(exch_pairs)
+        due_expiries = sorted(
+            expiry for (_e, expiry), trig in trigger_map.items()
+            if floor < trig <= today
+        )
+        if not due_expiries:
+            continue
+        current = due_expiries[-1]
+        earliest_due = due_expiries[0]
+        older = sorted(d for (_e, d) in exch_pairs if d < earliest_due)
+        previous = older[-1] if older else None
+        start = (
+            previous + timedelta(days=1) if previous is not None
+            else earliest_due - timedelta(days=_SYNC_RANGE_FALLBACK_DAYS)
+        )
+        end = current
+        if segment in plan:
+            p_start, p_end = plan[segment]
+            plan[segment] = (min(p_start, start), max(p_end, end))
+        else:
+            plan[segment] = (start, end)
+    return plan
 
 
 # ---------------------------------------------------------------------------
@@ -1263,8 +1376,7 @@ async def _pull_and_ingest_one_report(
     return n, []
 
 
-async def sync_account(row, *, plan: "dict[str, tuple[date, date]]",
-                        today: "date | None" = None) -> SyncOutcome:
+async def sync_account(row, *, plan: "dict[str, tuple[date, date]]") -> SyncOutcome:
     """Runs the full login -> scrape -> validate -> ingest cycle for one
     broker_accounts row, across every segment in `plan` AND both report
     types (tradebook + pnl) for each segment. One (segment, report_type)
@@ -1274,18 +1386,19 @@ async def sync_account(row, *, plan: "dict[str, tuple[date, date]]",
     matching this codebase's `@for_all_accounts`
     per-account-degrades-not-the-batch convention.
 
-    `today` governs ONLY the P&L-statement pull's date range (see
-    `pnl_pull_range()`) — `plan`'s own ranges govern the Tradebook pull,
-    unchanged. Defaults to the real current IST date when omitted, so
-    existing direct callers that only care about the Tradebook path
-    (e.g. a cooling-off early return, which never reaches the per-segment
-    loop at all) don't need to pass it."""
+    2026-11-26 redesign — BOTH report types now pull `plan`'s own range
+    for a segment, each split into non-overlapping calendar-month chunks
+    via `chunk_by_calendar_month()` (Kite Console's CSV export does not
+    reliably support a range wider than ~1 month). The pnl-statement no
+    longer pulls a SEPARATE fixed-anchor-to-today range — that design
+    assumed pulls were wide, overlapping, variable-width ranges; every
+    real pull is now one of a fixed set of non-overlapping calendar-
+    month-aligned chunks, so a (symbol, expiry)'s total realized P&L is
+    the SUM of its disjoint chunks (see `get_accumulated_pnl()`), and a
+    chunk's own `pull_range_start`/`pull_range_end` are exactly the
+    chunk's own boundaries, never the full un-chunked `plan` range."""
     from backend.shared.helpers.utils import mask_account
     from backend.brokers.connections import _cross_process_login_lock
-
-    if today is None:
-        from backend.shared.helpers.date_time_utils import timestamp_indian
-        today = timestamp_indian().date()
 
     account = row.account
     masked = mask_account(account)
@@ -1313,17 +1426,39 @@ async def sync_account(row, *, plan: "dict[str, tuple[date, date]]",
         reports = KiteConsoleReportsPage(page)
         total_rows = 0
         segment_errors: "list[str]" = []
-        pnl_start, pnl_end = pnl_pull_range(today)
         for segment, (start, end) in plan.items():
-            for report_type, (r_start, r_end) in (
-                ("tradebook", (start, end)),
-                ("pnl", (pnl_start, pnl_end)),
-            ):
-                n, errs = await _pull_and_ingest_one_report(
-                    reports, page, masked, segment, report_type, r_start, r_end,
-                )
-                total_rows += n
-                segment_errors.extend(errs)
+            for report_type in ("tradebook", "pnl"):
+                for c_start, c_end in chunk_by_calendar_month(start, end):
+                    # pnl ONLY: floor the request's own start to the 1st
+                    # of c_start's month. Still <= ~1 month wide (c_end
+                    # is already bounded by chunk_by_calendar_month), so
+                    # the Console limit still holds — but this makes
+                    # EVERY pnl request for "this calendar month",
+                    # whichever caller/trigger produced it (a one-time
+                    # backfill's own full-month chunk, a later sync's
+                    # narrower expiry-aligned chunk, or a same-day
+                    # re-run), anchor its requested range at the SAME
+                    # start, so they become directly comparable as
+                    # successive snapshots of one month rather than
+                    # genuinely different, non-comparable ranges. See
+                    # `get_accumulated_pnl()`'s own docstring for why
+                    # that comparability is what makes "pick the latest
+                    # one per month, then sum across months" correct —
+                    # without this floor, two pulls for the same month
+                    # with different `pull_range_start` would get
+                    # DIFFERENT `dedup_key`s and silently SUM instead of
+                    # replacing each other, double-counting the overlap.
+                    # Tradebook needs no such floor — trade_id-based
+                    # dedup already makes any overlapping window safe.
+                    req_start = (
+                        date(c_start.year, c_start.month, 1)
+                        if report_type == "pnl" else c_start
+                    )
+                    n, errs = await _pull_and_ingest_one_report(
+                        reports, page, masked, segment, report_type, req_start, c_end,
+                    )
+                    total_rows += n
+                    segment_errors.extend(errs)
         return SyncOutcome(
             account=masked, ok=not segment_errors, rows_ingested=total_rows,
             reason="" if not segment_errors else "segment_errors",
@@ -1351,19 +1486,40 @@ async def get_accumulated_pnl(
     (`report_type='pnl'` rows only), grouped by every requested dimension
     left ungrouped by the filters above.
 
-    THE important design point (see `pnl_pull_range()`'s docstring and
-    `KiteConsolePnlSync`'s model docstring for the full reasoning): this
-    does NOT `SUM(realized_pnl)` across every row matching the filters.
-    It first picks, per (account, segment, symbol, expiry), only the
-    MOST RECENTLY PULLED row (via a `ROW_NUMBER() OVER (PARTITION BY ...
-    ORDER BY pull_range_end DESC, updated_at DESC)` window, `rn=1`) —
-    because every pnl pull is designed (via `pnl_pull_range()`) to always
-    span a fixed anchor to "today", so the latest pull for a given
-    symbol+expiry is already that symbol's complete cumulative total,
-    and summing across OLDER, narrower pulls for the SAME symbol+expiry
-    would double-count the overlap. Summing is then correct, and does
-    happen, ACROSS DIFFERENT symbols within one requested grouping (e.g.
-    multiple strikes under one underlying+expiry).
+    2026-11-26 redesign (see `KiteConsolePnlSync`'s model docstring for
+    the fuller reasoning) — real-world constraint discovered before any
+    real data existed in this table (confirmed 0 rows in prod at the
+    time): Kite Console's Tradebook/P&L-statement CSV export does not
+    reliably support a requested date range wider than ~1 month, so
+    every real pull is now forced through `chunk_by_calendar_month()`
+    into non-overlapping calendar-month-aligned chunks.
+
+    This is NOT a bare `SUM(realized_pnl)` across every matching row —
+    an earlier version of this redesign was, and that double-counts on
+    two realistic paths: (a) re-running the SAME month (a retried or
+    re-triggered pull) produces a DIFFERENT `pull_range_end` (today's
+    date moves), hence a DIFFERENT `dedup_key`, hence a SECOND row for
+    the same month rather than an upsert in place; (b) the FIRST ongoing
+    sync after a one-time backfill can genuinely overlap the backfill's
+    own last month (an expiry essentially never lands exactly on a
+    calendar-month boundary), again with a different `pull_range_end`
+    for that shared month. A bare SUM would double-count both.
+
+    The actual rule: per (account, segment, symbol, expiry,
+    `pull_range_start`) — `sync_account()` floors every PNL chunk's own
+    `pull_range_start` to the 1st of its calendar month, so this key is
+    stable and shared by every pull that ever touched "this symbol, this
+    expiry, this calendar month", regardless of which caller/trigger
+    produced it — pick only the row with the LATEST `pull_range_end`
+    (via a `ROW_NUMBER() OVER (PARTITION BY ... ORDER BY pull_range_end
+    DESC, updated_at DESC)` window, `rn=1`). That is the single most
+    complete picture of that one month. Summing is then correct, and
+    happens, ACROSS the resulting per-month "latest" rows — both across
+    DIFFERENT symbols within one requested grouping (e.g. multiple
+    strikes under one underlying+expiry) and across DIFFERENT months for
+    the same symbol+expiry (a position spanning more than one calendar
+    month), since those are genuinely non-overlapping facts once each
+    month's own latest-pull value has been picked.
 
     Returns:
         {
@@ -1404,26 +1560,27 @@ async def get_accumulated_pnl(
         filters.append(T.expiry == expiry)
 
     rn = func.row_number().over(
-        partition_by=(T.account, T.segment, T.symbol, T.expiry),
+        partition_by=(T.account, T.segment, T.symbol, T.expiry, T.pull_range_start),
         order_by=(T.pull_range_end.desc(), T.updated_at.desc()),
     ).label("rn")
 
     ranked = (
         select(
             T.account, T.segment, T.instrument_type, T.symbol_root,
-            T.symbol, T.expiry, T.realized_pnl, rn,
+            T.symbol, T.expiry, T.pull_range_start, T.realized_pnl, rn,
         )
         .where(and_(*filters))
         .subquery()
     )
-    latest = select(ranked).where(ranked.c.rn == 1).subquery()
+    latest_per_month = select(ranked).where(ranked.c.rn == 1).subquery()
 
     group_cols = (
-        latest.c.account, latest.c.segment,
-        latest.c.instrument_type, latest.c.symbol_root, latest.c.expiry,
+        latest_per_month.c.account, latest_per_month.c.segment,
+        latest_per_month.c.instrument_type, latest_per_month.c.symbol_root,
+        latest_per_month.c.expiry,
     )
     stmt = (
-        select(*group_cols, func.sum(latest.c.realized_pnl).label("total_pnl"))
+        select(*group_cols, func.sum(latest_per_month.c.realized_pnl).label("total_pnl"))
         .group_by(*group_cols)
     )
 
@@ -1607,8 +1764,9 @@ async def reconcile_against_daily_book(
     "missing" and "disagree" are reported as genuinely distinct outcomes.
 
     `start`/`end` scope only the `daily_book` side (it has no natural
-    equivalent on the ground-truth side, which is already a cumulative
-    total as of "today" per `pnl_pull_range()`'s design).
+    equivalent on the ground-truth side, which is already the SUM of
+    every non-overlapping calendar-month chunk pulled so far — see
+    `get_accumulated_pnl()`'s own docstring).
 
     Account-representation note (the same flagged join-key mismatch as
     `get_accumulated_pnl()`): `daily_book`'s grouping key carries the RAW
@@ -1634,6 +1792,125 @@ async def reconcile_against_daily_book(
     return compare_pnl_groups(
         ground_truth_result["by_account_root_expiry"], daily_book_masked,
     )
+
+
+# ---------------------------------------------------------------------------
+# Part 3 — surface a genuine reconciliation "disagree" finding through
+# the standard log-then-dispatch alert pipeline. Never a direct send —
+# see this module's own "Alert delivery" docstring section and
+# CLAUDE.md's "Alert identity SSOT"/"Alert-agent audit" entries. A
+# "missing"/"match" group is never alert-worthy on its own; this fires
+# AT MOST once per reconciliation run (one summary record covering
+# every disagreeing group from that run, not one alert per group).
+# ---------------------------------------------------------------------------
+
+_RECONCILE_ALERT_TOP_N = 15
+
+
+def _build_reconciliation_alert(summary: dict) -> "tuple[str, str, dict] | None":
+    """Pure builder — extracted so `alert_pnl_reconciliation_disagreement()`
+    stays a thin I/O wrapper and this is directly unit-testable with no
+    DB/dispatch pipeline involved. Returns `None` when there is nothing
+    to alert on (`disagree_count == 0` / no 'disagree'-status group) —
+    this is the ONLY gate; a 'missing' or 'match' group never reaches
+    this function's output.
+
+    Returns `(title, body, extra)`:
+      - `title`/`body` are plain text (this codebase's 2026-10 plain-
+        text alert convention — no markup).
+      - `body` lists at most `_RECONCILE_ALERT_TOP_N` groups, sorted by
+        `|delta|` descending (the worst disagreements first), then
+        "+N more" — Telegram's own 4096-character message limit makes
+        listing an unbounded discrepancy set unsafe.
+      - `extra` is JSON-safe (every `date`/`None` expiry is rendered as
+        its ISO string or `None` — `extra` is persisted to `log_events`
+        JSONB) and carries the FULL disagreeing-group list under
+        `extra["groups"]`, so the complete detail survives even when
+        `body` is truncated. Account codes are NOT re-masked here —
+        `reconcile_against_daily_book()`'s own group keys are already
+        masked (`mask_account()` is not idempotent; re-masking an
+        already-masked code produces a different, wrong string)."""
+    groups = summary.get("groups") or {}
+    disagreeing = [
+        (key, g) for key, g in groups.items() if g.get("status") == "disagree"
+    ]
+    if not disagreeing:
+        return None
+
+    disagreeing.sort(key=lambda kv: abs(kv[1].get("delta") or 0.0), reverse=True)
+
+    def _group_payload(key: tuple, g: dict) -> dict:
+        account, symbol_root, expiry = key
+        return {
+            "account": account,
+            "symbol_root": symbol_root,
+            "expiry": expiry.isoformat() if expiry else None,
+            "ground_truth_pnl": g.get("ground_truth_pnl"),
+            "daily_book_pnl": g.get("daily_book_pnl"),
+            "delta": g.get("delta"),
+        }
+
+    all_groups = [_group_payload(key, g) for key, g in disagreeing]
+
+    lines = []
+    for gd in all_groups[:_RECONCILE_ALERT_TOP_N]:
+        exp_s = gd["expiry"] or "n/a"
+        gt = gd["ground_truth_pnl"] if gd["ground_truth_pnl"] is not None else 0.0
+        db = gd["daily_book_pnl"] if gd["daily_book_pnl"] is not None else 0.0
+        delta = gd["delta"] if gd["delta"] is not None else 0.0
+        lines.append(
+            f"{gd['account']} {gd['symbol_root']} ({exp_s}): ground truth "
+            f"{gt:,.2f} vs daily_book {db:,.2f} (delta {delta:,.2f})"
+        )
+    remaining = len(all_groups) - _RECONCILE_ALERT_TOP_N
+    if remaining > 0:
+        lines.append(f"+{remaining} more")
+
+    title = f"Kite Console P&L reconciliation — {len(all_groups)} group(s) disagree"
+    body = "\n".join(lines)
+    extra = {
+        "groups_compared": summary.get("groups_compared"),
+        "missing_count": summary.get("missing_count"),
+        "disagree_count": summary.get("disagree_count"),
+        "groups": all_groups,
+    }
+    return title, body, extra
+
+
+async def alert_pnl_reconciliation_disagreement(summary: dict) -> None:
+    """Logs ONE tagged record when `reconcile_against_daily_book()`'s
+    summary carries at least one genuine 'disagree' group, then runs the
+    real flush+dispatch pipeline once (exactly like `alert_critical()`
+    above — this is a standalone, short-lived process, so nothing else
+    will ever dispatch this record on a timer).
+
+    Uses this module's OWN `logger` — the SAME logger `alert_critical()`
+    already uses, not a different one — at WARNING, not ERROR+:
+    `tags_for()` (`log_store.py`) only auto-tags a record "error" at
+    CRITICAL, so a WARNING here never collides with `ERROR_AGENT`'s
+    `min_level="ERROR"` catch-all. The explicit `tags=["alert"]` set
+    below is read directly by `tags_for()` whenever a record's own
+    `extra["tags"]` is present, bypassing its logger-name-based
+    fallback entirely — so this module's logger name (`"__main__"` when
+    run as a script, `"scripts.kite_console_pnl_sync"` when imported)
+    has no bearing on tagging, and neither name is in
+    `log_store._SKIP_PREFIXES`, so the record genuinely reaches the
+    in-process alert queue either way."""
+    built = _build_reconciliation_alert(summary)
+    if built is None:
+        return
+    title, body, extra = built
+    extra = {
+        **extra,
+        "source_type": "process",
+        "source_name": "Kite Console P&L sync",
+        "tags": ["alert"],
+        "alert_event": "pnl_reconciliation_disagreement",
+        "title": title,
+        "body": body,
+    }
+    logger.warning("%s", title, extra=extra)
+    await _flush_and_dispatch_once()
 
 
 # ---------------------------------------------------------------------------
@@ -1670,8 +1947,15 @@ async def main(argv: "list[str] | None" = None) -> int:
     if args.mode == "backfill":
         plan = backfill_plan(today)
     else:
+        # Widened lookback (vs. the default _EXPIRY_LOOKBACK_DAYS) so
+        # `resolve_sync_plan()` can see BOTH the current (just-triggered)
+        # and the previous expiry cycle for an exchange from the SAME
+        # `expiry_pairs` set used for the overall trigger gate below —
+        # never a second, independent expiry derivation.
         async with async_session() as s:
-            expiry_pairs = await collect_recent_fo_expiry_dates(s)
+            expiry_pairs = await collect_recent_fo_expiry_dates(
+                s, lookback_days=_SYNC_RANGE_LOOKBACK_DAYS,
+            )
         trigger_dates = await compute_trigger_dates(expiry_pairs)
         last_synced = await load_last_synced_through()
         if not should_sync_today(today, trigger_dates, last_synced):
@@ -1680,7 +1964,18 @@ async def main(argv: "list[str] | None" = None) -> int:
                 today,
             )
             return 0
-        plan = sync_plan(today)
+        # 2026-11-26 operator instruction: the ongoing-sync range is
+        # (previous expiry date -> current/most recent expiry date) per
+        # exchange, never a generic trailing lookback window — see
+        # `resolve_sync_plan()`'s own docstring.
+        plan = await resolve_sync_plan(expiry_pairs, today, last_synced)
+        if not plan:
+            logger.info(
+                "[KITE-CONSOLE-SYNC] trigger fired today (%s) but no "
+                "exchange-specific range could be resolved; nothing to do",
+                today,
+            )
+            return 0
 
     if args.dry_run:
         print(json.dumps({
@@ -1697,7 +1992,7 @@ async def main(argv: "list[str] | None" = None) -> int:
     exit_code = 0
     for row in rows:
         try:
-            outcome = await sync_account(row, plan=plan, today=today)
+            outcome = await sync_account(row, plan=plan)
         except Exception as e:  # never let one account's unexpected failure abort the batch
             from backend.shared.helpers.utils import mask_account
             logger.exception("[KITE-CONSOLE-SYNC] unexpected failure for %s", mask_account(row.account))
@@ -1711,11 +2006,25 @@ async def main(argv: "list[str] | None" = None) -> int:
         await mark_synced_through(today)
 
     if args.mode == "backfill" and exit_code == 0:
+        # 2026-11-26 — also mark the sync-through marker on a successful
+        # backfill (mirroring the sync branch above). This is an
+        # EFFICIENCY fix, not a correctness one: without it, the FIRST
+        # ongoing-sync run after a one-time backfill would treat
+        # `last_synced_through` as never-set (floor=date.min) and
+        # immediately re-fire for whichever cycle already fell inside
+        # the backfill's own already-covered range, re-scraping Console
+        # for data already ingested. Correctness for the resulting
+        # overlap (a sync's own chunk and an earlier backfill's chunk
+        # sharing one calendar month) is handled separately — see
+        # `get_accumulated_pnl()`'s own docstring for why that overlap
+        # resolves to "latest wins per month", never a double-count,
+        # regardless of whether this marker is set.
+        await mark_synced_through(today)
+
         # Best-effort reconciliation summary — never raises, never blocks
         # the real sync outcome. A backfill is the point where the
         # CSV-sourced ground truth is most complete, so it's the most
-        # meaningful moment to compare it against daily_book. No new
-        # admin/UI endpoint — just a log line the operator can grep for.
+        # meaningful moment to compare it against daily_book.
         try:
             summary = await reconcile_against_daily_book()
             logger.info(
@@ -1724,6 +2033,11 @@ async def main(argv: "list[str] | None" = None) -> int:
                 summary["groups_compared"], summary["discrepancy_count"],
                 summary["missing_count"], summary["disagree_count"],
             )
+            # Part 3 — surface any genuine "disagree" groups through the
+            # standard log-then-dispatch alert pipeline (never a direct
+            # send — see `alert_pnl_reconciliation_disagreement()`'s own
+            # docstring).
+            await alert_pnl_reconciliation_disagreement(summary)
         except Exception:
             logger.exception("[KITE-CONSOLE-SYNC] reconciliation summary failed (non-fatal)")
 

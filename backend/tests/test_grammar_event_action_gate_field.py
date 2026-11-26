@@ -316,6 +316,10 @@ class TestSeededAgentsGateKeysAreDeclared:
         channels (telegram/ntfy/email), same convention as `order-
         failure-alert` — this alert must reach the operator regardless
         of capability-enabled toggles (live ZG0790 CAPTCHA incident).
+
+        2026-11-26 — `pnl-reconciliation-alert` joins the set: its one
+        channel (`telegram_info`, via `alert_routing._PER_SLUG_OVERRIDES`)
+        carries `gate: False`, same convention as `draft-sweep-alert`.
         """
         slugs = {
             agent["slug"]
@@ -326,6 +330,7 @@ class TestSeededAgentsGateKeysAreDeclared:
             "unrouted-alert-catch-all", "agent-alert-rich", "market-summary",
             "visitor-report-alert", "deploy-sync-alert",
             "draft-sweep-alert", "broker-login-blocked-alert",
+            "pnl-reconciliation-alert",
         }
 
     def test_inventory_action_level_gate_agent_count(self):

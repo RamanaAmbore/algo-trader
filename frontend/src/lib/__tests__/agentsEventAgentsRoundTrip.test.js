@@ -85,7 +85,11 @@ describe('Wave 2 — byte-identical compile gate: all 14 real SEEDED_AGENTS shap
   // critical-tier agent with its own renderer
   // (`event_agents.py:_render_broker_login_blocked`), same
   // "brand-new dedicated agent" shape as every other addition above.
-  expect(seededAgents.length).toBe(15);
+  // 2026-11-26 (Kite Console P&L reconciliation): 15 -> 16 —
+  // `pnl-reconciliation-alert`, a brand-new standalone dedicated
+  // medium-tier `generic_notice` agent, same shape as `draft-sweep-
+  // alert` above (SEED_VERSION 12 -> 13).
+  expect(seededAgents.length).toBe(16);
 
   for (const agent of seededAgents) {
     it(`${agent.slug}: decompile -> recompile reproduces the EXACT stored conditions/events/actions`, () => {
