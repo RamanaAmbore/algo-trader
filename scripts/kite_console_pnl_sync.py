@@ -486,13 +486,30 @@ class KiteConsoleReportsPage:
         directly, with no separate login step, lands on Console's own
         authenticated UI). This check now does that navigation itself,
         then confirms via Console's OWN top-nav "Reports" link -- which
-        genuinely exists there."""
+        genuinely exists there.
+
+        2026-11-26 fix (second real run found this): the goto() above can
+        itself raise `Error: net::ERR_ABORTED`, not a timeout -- a known
+        Playwright/Chromium gotcha where the navigation we started is
+        cancelled mid-flight by a SECOND, client-side-redirect navigation
+        the page fires immediately (e.g. `/` -> `/dashboard`) before
+        `domcontentloaded` can fire for the first one. This is not a
+        failure signal on its own -- the real success criterion is
+        whichever page we actually end up on having a "Reports" link, so
+        a bare ERR_ABORTED is swallowed and we fall through to the same
+        Reports-link wait below. Any OTHER `Error` (a real network
+        failure, a hard navigation block) still propagates unchanged."""
+        from playwright.sync_api import Error as PlaywrightError
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
         try:
-            self.page.goto(
-                "https://console.zerodha.com/", wait_until="domcontentloaded", timeout=20000,
-            )
+            try:
+                self.page.goto(
+                    "https://console.zerodha.com/", wait_until="domcontentloaded", timeout=20000,
+                )
+            except PlaywrightError as e:
+                if "ERR_ABORTED" not in str(e):
+                    raise
             self.page.get_by_role("link", name="Reports", exact=True).wait_for(timeout=20000)
         except PlaywrightTimeoutError as e:
             if self._looks_like_captcha_or_unexpected_challenge():

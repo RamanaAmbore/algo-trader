@@ -1210,6 +1210,77 @@ class _FakeSessionCtx:
 
 
 # ===========================================================================
+# 5b. KiteConsoleReportsPage.verify_logged_in — ERR_ABORTED swallowed
+# ===========================================================================
+
+class _FakePlaywrightError(Exception):
+    """Stand-in for `playwright.sync_api.Error` — monkeypatched into
+    `mod`'s own `Error`/`TimeoutError` names so `verify_logged_in()`'s
+    local `from playwright.sync_api import Error as PlaywrightError`
+    binds to these fakes instead of needing the real playwright package
+    installed in the test environment."""
+
+
+class _FakePlaywrightTimeoutError(_FakePlaywrightError):
+    pass
+
+
+def _patch_playwright_errors(monkeypatch):
+    import sys
+    import types as _types
+    fake_module = _types.SimpleNamespace(
+        Error=_FakePlaywrightError,
+        TimeoutError=_FakePlaywrightTimeoutError,
+    )
+    fake_parent = _types.SimpleNamespace(sync_api=fake_module)
+    monkeypatch.setitem(sys.modules, "playwright", fake_parent)
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", fake_module)
+
+
+class TestVerifyLoggedInErrAborted:
+    """2026-11-26 fix (second real run found this): `goto()` can raise a
+    bare `Error: net::ERR_ABORTED` — a known Playwright/Chromium race
+    where the navigation we started is cancelled by a second,
+    client-side-redirect navigation before `domcontentloaded` fires. The
+    real success signal is the Reports link, not this goto() completing
+    cleanly."""
+
+    def test_err_aborted_on_goto_is_swallowed_reports_link_still_found(self, monkeypatch):
+        _patch_playwright_errors(monkeypatch)
+        page = MagicMock()
+        page.goto.side_effect = _FakePlaywrightError("Page.goto: net::ERR_ABORTED")
+        reports_link = MagicMock()
+        page.get_by_role.return_value = reports_link
+
+        console = mod.KiteConsoleReportsPage(page)
+        console.verify_logged_in()  # must not raise
+
+        reports_link.wait_for.assert_called_once()
+
+    def test_non_err_aborted_playwright_error_still_propagates(self, monkeypatch):
+        _patch_playwright_errors(monkeypatch)
+        page = MagicMock()
+        page.goto.side_effect = _FakePlaywrightError("Page.goto: net::ERR_CONNECTION_REFUSED")
+
+        console = mod.KiteConsoleReportsPage(page)
+        with pytest.raises(_FakePlaywrightError, match="ERR_CONNECTION_REFUSED"):
+            console.verify_logged_in()
+
+    def test_timeout_waiting_for_reports_link_still_raises_console_login_error(self, monkeypatch):
+        _patch_playwright_errors(monkeypatch)
+        page = MagicMock()
+        page.goto.return_value = None
+        page.inner_text.return_value = "welcome back"  # no captcha tokens present
+        reports_link = MagicMock()
+        reports_link.wait_for.side_effect = _FakePlaywrightTimeoutError("timed out")
+        page.get_by_role.return_value = reports_link
+
+        console = mod.KiteConsoleReportsPage(page)
+        with pytest.raises(mod.ConsoleLoginError, match="authenticated dashboard"):
+            console.verify_logged_in()
+
+
+# ===========================================================================
 # 6. KiteConsoleConnection.init_kite_conn — mocked Playwright
 # ===========================================================================
 
