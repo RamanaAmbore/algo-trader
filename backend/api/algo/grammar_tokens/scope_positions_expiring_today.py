@@ -32,8 +32,12 @@ def _scope_positions_expiring_today(ctx):
         if not parsed or not parsed.get('expiry'):
             continue
         try:
-            from backend.api.algo.derivatives import days_to_expiry
-            close_time = (23, 30) if (r.get('exchange') or '').upper() == 'MCX' else (15, 30)
+            from backend.api.algo.derivatives import days_to_expiry, mcx_non_agri_close_time
+            if (r.get('exchange') or '').upper() == 'MCX':
+                ct = mcx_non_agri_close_time(parsed['expiry'])
+                close_time = (ct.hour, ct.minute)
+            else:
+                close_time = (15, 30)
             d = float(days_to_expiry(parsed['expiry'], ref=ctx.now, close_time=close_time))
         except Exception as e:
             # 2026-11-24 fix (audit finding #14): was a bare
