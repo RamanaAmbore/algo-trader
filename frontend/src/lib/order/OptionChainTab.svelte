@@ -56,7 +56,6 @@
    *   onDraftToggleChange?: (checked: boolean) => void,
    *   chaseAgg?:            'low'|'med'|'high',
    *   onChaseAggChange?:    (v: 'low'|'med'|'high') => void,
-   *   symbolPicker?:        import('svelte').Snippet,
    * }} */
   let {
     // Seed the underlying from a known symbol (e.g. NIFTY25APR22000CE → NIFTY).
@@ -108,19 +107,6 @@
     // rebuilt — existing Playwright selectors keep matching.
     chaseAgg         = /** @type {'low'|'med'|'high'} */ ('low'),
     onChaseAggChange = /** @type {((v:'low'|'med'|'high') => void)|undefined} */ (undefined),
-    // Symbol-picker snippet (merged Symbol+Expiry row). Defined and
-    // owned by the host (SymbolPanel.svelte) — its own `.oes-sym-pick-
-    // chain` + `SymbolSearchInput` markup, rendered here immediately
-    // before the parenthesised Expiry picker so the two read as one
-    // combined "SYMBOL (EXPIRY)" element. Svelte compiles a snippet's
-    // markup (and scoped styles) against the component that DEFINES
-    // it, not the one that renders it — so SymbolPanel's own CSS still
-    // applies even though it's rendered from inside this component.
-    // Optional — SymbolPanel.svelte is the only real `<OptionChainTab>`
-    // mount today and always passes it; a hypothetical future bare
-    // mount with no symbolPicker falls back to a plain "Expiry" label
-    // with no parens (parens only make sense paired with a symbol).
-    symbolPicker = /** @type {import('svelte').Snippet|undefined} */ (undefined),
   } = $props();
 
   // "Place" mode toggle — default OFF (Basket mode). Off: +/− stage
@@ -1246,54 +1232,30 @@
        When the picked expiry is within 3 days the chip flips amber
        so the operator sees the imminent roll.
 
-       Symbol+Expiry merge (2026-11-25, operator: "merge symbol and
-       expiry rows into one row") — the Symbol search box (owned by
-       SymbolPanel.svelte's `.oes-picker` row) and this tab's own
-       Expiry picker used to live in two separate rows, with a dead
-       empty row between them on the Chain tab (SymbolPanel's shared
-       CHASE/DRAFT row renders nothing for Chain — CHASE moved in here
-       2026-11-03, DRAFT the same day). SymbolPanel now passes its
-       Symbol control down as the `symbolPicker` snippet prop, rendered
-       first inside `.oct-sym-expiry`, immediately followed by the
-       Expiry picker in literal parentheses — "SYMBOL (EXPIRY)" as one
-       visual+DOM unit. Both controls stay fully independent/functional
-       (separate inputs, separate click targets) — only their visual
-       grouping changed. The gate below is intentionally broader than
-       the old `chainUnderlying && chainExpiries.length` alone, so the
-       Symbol control (and therefore the whole toolbar row) keeps
-       rendering even while instruments are still loading or the
-       picked underlying has no expiries yet — the operator must always
-       be able to change symbol, not just once expiries have resolved. -->
-  {#if symbolPicker || (chainUnderlying && chainExpiries.length)}
+       Two separate elements, two separate rows (2026-11-26 revert —
+       operator: "revert chain symbol and expiry elements changes and
+       make them two elements in different rows like before"). A
+       2026-11-25/26 merge briefly combined this tab's Expiry picker
+       with SymbolPanel's Symbol search box into one "SYMBOL (EXPIRY)"
+       unit (`symbolPicker` snippet prop); that merge is reverted here.
+       Symbol lives in its own row again, in SymbolPanel.svelte's
+       `.oes-picker` (rendered for every tab including Chain); this
+       row is Expiry's own row, label + Select, exactly as before the
+       merge. `.oct-toolbar-trailing` (DTE chip through DRAFT) is kept
+       on its own row below this one — that's a later, independent
+       operator instruction ("in chain keep element after symbol
+       expiry in the next row", commit 916389fb) that still reads
+       correctly against this reverted two-row Expiry shape. -->
+  {#if chainUnderlying && chainExpiries.length}
     {@const _dte = _daysToExpiry(chainExpiry)}
     <div class="oct-toolbar">
-      <div class="oct-sym-expiry">
-        {#if symbolPicker}
-          {@render symbolPicker()}
-        {:else}
-          <!-- No symbol slot handed down (no mount does this today —
-               SymbolPanel.svelte is the only `<OptionChainTab>` caller
-               and always passes `symbolPicker` — but a future bare
-               mount shouldn't lose the "what is this picker" label
-               entirely just because there's nothing to parenthesise
-               it against). -->
-          <span class="oct-toolbar-label">Expiry</span>
-        {/if}
-        {#if symbolPicker && chainUnderlying && chainExpiries.length}
-          <span class="oct-expiry-paren" aria-hidden="true">(</span>
-        {/if}
-        {#if chainUnderlying && chainExpiries.length}
-          <div class="oct-expiry-pick">
-            <Select
-              bind:value={chainExpiry}
-              options={_chainExpiryOptions}
-              ariaLabel="Chain expiry"
-              placeholder="Pick expiry…" />
-          </div>
-        {/if}
-        {#if symbolPicker && chainUnderlying && chainExpiries.length}
-          <span class="oct-expiry-paren" aria-hidden="true">)</span>
-        {/if}
+      <span class="oct-toolbar-label">Expiry</span>
+      <div class="oct-expiry-pick">
+        <Select
+          bind:value={chainExpiry}
+          options={_chainExpiryOptions}
+          ariaLabel="Chain expiry"
+          placeholder="Pick expiry…" />
       </div>
       <div class="oct-toolbar-trailing">
       {#if _dte != null && chainExpiry}
@@ -1719,128 +1681,23 @@
     /* Dashed border-bottom removed (2026-09-30, operator: "the dotted
        line is not needed") — it sat directly above the CE/Strike/PE
        header row and read as a stray second separator. */
-    /* Symbol+Expiry merge (2026-11-25) made this row carry the Symbol
-       picker too (via the `symbolPicker` snippet prop) and, the next
-       day, set `flex-wrap: nowrap` so `.oct-toolbar-trailing` (DTE chip
-       through DRAFT) could never wrap onto a second visible row — at
-       the time that would have reintroduced the "dead empty row" bug
-       the same merge had just removed (a row with NOTHING in it,
-       sitting between `.oes-picker` and this toolbar).
-
-       Reversed 2026-11-26 (operator: "in chain keep element after
-       symbol expiry in the next row") — the operator now explicitly
-       wants `.oct-toolbar-trailing` on its OWN row below "SYMBOL
-       (EXPIRY)", for better legibility on narrow/mobile viewports. This
-       is NOT a regression of the dead-row bug above: that bug was about
-       an EMPTY second row; `.oct-toolbar-trailing` always has real
-       content (DTE chip, Spread%, HEDGE fields, CHASE, and the DRAFT
-       `<label>` at minimum — DRAFT renders unconditionally, so this row
-       is never empty). `flex-wrap: wrap` on the container, plus
-       `.oct-toolbar-trailing`'s own `flex: 0 1 100%` (100% basis forces
-       a flex item onto a fresh line in a wrapping container, the
-       standard CSS technique for "always start the next row" without a
-       second DOM container) — `.oct-sym-expiry` keeps its own
-       `flex: 0 0 auto` unchanged, so it alone occupies row 1.
-       `.oct-toolbar-trailing`'s pre-existing `overflow-x: auto` still
-       absorbs any squeeze on its own, now full-width, row. */
+    /* Two rows (2026-11-26 revert of the 2026-11-25/26 Symbol+Expiry
+       merge — "SYMBOL (EXPIRY)" is gone; Expiry is back to its own
+       plain label + Select, row 1 here). `flex-wrap: wrap` plus
+       `.oct-toolbar-trailing`'s own `flex: 0 1 100%` below (a 100%
+       basis always starts a fresh line in a wrapping container) keeps
+       row 1 (Expiry label + Select) and row 2 (DTE chip through DRAFT,
+       `.oct-toolbar-trailing`) separate — the shape the operator asked
+       for in a later, independent instruction ("in chain keep element
+       after symbol expiry in the next row", commit 916389fb), which
+       still applies correctly now that row 1 is Expiry alone rather
+       than the merged "SYMBOL (EXPIRY)" unit. */
     flex-wrap: wrap;
     min-width: 0;
   }
-  /* Expiry Select trigger loses its OWN border/background (2026-11-26
-     chrome-merge fix, see `.oct-sym-expiry` below) — the chip's visual
-     chrome now lives on the shared `.oct-sym-expiry` container, not on
-     each of its interactive children, so there is exactly ONE bordered
-     box around "SYMBOL (EXPIRY)" instead of two. `background`/`border`
-     are zeroed outright (not colour-transparent): Select.svelte's own
-     `:hover`/`:focus`/`.rbq-select-open` rules only ever repaint
-     `border-color`, never `border-width`/`border-style`, so a
-     zero-width `border: none` here makes those rules inert regardless
-     of their own specificity — confirmed before shipping (see the
-     source-scan test for this file). `min-height: auto` hands height
-     control to the outer chip's own `min-height` instead of Select's
-     usual `var(--ctl-h, 1.55rem)` floor, which would otherwise make
-     this one child taller than the chip around it. Scoped to
-     `.oct-expiry-pick` only — the Expiry Select is the one Select this
-     toolbar renders; no other `.rbq-select-trigger` on this page is
-     affected. */
-  .oct-expiry-pick :global(.rbq-select-trigger) {
-    background: none;
-    background-image: none;
-    background-color: transparent;
-    border: none;
-    box-shadow: none;
-    padding: 0 0.15rem;
-    min-height: auto;
+  .oct-toolbar :global(.rbq-select-trigger) {
+    padding-block: 0.15rem;
   }
-  /* Symbol+Expiry merge (2026-11-25); ONE shared chip, not two boxed
-     controls (2026-11-26 fix) — operator reported the prior merge still
-     rendered as two visibly bordered controls either side of literal
-     "("/")" text, not one combined element. `.oct-sym-expiry` now
-     carries the single shared border/background for the whole
-     "SYMBOL (EXPIRY)" unit — the same chip look (`#1d2a44` fill,
-     amber-0.25 border) the Expiry Select trigger itself used to carry
-     before this fix stripped it (see the rule above), and that the DTE
-     chip + Spread% input elsewhere in this same row still carry, so the
-     new chip reads as a sibling of those, not a novel shape. Both
-     children's OWN chrome is stripped (the rule above, and
-     `.oes-sym-pick-chain :global(.ssi-input)` in SymbolPanel.svelte) so
-     nothing paints a second box inside this one.
-     `.oct-sym-expiry` no longer shrinks below its own content
-     (2026-11-26, `flex: 0 0 auto`, was `0 1 auto; min-width: 0`) — now
-     that it carries a real border, letting it shrink meant letting its
-     CONTENT spill past that border instead, which is strictly worse
-     than the pre-chip "two boxes" defect this fix exists to close.
-     Confirmed live before shipping: at 370px with a 9-char symbol
-     ("BANKNIFTY"), the old `min-width: 0` let the chip compress to
-     130px while its own children still needed 186px, spilling 56px of
-     content outside the drawn border.
-     `.oct-toolbar-trailing` (DTE chip through DRAFT) moved to its OWN
-     row below this one (2026-11-26, see `.oct-toolbar`'s own comment
-     for why) — it no longer shares a row with `.oct-sym-expiry`, so it
-     no longer absorbs this chip's squeeze the way it used to. This chip
-     must fit row 1 on its own strength at every viewport; it was
-     already confirmed to do so down to 370px with a 9-char symbol (see
-     the live test in chain_symbol_expiry_merge.spec.js).
-     Deliberately NO `flex-grow` here either (`flex: 0 0 auto`, not
-     `1 0 auto`) — growing this box would absorb leftover row-1 width on
-     a wide desktop viewport that neither child actually consumes (the
-     Symbol snippet caps at 20rem, the Expiry picker doesn't grow
-     either), leaving dead space INSIDE this box between the closing ")"
-     and the chip's own right edge. This no longer risks pushing
-     `.oct-toolbar-trailing` rightward the way it did pre-2026-11-26,
-     since trailing is on its own row now regardless of row 1's leftover
-     width (it always starts a fresh line via its own `flex: 0 1 100%`,
-     see `.oct-toolbar`'s comment above) — but the no-grow rule is kept
-     anyway, since growing this chip for no reason is still wrong on its
-     own terms.
-     No `overflow` set here (stays the implicit `visible`) — the Symbol
-     search box's own results dropdown (`SymbolSearchInput.svelte`'s
-     `.ssi-drop`) is `position: absolute` relative to its own wrapper,
-     not `fixed`, so an `overflow: hidden`/`auto` here would clip that
-     dropdown to this row's own ~1.4rem height. The Symbol snippet's own
-     markup (`.oes-sym-pick-chain` → its `.ssi-input`, SymbolPanel.svelte)
-     sizes itself to its own content (a ch-based width with a small
-     3rem sanity floor, 2026-11-26) as a flex child of this container —
-     nothing duplicated here. */
-  .oct-sym-expiry {
-    display: flex;
-    align-items: center;
-    gap: 0.25rem;
-    flex: 0 0 auto;
-    background: #1d2a44;
-    border: 1px solid rgba(251, 191, 36, 0.25);
-    border-radius: 3px;
-    padding: 0 0.4rem;
-    min-height: var(--ctl-h, 1.4rem);
-    box-sizing: border-box;
-    transition: border-color 0.08s;
-  }
-  .oct-sym-expiry:hover { border-color: rgba(251, 191, 36, 0.6); }
-  .oct-sym-expiry:focus-within { border-color: var(--c-action); }
-  /* Fallback label for the no-`symbolPicker` mount case only (see the
-     `{:else}` branch above) — no live mount uses this today, kept only
-     so a future bare `<OptionChainTab>` (no symbolPicker) doesn't lose
-     the "what is this picker" label entirely. */
   .oct-toolbar-label {
     font-family: var(--font-numeric);
     font-size: var(--fs-xs);
@@ -1848,13 +1705,6 @@
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: rgba(251, 191, 36, 0.7);
-    flex-shrink: 0;
-  }
-  .oct-expiry-paren {
-    font-family: var(--font-numeric);
-    font-size: var(--fs-sm);
-    font-weight: 700;
-    color: rgba(251, 191, 36, 0.55);
     flex-shrink: 0;
   }
   /* The rest of the toolbar (DTE chip through DRAFT) — every child is
@@ -1866,18 +1716,16 @@
      `position: fixed` — both escape this container's overflow clipping
      regardless of scroll position, so `overflow-x: auto` here is safe.
 
-     Own row, below "SYMBOL (EXPIRY)" (2026-11-26, operator: "in chain
-     keep element after symbol expiry in the next row"; was a sibling
-     on the SAME row as `.oct-sym-expiry`, `flex: 0 1 auto`) —
+     Own row, below the Expiry label + Select (2026-11-26, operator:
+     "in chain keep element after symbol expiry in the next row") —
      `flex: 0 1 100%` sets a 100%-basis, which in a `flex-wrap: wrap`
      container (`.oct-toolbar`, see its own comment) always forces this
      item onto a fresh line, regardless of how much width row 1's own
-     content (`.oct-sym-expiry`) actually used. `flex-shrink: 1` is kept
-     (not 0) so this row can still shrink as a whole if the viewport is
-     narrower than its own content needs — `overflow-x: auto` below is
-     the real mechanism that absorbs that squeeze, same as before this
-     change; shrink on the container itself is just the other half of
-     that same contract. */
+     content used. `flex-shrink: 1` is kept (not 0) so this row can
+     still shrink as a whole if the viewport is narrower than its own
+     content needs — `overflow-x: auto` below is the real mechanism
+     that absorbs that squeeze; shrink on the container itself is just
+     the other half of that same contract. */
   .oct-toolbar-trailing {
     display: flex;
     align-items: center;
@@ -1889,7 +1737,7 @@
   }
   .oct-toolbar-trailing > * { flex-shrink: 0; }
   /* Narrowed 20% (2026-09-30, operator request): 11rem/16rem → 8.8rem/12.8rem. */
-  .oct-expiry-pick { min-width: 5rem; max-width: 11.2rem; flex: 0 1 auto; }
+  .oct-expiry-pick { min-width: 7.7rem; max-width: 11.2rem; flex: 0 1 auto; }
   /* Days-to-expiry chip — slate-blue resting, amber when ≤ 3 days
      to expiry so the operator sees the imminent roll. */
   .oct-expiry-dte {

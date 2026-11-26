@@ -2263,50 +2263,6 @@
          own text parameters (`order(account=..., symbol=..., ...)`),
          so this picker is redundant there and was reading as leftover
          chrome rather than a relevant control. -->
-    <!-- Chain-only Symbol picker snippet (2026-11-25, Symbol+Expiry
-         merge) — handed down to `<OptionChainTab>` as its `symbolPicker`
-         prop and rendered there, immediately before the parenthesised
-         Expiry picker, as one combined "SYMBOL (EXPIRY)" unit. A
-         DELIBERATELY SEPARATE markup/class from `.oes-picker`'s own
-         inline `.oes-sym-pick` below, not a shared extraction — the two
-         sit in genuinely different row contexts: `.oes-picker`'s copy
-         is near the RIGHT edge of its row (Account+Exchange precede
-         it), so it right-anchors its own `.ssi-drop` results panel
-         (see that rule's own comment). This copy is the LEFTMOST
-         control in the merged Chain row, so its dropdown stays at
-         SymbolSearchInput's own default LEFT anchor instead — the
-         opposite placement, and reusing the right-anchor class would
-         have clipped it against the modal's right edge. A snippet's
-         markup (and scoped styles) compile against the component that
-         DEFINES it, not the one that renders it, so this `.oes-sym-pick-
-         chain` CSS (below) still applies wherever OptionChainTab
-         renders it. -->
-    {#snippet _chainSymbolPicker()}
-      <!-- `--sym-ch` (2026-11-26, one-chip visual fix) — feeds the
-           ch-based width calc on `.ssi-input` below so the text input
-           hugs its OWN value's width at rest instead of stretching to
-           fill a fixed flex-basis box. SymbolSearchInput keeps its
-           typed-query state (`_symQuery`) internal, so this can only
-           track the committed `_localSymbol`, not a live keystroke —
-           `:focus` widens to a fixed comfortable width instead (see
-           that rule's own comment) so typing/search still has room. -->
-      <div class="oes-sym-pick-chain" style:--sym-ch={_localSymbol.length || 6}>
-        <SymbolSearchInput
-          value={_localSymbol}
-          type={_symType}
-          exchangeFilter={_exchFilter}
-          placeholder="Symbol — pick or type 3+"
-          onPick={(sym, meta) => {
-            // No hardcoded pin list — every picked symbol is already
-            // a real tradingsymbol (from watchlist auto-load or search).
-            _localSymbol = sym;
-            if (meta?.exchange) _pickedExchange = meta.exchange;
-            onSymbolChange?.(sym);
-          }}
-          ariaLabel="Symbol — pinned or search" />
-      </div>
-    {/snippet}
-
     {#if _activeTab !== 'cli'}
       <div class="oes-picker">
         <!-- Operator: "order entry in modal and page don't have account
@@ -2346,31 +2302,29 @@
             placeholder="All"
             ariaLabel="Exchange filter" />
         </div>
-        <!-- Suppressed on Chain (2026-11-25, Symbol+Expiry merge) — Chain
-             renders the `_chainSymbolPicker` snippet above (a separate
-             markup/class, see its own comment) inside OptionChainTab's
-             `.oct-toolbar` instead, merged with the Expiry picker;
-             rendering THIS inline copy too would show the Symbol
-             control twice. Account + Exchange above are NOT behind this
-             guard — they keep rendering in `.oes-picker` for every tab,
-             Chain included; only the Symbol merge moved. -->
-        {#if _activeTab !== 'chain'}
-          <div class="oes-sym-pick">
-            <SymbolSearchInput
-              value={_localSymbol}
-              type={_symType}
-              exchangeFilter={_exchFilter}
-              placeholder="Symbol — pick or type 3+"
-              onPick={(sym, meta) => {
-                // No hardcoded pin list — every picked symbol is already
-                // a real tradingsymbol (from watchlist auto-load or search).
-                _localSymbol = sym;
-                if (meta?.exchange) _pickedExchange = meta.exchange;
-                onSymbolChange?.(sym);
-              }}
-              ariaLabel="Symbol — pinned or search" />
-          </div>
-        {/if}
+        <!-- Renders for every tab including Chain (2026-11-26 revert —
+             the 2026-11-25 Symbol+Expiry merge that moved this control
+             into OptionChainTab's own toolbar, merged with the Expiry
+             picker, was reverted per operator instruction: "revert
+             chain symbol and expiry elements changes and make them two
+             elements in different rows like before." Symbol lives here,
+             in its own row; Expiry lives in OptionChainTab's own
+             toolbar row below. -->
+        <div class="oes-sym-pick">
+          <SymbolSearchInput
+            value={_localSymbol}
+            type={_symType}
+            exchangeFilter={_exchFilter}
+            placeholder="Symbol — pick or type 3+"
+            onPick={(sym, meta) => {
+              // No hardcoded pin list — every picked symbol is already
+              // a real tradingsymbol (from watchlist auto-load or search).
+              _localSymbol = sym;
+              if (meta?.exchange) _pickedExchange = meta.exchange;
+              onSymbolChange?.(sym);
+            }}
+            ariaLabel="Symbol — pinned or search" />
+        </div>
         {#if pickerSuffix}
           {@render pickerSuffix()}
         {/if}
@@ -2390,13 +2344,15 @@
          CHASE is excluded on Chain too (T3.3) — it now renders inside
          OptionChainTab's own Expiry toolbar row instead, so this shared
          row only ever shows CHASE for the Ticket tab.
-         Chain excluded from the outer gate too (2026-11-25, Symbol+
-         Expiry merge) — both inner controls (CHASE, DRAFT) were already
-         individually suppressed for Chain below, so this whole row
-         rendered as a dead, empty `<div>` on the Chain tab, sitting
-         between `.oes-picker` and OptionChainTab's own now-merged
-         toolbar. Excluding 'chain' here removes that empty row
-         entirely instead of just emptying it. -->
+         Chain excluded from the outer gate too (2026-11-25) — both
+         inner controls (CHASE, DRAFT) were already individually
+         suppressed for Chain below, so this whole row rendered as a
+         dead, empty `<div>` on the Chain tab, sitting between
+         `.oes-picker` and OptionChainTab's own toolbar. Excluding
+         'chain' here removes that empty row entirely instead of just
+         emptying it — kept as-is through the 2026-11-26 Symbol+Expiry
+         merge revert below (OptionChainTab.svelte), which is unrelated
+         to this row. -->
     {#if _activeTab !== 'cli' && _activeTab !== 'chart' && _activeTab !== 'chain'}
       <div class="oes-chase-row">
         <!-- CHASE — moved verbatim from .oes-tabs (unchanged markup).
@@ -2417,10 +2373,10 @@
              BRACKET toggle used while a mutually-exclusive mode was
              active. Chain's own `_activeTab !== 'chain'` exclusion used
              to live on THIS line; it moved to the outer `.oes-chase-row`
-             gate above (2026-11-25, Symbol+Expiry merge) so the whole
-             row is skipped instead of rendering empty — `_activeTab` is
-             narrowed to exclude 'chain' by that outer gate already, so
-             repeating the check here is now unreachable/a type error. -->
+             gate above (2026-11-25) so the whole row is skipped instead
+             of rendering empty — `_activeTab` is narrowed to exclude
+             'chain' by that outer gate already, so repeating the check
+             here is now unreachable/a type error. -->
         {#if _chaseEnabled}
           <span class="oes-chase-cluster" class:oes-chase-protected={_sharedDraftMode}>
             <span class="oes-common-chase-label" class:on={!_sharedDraftMode}
@@ -2473,11 +2429,11 @@
              keeps rendering this copy exactly as before.
              Chain's own `_activeTab !== 'chain'` exclusion used to live
              on THIS line too; it moved to the outer `.oes-chase-row`
-             gate above (2026-11-25, Symbol+Expiry merge), for the same
-             "skip the whole dead row, don't just empty it" reason as
-             CHASE above — repeating the check here is now unreachable/
-             a type error, since the outer gate already narrows
-             `_activeTab` to exclude 'chain'. -->
+             gate above (2026-11-25), for the same "skip the whole dead
+             row, don't just empty it" reason as CHASE above —
+             repeating the check here is now unreachable/a type error,
+             since the outer gate already narrows `_activeTab` to
+             exclude 'chain'. -->
         {#if _draftToggleVisible}
           <label class="ot-draft-toggle"
                  title={_sharedDraftMode
@@ -2594,7 +2550,6 @@
         <OptionChainTab
           bind:this={_chainTabRef}
           symbol={_localSymbol}
-          symbolPicker={_chainSymbolPicker}
           account={_sharedAccount || account}
           onAccountChange={_onAccountChange}
           bind:spreadMaxPctOverride={_sharedSpreadMaxPctOverride}
@@ -3211,101 +3166,6 @@
      which places the input near the row's LEFT edge) keep the
      default left-anchor, where it's the correct choice. */
   .oes-sym-pick :global(.ssi-drop) { left: auto; right: 0; }
-  /* Chain-only Symbol picker (2026-11-25, Symbol+Expiry merge;
-     chrome-merge fix 2026-11-26) — rendered inside OptionChainTab's
-     `.oct-toolbar`, where this control sits LEFTMOST in the merged
-     row (the opposite position from `.oes-sym-pick` above). No
-     `.ssi-drop` override here — the default LEFT anchor
-     (SymbolSearchInput's own CSS) is already correct for a leftmost
-     control; overriding it to right-anchor (like the rule above)
-     would clip the dropdown the OPPOSITE way, against the modal's
-     right edge, once this row's trailing controls (DTE through DRAFT)
-     sit to its right.
-
-     2026-11-26 — the operator reported the merge still rendered as
-     TWO visibly boxed controls (the Symbol input's own border, the
-     Expiry Select's own border) sitting either side of literal "("/")"
-     text, not one combined element. The single shared border/
-     background now lives on the PARENT `.oct-sym-expiry` chip
-     (OptionChainTab.svelte) instead — this rule and the `.ssi-input`
-     override below strip this control's OWN chrome so nothing paints
-     a second box inside that chip.
-
-     `flex: 1 1 8rem; min-width: 6rem;` (the pre-chrome-merge values)
-     are gone — that forced this box to stretch to an 8rem flex-basis
-     regardless of the symbol's actual text width, which read as a
-     visible dead-space gap between the symbol text and the ")" once
-     the border was removed (a plain gap reads just as "not one
-     element" as a second box does). `flex: 0 0 auto` + the ch-based
-     `.ssi-input` width below make this control hug its OWN content
-     width instead. `max-width: 20rem` stays as the pre-existing
-     safety ceiling for a genuinely long picked symbol. */
-  .oes-sym-pick-chain {
-    position: relative;
-    display: inline-flex;
-    align-items: center;
-    flex: 0 0 auto;
-    min-width: 0;
-    max-width: 20rem;
-  }
-  /* `width: auto` (was `100%`) — let the wrap hug the ch-sized input
-     below instead of stretching to this box's own (now content-driven)
-     width, which would otherwise just move the dead-space gap one
-     level down. */
-  .oes-sym-pick-chain :global(.ssi-wrap) { width: auto; }
-  /* Chrome strip + content-fit width (2026-11-26) — `background`/
-     `border` zeroed outright (not colour-transparent) so the visible
-     box disappears regardless of this rule's specificity vs.
-     SymbolSearchInput's own `.ssi-input:focus` rule, which repaints
-     `background` on focus — see the dedicated `:focus` override
-     immediately below, which wins on specificity (one more ancestor
-     class) rather than relying on source order between two different
-     components' <style> blocks.
-     Width: `var(--sym-ch)` (set via `style:--sym-ch` on the wrapper
-     div above, from the committed `_localSymbol`'s own length) sizes
-     the box to roughly fit the symbol text at rest — the font here IS
-     a true monospace stack (`.ssi-input`'s own `font-family` resolves
-     to `ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`), so
-     a `ch`-based width tracks the actual rendered glyph width closely.
-     `(1ch + 0.04em)` per character, NOT a bare `1ch` — SymbolSearchInput's
-     own `.ssi-input` rule sets `letter-spacing: 0.04em`, which a bare
-     `ch`-count does not account for; omitting it clipped a longer
-     symbol (confirmed live: "BANKNIFTY", 9 chars, measured
-     `scrollWidth` > `clientWidth` with only a bare `1ch` term — see
-     this file's own Playwright spec). `letter-spacing` is re-declared
-     explicitly here (even though it's already inherited from
-     SymbolSearchInput's own base rule) so the calc and the property it
-     depends on sit together — a future change to either one is a
-     single, visible diff, not two files that can silently drift apart.
-     `min-width: 3rem` is only a small sanity floor (e.g. a not-yet-
-     painted font, or a 1-2 char value), NOT the pre-chrome-merge `6rem`
-     floor — that value was sized for a fixed flex-basis box, not a
-     content-fit one, and left a visible dead-space gap once this
-     control's own border was removed (exactly the "still doesn't read
-     as one element" defect this fix exists to close). */
-  .oes-sym-pick-chain :global(.ssi-input) {
-    width: calc(var(--sym-ch, 6) * (1ch + 0.04em) + 0.6rem);
-    min-width: 3rem;
-    max-width: 20rem;
-    box-sizing: border-box;
-    background: none;
-    border: none;
-    padding: 0 0.2rem;
-    letter-spacing: 0.04em;
-  }
-  /* SymbolSearchInput's own `:focus` rule repaints `background` (amber
-     0.06) and `border-color` — both would reintroduce a visible box
-     the instant this control is focused/edited. This override also
-     widens the box to a fixed, generous width while typing: the
-     ch-based width above tracks the COMMITTED `_localSymbol`, not the
-     live `_symQuery` keystrokes (SymbolSearchInput keeps that state
-     internal), so a narrow at-rest box would otherwise visibly clip
-     the operator's own typing mid-search. */
-  .oes-sym-pick-chain :global(.ssi-input:focus) {
-    background: none;
-    border-color: transparent;
-    width: 11rem;
-  }
   /* Account dropdown — placeholder "Account" reads as its label when
      nothing is picked. Narrow Select pinned next to the symbol combo. */
   /* Picker row — Account · Symbol type · Symbol — between header and
