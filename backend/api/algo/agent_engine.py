@@ -2840,56 +2840,95 @@ _EXPIRY_RISK_AGENT_DEFAULTS = dict(
 # `_AE_CONTENT_MATCHED_COND_MIGRATIONS` below) — a bare edit here does
 # NOT reach an already-seeded prod/dev row on its own.
 #
-# 2026-11-19 — `expiry-mcx-risk-alert` is merged into this one row
-# (edited IN PLACE, not a new slug — builtin-agent retirement
-# (`_ae_prune_retired_builtins()`) DELETES rows, unlike the event-agent
-# deactivate-never-delete path, so editing one existing slug keeps one
-# row's history instead of losing both). The merged `conditions` is a
-# top-level `{"any": [<old NFO all[] tree>, <old MCX all[] tree>]}` —
-# each branch keeps its OWN exchange-scoped pre-close suppression leaf
-# (`nse_*` for the NFO branch, `mcx_*` for the MCX branch). This is
-# deliberate: hoisting a single shared outer suppression leaf would make
-# one exchange's pre-close window silently suppress the OTHER exchange's
-# breach too. `_EXPIRY_RISK_AGENT_DEFAULTS["topic"] = "expiry_warning"`
-# still applies to this one row; `_compute_topic_suppression()` is left
-# untouched (generic, still needed for any future same-topic pair) and
-# simply becomes inert for this pair now that only one agent carries the
-# topic. `expiry-mcx-risk-alert`'s own dict is removed entirely — it is
-# pruned (deleted) from the DB on next boot via the existing
-# `_ae_prune_retired_builtins()` mechanism, no new retirement code
-# needed.
+# 2026-11-19 — `expiry-mcx-risk-alert` was merged into `expiry-nfo-
+# risk-alert` (edited in place). REVERSED 2026-11-26 — live operator
+# report: "i don't have any nfo positions. i got nfo expiration alerts
+# with mcx positions." Confirmed via a direct read of `agent_events`
+# on prod: every real fire of the merged agent for several hours
+# matched ONLY `positions.expiring_today.mcx_unhedged` (real MCX GOLD
+# legs, zero NFO), yet the alert's own stored `name` field — itself
+# stale, since `name` is one of the fields `_ae_sync_existing_builtin`
+# never force-syncs, so the 2026-11-19 merge's own "NFO or MCX..."
+# rename never reached the already-seeded prod/dev row — still read
+# "NFO expiry risk...", with no mention of MCX at all. An operator with
+# zero NFO exposure has no way to read that as "this is actually about
+# MCX." The fix is NOT just a name sync: the merge itself conflated two
+# genuinely different alerts under one slug the moment either exchange
+# alone matches, which is the common case (confirmed live: MCX fires
+# routinely while NFO has had zero matches). Split back into two
+# exchange-pure agents, each named and scoped unambiguously:
+# `expiry-nfo-risk-alert` (NFO-only) and `expiry-mcx-risk-alert`
+# (re-created; confirmed via a direct DB read that zero rows with this
+# slug survive on either prod or dev, so this is a fresh insert, not a
+# migration). Each keeps its own exchange-scoped pre-close suppression
+# leaf unchanged from the merged shape (`nse_*` for NFO, `mcx_*` for
+# MCX) — hoisting a single shared leaf would still let one exchange's
+# pre-close window suppress the other's breach, the same reasoning the
+# 2026-11-19 merge already documented for why the two `all[]` branches
+# never shared one outer suppression term.
+#
+# Distinct topics (`expiry_warning_nfo` / `expiry_warning_mcx`), NOT
+# the shared `expiry_warning` topic the generic-reminder/preclose/
+# morning-preview family uses. This was flagged during planning and
+# confirmed by reading `_compute_topic_suppression()`: when two agents
+# share one topic and both buffer a fire in the SAME run_cycle tick,
+# one is suppressed and its matches are MERGED into the winner's alert
+# body — which would silently reproduce the exact bug being fixed here
+# (an MCX match folded into whichever agent's alert wins the tie-break
+# that tick, possibly the NFO-named one) the first time both genuinely
+# co-fire. A distinct topic per exchange makes that structurally
+# impossible for this pair, while leaving the existing, intentional
+# same-topic dedup among the generic-reminder/preclose/auto-close/
+# morning-preview agents (which all still share `expiry_warning`)
+# completely unchanged.
+#
+# Content-matched one-time migration for the pre-split merged
+# condition shape lives in `_AE_CONTENT_MATCHED_COND_MIGRATIONS`
+# (`agent_engine.py`) — confirmed byte-for-byte identical on both prod
+# and dev via a direct DB read before writing the migration key, so one
+# key correctly matches both. `name`/`long_name`/`description`/`topic`
+# are separately force-synced by `_ae_sync_expiry_risk_alert_split()`
+# (also value-gated against the exact pre-split stock values) — a bare
+# `conditions` migration alone would leave the stale "NFO or MCX..."
+# name in place, reproducing the same confusion this split exists to fix.
 _EXPIRY_RISK_AGENTS = [
     {
         "slug": "expiry-nfo-risk-alert",
-        "name": "NFO or MCX expiry risk — ITM/unhedged options or open futures",
-        "long_name": "when:(positions.expiring_today.nfo.pnl>=-inf AND NOT(nse_preclose_window)) OR (positions.expiring_today.mcx_unhedged.pnl>=-inf AND NOT(mcx_preclose_window))   alert:high/tg+email+ntfy(high)+log   do:notify-only",
-        "description": "Fires on expiry day when any NFO position is ITM (option) or is an open future, OR any MCX option position is unhedged after the real engine's 4-rule netting (or UNKNOWN-moneyness) — all three require active management, and MCX additionally risks an unfavourable broker auto-settlement. A lone expiring MCX future with no option leg is never itself flagged (futures are netting partners only, never a needs_close candidate in their own right). Each exchange's own branch is suppressed during that exchange's own 65-min pre-close window (retimed 2026-11-22, was 30), where expiry-day-preclose-alert already reports the same thing — the other exchange's branch keeps firing normally.",
-        "conditions": {"any": [
-            {"all": [
-                # 2026-11-24 fix (audit finding #14): the NFO leaf used to
-                # be `any[is_itm==1, is_future==1]`, evaluated by the
-                # GENERIC is_itm metric per row — which silently drops a
-                # row with an unresolvable spot price (no match, no log),
-                # unlike the MCX branch below. The scope itself
-                # (`positions.expiring_today.nfo`) now owns that
-                # membership test AND fails loud on an unresolved spot
-                # (see that module's own docstring) — this leaf is now a
-                # tautological sentinel, mirroring the MCX branch's own
-                # `pnl >= -999999999` pattern: the scope's own
-                # classification fully decides membership.
-                {"op": ">=", "scope": "positions.expiring_today.nfo", "metric": "pnl", "value": -999999999},
-                {"not": {"all": [
-                    {"op": "==", "scope": "funds.total", "metric": "is_nse_expiry_today",        "value": 1.0},
-                    {"op": "<=", "scope": "funds.total", "metric": "minutes_until_nse_close",     "value": 65},
-                ]}},
-            ]},
-            {"all": [
-                {"op": ">=", "scope": "positions.expiring_today.mcx_unhedged", "metric": "pnl", "value": -999999999},
-                {"not": {"all": [
-                    {"op": "==", "scope": "funds.total", "metric": "is_mcx_expiry_today",        "value": 1.0},
-                    {"op": "<=", "scope": "funds.total", "metric": "minutes_until_mcx_close",     "value": 65},
-                ]}},
-            ]},
+        "name": "NFO expiry risk — ITM options or open futures",
+        "long_name": "when:positions.expiring_today.nfo.pnl>=-inf AND NOT(nse_preclose_window)   alert:high/tg+email+ntfy(high)+log   do:notify-only",
+        "description": "Fires on expiry day when any NFO position is ITM (option) or is an open future — both require active management before the exchange settles the contract. Suppressed during NSE's own 65-min pre-close window (retimed 2026-11-22, was 30), where expiry-day-preclose-alert already reports the same thing. Exchange-pure: never fires on an MCX-only match — see `expiry-mcx-risk-alert` for that (split 2026-11-26, was briefly merged into this one row 2026-11-19 to 2026-11-26).",
+        "topic": "expiry_warning_nfo",
+        "conditions": {"all": [
+            # 2026-11-24 fix (audit finding #14): the NFO leaf used to
+            # be `any[is_itm==1, is_future==1]`, evaluated by the
+            # GENERIC is_itm metric per row — which silently drops a
+            # row with an unresolvable spot price (no match, no log),
+            # unlike the MCX branch below. The scope itself
+            # (`positions.expiring_today.nfo`) now owns that
+            # membership test AND fails loud on an unresolved spot
+            # (see that module's own docstring) — this leaf is now a
+            # tautological sentinel, mirroring the MCX agent's own
+            # `pnl >= -999999999` pattern: the scope's own
+            # classification fully decides membership.
+            {"op": ">=", "scope": "positions.expiring_today.nfo", "metric": "pnl", "value": -999999999},
+            {"not": {"all": [
+                {"op": "==", "scope": "funds.total", "metric": "is_nse_expiry_today",        "value": 1.0},
+                {"op": "<=", "scope": "funds.total", "metric": "minutes_until_nse_close",     "value": 65},
+            ]}},
+        ]},
+    },
+    {
+        "slug": "expiry-mcx-risk-alert",
+        "name": "MCX expiry risk — unhedged options",
+        "long_name": "when:positions.expiring_today.mcx_unhedged.pnl>=-inf AND NOT(mcx_preclose_window)   alert:high/tg+email+ntfy(high)+log   do:notify-only",
+        "description": "Fires on expiry day when any MCX option position is unhedged after the real engine's 4-rule netting (or UNKNOWN-moneyness) — this additionally risks an unfavourable broker auto-settlement. A lone expiring MCX future with no option leg is never itself flagged (futures are netting partners only, never a needs_close candidate in their own right). Suppressed during MCX's own 65-min pre-close window (retimed 2026-11-22, was 30), where expiry-day-preclose-alert already reports the same thing. Exchange-pure: never fires on an NFO-only match — see `expiry-nfo-risk-alert` for that (split 2026-11-26, was briefly merged into that one row 2026-11-19 to 2026-11-26).",
+        "topic": "expiry_warning_mcx",
+        "conditions": {"all": [
+            {"op": ">=", "scope": "positions.expiring_today.mcx_unhedged", "metric": "pnl", "value": -999999999},
+            {"not": {"all": [
+                {"op": "==", "scope": "funds.total", "metric": "is_mcx_expiry_today",        "value": 1.0},
+                {"op": "<=", "scope": "funds.total", "metric": "minutes_until_mcx_close",     "value": 65},
+            ]}},
         ]},
     },
 ]
@@ -3738,18 +3777,25 @@ _AE_CONTENT_MATCHED_COND_MIGRATIONS: dict[str, dict] = {
     # `_ae_prune_retired_builtins()` instead of migrated.
     # 2026-11-24 — updated AGAIN (audit finding #14) from the 65-min,
     # generic-is_itm/is_future shape (BYTE-FOR-BYTE what the 2026-11-22
-    # retime above shipped) to the CURRENT tautological-sentinel shape
-    # (see `_EXPIRY_RISK_AGENTS`'s own conditions dict above). The
-    # 30-min pre-retime shape this replaced is moot — that migration
-    # already ran against any live row by the time this one ships
-    # (only one trigger shape per slug is kept, same convention as the
+    # retime above shipped) to the then-current tautological-sentinel
+    # shape (the merged `any[]` of both exchanges). The 30-min
+    # pre-retime shape this replaced is moot — that migration already
+    # ran against any live row by the time this one ships (only one
+    # trigger shape per slug is kept, same convention as the
     # 2026-11-22 entry's own comment).
+    # 2026-11-26 — SPLIT, not just retimed (see `_EXPIRY_RISK_AGENTS`'s
+    # own comment above for the full rationale). The shape below is
+    # the merged `any[nfo, mcx]` tree, confirmed BYTE-FOR-BYTE identical
+    # on both prod and dev via a direct DB read before this edit — the
+    # one trigger shape an already-seeded `expiry-nfo-risk-alert` row
+    # must exactly match to force-upgrade to the NEW, NFO-only
+    # `all[]` shape now in `_EXPIRY_RISK_AGENTS`. `expiry-mcx-risk-
+    # alert` needs no migration entry here — it's a fresh insert
+    # (confirmed 0 rows with that slug on either prod or dev), handled
+    # by the ordinary `_ae_build_agent_row` path in `seed_agents()`.
     "expiry-nfo-risk-alert": {"any": [
         {"all": [
-            {"any": [
-                {"op": "==", "scope": "positions.expiring_today.nfo", "metric": "is_itm",    "value": 1.0},
-                {"op": "==", "scope": "positions.expiring_today.nfo", "metric": "is_future", "value": 1.0},
-            ]},
+            {"op": ">=", "scope": "positions.expiring_today.nfo", "metric": "pnl", "value": -999999999},
             {"not": {"all": [
                 {"op": "==", "scope": "funds.total", "metric": "is_nse_expiry_today",        "value": 1.0},
                 {"op": "<=", "scope": "funds.total", "metric": "minutes_until_nse_close",     "value": 65},
@@ -3849,6 +3895,7 @@ def _ae_sync_existing_builtin(existing, agent_def: dict) -> None:
     # `_AE_CONTENT_MATCHED_COND_MIGRATIONS`'s own docstring.
     _ae_apply_content_matched_cond_migration(existing, agent_def)
     _ae_sync_expiry_awareness_cooldown(existing, agent_def)
+    _ae_sync_expiry_risk_alert_split(existing, agent_def)
 
 
 def _ae_sync_expiry_awareness_cooldown(existing, agent_def: dict) -> None:
@@ -3868,6 +3915,52 @@ def _ae_sync_expiry_awareness_cooldown(existing, agent_def: dict) -> None:
             and existing.cooldown_minutes == 180):
         existing.cooldown_minutes = agent_def.get(
             "cooldown_minutes", existing.cooldown_minutes)
+
+
+# Pre-split stock values, confirmed byte-for-byte identical on prod and
+# dev via a direct DB read before this edit (2026-11-26). Only an
+# already-seeded row still at EXACTLY this value is force-synced by
+# `_ae_sync_expiry_risk_alert_split()` below — an operator who already
+# renamed/re-topicked this agent is left alone, same safety contract as
+# every other migration in this file.
+_AE_EXPIRY_NFO_RISK_ALERT_PRE_SPLIT_NAME = (
+    "NFO or MCX expiry risk — ITM/unhedged options or open futures"
+)
+_AE_EXPIRY_NFO_RISK_ALERT_PRE_SPLIT_TOPIC = "expiry_warning"
+
+
+def _ae_sync_expiry_risk_alert_split(existing, agent_def: dict) -> None:
+    """One-time `name`/`description`/`topic` migration for the
+    2026-11-26 `expiry-nfo-risk-alert` / `expiry-mcx-risk-alert` split
+    (see `_EXPIRY_RISK_AGENTS`'s own comment for the full rationale —
+    live operator report: an alert slugged/named "NFO" was firing
+    purely on real MCX positions). `_ae_apply_content_matched_cond_
+    migration()` already force-syncs `conditions` for the
+    `expiry-nfo-risk-alert` slug, and `long_name` is already force-
+    synced unconditionally a few lines above in `_ae_sync_existing_
+    builtin` whenever it differs. Neither touches `name`/`description`/
+    `topic` — `name`/`description` are never force-synced anywhere
+    else, and the existing generic `topic` sync only applies while a
+    row is still at the schema default `"general"` (this row's topic
+    is `"expiry_warning"`, never `"general"`, so that generic sync is
+    always a no-op here). Without this function, an already-seeded row
+    would keep its stale merged-era `name` ("NFO or MCX expiry
+    risk...") and its old shared `expiry_warning` topic forever,
+    silently reproducing the exact confusion this split exists to fix.
+    Value-gated to the EXACT pre-split stock `name`/`topic` (not just a
+    slug match) — an operator who already customized either field is
+    left alone.
+
+    `expiry-mcx-risk-alert` needs no entry here: it's a fresh insert
+    on both prod and dev (confirmed 0 existing rows with that slug),
+    so `_ae_build_agent_row()` sets its fields correctly from
+    `BUILTIN_AGENTS` on first insert — there is no stale row to sync."""
+    if (agent_def.get("slug") == "expiry-nfo-risk-alert"
+            and existing.name == _AE_EXPIRY_NFO_RISK_ALERT_PRE_SPLIT_NAME
+            and existing.topic == _AE_EXPIRY_NFO_RISK_ALERT_PRE_SPLIT_TOPIC):
+        existing.name = agent_def["name"]
+        existing.description = agent_def.get("description", existing.description)
+        existing.topic = agent_def.get("topic", existing.topic)
 
 
 def _ae_build_agent_row(agent_def: dict) -> 'Agent':

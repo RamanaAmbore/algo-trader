@@ -776,10 +776,10 @@ class TestMatchToAlertRowMarginFalsePositive:
         assert '999,999,999' not in str(row['threshold'])
 
     def test_expiry_mcx_risk_alert_sentinel_leaf_no_longer_shows_fabricated_number(self):
-        """The MCX branch of `expiry-nfo-risk-alert` (2026-11-19 — merged
-        in place from the now-retired standalone `expiry-mcx-risk-alert`
-        agent, see agent_engine.py's own comment above
-        `_EXPIRY_RISK_AGENTS`) also uses the -999999999 'always true'
+        """`expiry-mcx-risk-alert` (2026-11-19 — briefly merged into
+        `expiry-nfo-risk-alert`; split back into its own independent
+        agent 2026-11-26, see agent_engine.py's own comment above
+        `_EXPIRY_RISK_AGENTS`) uses the -999999999 'always true'
         sentinel (pnl >= -999999999) — the format guard (fix #3) applies
         here too, independent of the kind-classification fix (its kind was
         already 'static_abs' and remains so)."""

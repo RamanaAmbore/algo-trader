@@ -141,10 +141,10 @@ def test_commodity_agent_condition_fires_on_unhedged_itm_goldm():
     ExpiryEngine.scan_positions(), called from the action, not
     evaluated via this condition tree). This test still proves the
     `mcx_unhedged`/`is_itm` resolvers themselves are correct — they
-    remain live, used today by the MCX branch of `expiry-nfo-risk-alert`
-    (2026-11-19 — `expiry-mcx-risk-alert` was merged into that one agent
-    in place; see `agent_engine.py`'s own comment above
-    `_EXPIRY_RISK_AGENTS`).
+    remain live, used today by `expiry-mcx-risk-alert` (2026-11-19 —
+    briefly merged into `expiry-nfo-risk-alert`; split back into its
+    own independent agent 2026-11-26 — see `agent_engine.py`'s own
+    comment above `_EXPIRY_RISK_AGENTS`).
 
     2026-11 classifier re-base (operator decision): `mcx_unhedged` now
     classifies via the real `ExpiryEngine` 4-rule netting, not a crude
@@ -239,8 +239,9 @@ def test_equity_agent_condition_fires_on_itm_nifty_calls():
     far OTM. Should match only the ITM leg. Equity rules: hedging does
     NOT save you — every ITM contract must close. Condition built
     inline (2026-10-29, same rationale as the commodity test above) —
-    the resolvers remain live, used today by the still-active
-    expiry-nfo-risk-alert agent."""
+    the resolvers remain live, used today by the still-active,
+    NFO-pure expiry-nfo-risk-alert agent (split from expiry-mcx-
+    risk-alert 2026-11-26)."""
     _seed_registry_inline()
     from backend.api.algo.agent_evaluator import evaluate
 

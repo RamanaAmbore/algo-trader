@@ -281,12 +281,17 @@ class TestTopicSuppressionActionExemption:
         # (the pair this test used before) were merged into one agent
         # (see agent_engine.py's own comment above `_EXPIRY_RISK_AGENTS`),
         # so only one of the two slugs this test used to exercise still
-        # exists. Swapped to a different real same-topic pair —
-        # `expiry-day-positions-alert` + `expiry-nfo-risk-alert` both
-        # still carry `topic="expiry_warning"` — that still exercises the
-        # identical generic cross-agent-suppression mechanism this test
-        # targets (`_compute_topic_suppression` is topic-keyed, not
-        # slug-specific).
+        # existed. Swapped to a different real same-topic pair —
+        # `expiry-day-positions-alert` (real topic `expiry_warning`) and
+        # a hand-built `_Agent` test double here set to the SAME topic
+        # string so this test exercises the identical generic cross-
+        # agent-suppression mechanism it targets
+        # (`_compute_topic_suppression` is topic-keyed, not slug-
+        # specific). Not a claim about `expiry-nfo-risk-alert`'s real
+        # live topic — 2026-11-26 split gave it its own dedicated
+        # `expiry_warning_nfo` topic, specifically so it no longer
+        # shares a topic with any other agent (see that split's own
+        # comment above `_EXPIRY_RISK_AGENTS` for why).
         a1 = _Agent(id=1, slug="expiry-day-positions-alert", tier="high", topic="expiry_warning")
         a2 = _Agent(id=2, slug="expiry-nfo-risk-alert", tier="high", topic="expiry_warning")
         m1 = _m(metric="is_itm", account="ACCT1")
