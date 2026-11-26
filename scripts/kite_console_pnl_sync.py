@@ -728,7 +728,17 @@ class KiteConsoleConnection:
         pw = sync_playwright().start()
         browser = None
         try:
-            browser = pw.chromium.launch(headless=True)
+            # --disable-ipv6: the prod/dev server's IPv6 route to
+            # console.zerodha.com is unreachable (confirmed via `curl -6`
+            # timing out while `curl -4` succeeds — same class of egress
+            # quirk already documented for httpx/urllib3 callers in
+            # CLAUDE.md's "Network egress quirks" entry, but Chromium's own
+            # network stack doesn't go through that Python-level IPv4-
+            # forcing patch at all). Without this flag Chromium's own
+            # happy-eyeballs resolution raced and lost, surfacing as a bare
+            # `net::ERR_ABORTED` on the very first `page.goto()` — not a
+            # CAPTCHA or login failure, just a dead IPv6 route.
+            browser = pw.chromium.launch(headless=True, args=["--disable-ipv6"])
             context = browser.new_context()
             page = context.new_page()
             console = KiteConsoleReportsPage(page)

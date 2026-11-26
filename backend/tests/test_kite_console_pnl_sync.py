@@ -1268,6 +1268,29 @@ class TestInitKiteConnPlaywrightFlow:
         conn.init_kite_conn(test_conn=False)
         assert conn._console_page is None
 
+    def test_chromium_launched_with_ipv6_disabled(self, monkeypatch):
+        """2026-11-26 live incident: the server's IPv6 route to
+        console.zerodha.com is unreachable (`curl -6` times out, `curl -4`
+        succeeds), and Chromium's own network stack doesn't go through the
+        Python-level IPv4-forcing patch used elsewhere in this codebase
+        (see CLAUDE.md's "Network egress quirks" entry) — the very first
+        `page.goto()` failed with a bare `net::ERR_ABORTED`, not a CAPTCHA
+        or login failure. Pins that `chromium.launch()` is always called
+        with `--disable-ipv6`, confirmed to fail against the pre-fix call
+        (`pw.chromium.launch(headless=True)`, no args)."""
+        conn = _console_conn_bare("ZCONSOLE_INIT4")
+        page = MagicMock()
+        pw_instance, browser, context, page = self._patch_sync_playwright(monkeypatch, page)
+        monkeypatch.setattr(mod, "KiteConsoleReportsPage", lambda p: MagicMock())
+        from backend.shared.helpers import utils as shared_utils
+        monkeypatch.setattr(shared_utils, "generate_totp", lambda token: "123456")
+
+        conn.init_kite_conn(test_conn=True)
+
+        pw_instance.chromium.launch.assert_called_once_with(
+            headless=True, args=["--disable-ipv6"],
+        )
+
 
 # ===========================================================================
 # 7. Trigger logic — should_sync_today (pure) + supporting helpers
