@@ -108,6 +108,81 @@ test('SSOT: _chartExpPnlAtSpot and legsExpPnlAtSpot are fully removed, not just 
     .toBeGreaterThanOrEqual(1);
 });
 
+/**
+ * SSOT + stale-code guards for the real (actual-money) Day P&L dart
+ * (2026-11-25) and the DTE timezone fix on the same component.
+ *
+ * The third dart reuses the already-wired `dayPnl` prop (baseline-diff
+ * Day P&L — see its own prop doc in OptionsPayoff.svelte) instead of a
+ * new prop, is painted in both the bg and fg SVGs (same two-circle
+ * ring+fill pattern as the amber "today" and sky "expiry" darts), in
+ * violet (`--algo-violet` / `#c084fc` in app.css) so it reads distinctly
+ * against amber (#fbbf24), sky (#7dd3fc), and the app's green/red
+ * long-short convention (--c-long/--c-short, #4ade80/#f87171).
+ *
+ * The DTE fix replaces a UTC-anchored `new Date().toISOString().slice(0,
+ * 10)` with the IST-anchored `todayIST()` (`$lib/dateFormat.js`) inside
+ * `anchorDaysToExpiry` — see the dedicated Vitest unit test for the IST
+ * vs UTC discriminating instant
+ * (`src/lib/__tests__/data/dateFormat_todayIST_utc_vs_ist.test.js`);
+ * `anchorDaysToExpiry`/`anchorRollingSoon` are computed here but have no
+ * template consumer today (confirmed via grep — the `.payoff-anchor-
+ * chip--amber` CSS class is dead code, unrelated to and unchanged by
+ * this fix), so this is a source-level guard only.
+ */
+test('SSOT: real Day P&L dart (violet, dayPnl-driven) and IST-anchored anchorDaysToExpiry', () => {
+  const optionsPayoffPath = path.resolve(process.cwd(), 'src/lib/OptionsPayoff.svelte');
+  const opSrc = fs.readFileSync(optionsPayoffPath, 'utf8');
+
+  // ── Day P&L dart ──────────────────────────────────────────────────────
+  expect(
+    opSrc.includes('const dayPnlY'),
+    'Expected a dayPnlY derived computing the Y position of the real Day P&L marker'
+  ).toBe(true);
+
+  const violetDartMatches = opSrc.match(/cy=\{dayPnlY\}[\s\S]{0,10}class="payoff-dart-actual"/g) || [];
+  expect(
+    violetDartMatches.length,
+    'Expected the violet Day P&L dart (ring + filled circle) painted in BOTH the bg and fg SVGs — 4 circles total'
+  ).toBe(4);
+
+  // Color must be the violet app.css token's hex value, and must differ
+  // from every other dart/long-short color already in use.
+  expect(opSrc.includes('#c084fc'), 'Expected the violet --algo-violet hex literal for the new dart').toBe(true);
+  const violetStrokeOrFill = (opSrc.match(/stroke="#c084fc"|fill="#c084fc"/g) || []).length;
+  expect(violetStrokeOrFill, 'Expected #c084fc used as both stroke and fill across the 4 circles').toBeGreaterThanOrEqual(4);
+
+  const OTHER_COLORS = ['#fbbf24', '#7dd3fc', '#4ade80', '#f87171'];
+  for (const c of OTHER_COLORS) {
+    // Sanity: the new color literal must not collide with an existing one.
+    expect(c).not.toBe('#c084fc');
+  }
+
+  // Must reuse the existing dayPnl prop — no new prop was added.
+  expect(
+    opSrc.includes('dayPnl = /** @type {number|null} */ (null)'),
+    'dayPnl prop signature must be unchanged — the new dart must not introduce a new prop'
+  ).toBe(true);
+
+  // ── DTE timezone fix ──────────────────────────────────────────────────
+  expect(
+    opSrc.includes("import { todayIST } from '$lib/dateFormat.js';"),
+    'anchorDaysToExpiry must import the shared todayIST() helper'
+  ).toBe(true);
+  expect(
+    opSrc.includes("new Date(todayIST() + 'T00:00:00Z')"),
+    'anchorDaysToExpiry must anchor "today" via todayIST(), not the browser/UTC clock'
+  ).toBe(true);
+  // Checks the actual OLD assignment statement (not just the bare
+  // sub-expression), which also appears inside this fix's own explanatory
+  // comment in OptionsPayoff.svelte — a looser substring check would
+  // false-positive against that comment text.
+  expect(
+    opSrc.includes("todayMs = new Date(new Date().toISOString().slice(0, 10)"),
+    'The old UTC-anchored "today" assignment must be fully removed from anchorDaysToExpiry'
+  ).toBe(false);
+});
+
 // ── Live-UI divergence cases ───────────────────────────────────────────────
 
 const ACCOUNT_A = 'ZG0790';
@@ -362,5 +437,107 @@ test.describe('Payoff chart dart-vs-number parity (C1 invariant)', () => {
       `Exp P&L showed ${text} — expected the backend curve value (${BACKEND_EXP_PNL}), ` +
       `not the futures-leg's-own-LTP local value (${LOCAL_SUM_WOULD_BE}) the pre-fix code computed`
     ).toBe(BACKEND_EXP_PNL);
+  });
+
+  test('Case (d) — real Day P&L dart: renders violet at dayPnl\'s own Y position, distinct from the sky expiry dart', async ({ page }) => {
+    await loginAsAdmin(page);
+    await blockLiveTicks(page);
+
+    const SYM = 'NIFTY26DEC25000CE';
+    const SPOT = 25000;
+    // Backend curve value at spot (feeds the sky "expiry" dart AND bounds
+    // the chart's auto y-domain: lo=0, hi=EXPIRY_VALUE, pad=max(10%,100) —
+    // so the domain here is [-100, 200]). DAY_PNL is chosen distinct from
+    // EXPIRY_VALUE, on the SAME side of zero, and comfortably inside that
+    // domain so the new dart's suppress-when-off-chart guard (dayPnlY)
+    // doesn't hide it.
+    const EXPIRY_VALUE = 100;
+    const DAY_PNL = 175;
+
+    await mockCommonEndpoints(page, {
+      positionsRows: [
+        // realised=0, unrealised=DAY_PNL (nonzero) -> currentTotalProfit()
+        // takes the realised+unrealised branch = DAY_PNL. prev_settlement_pnl
+        // omitted -> baseDayPnlForPosition's base term defaults to 0, so
+        // candidatesDayPnl (dayPnl prop) resolves to exactly DAY_PNL - 0 =
+        // DAY_PNL (nav.js SSOT formula — see "Frontend Day P&L SSOT" in
+        // CLAUDE.md).
+        { tradingsymbol: SYM, symbol: SYM, account: ACCOUNT_A,
+          quantity: 1, average_price: 150, last_price: 170,
+          pnl: 0, realised: 0, unrealised: DAY_PNL,
+          overnight_quantity: 1, day_buy_quantity: 0, day_sell_quantity: 0,
+          day_buy_value: 0, day_sell_value: 0 },
+      ],
+      instrumentItems: [
+        { s: SYM, e: 'NFO', t: 'CE', ls: 25, ts: 0.05, u: 'NIFTY', x: '2026-12-31', k: 25000 },
+      ],
+      strategyResponse: {
+        underlying: 'NIFTY', spot: SPOT, spot_prev_close: SPOT,
+        // Synthetic anchor (test-only determinism knob, same convention as
+        // Case (b) above) — guarantees payoffSpot resolves to `spot`
+        // regardless of any live/poll underlying-quote tick.
+        spot_anchor_contract: 'NIFTY_TEST_SPOT_ANCHOR', spot_source: 'futures',
+        legs: [
+          { symbol: SYM, qty: 1, strike: 25000, opt_type: 'CE', greeks: { delta: 0.5, gamma: 0.01, theta: -0.3, vega: 0.2, rho: 0.01 } },
+        ],
+        payoff: flatCurve(EXPIRY_VALUE, EXPIRY_VALUE, SPOT),
+        risk: { breakevens: [] }, breakevens: [],
+        pnl_at_spot: EXPIRY_VALUE, exp_pnl_at_spot: EXPIRY_VALUE,
+        dte: 20, iv: 0.2, aggregate_greeks: { delta: 1.0, gamma: 0.02, theta: -0.3, vega: 0.2, rho: 0.01 },
+      },
+    });
+
+    await page.goto('/admin/derivatives?u=NIFTY', { waitUntil: 'domcontentloaded' });
+
+    // First, confirm the mocked dayPnl value actually reaches the
+    // component (exact text-row check, same technique as readExpPnl
+    // above) — this is the precise, formatting-independent proof that
+    // `dayPnl` carries DAY_PNL. The SVG checks below then only need to
+    // confirm the new marker tracks that already-proven number.
+    const overlay = page.locator('.payoff-stats');
+    await expect(overlay).toBeVisible({ timeout: 20_000 });
+    const legsChip = overlay.locator('.ps-row', { has: page.locator('.ps-k', { hasText: 'LEGS' }) }).locator('.ps-v');
+    await expect(legsChip).not.toHaveText('0', { timeout: 15_000 });
+    const dayRow = overlay.locator('.ps-row', { has: page.locator('.ps-k', { hasText: 'DAY P&L' }) }).first();
+    await expect(dayRow).toBeVisible({ timeout: 15_000 });
+    const dayText = (await dayRow.locator('.ps-v').textContent()) || '';
+    const dayValue = parseFloat(dayText.replace(/[₹,\s]/g, ''));
+    expect(Number.isFinite(dayValue), `DAY P&L text "${dayText}" did not parse to a number`).toBe(true);
+    expect(Math.round(dayValue)).toBe(DAY_PNL);
+
+    // Violet dart — rendered in both the bg and fg SVGs, color distinct
+    // from the amber/sky darts and the app's green/red long-short tokens.
+    const fgViolet = page.locator('.payoff-svg-fg circle.payoff-dart-actual[fill="#c084fc"]');
+    const fgVioletRing = page.locator('.payoff-svg-fg circle.payoff-dart-actual[stroke="#c084fc"]');
+    const bgViolet = page.locator('.payoff-svg:not(.payoff-svg-fg) circle.payoff-dart-actual[fill="#c084fc"]');
+    await expect(fgViolet).toHaveCount(1, { timeout: 15_000 });
+    await expect(fgVioletRing).toHaveCount(1, { timeout: 15_000 });
+    await expect(bgViolet).toHaveCount(1, { timeout: 15_000 });
+
+    // Sky "expiry" dart (always wired live — unlike the amber "today" dart,
+    // whose `currentPnl` prop is never passed by either real call site,
+    // confirmed via `grep -n "currentPnl=" src`) gives a live, known second
+    // data point: value=EXPIRY_VALUE at fgSky's own cy.
+    const fgSky = page.locator('.payoff-svg-fg circle[fill="#7dd3fc"]');
+    await expect(fgSky).toHaveCount(1, { timeout: 15_000 });
+
+    const violetCy = parseFloat((await fgViolet.getAttribute('cy')) ?? '');
+    const skyCy    = parseFloat((await fgSky.getAttribute('cy')) ?? '');
+    expect(Number.isFinite(violetCy), 'Violet dart cy did not parse to a number').toBe(true);
+    expect(Number.isFinite(skyCy), 'Sky dart cy did not parse to a number').toBe(true);
+
+    // DAY_PNL (175) > EXPIRY_VALUE (100), both positive — on the SVG's
+    // inverted P&L axis (higher P&L -> smaller y, "higher up" on screen),
+    // the violet dart must sit strictly above (smaller cy than) the sky
+    // dart. Also must not coincide with it.
+    expect(violetCy, 'Violet dart must not share the sky dart\'s Y position').not.toBeCloseTo(skyCy, 1);
+    expect(violetCy, `Violet dart (dayPnl=${DAY_PNL}) must render ABOVE the sky dart (expiry_value=${EXPIRY_VALUE})`)
+      .toBeLessThan(skyCy);
+
+    const violetStroke = await fgVioletRing.getAttribute('stroke');
+    expect(violetStroke).toBe('#c084fc');
+    expect(violetStroke).not.toBe('#fbbf24'); // amber "today" dart
+    expect(violetStroke).not.toBe('#7dd3fc'); // sky "expiry" dart
+    expect(['#4ade80', '#f87171']).not.toContain(violetStroke); // app's long/short green/red
   });
 });

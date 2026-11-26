@@ -8,7 +8,9 @@
   //     would be worth if the underlying moves NOW.
   //   - Expiry value (intrinsic only) — sky-blue dashed, what it'd be
   //     worth at settlement.
-  // Markers: current spot (cyan), strike (white), breakeven (magenta).
+  // Three spot×curve darts: amber (today, theoretical), sky (expiry,
+  // theoretical), and violet (real, broker-reported Day P&L — `dayPnl`).
+  // Markers: current spot (cyan), strike (white), breakeven (amber).
   // Profit zone shaded green, loss zone shaded red.
 
   /** @type {{
@@ -116,13 +118,24 @@
 
   // Days until the anchor contract expires — used to decide whether
   // to flip the chip to amber "rolls in N days" mode. Computed from
-  // expiryISO vs today's wall-clock date (UTC midnight comparison is
-  // fine for a 3-day threshold; DST drift < 1 day won't matter here).
+  // expiryISO vs "today" anchored to midnight IST (`todayIST()` — this
+  // app's canonical calendar-day boundary), NOT the viewer's own browser/
+  // system timezone. A bare `new Date().toISOString().slice(0, 10)` reads
+  // UTC "now", which disagrees with the real IST calendar date for the
+  // whole 00:00–05:29 IST window (IST is UTC+5:30) — e.g. 02:00 IST on a
+  // given date is still 20:30 UTC the PREVIOUS day, so the old code would
+  // read "today" as one day earlier than it actually is in IST, off-by-one
+  // on the displayed DTE for that window every single day. This is a
+  // plain calendar day-count display ("rolls in N days"), not a P&L-freeze
+  // boundary, so the simpler midnight-IST `todayIST()` is used rather than
+  // the heavier 08:00-IST `tradingSessionDateIST()`. Both sides are parsed
+  // with the same `T00:00:00Z` anchor so the day-count subtraction stays
+  // on one consistent basis.
   const anchorDaysToExpiry = $derived.by(() => {
     if (!spotAnchor?.expiryISO) return null;
     try {
       const expMs  = new Date(spotAnchor.expiryISO + 'T00:00:00Z').getTime();
-      const todayMs = new Date(new Date().toISOString().slice(0, 10) + 'T00:00:00Z').getTime();
+      const todayMs = new Date(todayIST() + 'T00:00:00Z').getTime();
       return Math.round((expMs - todayMs) / 86_400_000);
     } catch {
       return null;
@@ -456,6 +469,20 @@
     return { y, level, label: netCost > 0 ? `Cost ₹${aggFmt(netCost)}` : `Credit ₹${aggFmt(-netCost)}` };
   });
 
+  // Y position of the REAL (actual-money, broker-reported) current Day
+  // P&L marker — `dayPnl` is the baseline-diff Day P&L (today's change
+  // only, see its own prop doc above), a different basis from the curve's
+  // P&L-since-entry, so it is NOT guaranteed to land inside the curve's
+  // y-domain the way the model-curve darts do. Suppress (rather than
+  // clamp to the edge) when it would fall outside the visible plot area —
+  // same convention as `_netCostY` above.
+  const dayPnlY = $derived.by(() => {
+    if (dayPnl == null) return null;
+    const y = yOf(dayPnl);
+    if (y < PAD_T || y > height - PAD_B) return null;
+    return y;
+  });
+
   // True when every payoff point carries a real today_value (not null/undefined).
   // The client-side intrinsic stub sets today_value: null to signal that BS
   // pricing hasn't arrived yet from the backend. Suppressing the path here
@@ -519,6 +546,7 @@
   import { untrack } from 'svelte';
   import { priceFmt, aggFmt, aggCompact, ltpDayClass } from '$lib/format';
   import { interpAt } from '$lib/data/derivativesMath.js';
+  import { todayIST } from '$lib/dateFormat.js';
   import LegLabel from '$lib/LegLabel.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
   import { createChartRefreshPulse } from '$lib/data/chartRefreshPulse.svelte.js';
@@ -1350,6 +1378,27 @@
                 pointer-events="none"/>
       {/if}
 
+      <!-- Spot × REAL (actual-money) current Day P&L dart — violet,
+           same two-circle pattern as the amber/sky darts above. Unlike
+           those two (both theoretical model-curve values), this one is
+           the genuine broker-reported P&L the operator's book shows
+           today — `dayPnl` (baseline-diff Day P&L; see its own prop doc).
+           Color matches --algo-violet in app.css: chosen to stay visually
+           distinct from the amber "today" dart, the sky "expiry" dart,
+           and this app's green/red long-short convention (--c-long/
+           --c-short), so the operator never mistakes model P&L for the
+           real figure. -->
+      {#if dayPnlY != null && spot >= sMin && spot <= sMax}
+        <circle cx={spotX} cy={dayPnlY} r="6" class="payoff-dart-actual"
+                fill="none" stroke="#c084fc" stroke-width="1.25"
+                stroke-opacity="0.55"
+                pointer-events="none"/>
+        <circle cx={spotX} cy={dayPnlY} r="3" class="payoff-dart-actual"
+                fill="#c084fc" fill-opacity="0.85"
+                stroke="#0c1830" stroke-width="1"
+                pointer-events="none"/>
+      {/if}
+
       <!-- Spot vertical line — operator: "remove decoration for spot
            price line. but still make more prominent". No dart sits
            on the line itself; instead the line gets a halo (wider
@@ -1484,6 +1533,19 @@
                 pointer-events="none"/>
         <circle cx={spotX} cy={yOf(curveAtSpot.expiry_value)} r="3"
                 fill="#7dd3fc" fill-opacity="0.85"
+                stroke="#0c1830" stroke-width="1"
+                pointer-events="none"/>
+      {/if}
+      <!-- Foreground spot × actual Day P&L dart — violet (--algo-violet),
+           the real broker-reported current P&L. Re-painted on the fg
+           layer for the same reason as the two darts above. -->
+      {#if dayPnlY != null && spot >= sMin && spot <= sMax}
+        <circle cx={spotX} cy={dayPnlY} r="6" class="payoff-dart-actual"
+                fill="none" stroke="#c084fc" stroke-width="1.25"
+                stroke-opacity="0.55"
+                pointer-events="none"/>
+        <circle cx={spotX} cy={dayPnlY} r="3" class="payoff-dart-actual"
+                fill="#c084fc" fill-opacity="0.85"
                 stroke="#0c1830" stroke-width="1"
                 pointer-events="none"/>
       {/if}
