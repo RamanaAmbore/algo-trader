@@ -220,7 +220,14 @@ from backend.shared.helpers.ramboq_logger import get_logger  # noqa: E402
 logger = get_logger(__name__)
 
 _DIAGNOSTICS_DIR = _REPO_ROOT / ".log" / "kite_console_diagnostics"
-_DOWNLOADS_DIR = _REPO_ROOT / ".log" / "kite_console_downloads"
+# `data/` (not `.log/`) -- these are the raw downloaded CSV reports, kept
+# for further processing/audit, never deleted after ingestion (see
+# trigger_download()'s own docstring). `.log/` reads as disposable
+# diagnostic output; these are the source records this script's own
+# `kite_console_pnl_sync` table is derived from. `/data/` is already a
+# recognised top-level convention in this repo (gitignored at the repo
+# root) for exactly this kind of persistent, non-code artifact.
+_DOWNLOADS_DIR = _REPO_ROOT / "data" / "kite_console_downloads"
 
 _BACKFILL_START = date(2026, 4, 1)  # was 2026-03-01; operator instruction, 2026-11-26
 _EXPIRY_LOOKBACK_DAYS = 10
