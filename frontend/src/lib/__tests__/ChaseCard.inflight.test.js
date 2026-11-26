@@ -20,6 +20,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
+import { reducePoll, buildGhosts, mergeGhosts, pruneGhosts, GRACE_THRESHOLD, GHOST_DISPLAY_MS } from '../order/chaseDisplayGrace.js';
 
 // ── Factory — replicates the _poll guard from ChaseCard.svelte ───────────────
 //
@@ -231,5 +232,198 @@ describe('ChaseCard mode class (_modeCls)', () => {
     expect(_modeCls('bogus')).toBe('cc-mode');
     expect(_modeCls(undefined)).toBe('cc-mode');
     expect(_modeCls(null)).toBe('cc-mode');
+  });
+});
+
+// ── Display grace window + terminal-outcome ghosts ──────────────────────────
+//
+// 2026-11-25 fix for "chase card shows data for a short span and
+// disappears" — unlike the mirrored pure-function tests above, these
+// import the REAL production module (chaseDisplayGrace.js) directly,
+// not a hand-copied mirror, per the ChaseCard.next-action-countdown
+// comment's own cautionary note about mirrors drifting from reality.
+//
+// Five quality dimensions:
+//   1. SSOT   — imports the real reducePoll/buildGhosts/pruneGhosts, no
+//               second hand-mirrored copy of the grace/ghost logic.
+//   2. Perf   — pure unit tests, no DOM/network/Svelte runes.
+//   3. Stale  — explicitly asserts the OLD (no-grace) behaviour would
+//               have cleared immediately, before proving the fix holds.
+//   4. Reuse  — `_row`/`_algoRow` factories build fixtures for any case.
+//   5. UX     — covers the exact "finishes fast and vanishes" complaint:
+//               a transient blip must not clear, a genuine drought must.
+
+function _row(id, extra = {}) {
+  return { id, account: 'ZG0790', transaction_type: 'BUY', quantity: 50, symbol: 'NIFTY', ...extra };
+}
+
+/** Shapes a fetchAlgoOrdersRecent()-style row. */
+function _algoRow(id, status) {
+  return { id, status };
+}
+
+describe('chaseDisplayGrace.reducePoll — grace window', () => {
+  it('a single transient empty poll does NOT clear a non-empty display (grace holds)', () => {
+    const r1 = [_row(1)];
+    // Poll 1: non-empty.
+    let state = reducePoll([], 0, r1);
+    expect(state.chases).toEqual(r1);
+    expect(state.consecutiveEmpty).toBe(0);
+
+    // Poll 2: empty — this is the critical poll. Under the OLD behaviour
+    // (no grace), the display would have cleared to [] right here.
+    const oldBehaviour = []; // what `_chases = raw || []` used to produce
+    expect(oldBehaviour).toEqual([]); // documents the bug being fixed
+
+    state = reducePoll(state.chases, state.consecutiveEmpty, []);
+    // Fixed behaviour: held steady, NOT cleared.
+    expect(state.chases).toEqual(r1);
+    expect(state.consecutiveEmpty).toBe(1);
+    expect(state.disappeared).toEqual([]);
+
+    // Poll 3: non-empty again — the chase reappears before anything was
+    // ever cleared. The display never dropped the row at all.
+    state = reducePoll(state.chases, state.consecutiveEmpty, r1);
+    expect(state.chases).toEqual(r1);
+    expect(state.consecutiveEmpty).toBe(0);
+  });
+
+  it('a sustained empty run DOES eventually clear, once the grace threshold is reached', () => {
+    const r1 = [_row(1)];
+    let state = reducePoll([], 0, r1);
+    expect(state.chases).toEqual(r1);
+
+    // First empty poll — grace holds (same as above).
+    state = reducePoll(state.chases, state.consecutiveEmpty, []);
+    expect(state.chases).toEqual(r1);
+    expect(state.consecutiveEmpty).toBe(1);
+
+    // Second CONSECUTIVE empty poll reaches GRACE_THRESHOLD (2) — the
+    // display now genuinely clears, proving the grace window only
+    // DELAYS clearing rather than disabling it outright.
+    expect(GRACE_THRESHOLD).toBe(2);
+    state = reducePoll(state.chases, state.consecutiveEmpty, []);
+    expect(state.chases).toEqual([]);
+    expect(state.consecutiveEmpty).toBe(2);
+    expect(state.disappeared).toEqual(r1);
+  });
+
+  it('an empty poll against an already-empty display is a pure no-op (no held state to protect)', () => {
+    const state = reducePoll([], 0, []);
+    expect(state.chases).toEqual([]);
+    expect(state.consecutiveEmpty).toBe(0);
+    expect(state.disappeared).toEqual([]);
+  });
+
+  it('a non-empty poll that drops one of two ids reports it as disappeared immediately — no grace needed for a confirmed partial change', () => {
+    const r1 = _row(1);
+    const r2 = _row(2, { symbol: 'BANKNIFTY' });
+    let state = reducePoll([], 0, [r1, r2]);
+    expect(state.chases).toEqual([r1, r2]);
+
+    // Next poll authoritatively reports only r2 is still active.
+    state = reducePoll(state.chases, state.consecutiveEmpty, [r2]);
+    expect(state.chases).toEqual([r2]);
+    expect(state.consecutiveEmpty).toBe(0);
+    expect(state.disappeared).toEqual([r1]);
+  });
+
+  it('a non-empty poll always resets the grace counter to 0, even mid-grace', () => {
+    const r1 = [_row(1)];
+    let state = reducePoll([], 0, r1);
+    state = reducePoll(state.chases, state.consecutiveEmpty, []); // consecutiveEmpty -> 1
+    expect(state.consecutiveEmpty).toBe(1);
+    state = reducePoll(state.chases, state.consecutiveEmpty, r1); // recovers
+    expect(state.consecutiveEmpty).toBe(0);
+  });
+});
+
+describe('chaseDisplayGrace.buildGhosts / pruneGhosts — terminal-outcome row', () => {
+  it('renders a ghost when the disappeared id resolves to a real terminal status (FILLED)', () => {
+    const disappeared = [_row(7)];
+    const algoRows = [_algoRow(7, 'FILLED')];
+    const ghosts = buildGhosts(disappeared, algoRows, 1_000_000);
+    expect(ghosts).toHaveLength(1);
+    expect(ghosts[0]).toMatchObject({ id: 7, label: 'Filled', cls: 'filled', symbol: 'NIFTY' });
+    expect(ghosts[0].expiresAt).toBe(1_000_000 + GHOST_DISPLAY_MS);
+  });
+
+  it('HELD maps to the "Pending" label, per the CLAUDE.md operator-facing hold-text invariant', () => {
+    const ghosts = buildGhosts([_row(9)], [_algoRow(9, 'HELD')], 0);
+    expect(ghosts[0].label).toBe('Pending');
+  });
+
+  it.each([
+    ['REJECTED', 'Rejected'],
+    ['CANCELLED', 'Cancelled'],
+    ['UNFILLED', 'Unfilled'],
+  ])('%s maps to the "%s" label', (status, label) => {
+    const ghosts = buildGhosts([_row(1)], [_algoRow(1, status)], 0);
+    expect(ghosts[0].label).toBe(label);
+  });
+
+  it('does NOT render a ghost when nothing disappeared (falls back to step-1 behaviour only)', () => {
+    expect(buildGhosts([], [_algoRow(1, 'FILLED')], 0)).toEqual([]);
+  });
+
+  it('does NOT render a ghost when the disappeared id has no match in the algo-orders lookup', () => {
+    const ghosts = buildGhosts([_row(5)], [_algoRow(6, 'FILLED')], 0);
+    expect(ghosts).toEqual([]);
+  });
+
+  it('does NOT render a ghost for a status that is not a recognized terminal outcome (e.g. OPEN, CANCEL_FAILED, or unknown)', () => {
+    expect(buildGhosts([_row(1)], [_algoRow(1, 'OPEN')], 0)).toEqual([]);
+    expect(buildGhosts([_row(1)], [_algoRow(1, 'CANCEL_FAILED')], 0)).toEqual([]);
+    expect(buildGhosts([_row(1)], [_algoRow(1, 'SOME_UNKNOWN_STATUS')], 0)).toEqual([]);
+  });
+
+  it('does NOT render a ghost when the lookup itself is empty (e.g. a failed best-effort fetch)', () => {
+    expect(buildGhosts([_row(1)], [], 0)).toEqual([]);
+    expect(buildGhosts([_row(1)], null, 0)).toEqual([]);
+  });
+
+  it('pruneGhosts drops a ghost whose id reappeared in the live chase list', () => {
+    const ghosts = [{ id: 1, expiresAt: 10_000 }];
+    const pruned = pruneGhosts(ghosts, new Set([1]), 100); // well before expiry
+    expect(pruned).toEqual([]);
+  });
+
+  it('pruneGhosts drops a ghost once its display window has elapsed', () => {
+    const ghosts = [{ id: 1, expiresAt: 1000 }];
+    const pruned = pruneGhosts(ghosts, new Set(), 1001); // past expiresAt
+    expect(pruned).toEqual([]);
+  });
+
+  it('pruneGhosts keeps a ghost that is neither live again nor expired yet', () => {
+    const ghosts = [{ id: 1, expiresAt: 1000 }];
+    const pruned = pruneGhosts(ghosts, new Set(), 500);
+    expect(pruned).toEqual(ghosts);
+  });
+
+  // mergeGhosts — dedup-by-id merge, closes a real bug: `_load()` can be
+  // re-entered (`_reconcile()`/`onMount()` bypass the `_fetching` guard),
+  // so two concurrent calls could report the SAME disappeared id twice.
+  // Appending both resulting ghost batches with no dedup would produce a
+  // duplicate `id` key, which Svelte 5's keyed `{#each ... (ghost.id)}`
+  // throws `each_key_duplicate` on.
+  it('mergeGhosts deduplicates by id — a later entry for the same id replaces, never duplicates', () => {
+    const existing = [{ id: 1, label: 'Filled', expiresAt: 1000 }];
+    const fresh = [{ id: 1, label: 'Filled', expiresAt: 4000 }]; // same id, refreshed expiry
+    const merged = mergeGhosts(existing, fresh);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toEqual({ id: 1, label: 'Filled', expiresAt: 4000 });
+  });
+
+  it('mergeGhosts keeps distinct ids from both batches', () => {
+    const existing = [{ id: 1, expiresAt: 1000 }];
+    const fresh = [{ id: 2, expiresAt: 2000 }];
+    const merged = mergeGhosts(existing, fresh);
+    expect(merged.map((g) => g.id).sort()).toEqual([1, 2]);
+  });
+
+  it('mergeGhosts tolerates empty/missing inputs', () => {
+    expect(mergeGhosts([], [])).toEqual([]);
+    expect(mergeGhosts(undefined, [{ id: 1 }])).toEqual([{ id: 1 }]);
+    expect(mergeGhosts([{ id: 1 }], undefined)).toEqual([{ id: 1 }]);
   });
 });

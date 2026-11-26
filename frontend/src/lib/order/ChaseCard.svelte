@@ -38,12 +38,13 @@
    *                   does not populate `_chases`).
    */
   import { onMount, onDestroy, untrack } from 'svelte';
-  import { fetchActiveChases, killChase, reconcileAlgoOrders } from '$lib/api';
+  import { fetchActiveChases, fetchAlgoOrdersRecent, killChase, reconcileAlgoOrders } from '$lib/api';
   import { priceFmt } from '$lib/format';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   import { toast } from '$lib/data/toastStore.svelte.js';
   import CardHeader from '$lib/CardHeader.svelte';
   import { visibleInterval, chasePollKick } from '$lib/stores';
+  import { reducePoll, buildGhosts, mergeGhosts, pruneGhosts, GHOST_DISPLAY_MS } from './chaseDisplayGrace.js';
 
   let {
     pollMs   = 3000,
@@ -101,6 +102,17 @@
   // this instance has a real answer, so a fresh empty `_chases` can
   // never stomp an inherited non-zero value.
   let _loadedOnce = $state(false);
+  // Grace-window counter (chaseDisplayGrace.js:reducePoll) — number of
+  // CONSECUTIVE empty poll results seen so far. Plain `let`, not
+  // `$state`: it's internal `_load()` bookkeeping, never rendered
+  // directly, same convention as `_fetching` below.
+  let _consecutiveEmptyPolls = 0;
+  // Terminal-outcome ghost rows (chaseDisplayGrace.js:buildGhosts) — a
+  // just-disappeared chase that resolved to a real terminal status
+  // (filled/rejected/cancelled/held) renders here briefly instead of
+  // hard-vanishing. Best-effort, frontend-only (see that module's own
+  // header comment for why this doesn't reuse `ordersStore`).
+  let _ghosts = $state(/** @type {any[]} */ ([]));
   // Mirror the chase count, broker_order_id set, and load-error string
   // out to bindable props so the parent's gate / dedup / error-surfacing
   // logic can react — this effect runs regardless of `headless`, since
@@ -116,8 +128,17 @@
   // ping-pong. Reading the bound props through `untrack` makes this
   // effect depend ONLY on this instance's own local state, which is
   // the invariant a bindable mirror must hold to be safe to share.
+  //
+  // 2026-11-25 fix — `activeCount` now also counts live ghost rows (NOT
+  // `chaseOrderIds`, which stays real-broker-id-only — ghosts carry no
+  // broker_order_id dedup meaning). Without this, a host page that gates
+  // its own visibility on `activeCount > 0` (e.g. /orders' `_showChases`)
+  // would hide the whole ChaseCard the instant the last real chase
+  // disappeared, before its ghost row ever had a chance to render —
+  // the outward count staying non-zero for the ghost's ~3s life is what
+  // keeps that host's section visible long enough to show it.
   $effect(() => {
-    const n = _chases.length;
+    const n = _chases.length + _ghosts.length;
     if (!_loadedOnce) return;
     const curActiveCount = untrack(() => activeCount);
     if (n !== curActiveCount) activeCount = n;
@@ -185,11 +206,50 @@
   // before the previous one has resolved (e.g. slow network + 3s interval).
   let _fetching = false;
 
+  // 2026-11-25 fix — a single empty poll result used to clear `_chases`
+  // immediately, hiding the whole card and (via `_idle` below) throttling
+  // the very next poll to ~15-30s — so a transient blip, or a chase that
+  // genuinely finished fast and simply fell out of the backend's
+  // OPEN/CANCEL_FAILED filter, made the display vanish abruptly and then
+  // take far longer than normal to recover even if it WAS just a blip.
+  // `reducePoll()` (chaseDisplayGrace.js) now holds the prior non-empty
+  // list steady across one consecutive empty poll before actually
+  // clearing it — see that module's own header comment for the full
+  // design and the two-phase grace-then-clear behaviour it implements.
   async function _load() {
     try {
       _loading = true;
       _err = '';
-      _chases = (await fetchActiveChases()) || [];
+      const raw = (await fetchActiveChases()) || [];
+      const result = reducePoll(_chases, _consecutiveEmptyPolls, raw);
+      _consecutiveEmptyPolls = result.consecutiveEmpty;
+      // Terminal-outcome ghosts — best-effort, only when something
+      // actually disappeared this poll (never on every tick). A failed
+      // OR SLOW lookup here must never surface as the card's own `_err`
+      // banner, and must never stall the poll loop — capped at
+      // GHOST_DISPLAY_MS (the ghost's own on-screen window; there is no
+      // point waiting longer than the ghost would be shown for anyway)
+      // via Promise.race against a resolve-to-empty fallback, so a slow
+      // network can delay this one poll's resolution by at most that
+      // much, not by `_get`'s own internal 15s default timeout.
+      if (result.disappeared.length) {
+        let algoRows = [];
+        try {
+          algoRows = await Promise.race([
+            fetchAlgoOrdersRecent(100, 'all'),
+            new Promise((resolve) => setTimeout(() => resolve([]), GHOST_DISPLAY_MS)),
+          ]) || [];
+        } catch (_) {
+          // best-effort lookup — swallow; falls back to no ghost
+        }
+        const fresh = buildGhosts(result.disappeared, algoRows, Date.now());
+        // Merge-by-id (not append) — `_load()` can be re-entered
+        // (`_reconcile()`/`onMount()` bypass the `_fetching` guard), so
+        // two concurrent calls could otherwise report the same
+        // disappeared id twice and produce a duplicate-keyed `{#each}`.
+        if (fresh.length) _ghosts = mergeGhosts(_ghosts, fresh);
+      }
+      _chases = result.chases;
     } catch (e) {
       _err = e?.message || 'load failed';
     } finally {
@@ -200,10 +260,14 @@
       // deferring forever.
       _loadedOnce = true;
     }
-    // Switch the poll cadence based on the result. Empty result =
-    // idle; slow the poll way down (default 30s) and hide the card
-    // entirely via the template gate. Non-empty = active; fast poll
-    // (3s default) so kill state stays current.
+    // Switch the poll cadence based on the (post-grace) result. Empty
+    // result = idle; slow the poll way down (default 30s) and hide the
+    // card entirely via the template gate. Non-empty = active; fast poll
+    // (3s default) so kill state stays current. Deliberately keyed only
+    // on `_chases`, not `_ghosts` — a ghost row self-expires off the
+    // existing 1s clock (see the `_nowSec` effect below), it doesn't need
+    // a fast poll to clear itself, and the grace-window logic above is
+    // the one and only change to this cadence decision (per task scope).
     const wasIdle = _idle;
     _idle = _chases.length === 0;
     if (wasIdle !== _idle) _rescheduleTimer();
@@ -375,6 +439,23 @@
     if (_clockTimer) { clearInterval(_clockTimer); _clockTimer = null; }
   });
 
+  // Prune expired/re-appeared ghost rows off the EXISTING 1s `_nowSec`
+  // clock above, not the poll timer — a ghost must disappear on its own
+  // ~3s schedule even while idle (poll cadence can be up to 30s away).
+  // Depends only on `_nowSec` so it ticks every second regardless of
+  // what else changed; `_chases`/`_ghosts` are read through `untrack()`
+  // so appending a ghost inside `_load()` (a write to `_ghosts`) can
+  // never re-trigger this effect out of its own 1s cadence.
+  $effect(() => {
+    void _nowSec;
+    const nowMs = Date.now();
+    const cur = untrack(() => _ghosts);
+    if (!cur.length) return;
+    const liveIds = new Set(untrack(() => _chases).map(c => c.id));
+    const pruned = pruneGhosts(cur, liveIds, nowMs);
+    if (pruned.length !== cur.length) _ghosts = pruned;
+  });
+
   // 2026-11-05 live fix — force an immediate poll whenever a submit path
   // calls `kickChasePoll()` ($lib/stores), instead of waiting out
   // whatever is left of the idle-slowed 15-30s cadence. Skips the FIRST
@@ -392,10 +473,13 @@
 
 <!-- Operator: "in chase card, if there are no active chases, no
      need to show 'no active chases' and refresh it continuously".
-     Root is gated on real chases OR pending broker orders OR draft orders.
+     Root is gated on real chases OR pending broker orders OR draft orders
+     OR a live terminal-outcome ghost row (2026-11-25 — without `_ghosts.
+     length` here, the last real chase finishing would hide the whole
+     card before its own ghost row ever had a chance to render).
      Polling auto-slows in _rescheduleTimer when idle so background
      traffic drops to one fetch every ~30s. -->
-{#if !headless && (_chases.length || pendingOrders.length || draftOrders.length)}
+{#if !headless && (_chases.length || pendingOrders.length || draftOrders.length || _ghosts.length)}
 <div class="cc-root" class:cc-compact={compact}>
   <!-- 2026-10 CardHeader adoption sweep — this is now the ONE header
        ChaseCard renders, consolidating what used to be a second,
@@ -518,12 +602,44 @@
       </div>
     {/each}
 
+    <!-- Terminal-outcome ghost rows (2026-11-25) — a chase that just
+         disappeared from the live list because it genuinely finished
+         (filled/rejected/cancelled/held), rather than vanishing with no
+         trace. Read-only — no Kill button, self-expires off the 1s
+         clock (see the `_nowSec`-keyed prune effect in <script>). -->
+    {#if _ghosts.length}
+      {#if _orderedChases.length}
+        <div class="cc-ghost-divider" role="separator" aria-label="Recently finished"></div>
+      {/if}
+      {#each _ghosts as ghost (ghost.id)}
+        <div class="cc-row cc-ghost-row" role="row">
+          <span class="cc-col cc-col-acct" title={ghost.account || ''}>{ghost.account || '—'}</span>
+          <span class="cc-col cc-col-side cc-side-{(ghost.transaction_type || '').toLowerCase()}">
+            {ghost.transaction_type || '—'}
+          </span>
+          <span class="cc-col cc-col-qty">{ghost.quantity ?? '—'}</span>
+          <span class="cc-col cc-col-sym" title={ghost.symbol}>
+            {formatSymbol(ghost.symbol || '')}
+          </span>
+          <span class="cc-col cc-col-limit">—</span>
+          <span class="cc-col cc-col-att">—</span>
+          <span class="cc-col cc-col-age">
+            <span class="cc-ghost-label cc-ghost-{ghost.cls}">{ghost.label}</span>
+          </span>
+          {#if !compact}
+            <span class="cc-col cc-mode"></span>
+          {/if}
+          <span class="cc-col cc-col-actions"></span>
+        </div>
+      {/each}
+    {/if}
+
     <!-- Pending broker order rows — OPEN / TRIGGER_PENDING orders that
          are not managed by the chase engine. Shown between chase rows
          and draft rows. Clicking the row opens the order ticket pre-filled
          for modify/cancel. No inline action — cancel goes through the modal. -->
     {#if pendingOrders.length}
-      {#if _orderedChases.length}
+      {#if _orderedChases.length || _ghosts.length}
         <div class="cc-pending-divider" role="separator" aria-label="Pending orders"></div>
       {/if}
       {#each pendingOrders as o (o.order_id ?? o.id)}
@@ -582,7 +698,7 @@
          opens the order ticket pre-filled in draft mode. The inline ×
          removes the draft immediately without a confirm modal. -->
     {#if draftOrders.length}
-      {#if _orderedChases.length || pendingOrders.length}
+      {#if _orderedChases.length || _ghosts.length || pendingOrders.length}
         <div class="cc-draft-divider" role="separator" aria-label="Draft orders"></div>
       {/if}
       {#each draftOrders as draft (draft.id)}
@@ -1019,6 +1135,30 @@
   .cc-pending-divider {
     height: 1px;
     background: rgba(125, 211, 252, 0.18);
+    margin: 0.25rem 0;
+  }
+
+  /* Terminal-outcome ghost rows (2026-11-25) — read-only, self-expiring.
+     Slightly dimmed row background (no hover/pointer — not clickable)
+     so it visually reads as "already settling", distinct from the live
+     chase rows above it. Colors reuse existing tokens only. */
+  .cc-ghost-row {
+    opacity: 0.82;
+  }
+  .cc-ghost-label {
+    font-size: var(--fs-sm);
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+  }
+  .cc-ghost-filled    { color: var(--c-long); }
+  .cc-ghost-rejected  { color: var(--c-short); }
+  .cc-ghost-cancelled { color: var(--algo-muted); }
+  .cc-ghost-pending   { color: var(--c-action); }
+  /* Visual separator between chase rows and terminal-outcome ghost rows */
+  .cc-ghost-divider {
+    height: 1px;
+    background: rgba(148, 163, 184, 0.18);
     margin: 0.25rem 0;
   }
 </style>
