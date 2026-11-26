@@ -1466,7 +1466,7 @@
                     <span class="chain-cell-quote">
                       <span class="chain-cell-bid {_bidAskFlash.classOf(`${k}:CE:bid`)}">{_fmtLtp(ceQ?.bid)}</span><span
                             class="chain-cell-sep">-</span><span
-                            class="chain-cell-ask {_bidAskFlash.classOf(`${k}:CE:ask`)}">{_fmtLtp(ceQ?.ask)}</span>{#if ceSpreadWide}<span class="chain-cell-spread-warn" title="Wide spread — {_fmtLtp(ceQ.ask - ceQ.bid)} ({((ceQ.ask - ceQ.bid)/((ceQ.ask+ceQ.bid)/2)*100).toFixed(0)}% of mid)">⚠</span>{/if}
+                            class="chain-cell-ask {_bidAskFlash.classOf(`${k}:CE:ask`)}">{_fmtLtp(ceQ?.ask)}</span><span class="chain-cell-spread-warn" class:chain-cell-spread-warn-on={ceSpreadWide} aria-hidden={!ceSpreadWide} title={ceSpreadWide ? `Wide spread — ${_fmtLtp(ceQ.ask - ceQ.bid)} (${((ceQ.ask - ceQ.bid)/((ceQ.ask+ceQ.bid)/2)*100).toFixed(0)}% of mid)` : undefined}>⚠</span>
                     </span>
                     <span class="chain-side-action">
                       <span class="chain-btn-pair">
@@ -1514,7 +1514,7 @@
                     <span class="chain-cell-quote">
                       <span class="chain-cell-bid {_bidAskFlash.classOf(`${k}:PE:bid`)}">{_fmtLtp(peQ?.bid)}</span><span
                             class="chain-cell-sep">-</span><span
-                            class="chain-cell-ask {_bidAskFlash.classOf(`${k}:PE:ask`)}">{_fmtLtp(peQ?.ask)}</span>{#if peSpreadWide}<span class="chain-cell-spread-warn" title="Wide spread — {_fmtLtp(peQ.ask - peQ.bid)} ({((peQ.ask - peQ.bid)/((peQ.ask+peQ.bid)/2)*100).toFixed(0)}% of mid)">⚠</span>{/if}
+                            class="chain-cell-ask {_bidAskFlash.classOf(`${k}:PE:ask`)}">{_fmtLtp(peQ?.ask)}</span><span class="chain-cell-spread-warn" class:chain-cell-spread-warn-on={peSpreadWide} aria-hidden={!peSpreadWide} title={peSpreadWide ? `Wide spread — ${_fmtLtp(peQ.ask - peQ.bid)} (${((peQ.ask - peQ.bid)/((peQ.ask+peQ.bid)/2)*100).toFixed(0)}% of mid)` : undefined}>⚠</span>
                     </span>
                   </span>
                 </td>
@@ -1526,7 +1526,7 @@
                     <span class="chain-cell-quote">
                       <span class="chain-cell-bid {_bidAskFlash.classOf(`${k}:CE:bid`)}">{_fmtLtp(ceQ?.bid)}</span><span
                             class="chain-cell-sep">-</span><span
-                            class="chain-cell-ask {_bidAskFlash.classOf(`${k}:CE:ask`)}">{_fmtLtp(ceQ?.ask)}</span>{#if ceSpreadWide}<span class="chain-cell-spread-warn" title="Wide spread — {_fmtLtp(ceQ.ask - ceQ.bid)} ({((ceQ.ask - ceQ.bid)/((ceQ.ask+ceQ.bid)/2)*100).toFixed(0)}% of mid)">⚠</span>{/if}
+                            class="chain-cell-ask {_bidAskFlash.classOf(`${k}:CE:ask`)}">{_fmtLtp(ceQ?.ask)}</span><span class="chain-cell-spread-warn" class:chain-cell-spread-warn-on={ceSpreadWide} aria-hidden={!ceSpreadWide} title={ceSpreadWide ? `Wide spread — ${_fmtLtp(ceQ.ask - ceQ.bid)} (${((ceQ.ask - ceQ.bid)/((ceQ.ask+ceQ.bid)/2)*100).toFixed(0)}% of mid)` : undefined}>⚠</span>
                     </span>
                     <span class="chain-side-action">
                       <span class="chain-btn-pair">
@@ -1574,7 +1574,7 @@
                     <span class="chain-cell-quote">
                       <span class="chain-cell-bid {_bidAskFlash.classOf(`${k}:PE:bid`)}">{_fmtLtp(peQ?.bid)}</span><span
                             class="chain-cell-sep">-</span><span
-                            class="chain-cell-ask {_bidAskFlash.classOf(`${k}:PE:ask`)}">{_fmtLtp(peQ?.ask)}</span>{#if peSpreadWide}<span class="chain-cell-spread-warn" title="Wide spread — {_fmtLtp(peQ.ask - peQ.bid)} ({((peQ.ask - peQ.bid)/((peQ.ask+peQ.bid)/2)*100).toFixed(0)}% of mid)">⚠</span>{/if}
+                            class="chain-cell-ask {_bidAskFlash.classOf(`${k}:PE:ask`)}">{_fmtLtp(peQ?.ask)}</span><span class="chain-cell-spread-warn" class:chain-cell-spread-warn-on={peSpreadWide} aria-hidden={!peSpreadWide} title={peSpreadWide ? `Wide spread — ${_fmtLtp(peQ.ask - peQ.bid)} (${((peQ.ask - peQ.bid)/((peQ.ask+peQ.bid)/2)*100).toFixed(0)}% of mid)` : undefined}>⚠</span>
                     </span>
                   </span>
                 </td>
@@ -2725,7 +2725,50 @@
   .chain-btn:disabled { opacity: 0.3; cursor: not-allowed; }
   .chain-btn:disabled:hover { background: transparent; border-color: var(--c-long); }
   .chain-btn-sell:disabled:hover { border-color: var(--c-short); }
-  .chain-cell-spread-warn { font-size: var(--fs-xs); color: var(--algo-amber); margin-left: 0.12rem; cursor: default; vertical-align: super; }
+  /* Operator (2026-11-26): "when spread is more you can blink the text
+     now for spread refresh. but keep the place it anyway static" — the
+     element used to be conditionally removed from the DOM entirely, so
+     its appearance/disappearance on each 30s quote poll
+     (`_refreshChainQuotes`) shifted the bid/ask text beside it. Fixed:
+     the span is now ALWAYS in the DOM (never conditionally removed)
+     with a fixed `width` reserving its own slot at all times —
+     `visibility: hidden` (not `display: none`,
+     which would collapse the box) hides it when the spread isn't wide,
+     so the reserved width is identical whether shown or not. `position:
+     relative; top: -0.35em` replaces the old `vertical-align: super` —
+     `vertical-align` can grow the line box height on the rows where this
+     now permanently renders, which would itself be a layout shift this
+     fix exists to remove; a relative offset nudges the glyph up visually
+     without affecting line-box metrics. The reserved width matches what
+     this element already needed on its own worst case before this fix
+     (it was already this wide whenever a wide spread made it appear), so
+     this adds no new overflow risk at any viewport the pre-existing
+     conditional render didn't already have to accommodate. */
+  .chain-cell-spread-warn {
+    display: inline-block;
+    width: 1.05em;
+    font-size: var(--fs-xs);
+    color: var(--algo-amber);
+    margin-left: 0.12rem;
+    cursor: default;
+    position: relative;
+    top: -0.35em;
+    text-align: center;
+    visibility: hidden;
+  }
+  /* "blink... for spread refresh" — the derived `ceSpreadWide`/
+     `peSpreadWide` are re-evaluated on every quote poll, so this class
+     toggling on/off naturally re-confirms "still wide" on each refresh;
+     the animation itself just needs to run continuously while the class
+     is applied, which is the correct read of "blink on refresh". */
+  .chain-cell-spread-warn-on {
+    visibility: visible;
+    animation: chain-spread-warn-blink 1.1s ease-in-out infinite;
+  }
+  @keyframes chain-spread-warn-blink {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.35; }
+  }
   .chain-quick-toast {
     display: inline-block; padding: 2px 8px; border-radius: 2px;
     background: rgba(74,222,128,0.18); color: var(--c-long);
@@ -2861,6 +2904,7 @@
   }
   @media (prefers-reduced-motion: reduce) {
     .chain-quick-toast { animation: none; }
+    .chain-cell-spread-warn-on { animation: none; }
   }
 
   /* Operator (2026-09-29): "on desktop, the row borders in chain making
