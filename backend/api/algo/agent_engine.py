@@ -3917,14 +3917,29 @@ def _ae_sync_expiry_awareness_cooldown(existing, agent_def: dict) -> None:
             "cooldown_minutes", existing.cooldown_minutes)
 
 
-# Pre-split stock values, confirmed byte-for-byte identical on prod and
-# dev via a direct DB read before this edit (2026-11-26). Only an
-# already-seeded row still at EXACTLY this value is force-synced by
-# `_ae_sync_expiry_risk_alert_split()` below — an operator who already
-# renamed/re-topicked this agent is left alone, same safety contract as
-# every other migration in this file.
+# Pre-split stock values. CORRECTED after a direct post-deploy DB read
+# on dev caught a wrong assumption in the first version of this
+# migration: `name` was assumed to be the 2026-11-19 MERGED text ("NFO
+# or MCX expiry risk..." — the value `_EXPIRY_RISK_AGENTS` held for
+# that row at merge time), on the theory that the merge's own rename
+# simply never reached the DB. The real live row — confirmed
+# byte-for-byte identical on both prod and dev — was already stuck at
+# the ORIGINAL PRE-MERGE name ("NFO expiry risk — ITM options or open
+# futures") the entire time: `name` was never force-synced even AT the
+# 2026-11-19 merge either, so the merge's rename never took effect in
+# the first place, not just the split's. This value happens to be
+# byte-identical to the split's own new NFO-only `name` (both were
+# always "NFO expiry risk..." — only the brief 2026-11-19-to-2026-11-26
+# merge window ever used the "...or MCX..." text, and only in code, the
+# live row genuinely never carried it), so the migration is a correct
+# no-op for `name` specifically — `topic` is the field that genuinely
+# needed to move, from the stock `expiry_warning` to `expiry_
+# warning_nfo`. Only an already-seeded row still at EXACTLY these
+# values is force-synced by `_ae_sync_expiry_risk_alert_split()` below
+# — an operator who already renamed/re-topicked this agent is left
+# alone, same safety contract as every other migration in this file.
 _AE_EXPIRY_NFO_RISK_ALERT_PRE_SPLIT_NAME = (
-    "NFO or MCX expiry risk — ITM/unhedged options or open futures"
+    "NFO expiry risk — ITM options or open futures"
 )
 _AE_EXPIRY_NFO_RISK_ALERT_PRE_SPLIT_TOPIC = "expiry_warning"
 
