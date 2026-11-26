@@ -7344,11 +7344,15 @@
   }
   /* Real grid-header decoration for the 5 Greek header cells, matching
      `.cand-headrow`/`.byund-headrow`'s own treatment elsewhere in this
-     file. Scoped to `.opt-kv-greeks .kv-k-greek` only — the shared base
-     `.kv-k-greek` rule (also used by Risk & EV's 6 labels) is untouched,
-     so this does not affect those. The background bleeds outward by
-     half the column-gap via a negative margin (compensated by equal
-     extra padding so the visible glyph position doesn't move) — the
+     file — header rows in this file carry background + border-bottom
+     only, never a vertical divider (that would fragment one
+     continuous header bar into separate boxed cells; see the removed
+     2026-11-25 box-shadow additions, reverted 2026-11-26). Scoped to
+     `.opt-kv-greeks .kv-k-greek` only — the shared base `.kv-k-greek`
+     rule (also used by Risk & EV's 6 labels) is untouched, so this
+     does not affect those. The background bleeds outward by half the
+     column-gap via a negative margin (compensated by equal extra
+     padding so the visible glyph position doesn't move) — the
      standard gapless-background-across-a-grid-gap technique, needed
      because this grid paints its background per-cell with a real
      `column-gap` between cells (0.55rem, see `.opt-kv-greeks` above) —
@@ -7395,14 +7399,6 @@
        bare `var(--grid-pad-left)` would drop that compensation and
        shift every header 2-5 ~4.4px left of the value row beneath it. */
     padding: 0.1rem calc(0.2rem + 0.55rem / 2) 0.15rem calc(var(--grid-pad-left) + 0.55rem / 2);
-    /* Vertical divider (2026-11-25) — matches the box-shadow technique
-       `.cand-sym-acct`/`.byund-und` already use (Legs/Snapshot), with
-       an offset COMPENSATED for this cell's own bleed margin above: a
-       plain `-1px` would paint at this box's own (bled) right edge,
-       which sits half a column-gap PAST the real track boundary — the
-       extra `- 0.55rem / 2` pulls it back so it lands exactly where
-       the (non-bled) value row's own `-1px` divider lands below it. */
-    box-shadow: inset calc(-1px - 0.55rem / 2) 0 0 0 rgba(126,151,184,0.40);
   }
   .opt-kv-greeks .kv-k-greek:first-child {
     margin-left: 0;
@@ -7411,9 +7407,6 @@
   .opt-kv-greeks .kv-k-greek:nth-child(5) {
     margin-right: 0;
     padding-right: 0.2rem;
-    /* Last column — no divider after it (matches ag-Grid's own
-       .ag-column-last exclusion and Legs'/Snapshot's :last-child rule). */
-    box-shadow: none;
   }
   .opt-kv-greeks .kv-v {
     font-size: var(--fs-md);
@@ -7598,17 +7591,22 @@
      half-column-gap background bleed — same defect/fix class as
      Greeks above, needed because this grid also paints its background
      per-cell with a real `column-gap` (0.6rem, see `.opt-kv-risk`
-     above) between cells. The "last visible cell" in this bleed
-     differs by breakpoint — below 1180px only header cells
-     1-4 are visible (5/6 are `display:none`, see the rule above), so
-     `:nth-child(4)` is the true last cell there; at >=1180px cells 5/6
-     become visible too and `:nth-child(6)` becomes the true last cell
-     instead (same breakpoint the `display:none` rule above already
-     uses). `:first-child` is unaffected by the breakpoint (child 1 is
-     always the first visible header), so it needs no media query. A
-     bare `:last-child` never matches any of these 6 spans at either
-     width — the grid's actual last children are the final `.kv-pair`'s
-     two flattened cells, same reasoning as the Greeks comment above. */
+     above) between cells. No vertical divider on this row — header
+     rows in this file (`.cand-headrow`, `.byund-headrow`) never carry
+     one, only background + border-bottom (see the removed 2026-11-25
+     box-shadow additions, reverted 2026-11-26 — they fragmented the
+     header into separate boxed cells instead of one continuous bar).
+     The "last visible cell" in this bleed differs by breakpoint —
+     below 1180px only header cells 1-4 are visible (5/6 are
+     `display:none`, see the rule above), so `:nth-child(4)` is the
+     true last cell there; at >=1180px cells 5/6 become visible too
+     and `:nth-child(6)` becomes the true last cell instead (same
+     breakpoint the `display:none` rule above already uses).
+     `:first-child` is unaffected by the breakpoint (child 1 is always
+     the first visible header), so it needs no media query. A bare
+     `:last-child` never matches any of these 6 spans at either width
+     — the grid's actual last children are the final `.kv-pair`'s two
+     flattened cells, same reasoning as the Greeks comment above. */
   .opt-kv-risk .kv-risk-colhdr {
     display: flex;
     align-items: center;
@@ -7632,13 +7630,6 @@
        stays untouched. See that rule's comment for why flattening the
        whole value would break the bleed. */
     padding: 0.1rem calc(0.2rem + 0.6rem / 2) 0.15rem calc(var(--grid-pad-left) + 0.6rem / 2);
-    /* Vertical divider (2026-11-25) — same compensated-offset
-       technique as `.opt-kv-greeks .kv-k-greek`'s own box-shadow: a
-       plain `-1px` would paint at this (bled) cell's own right edge,
-       half a column-gap past the real track boundary; the extra
-       `- 0.6rem / 2` pulls it back to where the (non-bled) `.kv-k`/
-       `.kv-v` cells' own `-1px` divider lands below it. */
-    box-shadow: inset calc(-1px - 0.6rem / 2) 0 0 0 rgba(126,151,184,0.40);
   }
   .opt-kv-risk .kv-risk-colhdr:first-child {
     margin-left: 0;
@@ -7647,25 +7638,20 @@
   .opt-kv-risk .kv-risk-colhdr:nth-child(4) {
     margin-right: 0;
     padding-right: 0.2rem;
-    /* Last VISIBLE column below 1180px — no divider after it. */
-    box-shadow: none;
   }
   @media (min-width: 1180px) {
     /* nth-child(4) is now a middle cell (pairs 1-2 of 3 share row 1) —
-       restore its normal bleed instead of the "last cell" treatment
-       applied by default above. */
+       restore its normal bleed-margin/padding instead of the "last
+       cell" treatment applied by default above. */
     .opt-kv-risk .kv-risk-colhdr:nth-child(4) {
       margin-right: calc(0.6rem / -2);
       padding-right: calc(0.2rem + 0.6rem / 2);
-      /* No longer the last column at this width — restore its divider. */
-      box-shadow: inset calc(-1px - 0.6rem / 2) 0 0 0 rgba(126,151,184,0.40);
     }
     /* nth-child(6) is now visible (see the display:none rule above) and
        is the true last header cell at this width. */
     .opt-kv-risk .kv-risk-colhdr:nth-child(6) {
       margin-right: 0;
       padding-right: 0.2rem;
-      box-shadow: none;
     }
   }
   .kv-pos { color: var(--c-long); }

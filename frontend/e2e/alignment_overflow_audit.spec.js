@@ -1649,7 +1649,23 @@ test.describe('Static source checks — Greeks (.opt-kv-greeks) left-padding + d
     expect(body, '.opt-kv-greeks .kv-k-greek rule must exist').not.toBeNull();
     // Right side (3rd shorthand value) keeps the literal 0.2rem bleed term.
     expect(body).toMatch(/padding:\s*0\.1rem\s+calc\(0\.2rem\s*\+\s*0\.55rem\s*\/\s*2\)\s+0\.15rem\s+calc\(var\(--grid-pad-left\)\s*\+\s*0\.55rem\s*\/\s*2\)/);
-    expect(body).toMatch(/box-shadow:\s*inset\s+calc\(-1px\s*-\s*0\.55rem\s*\/\s*2\)\s+0\s+0\s+0\s+rgba\(126,151,184,0\.40\)/);
+  });
+
+  // 2026-11-26 revert — a 2026-11-25 fix put a vertical divider
+  // (box-shadow) on the Greeks HEADER cells, which fragmented the
+  // header into separate boxed cells instead of one continuous bar
+  // (operator-reported regression: "greeks and risks & ev grid headers
+  // show as cells instead of one single header"). Header rows in this
+  // file (`.cand-headrow`, `.byund-headrow`) never carry a divider —
+  // only the DATA/VALUE rows (`.kv-v` below) do. This pins the revert.
+  test('.kv-k-greek header cells carry no box-shadow divider — header rows in this file never do', () => {
+    const body = ruleBody(content, '.opt-kv-greeks .kv-k-greek');
+    expect(body, '.opt-kv-greeks .kv-k-greek rule must exist').not.toBeNull();
+    expect(body).not.toMatch(/box-shadow/);
+
+    const nth5Body = ruleBody(content, '.opt-kv-greeks .kv-k-greek:nth-child(5)');
+    expect(nth5Body, ':nth-child(5) rule must exist').not.toBeNull();
+    expect(nth5Body).not.toMatch(/box-shadow/);
   });
 
   test(':first-child override uses the bare shared var (no bleed compensation needed — margin-left is zeroed)', () => {
@@ -1657,12 +1673,6 @@ test.describe('Static source checks — Greeks (.opt-kv-greeks) left-padding + d
     expect(body, ':first-child rule must exist').not.toBeNull();
     expect(body).toMatch(/padding-left:\s*var\(--grid-pad-left\)/);
     expect(body).not.toMatch(/padding-left:\s*0\.2rem/);
-  });
-
-  test(':nth-child(5) (last column) has box-shadow: none — no divider after the last Greek', () => {
-    const body = ruleBody(content, '.opt-kv-greeks .kv-k-greek:nth-child(5)');
-    expect(body, ':nth-child(5) rule must exist').not.toBeNull();
-    expect(body).toMatch(/box-shadow:\s*none/);
   });
 
   test('.kv-v left-padding swaps only the left shorthand component for the shared var; right untouched', () => {
@@ -1691,24 +1701,34 @@ test.describe('Static source checks — Risk & EV (.opt-kv-risk) left-padding + 
     const body = ruleBody(content, '.opt-kv-risk .kv-risk-colhdr');
     expect(body, '.opt-kv-risk .kv-risk-colhdr rule must exist').not.toBeNull();
     expect(body).toMatch(/padding:\s*0\.1rem\s+calc\(0\.2rem\s*\+\s*0\.6rem\s*\/\s*2\)\s+0\.15rem\s+calc\(var\(--grid-pad-left\)\s*\+\s*0\.6rem\s*\/\s*2\)/);
-    expect(body).toMatch(/box-shadow:\s*inset\s+calc\(-1px\s*-\s*0\.6rem\s*\/\s*2\)\s+0\s+0\s+0\s+rgba\(126,151,184,0\.40\)/);
+  });
+
+  // 2026-11-26 revert — same regression/fix class as the Greeks header
+  // above. The Risk & EV header row must never carry a vertical
+  // divider, at either breakpoint.
+  test('.kv-risk-colhdr header cells carry no box-shadow divider at any breakpoint', () => {
+    const body = ruleBody(content, '.opt-kv-risk .kv-risk-colhdr');
+    expect(body, '.opt-kv-risk .kv-risk-colhdr rule must exist').not.toBeNull();
+    expect(body).not.toMatch(/box-shadow/);
+
+    const nth4Body = ruleBody(content, '.opt-kv-risk .kv-risk-colhdr:nth-child(4)');
+    expect(nth4Body, ':nth-child(4) rule must exist').not.toBeNull();
+    expect(nth4Body).not.toMatch(/box-shadow/);
+
+    const wideIdx = content.indexOf('@media (min-width: 1180px)', content.indexOf('.opt-kv-risk .kv-risk-colhdr:first-child'));
+    const wideBlock = content.slice(wideIdx, wideIdx + 900);
+    const nth4Wide = wideBlock.match(/\.opt-kv-risk \.kv-risk-colhdr:nth-child\(4\)\s*\{([^}]*)\}/);
+    expect(nth4Wide, 'wide :nth-child(4) rule must exist').not.toBeNull();
+    expect(nth4Wide[1]).not.toMatch(/box-shadow/);
+    const nth6Wide = wideBlock.match(/\.opt-kv-risk \.kv-risk-colhdr:nth-child\(6\)\s*\{([^}]*)\}/);
+    expect(nth6Wide, 'wide :nth-child(6) rule must exist').not.toBeNull();
+    expect(nth6Wide[1]).not.toMatch(/box-shadow/);
   });
 
   test(':first-child override uses the bare shared var', () => {
     const body = ruleBody(content, '.opt-kv-risk .kv-risk-colhdr:first-child');
     expect(body, ':first-child rule must exist').not.toBeNull();
     expect(body).toMatch(/padding-left:\s*var\(--grid-pad-left\)/);
-  });
-
-  test(':nth-child(4) (last visible column below 1180px) has box-shadow: none by default, restored inside the >=1180px override; :nth-child(6) becomes the new last column there', () => {
-    const body4 = ruleBody(content, '.opt-kv-risk .kv-risk-colhdr:nth-child(4)');
-    expect(body4, ':nth-child(4) rule must exist').not.toBeNull();
-    expect(body4).toMatch(/box-shadow:\s*none/);
-
-    const wideIdx = content.indexOf('@media (min-width: 1180px)', content.indexOf('.opt-kv-risk .kv-risk-colhdr:first-child'));
-    const wideBlock = content.slice(wideIdx, wideIdx + 900);
-    expect(wideBlock).toMatch(/\.opt-kv-risk \.kv-risk-colhdr:nth-child\(4\)\s*\{[^}]*box-shadow:\s*inset\s+calc\(-1px\s*-\s*0\.6rem\s*\/\s*2\)/);
-    expect(wideBlock).toMatch(/\.opt-kv-risk \.kv-risk-colhdr:nth-child\(6\)\s*\{[^}]*box-shadow:\s*none/);
   });
 
   test('.kv-v and .kv-k both get the shared left-inset var and the plain (uncompensated) divider', () => {
@@ -1858,10 +1878,18 @@ test.describe('Live — cross-grid left-inset parity (header text vs data text, 
   });
 });
 
-test.describe('Live — Greeks/Risk & EV vertical divider renders and aligns between header and data rows', () => {
+test.describe('Live — Greeks/Risk & EV header never has a divider; value rows keep theirs', () => {
   test.setTimeout(150_000);
 
-  test('Greeks: a non-last header cell and its value-row counterpart both paint the divider at the SAME x, and the last column has none', async ({ page }) => {
+  // 2026-11-26 revert — a vertical divider on the header row fragments
+  // one continuous header bar into separate boxed cells (operator-
+  // reported regression). Every header cell, including the non-last
+  // ones, must have NO box-shadow. The value/data row below keeps its
+  // own divider convention unchanged (present on every column except
+  // the true last one) — this spec section pins both halves so a
+  // future change can't silently reintroduce a header divider while
+  // "fixing" something else.
+  test('Greeks: no header cell carries a box-shadow divider; the value row below still does, except on the last column', async ({ page }) => {
     await _gotoDerivativesWithStrategy(page);
     const info = await page.evaluate(() => {
       const headers = [...document.querySelectorAll('.opt-kv-greeks .kv-k-greek')];
@@ -1869,36 +1897,20 @@ test.describe('Live — Greeks/Risk & EV vertical divider renders and aligns bet
       const shadowOf = (el) => getComputedStyle(el).boxShadow;
       return {
         count: headers.length,
-        // First (non-last) column — divider must be present on both,
-        // and (via the compensated header offset) land at the same x.
-        firstHeaderShadow: shadowOf(headers[0]),
+        headerShadows: headers.map(shadowOf),
         firstValueShadow: shadowOf(values[0]),
-        firstHeaderRight: headers[0].getBoundingClientRect().right,
-        firstValueRight: values[0].getBoundingClientRect().right,
-        // Last column — no divider on either.
-        lastHeaderShadow: shadowOf(headers[headers.length - 1]),
         lastValueShadow: shadowOf(values[values.length - 1]),
       };
     });
     expect(info.count, 'Greeks must render all 5 header cells').toBe(5);
-    expect(info.firstHeaderShadow, 'first Greek header must carry the divider').toContain('inset');
-    expect(info.firstValueShadow, 'first Greek value must carry the divider').toContain('inset');
-    // The header cell bleeds half a column-gap (0.55rem/2 ≈ 4.4px) past
-    // the real track boundary; the value cell has no bleed, so its own
-    // right edge IS the track boundary. header.right - gap/2 must equal
-    // value.right — this is the geometric fact the compensated offset
-    // in the CSS (`calc(-1px - 0.55rem/2)`) depends on for the painted
-    // divider lines to actually coincide.
-    const halfGapPx = 0.55 * 8; // 0.55rem/2 at the default 16px root (8px)
-    expect(
-      Math.abs((info.firstHeaderRight - halfGapPx) - info.firstValueRight),
-      `header right-edge (${info.firstHeaderRight}) minus half-gap vs value right-edge (${info.firstValueRight})`
-    ).toBeLessThanOrEqual(1.5);
-    expect(info.lastHeaderShadow, 'last Greek header (rho) must have NO divider').toBe('none');
+    for (const [i, shadow] of info.headerShadows.entries()) {
+      expect(shadow, `header cell ${i} must have NO divider`).toBe('none');
+    }
+    expect(info.firstValueShadow, 'first Greek value must still carry the divider').toContain('inset');
     expect(info.lastValueShadow, 'last Greek value (rho) must have NO divider').toBe('none');
   });
 
-  test('Risk & EV: divider renders on an internal boundary and is absent on the true last column, at both the narrow and >=1180px breakpoints', async ({ page }) => {
+  test('Risk & EV: no header cell carries a box-shadow divider at either the narrow or >=1180px breakpoint', async ({ page }) => {
     for (const vp of [{ width: 1000, height: 900 }, { width: 1280, height: 900 }]) {
       await page.setViewportSize(vp);
       await _gotoDerivativesWithStrategy(page);
@@ -1908,14 +1920,14 @@ test.describe('Live — Greeks/Risk & EV vertical divider renders and aligns bet
         const shadowOf = (el) => getComputedStyle(el).boxShadow;
         return {
           visibleHeaderCount: headers.length,
-          firstHeaderShadow: shadowOf(headers[0]),
-          lastHeaderShadow: shadowOf(headers[headers.length - 1]),
+          headerShadows: headers.map(shadowOf),
         };
       });
       const expectedCount = vp.width >= 1180 ? 6 : 4;
       expect(info.visibleHeaderCount, `visible Risk & EV header count at ${vp.width}px`).toBe(expectedCount);
-      expect(info.firstHeaderShadow, `first header divider at ${vp.width}px`).toContain('inset');
-      expect(info.lastHeaderShadow, `last visible header must have NO divider at ${vp.width}px`).toBe('none');
+      for (const [i, shadow] of info.headerShadows.entries()) {
+        expect(shadow, `header cell ${i} at ${vp.width}px must have NO divider`).toBe('none');
+      }
     }
   });
 });
