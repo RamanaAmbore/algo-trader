@@ -174,7 +174,17 @@ def _row_baseline_diff_day_pnl(row: PositionRow) -> float:
     else (polars summary builders, frontend `currentTotalProfit`), so this
     row-level path can never disagree with the vectorised ones on the same
     data.
+
+    `row.baseline_stale` (2026-11 Day P&L audit) short-circuits to 0.0
+    BEFORE the base_pnl=0 default is ever applied — mirrors the frontend's
+    `baseDayPnlForPosition`'s own `isBaselineGap` guard (nav.js), so a
+    daily_book snapshot-writer gap never contributes its full lifetime
+    pnl to `build_summary_from_rows` / `build_symbol_summary_from_rows`
+    (the account/symbol/TOTAL rollups) the way the un-guarded formula
+    would (`current_total_profit - 0`).
     """
+    if getattr(row, "baseline_stale", False):
+        return 0.0
     from backend.api.algo.pnl_math import baseline_diff_day_pnl_with_fallback
     _base = row.prev_settlement_pnl or 0.0
     return baseline_diff_day_pnl_with_fallback(row.realised, row.unrealised, row.pnl, _base)
@@ -409,6 +419,17 @@ def build_snapshot_position_row(
     ``product`` — the Kite product type (NRML / MIS / CNC). Extracted from
     ``payload_json.get("product", "NRML")`` at the call site. Defaults to
     "NRML" so existing callers without payload_json access are unaffected.
+
+    ``baseline_stale`` on the returned row (2026-11 Day P&L audit) is set
+    via ``pnl_math.is_baseline_gap(prev_settlement_pnl, overnight_quantity)``
+    — True only when ``prev_settlement_pnl`` is None AND the caller passed
+    an explicit non-zero ``overnight_quantity`` (a broker-confirmed carry-
+    over with no resolved daily_book baseline — a snapshot-writer gap, not
+    a genuine new position). Deliberately uses the raw ``overnight_quantity``
+    PARAMETER, not the ``oq_i`` fallback-to-``qty_i`` value computed below —
+    callers that omit ``overnight_quantity`` (most existing tests) must get
+    ``baseline_stale=False`` unconditionally, never a false positive from
+    treating "no signal" as "fully carried over".
     """
     avg_cost_f  = float(avg_cost)  if avg_cost  is not None else 0.0
     ltp_f       = float(ltp)       if ltp       is not None else 0.0
@@ -438,6 +459,15 @@ def build_snapshot_position_row(
     # caller (via build_row_from_snapshot_raw); fall back to qty_i so existing
     # call sites that don't pass overnight_quantity are unaffected.
     oq_i = int(overnight_quantity) if overnight_quantity is not None else qty_i
+
+    # baseline_stale gap check deliberately uses the RAW overnight_quantity
+    # parameter (0 when the caller passed none), not oq_i's fallback-to-
+    # qty_i — see docstring above.
+    from backend.api.algo.pnl_math import is_baseline_gap
+    baseline_stale = is_baseline_gap(
+        prev_settlement_pnl,
+        overnight_quantity if overnight_quantity is not None else 0,
+    )
 
     # realised/unrealised split — snapshot rows only persist the combined
     # `total_pnl` (daily_book has no separate columns for the two legs), so
@@ -480,6 +510,7 @@ def build_snapshot_position_row(
         is_animating=False,
         prev_settlement_pnl=prev_settlement_pnl,
         prev_close=prev_close_f,
+        baseline_stale=baseline_stale,
     )
 
 

@@ -285,6 +285,13 @@ export function buildPositionRowFromBroker(p, source) {
     day_buy_value:      Number(p?.day_buy_value || 0),
     day_sell_value:     Number(p?.day_sell_value || 0),
     prev_settlement_pnl: p?.prev_settlement_pnl != null ? Number(p.prev_settlement_pnl) : null,
+    // baseline_stale (2026-11 Day P&L audit) — True when prev_settlement_pnl
+    // above is null because of a daily_book snapshot-writer gap (broker
+    // confirms a non-zero overnight carry-over, no baseline resolved), not
+    // a genuine new position. Must travel alongside prev_settlement_pnl so
+    // nav.js's baseDayPnlForPosition/isBaselineGap see it on this
+    // normalised row too — same reasoning as that field's own comment.
+    baseline_stale:  p?.baseline_stale === true,
     // Position-state fields (2026-10 fix) — previously dropped by this
     // whitelist, so the derivatives Legs grid's pipeline
     // (buildCandidatePositions in pageLoad.js) never saw them even

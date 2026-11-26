@@ -64,6 +64,24 @@ export function currentTotalProfit(p) {
 }
 
 /**
+ * True when a position row's `prev_settlement_pnl` is null NOT because the
+ * position genuinely opened today, but because of a `daily_book` snapshot-
+ * writer gap — the backend (`pnl_math.is_baseline_gap`) sets
+ * `baseline_stale=true` on such a row when the broker confirms a non-zero
+ * overnight carry-over (`overnight_quantity != 0`) yet no baseline row was
+ * resolved. Row-level UI should render Day P&L as unavailable/stale for a
+ * row where this returns true, instead of trusting `baseDayPnlForPosition`'s
+ * (deliberately neutral) numeric return for that row — see that function's
+ * own doc for why it returns 0, not the row's full lifetime P&L, on a gap.
+ *
+ * @param {{ baseline_stale?: boolean|null }} p
+ * @returns {boolean}
+ */
+export function isBaselineGap(p) {
+  return p?.baseline_stale === true;
+}
+
+/**
  * Canonical base Day P&L for a single position row.
  *
  * Atomic formula (proven correct for any position state — new entry, full
@@ -77,10 +95,22 @@ export function currentTotalProfit(p) {
  * function (or a wrapper that calls it) instead of reading a raw broker
  * day-change field directly.
  *
- * @param {{ realised?: number|null, unrealised?: number|null, pnl?: number|null, prev_settlement_pnl?: number|null, tradingsymbol?: string|null, symbol?: string|null }} p
+ * Baseline gap (2026-11 Day P&L audit): when `isBaselineGap(p)` is true,
+ * `prev_settlement_pnl` being null is NOT a confirmed base_pnl=0 — using 0
+ * here would silently render this row's full LIFETIME P&L as if it were
+ * TODAY's P&L (the exact bug this guard exists to prevent). Returns 0 for
+ * such a row instead — a deliberately neutral placeholder, safe to sum
+ * into an aggregate (never inflates a total with an unknown-but-wrong
+ * number) — rather than null, so every existing numeric caller of this
+ * function keeps working unmodified. Row-level UI that wants to show a
+ * "—"/stale indicator instead of this 0 must check `isBaselineGap(p)`
+ * separately.
+ *
+ * @param {{ realised?: number|null, unrealised?: number|null, pnl?: number|null, prev_settlement_pnl?: number|null, baseline_stale?: boolean|null, tradingsymbol?: string|null, symbol?: string|null }} p
  * @returns {number}
  */
 export function baseDayPnlForPosition(p) {
+  if (isBaselineGap(p)) return 0;
   const total    = currentTotalProfit(p);
   const basePnl  = p?.prev_settlement_pnl;
   const base     = (basePnl != null && isFinite(Number(basePnl))) ? Number(basePnl) : 0;

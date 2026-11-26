@@ -570,6 +570,19 @@ def _rebuild_positions_summary(raw: "pd.DataFrame") -> "pd.DataFrame":
             raw['day_change_val'] = baseline_diff_day_pnl_series(
                 raw['realised'], raw['unrealised'], _base
             )
+        # baseline_stale (2026-11 Day P&L audit) — a daily_book snapshot-
+        # writer gap row must contribute 0 here too, for the SAME reason
+        # positions.py:_with_baseline_diff_day_change does — this rollup
+        # feeds the performance-refresh `sum_positions` summary, in turn
+        # read by NavStrip's P slot AND the `day_val`/`day_pct` grammar
+        # metrics (`loss-positions-total` and every other agent condition
+        # keyed on Positions scope). Without this, that critical-tier
+        # alert could fire (or fail to fire) off a position's full
+        # lifetime pnl rather than its real, unknown-but-flagged day move.
+        if 'baseline_stale' in raw.columns:
+            raw['day_change_val'] = raw['day_change_val'].where(
+                ~raw['baseline_stale'].fillna(False).astype(bool), 0.0
+            )
     sum_cols = [c for c in ('pnl', 'day_change_val') if c in raw.columns]
     grouped = raw.groupby('account')[sum_cols].sum().reset_index() if sum_cols \
         else pd.DataFrame(columns=['account'] + list(sum_cols))

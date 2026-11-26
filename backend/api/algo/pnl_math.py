@@ -228,6 +228,61 @@ def baseline_diff_day_pnl_expr_with_fallback(
     return _total - _base
 
 
+# ---------------------------------------------------------------------------
+# base_pnl gap detection — distinguishes "genuinely new position" from
+# "a daily_book snapshot-writer gap" (2026-11 Day P&L audit)
+# ---------------------------------------------------------------------------
+#
+# `base_pnl is None` (no baseline row found) is ambiguous on its own. It is
+# CORRECT when the position genuinely opened today (no prior session could
+# have a baseline). It is WRONG — and must never be silently treated as a
+# confirmed base_pnl=0 — when the position was already open *before* today
+# but `daily_book` simply has a gap for it (the snapshot writer missed a
+# day, or never wrote a `kind='positions'`/`'holdings'` row for this exact
+# symbol at all, even though real trading activity exists via other
+# bookkeeping such as `daily_book kind='trades'`).
+#
+# The broker's own `overnight_quantity` field (confirmed non-zero means
+# "this position carried a non-zero quantity from before today, per the
+# broker itself") is the discriminator: it is the one signal available on
+# both the live-fetch row (backfilled from the broker response) and the
+# closed-hours snapshot row (backfilled from that row's own
+# `payload_json.overnight_quantity`), and it is immune to `daily_book`'s
+# own `kind IN ('positions','holdings')` history being incomplete or
+# absent — unlike reaching back through `daily_book` itself (the design
+# this module's baseline queries deliberately reject — see
+# `positions.py:_fetch_baseline_pnl_map`'s own docstring on the staleness
+# risk of an unbounded reach-back).
+#
+# A deliberately *closed* historical position (overnight_quantity == 0 as
+# of the most recent known state, i.e. a genuine fresh re-entry after a
+# full exit) is NOT a gap — base_pnl=0 is the correct baseline for that
+# case, by the SAME design `_BASELINE_PNL_CTE_SQL`'s `qty != 0` filter
+# already encodes. Only a broker-confirmed non-zero carry-over with no
+# resolved baseline counts as a gap.
+
+def is_baseline_gap(base_pnl: "float | None", overnight_qty: "float | None") -> bool:
+    """True when `base_pnl` could not be resolved (None) but the position
+    is broker-confirmed to have carried a non-zero quantity from before
+    today (`overnight_qty != 0`) — i.e. base_pnl=0 would be a silent,
+    wrong substitute for "unknown", not a genuine new-position baseline.
+
+    False for every other combination:
+      - `base_pnl` is a real (possibly 0.0) resolved value — not a gap,
+        whatever base_pnl's value is.
+      - `base_pnl is None` and `overnight_qty` is 0/None/unparseable —
+        genuinely new position (or caller has no overnight-qty signal to
+        judge by, in which case this intentionally defaults to "not a
+        gap" rather than risk a false positive).
+    """
+    if base_pnl is not None:
+        return False
+    try:
+        return float(overnight_qty or 0.0) != 0.0
+    except (TypeError, ValueError):
+        return False
+
+
 def _recompute_day_change_pct(
     df: pd.DataFrame, sel_mask: "pd.Index", qty: "pd.Series"
 ) -> None:

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { expiryPnl, expiryPnlWithRealised, AVG_PRICE_IS_COST_BASIS, legExtrinsicDisplay, positionExpPnl, positionExpPnlPieces } from '../../data/expiryPnl.js';
+import { expiryPnl, expiryPnlWithRealised, AVG_PRICE_IS_COST_BASIS, legExtrinsicDisplay, positionExpPnl, positionExpPnlPieces, buildPositionRowFromBroker } from '../../data/expiryPnl.js';
 
 describe('expiryPnl', () => {
   const spot = 100;
@@ -592,5 +592,33 @@ describe('legExtrinsicDisplay', () => {
     const c = { symbol: 'CRUDEOIL6000CE', kind: 'opt', qty: 100, avg_cost: 125, ltp: 130 };
     expect(legExtrinsicDisplay(c, 0)).toBe(null);
     expect(legExtrinsicDisplay(c, null)).toBe(null);
+  });
+});
+
+// ============================================================================
+// buildPositionRowFromBroker — baseline_stale field passthrough
+// (2026-11 Day P&L audit) — must travel alongside prev_settlement_pnl, same
+// whitelist rule as is_orphan/pair_group_key/has_gtt above it, so the
+// derivatives Legs grid's pipeline (buildCandidatePositions in pageLoad.js)
+// and nav.js's isBaselineGap/baseDayPnlForPosition see it too.
+// ============================================================================
+
+describe('buildPositionRowFromBroker — baseline_stale passthrough', () => {
+  it('copies baseline_stale=true through unchanged', () => {
+    const p = { tradingsymbol: 'CRUDEOIL26OCT8700CE', account: 'ZG0790', baseline_stale: true };
+    const row = buildPositionRowFromBroker(p, 'live');
+    expect(row.baseline_stale).toBe(true);
+  });
+
+  it('defaults to false when absent (backward compat with every pre-existing caller)', () => {
+    const p = { tradingsymbol: 'RELIANCE', account: 'ZG0790' };
+    const row = buildPositionRowFromBroker(p, 'live');
+    expect(row.baseline_stale).toBe(false);
+  });
+
+  it('coerces a non-strict-true value to false (same convention as is_orphan/has_gtt)', () => {
+    const p = { tradingsymbol: 'RELIANCE', account: 'ZG0790', baseline_stale: 1 };
+    const row = buildPositionRowFromBroker(p, 'live');
+    expect(row.baseline_stale).toBe(false);
   });
 });

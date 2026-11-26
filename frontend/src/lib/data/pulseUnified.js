@@ -170,6 +170,12 @@ function _propagateStaleAndSource(row, r) {
     row.account_stale = true;
     if (r.account_stale_since) row.account_stale_since = r.account_stale_since;
   }
+  // baseline_stale (2026-11 Day P&L audit) — a daily_book snapshot-writer
+  // gap, distinct from account_stale (whole-account LKG substitution).
+  // OR-merged: one stale contributor is enough to mark the aggregated row,
+  // since baseDayPnlForPosition(r) already contributes 0 (not a wrong
+  // number) for that one raw row's share of row.day_pnl.
+  if (r.baseline_stale === true) row.baseline_stale = true;
   const _rps = r.price_source ?? r.ltp_source;
   if (_rps && _rps !== 'live') {
     row.price_source = row.price_source && row.price_source !== 'live'

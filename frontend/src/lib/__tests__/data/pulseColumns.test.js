@@ -361,6 +361,34 @@ describe('mkRightColDefs — column order LTP→Chg%→Lots→Qty→Avg→P.Clos
     expect(prevIdx).toBeLessThan(dayPnlIdx);
   });
 
+  // 2026-11 Day P&L audit — a daily_book snapshot-writer gap row
+  // (baseline_stale=true) must render "—" in the day_pnl cell instead of
+  // its (now-safe-but-still-potentially-confusing) numeric 0, so an
+  // operator can tell "unavailable" apart from "flat today".
+  describe('day_pnl valueFormatter — baseline_stale renders "—"', () => {
+    it('renders "—" when baseline_stale is true, bypassing aggFmtGrid', () => {
+      const opts = makeOpts();
+      const cols = mkRightColDefs(opts);
+      const col = cols.find(c => c.field === 'day_pnl');
+      const p = { value: 0, data: { baseline_stale: true } };
+      expect(col.valueFormatter(p)).toBe('—');
+      expect(opts.aggFmtGrid).not.toHaveBeenCalled();
+    });
+
+    it('delegates to aggFmtGrid when baseline_stale is false/absent', () => {
+      const opts = makeOpts();
+      const cols = mkRightColDefs(opts);
+      const col = cols.find(c => c.field === 'day_pnl');
+      const p = { value: 1234, data: { baseline_stale: false } };
+      col.valueFormatter(p);
+      expect(opts.aggFmtGrid).toHaveBeenCalledWith(p);
+
+      const p2 = { value: 5678, data: {} };
+      col.valueFormatter(p2);
+      expect(opts.aggFmtGrid).toHaveBeenCalledWith(p2);
+    });
+  });
+
   it('overnight_qty (O/N Qty) column exists adjacent to qty_net', () => {
     const cols = getOrderedCols();
     const qtyNetIdx = cols.findIndex(c => c.colId === 'qty_net');

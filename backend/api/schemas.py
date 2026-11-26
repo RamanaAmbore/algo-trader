@@ -233,6 +233,17 @@ class PositionRow(msgspec.Struct):
     # when the broker's close has drifted post-settlement (W3 window).
     # Zero means "not yet available" (cold boot / first deploy).
     prev_close: float = 0.0
+    # True when `prev_settlement_pnl` is None NOT because this position
+    # genuinely opened today, but because `daily_book` has a snapshot-
+    # writer gap for it — the broker confirms a non-zero overnight
+    # carry-over (`overnight_quantity != 0`) yet no baseline row was
+    # resolved (`pnl_math.is_baseline_gap`). Distinct from `account_stale`
+    # (whole-account LKG substitution) and `last_price_stale` (LTP-only) —
+    # this is a per-position baseline-resolution degradation. Frontend
+    # must render Day P&L as unavailable/stale for this row instead of
+    # treating base_pnl=0 as confirmed, which would silently show this
+    # position's full LIFETIME P&L as if it were TODAY's P&L.
+    baseline_stale: bool = False
 
 
 class PositionsSummaryRow(msgspec.Struct):

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   currentTotalProfit,
   baseDayPnlForPosition,
+  isBaselineGap,
   aggregateDayPnlForPositions,
   navTotalRow,
   positionsPnlFiltered,
@@ -107,6 +108,74 @@ describe('baseDayPnlForPosition', () => {
     // frontend just consumes whatever baseline the backend supplies.
     const p = { pnl: 9000, prev_settlement_pnl: 8500 };
     expect(baseDayPnlForPosition(p)).toBe(500);
+  });
+});
+
+// ── isBaselineGap / baseline_stale (2026-11 Day P&L audit) ──────────────────
+//
+// `prev_settlement_pnl: null` is ambiguous on its own: it means "genuinely
+// new position" OR "daily_book snapshot-writer gap". The backend sets
+// `baseline_stale: true` on a row only for the latter — the broker confirmed
+// a non-zero overnight carry-over but no baseline was resolved. Without this
+// guard, baseDayPnlForPosition would silently render the row's full LIFETIME
+// P&L as if it were TODAY's P&L (current_total_profit − 0).
+
+describe('isBaselineGap', () => {
+  it('true when baseline_stale is explicitly true', () => {
+    expect(isBaselineGap({ baseline_stale: true })).toBe(true);
+  });
+
+  it('false when baseline_stale is false/absent/not strictly true', () => {
+    expect(isBaselineGap({ baseline_stale: false })).toBe(false);
+    expect(isBaselineGap({})).toBe(false);
+    expect(isBaselineGap(null)).toBe(false);
+    // strict === true only — a truthy-but-not-boolean value must not pass.
+    expect(isBaselineGap({ baseline_stale: /** @type {any} */ (1) })).toBe(false);
+  });
+});
+
+describe('baseDayPnlForPosition — baseline gap handling', () => {
+  it('a daily_book gap row (baseline_stale=true) returns 0, NEVER the lifetime pnl', () => {
+    // Position carried a large lifetime gain (e.g. unrealised=48250) with no
+    // resolved baseline — this is the exact bug: current_total_profit − 0
+    // would otherwise render 48250 as "today's" day P&L.
+    const p = {
+      realised: 0,
+      unrealised: 48250,
+      pnl: 48250,
+      prev_settlement_pnl: null,
+      baseline_stale: true,
+    };
+    expect(baseDayPnlForPosition(p)).toBe(0);
+  });
+
+  it('a genuinely new position (baseline_stale=false, prev_settlement_pnl=null) is unchanged', () => {
+    const p = { pnl: 1000, prev_settlement_pnl: null, baseline_stale: false };
+    expect(baseDayPnlForPosition(p)).toBe(1000);
+  });
+
+  it('a row with no baseline_stale field at all behaves exactly as before this fix', () => {
+    const p = { pnl: 2000, prev_settlement_pnl: null };
+    expect(baseDayPnlForPosition(p)).toBe(2000);
+  });
+
+  it('a resolved baseline is never short-circuited, even if baseline_stale were somehow true', () => {
+    // Defensive: the backend never sets baseline_stale=true alongside a
+    // resolved prev_settlement_pnl, but the frontend guard must still take
+    // baseline_stale as authoritative over the (should-be-unreachable) combo
+    // — this documents the guard's priority, not a real backend state.
+    const p = { pnl: 9000, prev_settlement_pnl: 8500, baseline_stale: true };
+    expect(baseDayPnlForPosition(p)).toBe(0);
+  });
+});
+
+describe('aggregateDayPnlForPositions — baseline gap rows contribute 0, not their lifetime pnl', () => {
+  it('a mix of a gap row and a normal row sums only the normal row', () => {
+    const rows = [
+      { pnl: 5000, prev_settlement_pnl: 3000 },                                   // → 2000
+      { pnl: 48250, prev_settlement_pnl: null, baseline_stale: true },            // gap → 0, not 48250
+    ];
+    expect(aggregateDayPnlForPositions(rows)).toBe(2000);
   });
 });
 

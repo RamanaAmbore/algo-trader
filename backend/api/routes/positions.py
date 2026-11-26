@@ -842,6 +842,11 @@ _ROW_COLS = [
     # Frozen prior-session settlement price — set by _override_stale_close_from_snapshot
     # for every matched row.
     'prev_close',
+    # True when prev_settlement_pnl is None because of a daily_book
+    # snapshot-writer gap (broker-confirmed overnight carry-over, no
+    # resolved baseline) rather than a genuine new position — see
+    # pnl_math.is_baseline_gap / _backfill_prev_settlement_pnl.
+    'baseline_stale',
     # Entry lot count for a closed (quantity == 0) F&O row — see
     # PositionRow.lots / _restore_closed_position_lots.
     'lots',
@@ -1240,6 +1245,13 @@ def _with_baseline_diff_day_change(df: "pl.DataFrame") -> "pl.DataFrame":
     path (which rebuilds via `build_summary_from_rows`) can never disagree
     on the same underlying data. Falls back to the plain (no-pnl-fallback)
     expression when `pnl` is absent.
+
+    When a `baseline_stale` column is present (2026-11 Day P&L audit),
+    overrides the computed value to 0.0 on any row flagged True — mirrors
+    `_row_baseline_diff_day_pnl`'s own short-circuit, so this polars path
+    (the live-fetch account/symbol summary) can never disagree with the
+    row-level path about a daily_book snapshot-writer gap row's
+    contribution to the rollup.
     """
     if not {'realised', 'unrealised'}.issubset(df.columns):
         return df
@@ -1256,6 +1268,12 @@ def _with_baseline_diff_day_change(df: "pl.DataFrame") -> "pl.DataFrame":
         )
     else:
         _expr = baseline_diff_day_pnl_expr('realised', 'unrealised', _base_col)
+    if 'baseline_stale' in df.columns:
+        _expr = (
+            pl.when(pl.col('baseline_stale').fill_null(False))
+            .then(pl.lit(0.0))
+            .otherwise(_expr)
+        )
     return df.with_columns(_expr.alias('day_change_val'))
 
 
@@ -1847,11 +1865,12 @@ def _backfill_prev_settlement_pnl(
     prev_pnl_kind_map: "dict[tuple[str, str], str] | None" = None,
     prev_pnl_qty_map: "dict[tuple[str, str], float] | None" = None,
 ) -> None:
-    """Set `prev_settlement_pnl` on each row from yesterday's daily_book total_pnl.
+    """Set `prev_settlement_pnl` (and `baseline_stale`) on each row from
+    yesterday's daily_book total_pnl.
 
-    No-ops when `prev_pnl_map` is empty or `raw` is empty.
-    Rows with no matching key in `prev_pnl_map` (positions opened today)
-    keep None — the PositionRow default for that optional field.
+    No-ops when `raw` is empty. Rows with no matching key in `prev_pnl_map`
+    (positions opened today) keep `prev_settlement_pnl = None` — the
+    PositionRow default for that optional field.
 
     When `prev_pnl_kind_map` / `prev_pnl_qty_map` are supplied, routes the
     raw baseline through `pnl_math`-adjacent
@@ -1861,28 +1880,48 @@ def _backfill_prev_settlement_pnl(
     the actual sold quantity rather than the holding's full lifetime P&L
     (audit item #4). Omitting the two maps preserves the old unconditional
     behaviour (used by callers that haven't threaded the new maps through).
+
+    `baseline_stale` (2026-11 Day P&L audit) — set via
+    `pnl_math.is_baseline_gap(resolved, overnight_quantity)` for every row
+    that has an `overnight_quantity` column: True when `prev_settlement_pnl`
+    ends up None NOT because the position genuinely opened today, but
+    because the broker reports a non-zero overnight carry-over with no
+    daily_book baseline resolved for it — i.e. a snapshot-writer gap, not a
+    confirmed base_pnl=0. Computed for every row regardless of whether its
+    key is present in `prev_pnl_map`, which is why this function no longer
+    early-returns when `prev_pnl_map` is empty (a totally empty map is
+    exactly the case most likely to hide a systemic gap).
     """
-    if not prev_pnl_map or raw.empty:
+    if raw.empty:
         return
     if 'prev_settlement_pnl' not in raw.columns:
         raw['prev_settlement_pnl'] = None
+    if 'baseline_stale' not in raw.columns:
+        raw['baseline_stale'] = False
+    from backend.api.algo.pnl_math import is_baseline_gap
     from backend.api.routes.positions_helpers import _resolve_prev_settlement_pnl
+    _pnl_map = prev_pnl_map or {}
     _kind_map = prev_pnl_kind_map or {}
     _qty_map = prev_pnl_qty_map or {}
     _has_product = 'product' in raw.columns
     _has_dsq = 'day_sell_quantity' in raw.columns
+    _has_oq = 'overnight_quantity' in raw.columns
     for idx in raw.index:
         key = (str(raw.at[idx, 'account']), str(raw.at[idx, 'tradingsymbol']))
-        if key not in prev_pnl_map:
-            continue
-        resolved = _resolve_prev_settlement_pnl(
-            prev_pnl_map[key],
-            _kind_map.get(key),
-            _qty_map.get(key),
-            product=raw.at[idx, 'product'] if _has_product else None,
-            day_sell_qty=raw.at[idx, 'day_sell_quantity'] if _has_dsq else None,
-        )
-        raw.at[idx, 'prev_settlement_pnl'] = resolved
+        resolved = None
+        if key in _pnl_map:
+            resolved = _resolve_prev_settlement_pnl(
+                _pnl_map[key],
+                _kind_map.get(key),
+                _qty_map.get(key),
+                product=raw.at[idx, 'product'] if _has_product else None,
+                day_sell_qty=raw.at[idx, 'day_sell_quantity'] if _has_dsq else None,
+            )
+            raw.at[idx, 'prev_settlement_pnl'] = resolved
+        if _has_oq:
+            raw.at[idx, 'baseline_stale'] = is_baseline_gap(
+                resolved, raw.at[idx, 'overnight_quantity']
+            )
 
 
 def _dict_to_position_row(r: dict) -> "PositionRow":
