@@ -1564,3 +1564,358 @@ test.describe('Static source checks — Chain Strike column widened to separate 
     expect(Math.abs(headerCenter - cellCenter), 'header/body Strike column centers must align').toBeLessThanOrEqual(1);
   });
 });
+
+// ── 2026-11-25 — Derivatives page: cross-grid left-padding unification +
+// Greeks/Risk & EV vertical column dividers ──────────────────────────────
+//
+// Four hand-rolled grids on /admin/derivatives (Legs/.cand-grid,
+// Greeks/.opt-kv-greeks, Risk & EV/.opt-kv-risk, Snapshot/.byund-grid)
+// each independently hardcoded a different left-padding for their own
+// header AND data cells. Unified onto one shared app.css token,
+// `--grid-pad-left` (4px, matching Legs' own pre-existing value — the
+// densest of the four and this app's documented "tight card density"
+// preference). Separately, Greeks and Risk & EV were missing the
+// vertical column-divider treatment (`box-shadow: inset -1px 0 0 0
+// rgba(126,151,184,0.40)`) Legs (`.cand-sym-acct`/`.cand-chg-sep`) and
+// Snapshot (`.byund-und`/`.byund-chg-sep`) already carry.
+//
+// Five quality dimensions:
+//   1. SSOT   — one shared `--grid-pad-left` token drives all four
+//               grids' header+data left-inset; no grid hardcodes its
+//               own independent left-padding literal any more.
+//   2. Perf   — static checks are regex-only (no browser); live checks
+//               reuse the existing GOLD-underlying pick-loop pattern
+//               already established by derivatives_greeks_risk_
+//               restructure.spec.js, no extra network round-trips.
+//   3. Stale  — regression guards confirm the OLD per-grid literals
+//               (0.2rem container padding, flush 0px Risk value inset,
+//               bare `0.2rem` bleed-compensation terms) are gone.
+//   4. Reuse  — box-shadow divider value matches the EXACT existing
+//               Legs/Snapshot literal, not a new one; the GOLD-pick
+//               live-test helper mirrors the restructure spec's own.
+//   5. UX     — live checks verify the CSS fix's actual visible effect
+//               (text starts at the same inset; the divider's painted
+//               x-position — not just its presence — matches between a
+//               header row and the data row beneath it, at both the
+//               narrow and >=1180px Risk & EV breakpoints).
+//
+// Run:
+//   cd frontend && npx playwright test e2e/alignment_overflow_audit.spec.js
+
+test.describe('Static source checks — app.css --grid-pad-left token', () => {
+  const content = readFile('src/app.css');
+
+  test('--grid-pad-left is defined as 4px, matching Legs\' own pre-existing value', () => {
+    expect(content).toMatch(/--grid-pad-left:\s*4px;/);
+  });
+});
+
+test.describe('Static source checks — Legs (.cand-grid) left-padding unified', () => {
+  const candContent = readFile('src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte');
+  const pageContent = readFile('src/routes/(algo)/admin/derivatives/+page.svelte');
+
+  test('.cand-row > span (data cell) uses the shared var, not the old bare 4px literal', () => {
+    const body = ruleBody(candContent, '.cand-row > span');
+    expect(body, '.cand-row > span rule must exist').not.toBeNull();
+    expect(body).toMatch(/padding-left:\s*var\(--grid-pad-left\)/);
+  });
+
+  test('.cand-headrow container no longer carries horizontal padding (moved to per-span rule)', () => {
+    const body = ruleBody(pageContent, '.cand-headrow');
+    expect(body, '.cand-headrow rule must exist').not.toBeNull();
+    expect(body).toMatch(/padding:\s*0\.1rem\s+0\s+0\.15rem;/);
+    expect(body).not.toMatch(/padding:\s*0\.1rem\s+0\.2rem\s+0\.15rem;/);
+  });
+
+  test('.cand-headrow > span carries the shared var on the left, mirroring .cand-row > span\'s own per-span padding', () => {
+    const body = ruleBody(pageContent, '.cand-headrow > span');
+    expect(body, '.cand-headrow > span rule must exist').not.toBeNull();
+    expect(body).toMatch(/padding-left:\s*var\(--grid-pad-left\)/);
+    expect(body).toMatch(/padding-right:\s*4px/);
+  });
+
+  test('.cand-row.cand-row-total > span (Legs TOTAL row) also uses the shared var on the left', () => {
+    const body = ruleBody(pageContent, '.cand-row.cand-row-total > span');
+    expect(body, '.cand-row.cand-row-total > span rule must exist').not.toBeNull();
+    expect(body).toMatch(/padding:\s*0\s+0\.45rem\s+0\s+var\(--grid-pad-left\)/);
+  });
+});
+
+test.describe('Static source checks — Greeks (.opt-kv-greeks) left-padding + divider', () => {
+  const content = readFile('src/routes/(algo)/admin/derivatives/+page.svelte');
+
+  test('.kv-k-greek base rule swaps only the 0.2rem bleed-compensation term for the shared var (left only, right untouched)', () => {
+    const body = ruleBody(content, '.opt-kv-greeks .kv-k-greek');
+    expect(body, '.opt-kv-greeks .kv-k-greek rule must exist').not.toBeNull();
+    // Right side (3rd shorthand value) keeps the literal 0.2rem bleed term.
+    expect(body).toMatch(/padding:\s*0\.1rem\s+calc\(0\.2rem\s*\+\s*0\.55rem\s*\/\s*2\)\s+0\.15rem\s+calc\(var\(--grid-pad-left\)\s*\+\s*0\.55rem\s*\/\s*2\)/);
+    expect(body).toMatch(/box-shadow:\s*inset\s+calc\(-1px\s*-\s*0\.55rem\s*\/\s*2\)\s+0\s+0\s+0\s+rgba\(126,151,184,0\.40\)/);
+  });
+
+  test(':first-child override uses the bare shared var (no bleed compensation needed — margin-left is zeroed)', () => {
+    const body = ruleBody(content, '.opt-kv-greeks .kv-k-greek:first-child');
+    expect(body, ':first-child rule must exist').not.toBeNull();
+    expect(body).toMatch(/padding-left:\s*var\(--grid-pad-left\)/);
+    expect(body).not.toMatch(/padding-left:\s*0\.2rem/);
+  });
+
+  test(':nth-child(5) (last column) has box-shadow: none — no divider after the last Greek', () => {
+    const body = ruleBody(content, '.opt-kv-greeks .kv-k-greek:nth-child(5)');
+    expect(body, ':nth-child(5) rule must exist').not.toBeNull();
+    expect(body).toMatch(/box-shadow:\s*none/);
+  });
+
+  test('.kv-v left-padding swaps only the left shorthand component for the shared var; right untouched', () => {
+    const body = ruleBody(content, '.opt-kv-greeks .kv-v');
+    expect(body, '.opt-kv-greeks .kv-v rule must exist').not.toBeNull();
+    expect(body).toMatch(/padding:\s*0\.15rem\s+0\.35rem\s+0\.15rem\s+var\(--grid-pad-left\)/);
+    expect(body).toMatch(/box-shadow:\s*inset\s+-1px\s+0\s+0\s+0\s+rgba\(126,151,184,0\.40\)/);
+    // width:100%/no-margin must survive untouched — the compensated
+    // offset lives on the HEADER side, not by adding a matching bleed
+    // margin to the value row (see the rule's own code comment).
+    expect(body).toMatch(/width:\s*100%/);
+    expect(body).not.toMatch(/margin:\s*0\s+calc/);
+  });
+
+  test('.kv-v:nth-child(5n) (last column — rho\'s value) has box-shadow: none', () => {
+    const body = ruleBody(content, '.opt-kv-greeks .kv-v:nth-child(5n)');
+    expect(body, '.kv-v:nth-child(5n) rule must exist').not.toBeNull();
+    expect(body).toMatch(/box-shadow:\s*none/);
+  });
+});
+
+test.describe('Static source checks — Risk & EV (.opt-kv-risk) left-padding + divider', () => {
+  const content = readFile('src/routes/(algo)/admin/derivatives/+page.svelte');
+
+  test('.kv-risk-colhdr base rule swaps only the 0.2rem bleed-compensation term for the shared var', () => {
+    const body = ruleBody(content, '.opt-kv-risk .kv-risk-colhdr');
+    expect(body, '.opt-kv-risk .kv-risk-colhdr rule must exist').not.toBeNull();
+    expect(body).toMatch(/padding:\s*0\.1rem\s+calc\(0\.2rem\s*\+\s*0\.6rem\s*\/\s*2\)\s+0\.15rem\s+calc\(var\(--grid-pad-left\)\s*\+\s*0\.6rem\s*\/\s*2\)/);
+    expect(body).toMatch(/box-shadow:\s*inset\s+calc\(-1px\s*-\s*0\.6rem\s*\/\s*2\)\s+0\s+0\s+0\s+rgba\(126,151,184,0\.40\)/);
+  });
+
+  test(':first-child override uses the bare shared var', () => {
+    const body = ruleBody(content, '.opt-kv-risk .kv-risk-colhdr:first-child');
+    expect(body, ':first-child rule must exist').not.toBeNull();
+    expect(body).toMatch(/padding-left:\s*var\(--grid-pad-left\)/);
+  });
+
+  test(':nth-child(4) (last visible column below 1180px) has box-shadow: none by default, restored inside the >=1180px override; :nth-child(6) becomes the new last column there', () => {
+    const body4 = ruleBody(content, '.opt-kv-risk .kv-risk-colhdr:nth-child(4)');
+    expect(body4, ':nth-child(4) rule must exist').not.toBeNull();
+    expect(body4).toMatch(/box-shadow:\s*none/);
+
+    const wideIdx = content.indexOf('@media (min-width: 1180px)', content.indexOf('.opt-kv-risk .kv-risk-colhdr:first-child'));
+    const wideBlock = content.slice(wideIdx, wideIdx + 900);
+    expect(wideBlock).toMatch(/\.opt-kv-risk \.kv-risk-colhdr:nth-child\(4\)\s*\{[^}]*box-shadow:\s*inset\s+calc\(-1px\s*-\s*0\.6rem\s*\/\s*2\)/);
+    expect(wideBlock).toMatch(/\.opt-kv-risk \.kv-risk-colhdr:nth-child\(6\)\s*\{[^}]*box-shadow:\s*none/);
+  });
+
+  test('.kv-v and .kv-k both get the shared left-inset var and the plain (uncompensated) divider', () => {
+    const vBody = ruleBody(content, '.opt-kv-risk .kv-v');
+    expect(vBody, '.opt-kv-risk .kv-v rule must exist').not.toBeNull();
+    expect(vBody).toMatch(/padding-left:\s*var\(--grid-pad-left\)/);
+    expect(vBody).toMatch(/box-shadow:\s*inset\s+-1px\s+0\s+0\s+0\s+rgba\(126,151,184,0\.40\)/);
+
+    const kBody = ruleBody(content, '.opt-kv-risk .kv-k');
+    expect(kBody, '.opt-kv-risk .kv-k rule must exist').not.toBeNull();
+    expect(kBody).toMatch(/padding-left:\s*var\(--grid-pad-left\)/);
+    expect(kBody).toMatch(/box-shadow:\s*inset\s+-1px\s+0\s+0\s+0\s+rgba\(126,151,184,0\.40\)/);
+  });
+
+  test('.kv-v:nth-child(4n+2) is OFF (last column) below 1180px, ON again (internal column) and :nth-child(6n) OFF (new last column) inside the >=1180px override', () => {
+    const offBody = ruleBody(content, '.opt-kv-risk .kv-v:nth-child(4n+2)');
+    expect(offBody, '.kv-v:nth-child(4n+2) rule must exist').not.toBeNull();
+    expect(offBody).toMatch(/box-shadow:\s*none/);
+
+    const wideIdx = content.indexOf('@media (min-width: 1180px)', content.indexOf('.opt-kv-risk .kv-v:nth-child(4n+2)'));
+    const wideBlock = content.slice(wideIdx, wideIdx + 900);
+    expect(wideBlock).toMatch(/\.opt-kv-risk \.kv-v:nth-child\(4n\+2\)\s*\{[^}]*box-shadow:\s*inset\s+-1px/);
+    expect(wideBlock).toMatch(/\.opt-kv-risk \.kv-v:nth-child\(6n\)\s*\{[^}]*box-shadow:\s*none/);
+  });
+});
+
+test.describe('Static source checks — Snapshot (.byund-grid) left-padding unified', () => {
+  const content = readFile('src/routes/(algo)/admin/derivatives/+page.svelte');
+
+  test('.byund-headrow > span and .byund-row > span both swap only the left shorthand component for the shared var', () => {
+    const headBody = ruleBody(content, '.byund-headrow > span');
+    expect(headBody, '.byund-headrow > span rule must exist').not.toBeNull();
+    expect(headBody).toMatch(/padding:\s*0\s+0\.45rem\s+0\s+var\(--grid-pad-left\)/);
+
+    const rowBody = ruleBody(content, '.byund-row > span');
+    expect(rowBody, '.byund-row > span rule must exist').not.toBeNull();
+    expect(rowBody).toMatch(/padding:\s*0\s+0\.45rem\s+0\s+var\(--grid-pad-left\)/);
+  });
+});
+
+// ── Live checks — need a rendered page with a real strategy loaded ────────
+//
+// Reuses the GOLD-underlying pick-loop pattern from
+// derivatives_greeks_risk_restructure.spec.js (Greeks/Risk & EV only
+// render once a strategy has loaded for the selected underlying).
+
+/** Pick GOLD and keep re-picking until the Greeks card renders. */
+async function _pickGoldUntilGreeksRender(page) {
+  const trigger = page.locator('button#opt-und');
+  const label = trigger.locator('.rbq-select-label');
+  const greeks = page.locator('.opt-kv-greeks').first();
+  await trigger.waitFor({ state: 'visible', timeout: 60_000 });
+  await expect.poll(async () => {
+    if (await greeks.isVisible().catch(() => false)) return true;
+    if ((await label.textContent())?.trim() !== 'GOLD') {
+      const panelOpen = await page.locator('.rbq-select-panel').isVisible().catch(() => false);
+      if (!panelOpen) await trigger.click();
+      const opt = page.locator('.rbq-select-option-label', { hasText: /^GOLD$/ }).first();
+      if (await opt.isVisible().catch(() => false)) await opt.click();
+    }
+    return false;
+  }, { timeout: 90_000, intervals: [1000, 2000] }).toBe(true);
+}
+
+async function _gotoDerivativesWithStrategy(page) {
+  await loginAsAdmin(page);
+  await page.goto('/admin/derivatives', { waitUntil: 'domcontentloaded', timeout: 90_000 });
+  await _pickGoldUntilGreeksRender(page);
+  await page.locator('.opt-kv-risk').first().waitFor({ state: 'visible', timeout: 30_000 });
+  await page.locator('.cand-headrow').first().waitFor({ state: 'attached', timeout: 30_000 });
+}
+
+/** x-offset of the FIRST text node's rendered start, relative to el's own left edge. */
+async function _textStartInset(locator) {
+  return locator.evaluate((el) => {
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
+      acceptNode: (n) => (n.textContent.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP),
+    });
+    const textNode = walker.nextNode();
+    if (!textNode) return null;
+    const range = document.createRange();
+    range.selectNodeContents(textNode);
+    const textLeft = range.getBoundingClientRect().left;
+    const cellLeft = el.getBoundingClientRect().left;
+    return textLeft - cellLeft;
+  });
+}
+
+test.describe('Live — cross-grid left-inset parity (header text vs data text, 4px target)', () => {
+  test.setTimeout(150_000);
+
+  test('Legs: header "Symbol" text starts at the same inset as a data row\'s symbol text', async ({ page }) => {
+    await _gotoDerivativesWithStrategy(page);
+    const headerSymbol = page.locator('.cand-headrow [role="columnheader"]').first();
+    const dataSymbol = page.locator('.cand-row:not(.cand-row-total) .cand-sym-acct').first();
+    const [headerInset, dataInset] = await Promise.all([
+      _textStartInset(headerSymbol),
+      _textStartInset(dataSymbol),
+    ]);
+    expect(headerInset, 'Legs header Symbol text inset').not.toBeNull();
+    expect(dataInset, 'Legs data Symbol text inset').not.toBeNull();
+    expect(Math.abs(headerInset - dataInset), `Legs header (${headerInset}px) vs data (${dataInset}px) Symbol text inset`).toBeLessThanOrEqual(1);
+  });
+
+  test('Greeks: header (Δ) text starts at the same inset as the value-row\'s first cell text', async ({ page }) => {
+    await _gotoDerivativesWithStrategy(page);
+    const headerCell = page.locator('.opt-kv-greeks .kv-k-greek').first();
+    const valueCell = page.locator('.opt-kv-greeks .kv-v').first();
+    const [headerInset, valueInset] = await Promise.all([
+      _textStartInset(headerCell),
+      _textStartInset(valueCell),
+    ]);
+    expect(headerInset, 'Greeks header text inset').not.toBeNull();
+    expect(valueInset, 'Greeks value text inset').not.toBeNull();
+    expect(Math.abs(headerInset - valueInset), `Greeks header (${headerInset}px) vs value (${valueInset}px) text inset`).toBeLessThanOrEqual(1);
+  });
+
+  test('Risk & EV: header ("Metric") text starts at the same inset as the first pair\'s own label ("R:R") text', async ({ page }) => {
+    await _gotoDerivativesWithStrategy(page);
+    const headerCell = page.locator('.opt-kv-risk .kv-risk-colhdr').first();
+    const labelCell = page.locator('.opt-kv-risk .kv-k').first();
+    const [headerInset, labelInset] = await Promise.all([
+      _textStartInset(headerCell),
+      _textStartInset(labelCell),
+    ]);
+    expect(headerInset, 'Risk & EV header text inset').not.toBeNull();
+    expect(labelInset, 'Risk & EV label text inset').not.toBeNull();
+    expect(Math.abs(headerInset - labelInset), `Risk & EV header (${headerInset}px) vs label (${labelInset}px) text inset`).toBeLessThanOrEqual(1);
+  });
+
+  test('Snapshot: header "Underlying" text starts at the same inset as a data row\'s own underlying symbol text', async ({ page }) => {
+    await _gotoDerivativesWithStrategy(page);
+    const headerCell = page.locator('.byund-headrow > span').first();
+    const dataCell = page.locator('.byund-row:not(.byund-row-total) .byund-und').first();
+    const dataVisible = await dataCell.isVisible({ timeout: 5000 }).catch(() => false);
+    if (!dataVisible) {
+      test.info().annotations.push({ type: 'skip', description: 'No Snapshot data row rendered' });
+      return;
+    }
+    const [headerInset, dataInset] = await Promise.all([
+      _textStartInset(headerCell),
+      _textStartInset(dataCell),
+    ]);
+    expect(headerInset, 'Snapshot header text inset').not.toBeNull();
+    expect(dataInset, 'Snapshot data text inset').not.toBeNull();
+    expect(Math.abs(headerInset - dataInset), `Snapshot header (${headerInset}px) vs data (${dataInset}px) text inset`).toBeLessThanOrEqual(1);
+  });
+});
+
+test.describe('Live — Greeks/Risk & EV vertical divider renders and aligns between header and data rows', () => {
+  test.setTimeout(150_000);
+
+  test('Greeks: a non-last header cell and its value-row counterpart both paint the divider at the SAME x, and the last column has none', async ({ page }) => {
+    await _gotoDerivativesWithStrategy(page);
+    const info = await page.evaluate(() => {
+      const headers = [...document.querySelectorAll('.opt-kv-greeks .kv-k-greek')];
+      const values = [...document.querySelectorAll('.opt-kv-greeks .kv-v')];
+      const shadowOf = (el) => getComputedStyle(el).boxShadow;
+      return {
+        count: headers.length,
+        // First (non-last) column — divider must be present on both,
+        // and (via the compensated header offset) land at the same x.
+        firstHeaderShadow: shadowOf(headers[0]),
+        firstValueShadow: shadowOf(values[0]),
+        firstHeaderRight: headers[0].getBoundingClientRect().right,
+        firstValueRight: values[0].getBoundingClientRect().right,
+        // Last column — no divider on either.
+        lastHeaderShadow: shadowOf(headers[headers.length - 1]),
+        lastValueShadow: shadowOf(values[values.length - 1]),
+      };
+    });
+    expect(info.count, 'Greeks must render all 5 header cells').toBe(5);
+    expect(info.firstHeaderShadow, 'first Greek header must carry the divider').toContain('inset');
+    expect(info.firstValueShadow, 'first Greek value must carry the divider').toContain('inset');
+    // The header cell bleeds half a column-gap (0.55rem/2 ≈ 4.4px) past
+    // the real track boundary; the value cell has no bleed, so its own
+    // right edge IS the track boundary. header.right - gap/2 must equal
+    // value.right — this is the geometric fact the compensated offset
+    // in the CSS (`calc(-1px - 0.55rem/2)`) depends on for the painted
+    // divider lines to actually coincide.
+    const halfGapPx = 0.55 * 8; // 0.55rem/2 at the default 16px root (8px)
+    expect(
+      Math.abs((info.firstHeaderRight - halfGapPx) - info.firstValueRight),
+      `header right-edge (${info.firstHeaderRight}) minus half-gap vs value right-edge (${info.firstValueRight})`
+    ).toBeLessThanOrEqual(1.5);
+    expect(info.lastHeaderShadow, 'last Greek header (rho) must have NO divider').toBe('none');
+    expect(info.lastValueShadow, 'last Greek value (rho) must have NO divider').toBe('none');
+  });
+
+  test('Risk & EV: divider renders on an internal boundary and is absent on the true last column, at both the narrow and >=1180px breakpoints', async ({ page }) => {
+    for (const vp of [{ width: 1000, height: 900 }, { width: 1280, height: 900 }]) {
+      await page.setViewportSize(vp);
+      await _gotoDerivativesWithStrategy(page);
+      const info = await page.evaluate(() => {
+        const headers = [...document.querySelectorAll('.opt-kv-risk .kv-risk-colhdr')]
+          .filter((el) => getComputedStyle(el).display !== 'none');
+        const shadowOf = (el) => getComputedStyle(el).boxShadow;
+        return {
+          visibleHeaderCount: headers.length,
+          firstHeaderShadow: shadowOf(headers[0]),
+          lastHeaderShadow: shadowOf(headers[headers.length - 1]),
+        };
+      });
+      const expectedCount = vp.width >= 1180 ? 6 : 4;
+      expect(info.visibleHeaderCount, `visible Risk & EV header count at ${vp.width}px`).toBe(expectedCount);
+      expect(info.firstHeaderShadow, `first header divider at ${vp.width}px`).toContain('inset');
+      expect(info.lastHeaderShadow, `last visible header must have NO divider at ${vp.width}px`).toBe('none');
+    }
+  });
+});

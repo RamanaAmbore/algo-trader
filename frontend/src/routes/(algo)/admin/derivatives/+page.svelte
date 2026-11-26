@@ -7386,15 +7386,34 @@
     text-transform: uppercase;
     color: var(--text-muted);
     margin: 0 calc(0.55rem / -2);
-    padding: 0.1rem calc(0.2rem + 0.55rem / 2) 0.15rem;
+    /* Left-inset SSOT (2026-11-25, app.css --grid-pad-left) — ONLY the
+       `0.2rem` term is swapped for the shared var; the `+ 0.55rem/2`
+       compensation stays untouched on both sides. That compensation
+       cancels this cell's own bleed margin above, so the cell's real
+       NET inset from the grid track (not from this box's own bled
+       edge) is what the var controls. Flattening the whole value to a
+       bare `var(--grid-pad-left)` would drop that compensation and
+       shift every header 2-5 ~4.4px left of the value row beneath it. */
+    padding: 0.1rem calc(0.2rem + 0.55rem / 2) 0.15rem calc(var(--grid-pad-left) + 0.55rem / 2);
+    /* Vertical divider (2026-11-25) — matches the box-shadow technique
+       `.cand-sym-acct`/`.byund-und` already use (Legs/Snapshot), with
+       an offset COMPENSATED for this cell's own bleed margin above: a
+       plain `-1px` would paint at this box's own (bled) right edge,
+       which sits half a column-gap PAST the real track boundary — the
+       extra `- 0.55rem / 2` pulls it back so it lands exactly where
+       the (non-bled) value row's own `-1px` divider lands below it. */
+    box-shadow: inset calc(-1px - 0.55rem / 2) 0 0 0 rgba(126,151,184,0.40);
   }
   .opt-kv-greeks .kv-k-greek:first-child {
     margin-left: 0;
-    padding-left: 0.2rem;
+    padding-left: var(--grid-pad-left);
   }
   .opt-kv-greeks .kv-k-greek:nth-child(5) {
     margin-right: 0;
     padding-right: 0.2rem;
+    /* Last column — no divider after it (matches ag-Grid's own
+       .ag-column-last exclusion and Legs'/Snapshot's :last-child rule). */
+    box-shadow: none;
   }
   .opt-kv-greeks .kv-v {
     font-size: var(--fs-md);
@@ -7421,8 +7440,24 @@
        header's own border. */
     width: 100%;
     box-sizing: border-box;
-    padding: 0.15rem 0.35rem;
+    /* Left-inset SSOT (2026-11-25) — only the left component changes;
+       right stays the pre-existing 0.35rem. */
+    padding: 0.15rem 0.35rem 0.15rem var(--grid-pad-left);
     border-bottom: 1px solid rgba(126,151,184,0.10);
+    /* Vertical divider (2026-11-25) — this cell has no bleed margin
+       (it's `width: 100%` with no negative margin, unlike the header
+       cells above), so a plain `-1px` offset paints exactly at the
+       grid track's own right edge — the same x-position the header's
+       own compensated offset lands at. */
+    box-shadow: inset -1px 0 0 0 rgba(126,151,184,0.40);
+  }
+  /* Last column (rho's value) — no divider after it. `:nth-child(5n)`
+     matches child 5 (the rho HEADER, not a `.kv-v`, so the compound
+     selector below filters it out) and child 10 (rho's VALUE, the
+     actual last of 10 flat children: 5 headers then 5 values, see the
+     comment above `.opt-kv-greeks`). */
+  .opt-kv-greeks .kv-v:nth-child(5n) {
+    box-shadow: none;
   }
   /* Risk & expected value card — a responsive grid of 3 metric|value
      pairs: 2 pairs per row (4 tracks), with a real header row, below
@@ -7487,6 +7522,58 @@
     display: inline-flex;
     align-items: center;
     text-align: left;
+    /* Left-inset SSOT (2026-11-25, app.css --grid-pad-left) — this
+       cell previously had NO left padding at all (flush with its own
+       track's left edge), unlike every other grid's data cell. */
+    padding-left: var(--grid-pad-left);
+    /* Vertical divider — this cell carries no bleed margin (unlike
+       `.kv-risk-colhdr` below), so a plain `-1px` offset paints
+       exactly at the grid track's own right edge. Excluded from the
+       true "last column" cell only, per breakpoint, below. */
+    box-shadow: inset -1px 0 0 0 rgba(126,151,184,0.40);
+  }
+  /* `.kv-k` (the Metric label cell) gets the identical left-inset +
+     divider treatment as `.kv-v` above. Unlike `.kv-v`, `.kv-k` never
+     lands in the grid's own last column at either breakpoint — a
+     metric|value pair always contributes (label, value) in that
+     fixed order, and the grid's last column is always a value column
+     — so `.kv-k` needs no "last column" exclusion. */
+  .opt-kv-risk .kv-k {
+    padding-left: var(--grid-pad-left);
+    box-shadow: inset -1px 0 0 0 rgba(126,151,184,0.40);
+  }
+  /* Last-column exclusion, below 1180px (2 pairs/row, 4 tracks) — the
+     grid's DOM order is fixed regardless of breakpoint (6 header
+     spans, then each pair's [.kv-k, .kv-v] in sequence), so the "last
+     visible column" set is expressed as a literal nth-child formula
+     anchored on that fixed order, not on a recomputed pair/column
+     index. Below 1180px, column 4 (the even-indexed pair's `.kv-v`)
+     is the true last column — its members are children 10, 14, 18 of
+     `.opt-kv-risk` (`:nth-child(4n+2)`; the formula also matches
+     children 2/6, the "Value" headers, but those are `.kv-risk-colhdr`
+     elements, not `.kv-v`, so the compound selector filters them out
+     for free). When the EV/cost pair is hidden (5 pairs, not 6),
+     child 18 doesn't exist and child 16 (EV's own `.kv-v`, genuinely
+     the LAST DOM child in that case) is left WITHOUT this exclusion —
+     a deliberate, accepted cosmetic residual: a short divider segment
+     sits next to the row's own empty (pair-less) cells 3/4 at that
+     breakpoint. Not worth the added complexity of a pair-count-aware
+     override for a cosmetic edge case the operator didn't flag. */
+  .opt-kv-risk .kv-v:nth-child(4n+2) {
+    box-shadow: none;
+  }
+  @media (min-width: 1180px) {
+    /* At >=1180px (3 pairs/row, 6 tracks) the column mapping changes
+       completely — re-ON the cells excluded above that are now
+       internal boundaries (children 10, 14: columns 4 and 2 of the
+       wide layout), then re-exclude only the NEW true-last column
+       (column 6, children 12, 18 via `:nth-child(6n)`). */
+    .opt-kv-risk .kv-v:nth-child(4n+2) {
+      box-shadow: inset -1px 0 0 0 rgba(126,151,184,0.40);
+    }
+    .opt-kv-risk .kv-v:nth-child(6n) {
+      box-shadow: none;
+    }
   }
   /* The header row (`.kv-risk-colhdr`, 6 spans, 3 Metric|Value pairs,
      see the markup comment above `.opt-kv-risk`'s markup). Below
@@ -7538,15 +7625,30 @@
     text-transform: uppercase;
     color: var(--text-muted);
     margin: 0 calc(0.6rem / -2);
-    padding: 0.1rem calc(0.2rem + 0.6rem / 2) 0.15rem;
+    /* Left-inset SSOT (2026-11-25, app.css --grid-pad-left) — ONLY
+       the `0.2rem` term is swapped for the shared var; the `+
+       0.6rem/2` compensation (cancelling this cell's own bleed
+       margin, same technique as `.opt-kv-greeks .kv-k-greek` above)
+       stays untouched. See that rule's comment for why flattening the
+       whole value would break the bleed. */
+    padding: 0.1rem calc(0.2rem + 0.6rem / 2) 0.15rem calc(var(--grid-pad-left) + 0.6rem / 2);
+    /* Vertical divider (2026-11-25) — same compensated-offset
+       technique as `.opt-kv-greeks .kv-k-greek`'s own box-shadow: a
+       plain `-1px` would paint at this (bled) cell's own right edge,
+       half a column-gap past the real track boundary; the extra
+       `- 0.6rem / 2` pulls it back to where the (non-bled) `.kv-k`/
+       `.kv-v` cells' own `-1px` divider lands below it. */
+    box-shadow: inset calc(-1px - 0.6rem / 2) 0 0 0 rgba(126,151,184,0.40);
   }
   .opt-kv-risk .kv-risk-colhdr:first-child {
     margin-left: 0;
-    padding-left: 0.2rem;
+    padding-left: var(--grid-pad-left);
   }
   .opt-kv-risk .kv-risk-colhdr:nth-child(4) {
     margin-right: 0;
     padding-right: 0.2rem;
+    /* Last VISIBLE column below 1180px — no divider after it. */
+    box-shadow: none;
   }
   @media (min-width: 1180px) {
     /* nth-child(4) is now a middle cell (pairs 1-2 of 3 share row 1) —
@@ -7555,12 +7657,15 @@
     .opt-kv-risk .kv-risk-colhdr:nth-child(4) {
       margin-right: calc(0.6rem / -2);
       padding-right: calc(0.2rem + 0.6rem / 2);
+      /* No longer the last column at this width — restore its divider. */
+      box-shadow: inset calc(-1px - 0.6rem / 2) 0 0 0 rgba(126,151,184,0.40);
     }
     /* nth-child(6) is now visible (see the display:none rule above) and
        is the true last header cell at this width. */
     .opt-kv-risk .kv-risk-colhdr:nth-child(6) {
       margin-right: 0;
       padding-right: 0.2rem;
+      box-shadow: none;
     }
   }
   .kv-pos { color: var(--c-long); }
@@ -7921,7 +8026,11 @@
      being treated as "the same reference" — this switch also closes
      that gap, a small intentional size bump on Snapshot's header only. */
   .byund-headrow > span {
-    padding: 0 0.45rem;
+    /* Left-inset SSOT (2026-11-25, app.css --grid-pad-left) — only the
+       left component changes; right stays the pre-existing 0.45rem.
+       `.byund-headrow` is `display: contents`, so this `> span` IS
+       the real per-cell box (unlike Legs' subgrid container trick). */
+    padding: 0 0.45rem 0 var(--grid-pad-left);
     /* Height SSOT (2026-10) — height + matching line-height is the
        standard single-line vertical-centering trick (kept instead of
        flex so the existing `.num { text-align: right }` rule below
@@ -7948,7 +8057,8 @@
      see the vertical-divider rule just below, which fixes this grid to
      match.) */
   .byund-row > span {
-    padding: 0 0.45rem;
+    /* Left-inset SSOT (2026-11-25) — only the left component changes. */
+    padding: 0 0.45rem 0 var(--grid-pad-left);
     /* Height SSOT (2026-10) — same height+line-height trick as the
        header above, pinned to --grid-row-height (app.css). */
     height: var(--grid-row-height);
@@ -8393,7 +8503,12 @@
      height, matching `.cand-row > span`'s own 0-vertical-padding + flex-center
      convention for a stretched grid cell. */
   .cand-row.cand-row-total > span {
-    padding: 0 0.45rem;
+    /* Left-inset SSOT (2026-11-25) — this TOTAL row had its own
+       independent 0.45rem left padding, a third value inside the
+       SAME Legs grid alongside the real leg rows' 4px and the
+       header's now-matching 4px. Right padding (0.45rem) is
+       unchanged — only left is unified. */
+    padding: 0 0.45rem 0 var(--grid-pad-left);
     display: flex;
     align-items: center;
     /* Matches real leg rows' font (CandidateLegRow.svelte .cand-row:
@@ -8609,7 +8724,13 @@
     /* Subgrid inherits column-gap from .cand-grid (0.6rem). Don't
        set `gap` here — that overrides the parent and decouples the
        rows' spacing from the header's. */
-    padding: 0.1rem 0.2rem 0.15rem;
+    /* Horizontal padding moved off the container (2026-11-25) — on a
+       subgrid, container padding only insets the FIRST/LAST column
+       (it shifts where the shared subgrid's own lines start/end), not
+       every individual header cell's own text start. The real
+       per-cell left-inset fix lives on `.cand-headrow > span` below,
+       mirroring `.cand-row > span`'s own per-span padding exactly. */
+    padding: 0.1rem 0 0.15rem;
     align-items: center;
     /* Standardized (2026-10 CardHeader/grid consistency pass, Part B)
        on the shared --grid-header-* variables — this table IS the
@@ -8661,6 +8782,20 @@
     background:
       linear-gradient(var(--grid-header-bg), var(--grid-header-bg)),
       #1d2a44;
+  }
+  /* Left-inset SSOT (2026-11-25) — each header <span> (St, Symbol,
+     LTP, ...) gets its OWN per-cell inset, mirroring `.cand-row >
+     span`'s per-span padding in CandidateLegRow.svelte exactly, so a
+     header column's text starts at the same inset as its data column
+     below it — the `.cand-headrow` container's own horizontal padding
+     (above) only controls the outer edges, not this. Mirrors BOTH
+     sides of `.cand-row > span` (not left-only) so a right-aligned
+     `.num` header doesn't drift from its data column's own right
+     inset either. The checkbox is an `<input>`, not a `<span>` —
+     unaffected, it's centered via justify-self instead. */
+  .cand-headrow > span {
+    padding-left: var(--grid-pad-left);
+    padding-right: 4px;
   }
   /* Header checkbox — centered horizontally to match the data rows'
      own checkbox (.cand-row input[type="checkbox"] in

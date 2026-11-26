@@ -723,7 +723,11 @@
   .cand-row > span {
     padding-top: 0.2rem;
     padding-bottom: 0.2rem;
-    padding-left: 4px;
+    /* Left-inset SSOT (2026-11-25, app.css --grid-pad-left) — this
+       value (4px) is the one every OTHER hand-rolled grid on the
+       Derivatives page now matches. Do not change this literal in
+       isolation; app.css documents the reasoning. */
+    padding-left: var(--grid-pad-left);
     padding-right: 4px;
     display: flex;
     align-items: center;

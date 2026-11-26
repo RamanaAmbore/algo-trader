@@ -383,6 +383,21 @@
   --grid-header-font-size:      0.65rem;
   --grid-header-font-weight:    800;
   --grid-header-letter-spacing: 0.06em;
+  /* Grid left-inset SSOT (2026-11-25) — the Derivatives page's four
+     hand-rolled grids (Legs/.cand-grid, Greeks/.opt-kv-greeks,
+     Risk & EV/.opt-kv-risk, Snapshot/.byund-grid) each independently
+     hardcoded a different left-padding for their header AND data cells
+     (4px / 3.2px / 5.6px / 0px / 7.2px, depending on grid and row type)
+     — a genuine four-way mismatch, not a deliberate design choice.
+     Legs' own 4px (CandidateLegRow.svelte `.cand-row > span`) is the
+     reference value every other grid now matches on both its header
+     and its data row. Consumers with a bleed/background-extension
+     technique (a negative `margin` compensated by extra `padding`,
+     e.g. `.opt-kv-greeks .kv-k-greek`) swap only the `0.2rem`-shaped
+     term inside their own `calc()` for this var — never flatten the
+     whole padding to a bare `var(--grid-pad-left)`, or the bleed
+     compensation breaks and the cell's own net inset shifts. */
+  --grid-pad-left:               4px;
   /* Grid height SSOT (2026-10, operator: "I like derivatives legs grids
      as the standard" — unified every grid family, real ag-Grid AND
      hand-rolled, onto ONE height token instead of each family carrying
