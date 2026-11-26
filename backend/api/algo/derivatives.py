@@ -1066,16 +1066,28 @@ def _mcx_nearest_future_symbol(underlying: str, expiry: date) -> str:
     return candidates[-1].s
 
 
-def _close_time_for_row(row: dict) -> tuple[int, int]:
-    """Return the IST market-close time for a position row.
+def _close_time_for_row(row: dict, expiry: date) -> tuple[int, int]:
+    """Return the IST market-close time for a position row, on `expiry`
+    (the contract's own expiry date — the day the close boundary
+    actually applies to, matching every other caller of
+    `mcx_non_agri_close_time()`/`close_time_for_exchange()` in this
+    codebase).
 
     Reads `row['exchange']` which the sim driver populates on every
     position row (driver.py sets it during seed). Live broker rows carry
-    the exchange column from Kite's positions response. Falls back to
-    NSE/NFO (15:30) when the exchange is absent or unrecognised.
+    the exchange column from Kite's positions response.
+
+    Routes through `close_time_for_exchange()` — the market-calendar SSOT
+    — instead of a hardcoded flat (23, 30)/(15, 30) tuple, so MCX gets the
+    real DST-aware close (23:30 in-DST, 23:55 in the US-winter window)
+    rather than silently calibrating IV ~25 minutes short of the real
+    close every winter. Falls back to NSE/NFO (15:30) when the exchange
+    is absent, unrecognised, or the SSOT resolver itself fails.
     """
+    from backend.shared.helpers.date_time_utils import close_time_for_exchange
     exch = (row.get("exchange") or "").upper()
-    return (23, 30) if exch == "MCX" else (15, 30)
+    close_time = close_time_for_exchange(exch, expiry)
+    return close_time if close_time is not None else (15, 30)
 
 
 def calibrate_iv_for_row(row: dict, spot: float,
@@ -1095,7 +1107,7 @@ def calibrate_iv_for_row(row: dict, spot: float,
         return DEFAULT_IV
     expiry = parsed["expiry"]
     T_yrs  = days_to_expiry(expiry, ref=ref_now,
-                             close_time=_close_time_for_row(row)) / 365.0
+                             close_time=_close_time_for_row(row, expiry)) / 365.0
     return implied_vol(float(ltp), float(spot), parsed["strike"],
                        T_yrs, risk_free, parsed["opt_type"])
 
@@ -1119,7 +1131,7 @@ def reprice_row(row: dict, *, spot: float, sigma: Optional[float],
     if parsed["kind"] == "opt":
         expiry = parsed["expiry"]
         T_yrs  = days_to_expiry(expiry, ref=ref_now,
-                                close_time=_close_time_for_row(row)) / 365.0
+                                close_time=_close_time_for_row(row, expiry)) / 365.0
         sig    = sigma if (sigma and sigma > 0) else DEFAULT_IV
         return black_scholes(float(spot), parsed["strike"],
                              T_yrs, risk_free, sig, parsed["opt_type"])

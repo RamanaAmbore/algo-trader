@@ -15,8 +15,15 @@ def _metric_days_until_expiry(ctx, row):
         return None
     try:
         from backend.api.algo.derivatives import days_to_expiry
-        # MCX commodity options trade until 23:30; everything else 15:30.
-        close_time = (23, 30) if (row.get('exchange') or '').upper() == 'MCX' else (15, 30)
+        from backend.shared.helpers.date_time_utils import close_time_for_exchange
+        # Market-calendar SSOT, not a flat (23, 30)/(15, 30) literal —
+        # resolves MCX's real DST-aware close (23:30 in-DST, 23:55 in
+        # the US-winter window) instead of a year-round-flat assumption
+        # (2026-11-26 fix; this is a directly operator-facing DSL
+        # metric, so a miscalibrated close time here can make a custom
+        # agent's own days_until_expiry condition fire up to ~25
+        # minutes early during the winter window).
+        close_time = close_time_for_exchange(row.get('exchange'), parsed['expiry']) or (15, 30)
         return float(days_to_expiry(parsed['expiry'], ref=ctx.now, close_time=close_time))
     except Exception:
         return None

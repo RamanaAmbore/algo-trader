@@ -55,7 +55,27 @@ def test_days_until_expiry_mcx_uses_2330_close():
     # equity 'last Thursday' convention.
     row = {"tradingsymbol": "CRUDEOILM25MAY5500CE", "exchange": "MCX"}
     # 30 May 2025 — last Friday of May 2025. At 12:00 UTC = 17:30 IST,
-    # 6 hours to the 23:30 IST MCX close → days_to_expiry ≈ 0.25.
+    # 6 hours to the 23:30 IST MCX close → days_to_expiry ≈ 0.25. 2025-05
+    # is inside the US DST window, so the real close IS 23:30 -- this
+    # case alone can't tell the DST-aware fix apart from the old flat
+    # hardcode. See the winter-window test below for that.
     ctx = _ctx(now=datetime(2025, 5, 30, 12, 0, tzinfo=timezone.utc))
     d = _metric_days_until_expiry(ctx, row)
     assert d is not None and 0.2 < d < 0.3
+
+
+def test_days_until_expiry_mcx_uses_2355_close_in_winter():
+    # 2026-11-26 fix: was a flat (23, 30) regardless of season. GOLD's
+    # Nov monthly expires 2026-11-27 (Friday); the real winter-window
+    # MCX non-agri close is 23:55 IST, not 23:30. At 18:00 UTC on the
+    # expiry date (= 23:30 IST, the OLD flat close), the real close is
+    # still 25 minutes away -- days_until_expiry must be > 0, not 0.0.
+    row = {"tradingsymbol": "GOLD26NOV123000PE", "exchange": "MCX"}
+    ctx = _ctx(now=datetime(2026, 11, 27, 18, 0, tzinfo=timezone.utc))
+    d = _metric_days_until_expiry(ctx, row)
+    assert d is not None and d > 0.0, (
+        "MCX close time must resolve via the market-calendar SSOT "
+        "(23:55 in the winter window), not a flat 23:30 -- the old "
+        "hardcode floors this to exactly 0.0 at 23:30 IST, 25 minutes "
+        "before the real close."
+    )

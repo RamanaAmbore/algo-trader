@@ -609,7 +609,14 @@ def _capture_opt_leg_baseline(parsed: dict, S_base: float, ltp_base: float,
     opt_type = parsed.get('opt_type')
     if strike is None or opt_type not in ('CE', 'PE'):
         return None
-    close_time = (23, 30) if is_mcx else (15, 30)
+    # 2026-11-26 fix — was a flat (23, 30)/(15, 30) literal, the exact
+    # bug class CLAUDE.md flagged as a known residual at this line.
+    # Routes through the market-calendar SSOT so a baseline captured
+    # during the winter window isn't miscalibrated ~25 minutes early.
+    from backend.shared.helpers.date_time_utils import close_time_for_exchange
+    close_time = close_time_for_exchange(
+        "MCX" if is_mcx else "NFO", parsed['expiry'],
+    ) or (15, 30)
     try:
         T_base = days_to_expiry(parsed['expiry'], ref=now, close_time=close_time) / 365.0
     except Exception:

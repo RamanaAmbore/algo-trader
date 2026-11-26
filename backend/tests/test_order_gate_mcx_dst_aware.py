@@ -39,6 +39,7 @@ import pytest
 
 from backend.shared.helpers.date_time_utils import (
     _segment_is_open,
+    close_time_for_exchange,
     resolve_dst_aware_sessions,
 )
 
@@ -362,3 +363,50 @@ async def test_ticket_route_gate_rejects_mcx_order_during_dst_at_2340():
         with pytest.raises(HTTPException) as exc_info:
             await _ticket_gate_market_hours_and_align_price(data, "CRUDEOIL26JUN9200PE")
     assert exc_info.value.status_code == 409
+
+
+# ── close_time_for_exchange() — shared SSOT for any sync caller that
+#    needs a raw (hour, minute) close time, e.g. a days_to_expiry()
+#    computation, rather than an open/closed boolean. Added 2026-11-26
+#    per operator instruction ("everything should be from market
+#    calendar ssot") after a sibling bug was found in
+#    scope_positions_expiring_today.py hardcoding (23, 30) for MCX and
+#    a bare (15, 30) for everything else, instead of routing through
+#    resolve_dst_aware_sessions() like the order-placement gate does. ──
+
+
+def test_close_time_for_exchange_mcx_winter():
+    assert close_time_for_exchange("MCX", _WINTER_DATE) == (23, 55)
+
+
+def test_close_time_for_exchange_mcx_dst():
+    assert close_time_for_exchange("MCX", _DST_DATE) == (23, 30)
+
+
+def test_close_time_for_exchange_nco_mirrors_mcx():
+    # NCO (cross-currency on MCX) shares the commodity segment.
+    assert close_time_for_exchange("NCO", _WINTER_DATE) == (23, 55)
+
+
+def test_close_time_for_exchange_nfo_is_1530_regardless_of_season():
+    assert close_time_for_exchange("NFO", _WINTER_DATE) == (15, 30)
+    assert close_time_for_exchange("NFO", _DST_DATE) == (15, 30)
+
+
+def test_close_time_for_exchange_nse_bse_cds_bcd_all_equity_segment():
+    for exch in ("NSE", "BSE", "CDS", "BCD"):
+        assert close_time_for_exchange(exch, _WINTER_DATE) == (15, 30)
+
+
+def test_close_time_for_exchange_unknown_exchange_returns_none():
+    assert close_time_for_exchange("XYZ", _WINTER_DATE) is None
+    assert close_time_for_exchange("", _WINTER_DATE) is None
+    assert close_time_for_exchange(None, _WINTER_DATE) is None
+
+
+def test_close_time_for_exchange_resolver_failure_returns_none_not_a_guess():
+    with patch(
+        "backend.shared.helpers.utils.config",
+        {"market_segments": {}},
+    ):
+        assert close_time_for_exchange("MCX", _WINTER_DATE) is None

@@ -32,11 +32,16 @@ def _scope_positions_expiring_today(ctx):
         if not parsed or not parsed.get('expiry'):
             continue
         try:
-            from backend.api.algo.derivatives import days_to_expiry, mcx_non_agri_close_time
-            if (r.get('exchange') or '').upper() == 'MCX':
-                ct = mcx_non_agri_close_time(parsed['expiry'])
-                close_time = (ct.hour, ct.minute)
-            else:
+            from backend.api.algo.derivatives import days_to_expiry
+            from backend.shared.helpers.date_time_utils import close_time_for_exchange
+            # SSOT for the close time — never a hardcoded (15, 30) /
+            # (23, 30) literal here. Resolves via market_segments +
+            # resolve_dst_aware_sessions() (same path every order-
+            # placement gate uses), so this agrees with the real
+            # DST-aware MCX close and any holiday-shortened/special-
+            # session override, not just a flat NFO/MCX assumption.
+            close_time = close_time_for_exchange(r.get('exchange'), parsed['expiry'])
+            if close_time is None:
                 close_time = (15, 30)
             d = float(days_to_expiry(parsed['expiry'], ref=ctx.now, close_time=close_time))
         except Exception as e:

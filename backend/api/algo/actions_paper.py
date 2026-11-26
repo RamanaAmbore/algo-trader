@@ -90,8 +90,11 @@ async def _ap_write_placement_events(
 def _ap_dte(expiry: str, exch: str, ref) -> float | None:
     """Return days-to-expiry for `expiry`, or None if computation fails."""
     from backend.api.algo.derivatives import days_to_expiry
+    from backend.shared.helpers.date_time_utils import close_time_for_exchange
     try:
-        close_time = (23, 30) if exch == "MCX" else (15, 30)
+        # Market-calendar SSOT, not a flat (23, 30)/(15, 30) literal —
+        # resolves MCX's real DST-aware close (2026-11-26 fix).
+        close_time = close_time_for_exchange(exch, expiry) or (15, 30)
         return float(days_to_expiry(expiry, ref=ref, close_time=close_time))
     except Exception:
         return None

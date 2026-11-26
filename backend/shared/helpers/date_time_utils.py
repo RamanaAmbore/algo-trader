@@ -246,6 +246,67 @@ def resolve_dst_aware_sessions(seg_cfg: dict, today) -> "list | None":
     return resolved
 
 
+# Mirrors `agent_engine.py`'s `_EXCHANGE_TO_SEGMENT` (physical exchange→
+# market_segments-key grouping, not calendar data — this almost never
+# changes, unlike a close time). Kept here, not imported from
+# agent_engine.py, since that module is the higher algo layer and this one
+# is a low-level shared helper with no reverse dependency on it anywhere
+# else — duplicating this one small static grouping avoids a backwards
+# import direction. Any caller needing segment-level open/closed flags
+# (not a raw close time) should still go through `_ae_segment_flags()` /
+# `_symbol_exchange_open()` in agent_engine.py, not re-derive them here.
+_CLOSE_TIME_EXCHANGE_TO_SEGMENT = {
+    "NSE": "equity", "BSE": "equity", "NFO": "equity", "BFO": "equity",
+    "CDS": "equity", "BCD": "equity",
+    "MCX": "commodity", "NCO": "commodity",
+}
+
+
+def close_time_for_exchange(exchange: str, today: "date") -> "tuple[int, int] | None":
+    """The real IST market-close time (hour, minute) for `exchange` on
+    `today` (a `date`, not a `datetime`) — the one SSOT any caller
+    needing a close time for a
+    `days_to_expiry()`-style computation should use instead of a
+    hardcoded ``(15, 30)`` / ``(23, 30)`` literal.
+
+    Routes through the exact same `market_segments` YAML config +
+    `resolve_dst_aware_sessions()` every order-placement gate already
+    uses (see that function's own docstring) — so a caller here can
+    never silently disagree with the real DST-aware MCX close, or with
+    a holiday-shortened / special-session override baked into a
+    segment's own configured `sessions` list.
+
+    Returns ``None`` when the exchange is unrecognised, or when the
+    resolved segment config carries no `sessions` list at all (an
+    unconfigured segment) — callers must decide their own fallback
+    rather than this function silently guessing one.
+    """
+    seg_name = _CLOSE_TIME_EXCHANGE_TO_SEGMENT.get((exchange or "").upper().strip())
+    if not seg_name:
+        return None
+    try:
+        from backend.shared.helpers.utils import config as app_config
+        seg_cfg = (app_config.get("market_segments", {}) or {}).get(seg_name, {}) or {}
+    except Exception as e:
+        logger.warning(
+            "close_time_for_exchange: failed to load market_segments config "
+            "for %r: %s", exchange, e,
+        )
+        return None
+    sessions = resolve_dst_aware_sessions(seg_cfg, today)
+    if not sessions:
+        return None
+    try:
+        h, m = (int(x) for x in str(sessions[-1].get("end", "")).split(":", 1))
+        return (h, m)
+    except Exception as e:
+        logger.warning(
+            "close_time_for_exchange: failed to parse resolved close time "
+            "for %r: %s", exchange, e,
+        )
+        return None
+
+
 def _parse_session_windows(
     sessions, market_start: dtime, market_end: dtime
 ) -> "list[tuple[dtime, dtime]]":

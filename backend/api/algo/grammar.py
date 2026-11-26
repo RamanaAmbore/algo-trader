@@ -484,7 +484,12 @@ def _theo_reprice_opt_leg(b: dict, S_now: float, now) -> "float | None":
     if opt_type not in ('CE', 'PE'):
         return None
     is_mcx = bool(b.get('is_mcx'))
-    close_time = (23, 30) if is_mcx else (15, 30)
+    # Market-calendar SSOT, not a flat (23, 30)/(15, 30) literal — the
+    # same bug class flagged elsewhere in this codebase (2026-11-26 fix).
+    from backend.shared.helpers.date_time_utils import close_time_for_exchange
+    close_time = close_time_for_exchange(
+        "MCX" if is_mcx else "NFO", b.get('expiry'),
+    ) or (15, 30)
     try:
         T_now = days_to_expiry(b.get('expiry'), ref=now, close_time=close_time) / 365.0
         if is_mcx:
