@@ -1269,6 +1269,35 @@ def _v2_static_rate_enrichment(alert_state: dict, kind: str, scope_label: str,
     return windowed_rate(hist, hist[-1][0], rate_window_min, field_idx=1)
 
 
+def _v2_expiry_detail_for_row(scope_tok: str, row: dict) -> "str | None":
+    """For an `positions.expiring_today`-family match (the base scope and
+    its `.mcx_unhedged`/`.nfo` siblings), return a short, explicit
+    "{symbol} — {exchange}, expires {date} ({weekday})" string so the
+    rendered alert clearly names which contract and exchange is at risk
+    instead of only an account code and a bare pnl figure.
+
+    Operator complaint (2026-11-26): "the expiry risk should clearly
+    say the expiry day and exchange" — the generic kind/threshold table
+    `_v2_match_to_alertrow` otherwise builds carries neither; `row`
+    already has `tradingsymbol`/`exchange`, it just was never surfaced.
+
+    Returns None for any other scope (so this never touches an
+    unrelated alert's rendering) or when the symbol doesn't parse.
+    """
+    if not (scope_tok or '').startswith('positions.expiring_today'):
+        return None
+    sym = row.get('tradingsymbol') or ''
+    if not sym:
+        return None
+    exchange = (row.get('exchange') or '').upper() or 'unknown exchange'
+    from backend.api.algo.grammar import _parsed_or_none
+    parsed = _parsed_or_none(sym)
+    expiry = parsed.get('expiry') if parsed else None
+    if expiry:
+        return f"{sym} — {exchange}, expires {expiry:%d-%b-%Y} ({expiry:%a})"
+    return f"{sym} — {exchange}"
+
+
 def _v2_derive_section(scope_tok: str) -> str:
     """Map a scope token prefix to its alert section label."""
     if scope_tok.startswith('holdings'):
@@ -1743,10 +1772,13 @@ def _v2_match_to_alertrow(match: dict, *,
     from backend.shared.helpers.utils import mask_account
     masked_scope = mask_account(scope_label)
 
+    expiry_detail = _v2_expiry_detail_for_row(scope_tok, row)
+
     return dict(
         section=section, scope=masked_scope, kind=kind,
         pnl=pnl, pct=pct, rate_val=rate_val, threshold=thr_str,
         underlyings_breakdown=underlyings_breakdown,
+        expiry_detail=expiry_detail,
     )
 
 
@@ -1840,6 +1872,19 @@ def _ae_group_alert_rows(rows: list[dict]) -> list[dict]:
                     rate_for_enrichment = m['rate_val']
                     break
 
+        # expiry_detail is PER-LEAF, not a scope-level fact like
+        # underlyings_breakdown above — two different members sharing
+        # one (section, scope)=(Positions, account) group can genuinely
+        # name two different expiring contracts (e.g. two unhedged legs
+        # on the same account firing the same cycle). Collect every
+        # distinct value, order-preserving, rather than taking only the
+        # first member's.
+        expiry_details: list[str] = []
+        for m in members:
+            d = m.get('expiry_detail')
+            if d and d not in expiry_details:
+                expiry_details.append(d)
+
         for pos, i in enumerate(idxs):
             out[i]['_grp_size'] = len(idxs)
             out[i]['_grp_is_first'] = (pos == 0)
@@ -1847,6 +1892,7 @@ def _ae_group_alert_rows(rows: list[dict]) -> list[dict]:
             out[i]['_grp_pnl_agrees'] = agrees
             out[i]['_grp_underlyings_breakdown'] = ub
             out[i]['_grp_rate_for_enrichment'] = rate_for_enrichment
+            out[i]['_grp_expiry_details'] = expiry_details
     return out
 
 

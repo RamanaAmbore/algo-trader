@@ -1947,6 +1947,17 @@ def _tg_position_enrichment_lines(a: dict) -> list[str]:
     as a group of one) so behavior there is unchanged.
     """
     result: list[str] = []
+    # Expiry-risk detail (symbol, exchange, expiry date) — always shown
+    # first, since this is the identity of WHAT is at risk, not a
+    # supplementary breakdown. 2026-11-26 fix (operator: "the expiry
+    # risk should clearly say the expiry day and exchange").
+    if '_grp_expiry_details' in a:
+        eds = a['_grp_expiry_details'] or []
+    else:
+        d = a.get('expiry_detail')
+        eds = [d] if d else []
+    for d in eds:
+        result.append(f"  expiring: {d}")
     if '_grp_underlyings_breakdown' in a:
         ub = a['_grp_underlyings_breakdown'] or []
     else:
@@ -2034,6 +2045,25 @@ def _tg_alert_body(alerts: list) -> str:
     if lines and lines[-1] == "":
         lines.pop()
     return "\n".join(lines)
+
+
+def _email_expiry_detail_subrow(details: list, bg: str) -> str:
+    """Render an HTML sub-row naming which contract(s), exchange(s) and
+    expiry date(s) are at risk — same reasoning as the Telegram
+    "expiring:" line. 2026-11-26 fix (operator: "the expiry risk should
+    clearly say the expiry day and exchange")."""
+    items = "".join(
+        f"<div style='color:{_EMAIL_TEXT};padding:1px 0'>{d}</div>"
+        for d in details
+    )
+    return (
+        f"<tr><td colspan='6' style='padding:0 12px 8px;"
+        f"background-color:{bg or _EMAIL_PANEL_BG}'>"
+        f"<div style='font-size:11px;color:{_EMAIL_TEXT_MUTED};padding:4px 0 2px'>"
+        f"Expiring:</div>"
+        f"<div style='font-size:12px'>{items}</div>"
+        f"</td></tr>"
+    )
 
 
 def _email_underlying_subrow(ub: list, bg: str) -> str:
@@ -2147,6 +2177,16 @@ def _email_alert_body(alerts: list) -> str:
             + cell(a['threshold'], bg)
             + "</tr>"
         )
+        # Expiry-risk detail sub-row — same ONCE-per-group-on-last-
+        # member convention as the underlying breakdown below.
+        if '_grp_expiry_details' in a:
+            expiry_details = a['_grp_expiry_details'] or []
+        else:
+            d = a.get('expiry_detail')
+            expiry_details = [d] if d else []
+        is_last = a.get('_grp_is_last', True)
+        if a['section'] == 'Positions' and is_last and expiry_details:
+            row_html += _email_expiry_detail_subrow(expiry_details, bg)
         # Per-underlying breakdown sub-row — only for Position alerts
         # that carry the breakdown payload. Emitted ONCE per (section,
         # scope) group (on its last member), not once per leaf — see
@@ -2155,7 +2195,6 @@ def _email_alert_body(alerts: list) -> str:
             ub = a['_grp_underlyings_breakdown'] or []
         else:
             ub = a.get('underlyings_breakdown') or []
-        is_last = a.get('_grp_is_last', True)
         if a['section'] == 'Positions' and is_last and ub:
             row_html += _email_underlying_subrow(ub, bg)
     return (

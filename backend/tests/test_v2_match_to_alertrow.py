@@ -798,3 +798,163 @@ class TestV2MatchToAlertrowRateEnrichment:
                 rate_window_min=10,
             )
         assert result['rate_val'] is None
+
+
+class TestV2ExpiryDetailForRow:
+    """`_v2_expiry_detail_for_row` + its wiring into `_v2_match_to_alertrow`
+    and `_ae_group_alert_rows` — operator complaint (2026-11-26): "the
+    expiry risk should clearly say the expiry day and exchange"."""
+
+    def test_mcx_unhedged_scope_names_symbol_exchange_and_expiry(self):
+        from backend.api.algo.agent_engine import _v2_match_to_alertrow
+
+        match = {
+            'metric': 'pnl',
+            'scope': 'positions.expiring_today.mcx_unhedged',
+            'op': '>=',
+            'threshold': -999999999,
+            'value': 139050.0,
+            'row': {
+                'account': 'ZG0790',
+                'tradingsymbol': 'GOLD26NOV123000PE',
+                'exchange': 'MCX',
+                'pnl': 139050.0,
+            },
+        }
+        result = _v2_match_to_alertrow(match)
+        assert result['expiry_detail'] == (
+            "GOLD26NOV123000PE — MCX, expires 27-Nov-2026 (Fri)"
+        )
+
+    def test_nfo_scope_also_gets_detail(self):
+        from backend.api.algo.agent_engine import _v2_match_to_alertrow
+
+        match = {
+            'metric': 'pnl', 'scope': 'positions.expiring_today.nfo', 'op': '>=',
+            'threshold': -999999999, 'value': 1000.0,
+            'row': {
+                'account': 'ZG0790', 'tradingsymbol': 'NIFTY25APR22000CE',
+                'exchange': 'NFO', 'pnl': 1000.0,
+            },
+        }
+        result = _v2_match_to_alertrow(match)
+        assert result['expiry_detail'] is not None
+        assert "NFO" in result['expiry_detail']
+        assert "NIFTY25APR22000CE" in result['expiry_detail']
+
+    def test_unrelated_scope_never_gets_detail(self):
+        from backend.api.algo.agent_engine import _v2_match_to_alertrow
+
+        match = {
+            'metric': 'pnl_pct', 'scope': 'positions_TOTAL', 'threshold': -10,
+            'value': -5.5, 'row': {
+                'account': 'TOTAL', 'pnl': -110000,
+                'tradingsymbol': 'GOLD26NOV123000PE', 'exchange': 'MCX',
+            },
+        }
+        result = _v2_match_to_alertrow(match)
+        assert result['expiry_detail'] is None, (
+            "Only positions.expiring_today-family scopes should carry "
+            "expiry_detail -- an unrelated scope must never pick it up "
+            "even if the row happens to carry a parseable tradingsymbol."
+        )
+
+    def test_unparseable_symbol_returns_none(self):
+        from backend.api.algo.agent_engine import _v2_match_to_alertrow
+
+        match = {
+            'metric': 'pnl', 'scope': 'positions.expiring_today.mcx_unhedged',
+            'op': '>=', 'threshold': -999999999, 'value': 1.0,
+            'row': {'account': 'ZG0790', 'tradingsymbol': '', 'exchange': 'MCX'},
+        }
+        result = _v2_match_to_alertrow(match)
+        assert result['expiry_detail'] is None
+
+    def test_group_collects_distinct_expiry_details_across_members(self):
+        """Two different legs on the same account, same cycle -- the
+        group must list BOTH, not only the first member's (expiry_detail
+        is per-leaf, unlike the scope-level underlyings_breakdown)."""
+        from backend.api.algo.agent_engine import _ae_group_alert_rows
+
+        rows = [
+            {
+                'section': 'Positions', 'scope': 'ZG0790', 'kind': 'static_abs',
+                'pnl': 139050.0, 'pct': None, 'rate_val': None,
+                'threshold': 'n/a',
+                'expiry_detail': 'GOLD26NOV123000PE — MCX, expires 27-Nov-2026 (Fri)',
+            },
+            {
+                'section': 'Positions', 'scope': 'ZG0790', 'kind': 'static_abs',
+                'pnl': 4200.0, 'pct': None, 'rate_val': None,
+                'threshold': 'n/a',
+                'expiry_detail': 'SILVER26NOV90000CE — MCX, expires 27-Nov-2026 (Fri)',
+            },
+        ]
+        grouped = _ae_group_alert_rows(rows)
+        assert grouped[0]['_grp_expiry_details'] == [
+            'GOLD26NOV123000PE — MCX, expires 27-Nov-2026 (Fri)',
+            'SILVER26NOV90000CE — MCX, expires 27-Nov-2026 (Fri)',
+        ]
+        # Both members see the same accumulated list.
+        assert grouped[1]['_grp_expiry_details'] == grouped[0]['_grp_expiry_details']
+
+    def test_group_of_one_still_works_unannotated(self):
+        """A caller that passes a raw, un-annotated row (every pre-
+        existing test) must still render via the plain `expiry_detail`
+        key -- confirmed by the Telegram/email rendering tests below,
+        this test only confirms grouping itself doesn't choke."""
+        from backend.api.algo.agent_engine import _ae_group_alert_rows
+
+        rows = [{
+            'section': 'Positions', 'scope': 'ZG0790', 'kind': 'static_abs',
+            'pnl': 1.0, 'pct': None, 'rate_val': None, 'threshold': 'n/a',
+        }]
+        grouped = _ae_group_alert_rows(rows)
+        assert grouped[0]['_grp_expiry_details'] == []
+
+
+class TestExpiryDetailRendering:
+    """Telegram + email rendering of expiry_detail / _grp_expiry_details."""
+
+    def test_tg_alert_body_shows_expiring_line(self):
+        from backend.shared.helpers.alert_utils import _tg_alert_body
+
+        rows = [{
+            'section': 'Positions', 'scope': 'ZG0790', 'kind': 'static_abs',
+            'pnl': 139050.0, 'pct': None, 'rate_val': None, 'threshold': 'n/a',
+            'expiry_detail': 'GOLD26NOV123000PE — MCX, expires 27-Nov-2026 (Fri)',
+        }]
+        body = _tg_alert_body(rows)
+        assert "expiring: GOLD26NOV123000PE — MCX, expires 27-Nov-2026 (Fri)" in body
+
+    def test_tg_alert_body_no_expiring_line_when_absent(self):
+        from backend.shared.helpers.alert_utils import _tg_alert_body
+
+        rows = [{
+            'section': 'Positions', 'scope': 'TOTAL', 'kind': 'static_abs',
+            'pnl': -50000.0, 'pct': None, 'rate_val': None, 'threshold': 'n/a',
+        }]
+        body = _tg_alert_body(rows)
+        assert "expiring:" not in body
+
+    def test_email_alert_body_shows_expiry_subrow(self):
+        from backend.shared.helpers.alert_utils import _email_alert_body
+
+        rows = [{
+            'section': 'Positions', 'scope': 'ZG0790', 'kind': 'static_abs',
+            'pnl': 139050.0, 'pct': None, 'rate_val': None, 'threshold': 'n/a',
+            'expiry_detail': 'GOLD26NOV123000PE — MCX, expires 27-Nov-2026 (Fri)',
+        }]
+        html = _email_alert_body(rows)
+        assert "Expiring:" in html
+        assert "GOLD26NOV123000PE — MCX, expires 27-Nov-2026 (Fri)" in html
+
+    def test_email_alert_body_no_expiry_subrow_when_absent(self):
+        from backend.shared.helpers.alert_utils import _email_alert_body
+
+        rows = [{
+            'section': 'Positions', 'scope': 'TOTAL', 'kind': 'static_abs',
+            'pnl': -50000.0, 'pct': None, 'rate_val': None, 'threshold': 'n/a',
+        }]
+        html = _email_alert_body(rows)
+        assert "Expiring:" not in html
