@@ -4319,6 +4319,50 @@ seasonal branch at all.
   invariant does NOT yet hold codebase-wide outside those surfaces — see the residual bullets above
   for every other site still on the old flat value.
 
+**Amended 2026-11-26 — `market_lifecycle.py` was the one SSOT reader this sweep missed; live
+incident the same night the DST sync went live, fixed same day (commit `28034b4e`)** —
+`market_lifecycle.py:_enumerate_exchanges()` read `seg_cfg.get("sessions")` raw from
+`backend_config.yaml`, bypassing `resolve_dst_aware_sessions()` entirely — the one SSOT every
+other YAML-session reader (`_segment_is_open()`, `_ae_segment_flags()`) already routes through.
+Before this fix's own DST work shipped earlier the same session, the static 23:30 literal matched
+reality in-DST, so the gap was invisible. On the first winter night after the DST sync went live
+(2026-11-26), `market_lifecycle`'s own `mcx:close`/`mcx:close_settled` transition fired at the
+static 23:30 boundary — 24 minutes before the real 23:55 IST winter close, while MCX was still
+genuinely open. The (correctly DST-aware) `exchange_clock.is_exchange_open("MCX")` check inside
+`daily_snapshot.py`'s EOD writer (`_positions_rows`/`_snap_position_eod_vals`,
+`_holdings_rows`/`_snap_holding_eod_vals`) then correctly detected the market as still open and
+deliberately nulled `ltp`/`day_pnl` for the entire batch — this null-out is itself a correct,
+pre-existing safety behaviour ("Returns None for ltp/day_pnl when mid-session to prevent
+partial-day values from polluting the EOD snapshot"), not a new defect; it only fired because
+`market_lifecycle`'s clock was wrong. `positions.py`'s closed-hours `latest_batch` CTE requires
+`ltp IS NOT NULL AND ltp > 0` to select the day's snapshot per account; with every row null, it
+silently fell back to the PRIOR day's entire snapshot — live-reported as corrupted Day P&L / Chg%
+on MCX GOLD options (e.g. `-47.50%`, `+92.21%` on individual legs) right after close, and confirmed
+via `log_events` showing `positions snapshot: no rows for the current trading-day floor
+(2026-11-26), serving prior snapshot from 2026-11-25`.
+- **Fix.** `_enumerate_exchanges(today=None)` now accepts an explicit date and calls
+  `resolve_dst_aware_sessions(seg_cfg, today)` in place of the raw YAML read — a direct drop-in,
+  since that function already returns the raw list unchanged for every non-MCX segment and on any
+  resolver failure. `poll()` passes `today=now_ist.date()`, the exact IST date it already resolved
+  for the tick, so close-detection and the rest of the tick stay anchored to one date across a
+  midnight boundary rather than re-deriving a second, potentially different `timestamp_indian()`.
+- **Immediate remediation (same incident, manual).** Once MCX was genuinely closed for real,
+  `snapshot_daily_book(target_date=date(2026,11,26), market_open=False)` was re-run directly
+  (the same function `POST /api/admin/persistence/trigger-pnl-snapshot`-style admin triggers call) —
+  `market_open=False` forces EOD mode unconditionally regardless of `is_exchange_open()`, so it
+  correctly captured the real last-known MCX prices instead of nulling them. Confirmed every
+  GOLD/GOLDM leg got a valid `ltp`/`day_pnl` in the new batch before shipping the code fix.
+- Tests: `test_market_lifecycle.py` — `test_enumerate_exchanges_mcx_close_is_dst_aware_winter`,
+  `test_enumerate_exchanges_mcx_close_is_dst_aware_summer`,
+  `test_enumerate_exchanges_defaults_today_to_now_ist`,
+  `test_exchange_is_open_mcx_stays_open_past_old_static_close_in_winter` (the last one is the
+  direct regression: asserts MCX reads OPEN at 23:40 IST winter — pre-fix this read CLOSED).
+- Invariant: every reader of `market_segments` that decides MCX's close time — including a
+  transition/event-dispatch module, not only a pure "is it open" gate — must resolve through
+  `resolve_dst_aware_sessions()`. A module that re-derives its own copy of `hours_end` from the
+  YAML segment dict, even once, can silently drift from the DST-resolved value the rest of the
+  system now uses.
+
 **F&O order qty convention** — API now accepts LOTS as input for instruments with 
 `lot_size > 1`. `backend/api/routes/orders_place.py:_ticket_validate_input` converts 
 lots → contracts (`contracts = lots × lot_size`) at the request boundary. G2 (5-lot cap, 
