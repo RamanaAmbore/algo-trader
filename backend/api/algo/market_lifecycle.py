@@ -38,7 +38,7 @@ from datetime import datetime, time as dtime, timedelta
 from typing import Awaitable, Callable, Optional
 
 from backend.shared.helpers.date_time_utils import (
-    is_market_open, timestamp_indian,
+    is_market_open, resolve_dst_aware_sessions, timestamp_indian,
 )
 from backend.shared.helpers.ramboq_logger import get_logger
 from backend.shared.helpers.utils import config
@@ -172,7 +172,7 @@ class MarketLifecycle:
         # its own flag then, exactly once, tied to a REAL state transition
         # rather than the wall clock rolling over a date boundary.
         fired: list[dict] = []
-        exchanges = _enumerate_exchanges()
+        exchanges = _enumerate_exchanges(today=now_ist.date())
 
         # Pre-warm the special-sessions cache for every exchange THIS poll
         # cycle will check, BEFORE the per-exchange _exchange_is_open() loop
@@ -482,7 +482,7 @@ def _parse_time(t: str) -> dtime:
         return dtime(9, 15)
 
 
-def _enumerate_exchanges() -> dict[str, dict]:
+def _enumerate_exchanges(today=None) -> dict[str, dict]:
     """Read market_segments from config and return the per-exchange
     segment dict keyed by lower-case exchange name.
 
@@ -494,21 +494,48 @@ def _enumerate_exchanges() -> dict[str, dict]:
     Each per-exchange entry carries:
       • name                   — segment key from yaml
       • exchange               — upper-case exchange name (NSE/MCX/CDS)
-      • sessions               — list[{start: dtime, end: dtime}] from yaml.
-                                 Falls back to a single [(hours_start,
-                                 hours_end)] entry when the yaml still uses
-                                 the legacy shape.
+      • sessions               — list[{start: dtime, end: dtime}] from yaml,
+                                 routed through `resolve_dst_aware_sessions()`
+                                 so MCX's evening close reflects the real
+                                 US-DST-aware non-agri close time for *today*
+                                 (23:30 in-DST / 23:55 winter), never the
+                                 static YAML literal alone. Falls back to a
+                                 single [(hours_start, hours_end)] entry when
+                                 the yaml still uses the legacy shape.
       • hours_start / hours_end — first session bookends. Kept because
                                  `_task_market_lifecycle` derives its poll
                                  cadence from the earliest / latest window.
       • evening_open_on_holidays — MCX-style rule (calendar-closed day
                                  with 17:00+ evening session).
+
+    2026-11-26 fix (live incident, same night as the DST-close-time work
+    landed): this function used to read `seg_cfg.get("sessions")` raw,
+    bypassing `resolve_dst_aware_sessions()` entirely — the one SSOT every
+    other YAML-session reader (`_segment_is_open()`, `_ae_segment_flags()`)
+    already routes through. On the first winter night after that fix shipped,
+    this module's own `close`/`close_settled` transition fired at the STATIC
+    23:30 IST boundary while the real MCX close was 23:55 — 24 minutes early,
+    while the market was still genuinely open. The (correctly DST-aware)
+    `_exchange_clock.is_exchange_open("MCX")` check inside
+    `daily_snapshot.py`'s EOD writer then (correctly, by its own design)
+    detected the market as still open and nulled out `ltp`/`day_pnl` for the
+    whole batch to avoid polluting the EOD snapshot with a partial-day value.
+    The closed-hours `latest_batch` selector's `ltp IS NOT NULL AND ltp > 0`
+    filter then skipped that entire all-NULL batch and silently served the
+    PRIOR day's snapshot instead — reproducing the stale-Day-P&L symptom even
+    though the underlying data-freshness invariant elsewhere was fine. `today`
+    is accepted as a parameter (not re-derived internally) so `poll()` can
+    pass the exact IST date it already resolved for this tick, keeping the
+    close-detection and the rest of the tick's logic anchored to one date
+    even right at a midnight boundary.
     """
+    if today is None:
+        today = timestamp_indian().date()
     raw = config.get("market_segments", {}) or {}
     out: dict[str, dict] = {}
     for seg_name, seg_cfg in raw.items():
         exch = (seg_cfg or {}).get("holiday_exchange", "NSE")
-        sessions_raw = (seg_cfg or {}).get("sessions") or None
+        sessions_raw = resolve_dst_aware_sessions(seg_cfg, today)
         parsed_sessions: list[dict] = []
         if sessions_raw:
             for s in sessions_raw:

@@ -168,7 +168,7 @@ def stub_segments():
     """Patch _enumerate_exchanges with a stable 3-exchange map."""
     from backend.api.algo import market_lifecycle as ml_mod
 
-    def _fake():
+    def _fake(today=None):
         return {
             "nse": {"name": "equity",    "exchange": "NSE",
                     "hours_start": dtime(9, 15), "hours_end": dtime(15, 30)},
@@ -849,7 +849,7 @@ async def test_poll_prewarms_special_sessions_before_exchange_probe(
     now_ist = datetime(2026, 11, 5, 18, 0, tzinfo=IST)
     today = now_ist.date()
 
-    def _fake_enumerate():
+    def _fake_enumerate(today=None):
         return {
             "mcx": {
                 "name": "commodity", "exchange": "MCX",
@@ -925,7 +925,7 @@ async def test_poll_prewarm_key_matches_exchange_is_open_lookup_for_every_segmen
     IST = ZoneInfo("Asia/Kolkata")
     now_ist = datetime(2026, 11, 5, 10, 0, tzinfo=IST)
 
-    def _fake_enumerate():
+    def _fake_enumerate(today=None):
         return {
             "nse": {"name": "equity", "exchange": "NSE",
                     "sessions": [{"start": dtime_(9, 15), "end": dtime_(15, 30)}],
@@ -981,3 +981,89 @@ async def test_funds_offhours_task_registered():
     assert "is_any_segment_open" not in body
     # 30 min cadence (task still registered and still ticking)
     assert "30 * 60" in body or "1800" in body
+
+
+# ---------------------------------------------------------------------------
+# 2026-11-26 regression — _enumerate_exchanges() must be DST-aware for MCX
+# ---------------------------------------------------------------------------
+#
+# Live incident: this module's own close/close_settled detection read the
+# static YAML `hours_end` literal (23:30) directly, bypassing
+# `resolve_dst_aware_sessions()` — the one SSOT every other YAML-session
+# reader already routes through (see CLAUDE.md's "MCX DST-aware non-agri
+# close time" entry). On the first winter night after the DST-close-time fix
+# shipped, this fired the mcx:close -> close_settled transition 24 minutes
+# before the real 23:55 IST close, while the market was still genuinely
+# open. The (correctly DST-aware) exchange_clock check inside the EOD
+# snapshot writer then nulled out ltp/day_pnl for the whole batch (by
+# design, to avoid polluting the EOD snapshot with a partial-day value),
+# and the closed-hours reader fell back to the PRIOR day's entire snapshot.
+
+
+def test_enumerate_exchanges_mcx_close_is_dst_aware_winter():
+    """A winter-season `today` resolves MCX's hours_end to 23:55, not the
+    static YAML 23:30 literal — reproduces the exact incident date."""
+    from backend.api.algo.market_lifecycle import _enumerate_exchanges
+
+    exchanges = _enumerate_exchanges(today=date(2026, 11, 26))
+    assert exchanges["mcx"]["hours_end"] == dtime(23, 55)
+    assert exchanges["mcx"]["sessions"][-1]["end"] == dtime(23, 55)
+    # Non-MCX segments are never touched by the DST resolution.
+    assert exchanges["nse"]["hours_end"] == dtime(15, 30)
+
+
+def test_enumerate_exchanges_mcx_close_is_dst_aware_summer():
+    """A DST-season `today` still resolves to the pre-existing 23:30 —
+    confirms the fix is season-aware, not a blanket 23:55 override."""
+    from backend.api.algo.market_lifecycle import _enumerate_exchanges
+
+    exchanges = _enumerate_exchanges(today=date(2026, 7, 15))
+    assert exchanges["mcx"]["hours_end"] == dtime(23, 30)
+
+
+def test_enumerate_exchanges_defaults_today_to_now_ist():
+    """Calling with no `today` arg (the pre-fix call shape, still used by
+    any other caller) resolves via timestamp_indian() so behaviour for an
+    omitted argument is never silently wrong."""
+    from unittest.mock import patch as _patch
+    from backend.api.algo import market_lifecycle as ml_mod
+
+    winter_now = datetime(2026, 11, 26, 20, 0)
+    with _patch.object(ml_mod, "timestamp_indian", lambda: winter_now):
+        exchanges = ml_mod._enumerate_exchanges()
+    assert exchanges["mcx"]["hours_end"] == dtime(23, 55)
+
+
+@pytest.mark.asyncio
+async def test_exchange_is_open_mcx_stays_open_past_old_static_close_in_winter():
+    """Direct regression for the live incident: at 23:40 IST on a winter
+    date, MCX must read OPEN (real close 23:55) — pre-fix this read CLOSED
+    at the static 23:30 boundary, 24 minutes before the real close, which
+    is the premature close/close_settled transition the incident traced
+    back to."""
+    from unittest.mock import patch as _patch
+    from zoneinfo import ZoneInfo
+    from backend.api.algo.market_lifecycle import (
+        _enumerate_exchanges, _exchange_is_open,
+    )
+
+    IST = ZoneInfo("Asia/Kolkata")
+    today = date(2026, 11, 26)
+    mcx_segment = _enumerate_exchanges(today=today)["mcx"]
+
+    with _patch("backend.brokers.broker_apis.fetch_holidays", lambda exch: set()), \
+         _patch("backend.brokers.broker_apis.fetch_special_sessions", lambda exch: []):
+        still_open = _exchange_is_open(
+            mcx_segment, datetime(2026, 11, 26, 23, 40, tzinfo=IST),
+        )
+        genuinely_closed = _exchange_is_open(
+            mcx_segment, datetime(2026, 11, 26, 23, 56, tzinfo=IST),
+        )
+
+    assert still_open is True, (
+        "MCX must read OPEN at 23:40 IST on a winter-season date — the "
+        "real close is 23:55, not the static YAML 23:30"
+    )
+    assert genuinely_closed is False, (
+        "MCX must read CLOSED once the real 23:55 IST winter close has passed"
+    )
