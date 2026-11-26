@@ -1238,17 +1238,23 @@ def _patch_playwright_errors(monkeypatch):
 
 
 class TestVerifyLoggedInErrAborted:
-    """2026-11-26 fix (second real run found this): `goto()` can raise a
-    bare `Error: net::ERR_ABORTED` — a known Playwright/Chromium race
-    where the navigation we started is cancelled by a second,
-    client-side-redirect navigation before `domcontentloaded` fires. The
-    real success signal is the Reports link, not this goto() completing
-    cleanly."""
+    """2026-11-26 fixes (second and third real runs found these):
 
-    def test_err_aborted_on_goto_is_swallowed_reports_link_still_found(self, monkeypatch):
+    1. `goto()` can raise a bare `Error: net::ERR_ABORTED` — a known
+       Playwright/Chromium race where the navigation we started is
+       cancelled by a second, client-side-redirect navigation before
+       `domcontentloaded` fires. Swallowed, but not sufficient alone.
+    2. Swallowing ERR_ABORTED let kite.zerodha.com's own in-flight
+       post-TOTP redirect WIN that race, landing back on kite's own
+       dashboard (no Reports link there) instead of console.zerodha.com.
+       The fix checks `page.url` after each attempt and retries (bounded,
+       3 attempts) until it genuinely lands on the console host."""
+
+    def test_err_aborted_on_goto_is_swallowed_when_landed_url_is_console(self, monkeypatch):
         _patch_playwright_errors(monkeypatch)
         page = MagicMock()
         page.goto.side_effect = _FakePlaywrightError("Page.goto: net::ERR_ABORTED")
+        page.url = "https://console.zerodha.com/dashboard"
         reports_link = MagicMock()
         page.get_by_role.return_value = reports_link
 
@@ -1270,6 +1276,7 @@ class TestVerifyLoggedInErrAborted:
         _patch_playwright_errors(monkeypatch)
         page = MagicMock()
         page.goto.return_value = None
+        page.url = "https://console.zerodha.com/dashboard"
         page.inner_text.return_value = "welcome back"  # no captcha tokens present
         reports_link = MagicMock()
         reports_link.wait_for.side_effect = _FakePlaywrightTimeoutError("timed out")
@@ -1278,6 +1285,53 @@ class TestVerifyLoggedInErrAborted:
         console = mod.KiteConsoleReportsPage(page)
         with pytest.raises(mod.ConsoleLoginError, match="authenticated dashboard"):
             console.verify_logged_in()
+
+    def test_kite_redirect_wins_the_race_retries_then_raises_a_distinct_error(self, monkeypatch):
+        """The exact live incident: every attempt lands back on
+        kite.zerodha.com's own dashboard, never console.zerodha.com. Must
+        raise a message naming the real cause (the redirect race), not
+        the generic "Reports link timed out" message — they are different
+        failures and must not be conflated."""
+        _patch_playwright_errors(monkeypatch)
+        page = MagicMock()
+        page.goto.return_value = None
+        page.url = "https://kite.zerodha.com/dashboard"
+        page.wait_for_timeout = MagicMock()
+        reports_link = MagicMock()
+        page.get_by_role.return_value = reports_link
+
+        console = mod.KiteConsoleReportsPage(page)
+        with pytest.raises(mod.ConsoleLoginError, match="redirect kept winning"):
+            console.verify_logged_in()
+
+        assert page.goto.call_count == 3
+        reports_link.wait_for.assert_not_called()
+
+    def test_retry_succeeds_on_second_attempt_after_losing_first_race(self, monkeypatch):
+        """First attempt loses the race (lands on kite's dashboard),
+        second attempt wins (lands on console) -- confirms the retry
+        loop recovers from a transient race rather than needing the full
+        3 attempts every time."""
+        _patch_playwright_errors(monkeypatch)
+        page = MagicMock()
+        page.url = "https://kite.zerodha.com/dashboard"
+        call_count = {"n": 0}
+
+        def _first_attempt_loses_second_wins(*a, **kw):
+            call_count["n"] += 1
+            if call_count["n"] >= 2:
+                page.url = "https://console.zerodha.com/dashboard"
+
+        page.goto.side_effect = _first_attempt_loses_second_wins
+        page.wait_for_timeout = MagicMock()
+        reports_link = MagicMock()
+        page.get_by_role.return_value = reports_link
+
+        console = mod.KiteConsoleReportsPage(page)
+        console.verify_logged_in()  # must not raise
+
+        assert page.goto.call_count == 2
+        reports_link.wait_for.assert_called_once()
 
 
 # ===========================================================================
