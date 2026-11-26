@@ -1,12 +1,12 @@
 """Tests for `_v2_expiry_preclose_alert_section()` / `_v2_expiry_exchange_
 breakdown_or_empty()` (agent_engine.py) — the per-exchange root/position
 breakdown appended to the expiry-day pre-close alert. Covers the
-council-mandated wording rules:
-  - MCX: unnetted (needs_close) legs first, masked account, lots, the
-    real close_reason; fully-netted roots demoted/last, NEUTRAL wording
-    only (never "safe"/"hedged").
-  - NFO: ITM/NTM legs first; OTM legs demoted/last as "no action" —
-    never "netted" (different mechanism, no real pairing).
+action-only rendering rules:
+  - MCX: unnetted (needs_close) legs render, masked account, lots, the
+    real close_reason; a fully-netted root renders NOTHING at all — no
+    "netted"/"safe"/"hedged" line, it is simply absent.
+  - NFO: ITM/NTM legs render; an OTM leg renders NOTHING at all — no
+    "no action"/"netted" line, it is simply absent.
   - A scan failure renders an explicit degraded note, never a silent
     blank (which would read as a false "all clear").
   - Multi-account rows for the same root are never pooled.
@@ -23,6 +23,20 @@ takes an EXPLICIT single exchange and never re-derives a set, mirroring
 `_v2_expiry_morning_preview(context, exchange)`'s own, already-proven
 shape exactly. See `agent_engine.py`'s history comment above
 `_EXPIRY_DAY_AWARENESS_AGENTS` for the live incident this fixes.
+
+2026-11-26, same-day follow-up (operator: "audit all the alerts for
+market expiry close and make them consistent. Only show the required
+info like the positions that only that need to be closed") — the old
+demoted "netted: ROOT" / "no action (OTM): ROOT" lines are REMOVED
+entirely. A leg/root needing no action is now simply absent from the
+rendered text, never mentioned with neutral/reassuring wording. This
+also fixes a fallback-text self-contradiction the removal would
+otherwise have introduced: when expiring positions exist but NONE need
+closing, `_v2_expiry_exchange_section()` now returns `None` (same as
+"nothing expiring at all" used to), so the caller's fallback wording
+had to become true in BOTH cases — "No {exchange} F&O positions need
+closing today", never "are expiring today" (which would contradict an
+alert that fired precisely because something expires today).
 
 Shares `ExpiryEngine.scan_positions()` (mocked here) with the sibling
 order-placing action — this file does not re-implement any netting
@@ -79,7 +93,12 @@ async def test_mcx_unnetted_root_renders_first_with_masked_account_and_reason():
 
 
 @pytest.mark.asyncio
-async def test_mcx_fully_netted_root_is_demoted_and_neutral_never_safe_language():
+async def test_mcx_fully_netted_root_renders_nothing_to_close_fallback():
+    """2026-11-26: a fully-netted MCX root used to render a demoted
+    `netted: CRUDEOIL` line. It now renders NOTHING for that root — the
+    section itself has no content, so the caller's "nothing to close"
+    fallback fires instead, and it must never claim CRUDEOIL is not
+    expiring (it genuinely is — it just needs no action)."""
     positions = [
         _pos(account="ZG0790", tradingsymbol="CRUDEOIL26OCT6000CE", underlying="CRUDEOIL",
              exchange="MCX", quantity=1, residual_qty=0, needs_close=False),
@@ -89,16 +108,23 @@ async def test_mcx_fully_netted_root_is_demoted_and_neutral_never_safe_language(
     with patch("backend.api.algo.expiry.ExpiryEngine", return_value=_mock_engine(positions)):
         text = await _v2_expiry_preclose_alert_section({}, "MCX")
     assert text is not None
-    assert "netted: CRUDEOIL" in text
-    for banned in ("safe", "hedged, no action needed", "no action needed"):
-        assert banned not in text.lower(), f"must never claim an assurance: {banned!r} found"
+    assert "nothing to close" in text.lower()
+    assert "MCX" in text
+    for banned in ("netted", "safe", "hedged, no action needed", "no action needed", "are expiring today"):
+        assert banned not in text.lower(), f"must never claim an assurance or contradiction: {banned!r} found"
 
 
 @pytest.mark.asyncio
-async def test_mcx_unnetted_sorts_before_netted_root():
+async def test_mcx_mixed_root_renders_only_the_needs_close_leg():
+    """A root with one needs-close leg and one fully-netted leg (not the
+    same root-wide netting outcome — e.g. an unnetted residual sitting
+    alongside a genuinely netted sibling root) must render ONLY the
+    needs-close leg's line, with no "netted"/"no action" text anywhere."""
     positions = [
         _pos(account="ZG0790", tradingsymbol="CRUDEOIL26OCT6000CE", underlying="CRUDEOIL",
              exchange="MCX", quantity=1, residual_qty=0, needs_close=False),
+        _pos(account="ZG0790", tradingsymbol="CRUDEOIL26OCT6000PE", underlying="CRUDEOIL",
+             exchange="MCX", quantity=-1, residual_qty=0, needs_close=False),
         _pos(account="ZG0790", tradingsymbol="GOLD26OCT75000CE", underlying="GOLD",
              exchange="MCX", quantity=1, residual_qty=1, needs_close=True,
              close_reason="MCX unhedged ITM"),
@@ -107,12 +133,19 @@ async def test_mcx_unnetted_sorts_before_netted_root():
          patch("backend.api.algo.agent_engine._v2_expiry_qty_display", new=AsyncMock(return_value="1 lot")):
         text = await _v2_expiry_preclose_alert_section({}, "MCX")
     assert text is not None
-    assert text.index("GOLD") < text.index("netted: CRUDEOIL"), \
-        "action-needed root must render before the demoted netted root"
+    assert "GOLD" in text
+    assert "CRUDEOIL" not in text, "the fully-netted CRUDEOIL root must be entirely absent, not demoted"
+    assert "netted" not in text.lower()
+    # Header line + exactly one action line for the single needs-close leg.
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    assert len(lines) == 2, f"expected header + 1 action line only, got: {lines}"
 
 
 @pytest.mark.asyncio
-async def test_nfo_itm_leg_renders_first_never_says_netted():
+async def test_nfo_otm_leg_renders_nothing_only_itm_leg_shows():
+    """2026-11-26: an OTM NFO leg used to render a demoted `no action
+    (OTM): NIFTY` line. It now renders NOTHING for that leg — only the
+    ITM leg that genuinely needs closing appears."""
     positions = [
         _pos(account="ZJ6294", tradingsymbol="NIFTY26OCT22000CE", underlying="NIFTY",
              exchange="NFO", quantity=50, needs_close=True,
@@ -125,9 +158,34 @@ async def test_nfo_itm_leg_renders_first_never_says_netted():
         text = await _v2_expiry_preclose_alert_section({}, "NFO")
     assert text is not None
     assert "NSE/NFO:" in text
-    assert "no action (OTM): NIFTY" in text
+    assert "no action" not in text.lower(), "a no-action NFO leg must be entirely absent, not demoted"
     assert "netted" not in text.lower(), "NFO must never use MCX's netting wording"
-    assert text.index("NIFTY") < text.index("no action (OTM)")
+    # Header line + exactly one action line for the single ITM leg.
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    assert len(lines) == 2, f"expected header + 1 action line only, got: {lines}"
+    assert "NIFTY" in lines[1]
+
+
+@pytest.mark.asyncio
+async def test_nfo_mixed_root_itm_and_otm_legs_renders_only_itm():
+    """A single NFO root (NIFTY) with one ITM leg and one OTM leg must
+    render only the ITM leg — the OTM sibling in the SAME root is just
+    as absent as a different root's OTM leg would be."""
+    positions = [
+        _pos(account="ZJ6294", tradingsymbol="NIFTY26OCT22000CE", underlying="NIFTY",
+             exchange="NFO", quantity=50, needs_close=True,
+             close_reason="Equity ITM — must close before expiry"),
+        _pos(account="ZJ6294", tradingsymbol="NIFTY26OCT30000CE", underlying="NIFTY",
+             exchange="NFO", quantity=50, needs_close=False),
+    ]
+    with patch("backend.api.algo.expiry.ExpiryEngine", return_value=_mock_engine(positions)), \
+         patch("backend.api.algo.agent_engine._v2_expiry_qty_display", new=AsyncMock(return_value="50 (contracts)")):
+        text = await _v2_expiry_preclose_alert_section({}, "NFO")
+    assert text is not None
+    assert "no action" not in text.lower()
+    assert "netted" not in text.lower()
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    assert len(lines) == 2, f"expected header + 1 action line only, got: {lines}"
 
 
 @pytest.mark.asyncio

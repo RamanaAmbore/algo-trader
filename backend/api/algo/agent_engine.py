@@ -1431,52 +1431,51 @@ def _v2_expiry_root_unknown_lines(root: str, positions: list) -> list[str]:
     determined (underlying LTP fetch failed or returned nothing — see
     `ExpiryEngine._classify_moneyness`, which returns "UNKNOWN" rather
     than guessing ITM/OTM). Audit finding (2026-10-29): without this,
-    an UNKNOWN leg silently fell into the demoted branch below and
-    rendered as `netted: ROOT` / `no action (OTM): ROOT` — a false
-    all-clear on exactly the kind of failure this whole function's
-    try/except was built to surface loudly. Checked per-leg, both
-    exchanges — moneyness is computed for every expiring position
-    regardless of exchange."""
+    an UNKNOWN leg silently fell into the "needs no action" branch and
+    rendered as a false all-clear on exactly the kind of failure this
+    whole function's try/except was built to surface loudly. Checked
+    per-leg, both exchanges — moneyness is computed for every expiring
+    position regardless of exchange.
+
+    2026-11-26 (operator: "only show the required info like the
+    positions that only that need to be closed") — this is now the ONLY
+    non-action content this module ever renders. A leg needing no
+    action (MCX: netted; NFO: OTM) is omitted from the alert entirely,
+    not mentioned with reassuring/neutral wording — see
+    `_v2_expiry_exchange_section`'s own docstring.
+
+    2026-11-26 audit fix: `mask_account` had no import in this
+    function's scope at all — a genuinely UNKNOWN-moneyness leg would
+    have crashed this render with `NameError` instead of surfacing the
+    warning it exists to show. Found while auditing this exact
+    function for the demoted-line removal above; fixed alongside it."""
+    from backend.shared.helpers.utils import mask_account
+
     return [
         f"  {root} {mask_account(p.account or '')} price unavailable — moneyness unknown, not evaluated"
         for p in positions if p.moneyness == "UNKNOWN"
     ]
 
 
-def _v2_expiry_root_demoted_lines(exch: str, root: str, positions: list) -> list[str]:
-    """Demoted (no-action) line(s) for one (exchange, root)'s positions.
-    Extracted from `_v2_expiry_position_breakdown` to keep it below the
-    CC gate. UNKNOWN-moneyness legs are excluded here — see
-    `_v2_expiry_root_unknown_lines`, which renders them as an explicit
-    warning instead.
-
-    MCX: root-level netting concept — a leg with no residual is only
-    "netted" relative to the OTHER legs in this same (account,
-    underlying, expiry) group, so this is ONE line for the whole root,
-    only when NOTHING in it needs closing AND NOTHING in it is UNKNOWN
-    (mentioning it per-leg would be redundant with, or contradict, an
-    action line in the same root; an UNKNOWN leg means the root's real
-    net state is itself unverified, so it must not claim "netted").
-    NFO: no netting step at all (per-leg ITM/NTM flag only) — a root can
-    genuinely mix an ITM leg (needs closing) with an OTM leg (no
-    action), so this is per-LEG, never mutually exclusive with an
-    action line in the same root.
-    """
-    needs = [p for p in positions if p.needs_close]
-    unknown = [p for p in positions if p.moneyness == "UNKNOWN"]
-    if exch == "MCX":
-        return [f"netted: {root}"] if not needs and not unknown else []
-    return [
-        f"no action (OTM): {root}" for p in positions
-        if not p.needs_close and p.moneyness != "UNKNOWN"
-    ]
-
-
 async def _v2_expiry_exchange_section(exch: str, label: str, all_expiring: list) -> str | None:
-    """Render one exchange's root-grouped breakdown section (action
-    lines first, demoted lines last), or None when this exchange has no
-    expiring positions at all. Extracted from
-    `_v2_expiry_position_breakdown` to keep it below the CC gate."""
+    """Render one exchange's root-grouped breakdown section — ONLY the
+    legs that genuinely need attention (action-needed lines, then
+    UNKNOWN-moneyness warnings), or None when this exchange has nothing
+    that needs attention (no expiring positions at all, OR every
+    expiring leg is already netted/OTM with nothing to close).
+    Extracted from `_v2_expiry_position_breakdown` to keep it below the
+    CC gate.
+
+    2026-11-26 (operator: "only show the required info like the
+    positions that only that need to be closed") — a leg that needs no
+    action (MCX: fully netted within its root; NFO: OTM) used to render
+    as a demoted "netted: ROOT" / "no action (OTM): ROOT" line. That is
+    exactly the non-required noise the operator asked to drop — it is
+    now omitted from the alert entirely, never mentioned at all. The
+    caller (`_v2_expiry_exchange_breakdown_or_empty`) renders an
+    explicit "nothing to close" fallback when this function returns
+    None, so a position needing no action is never silently blank —
+    it is just not itemised per-root/per-leg inside this section."""
     exch_positions = [p for p in all_expiring if (p.exchange or "").upper() == exch]
     if not exch_positions:
         return None
@@ -1487,19 +1486,16 @@ async def _v2_expiry_exchange_section(exch: str, label: str, all_expiring: list)
 
     unknown_lines: list[str] = []
     action_lines: list[str] = []
-    demoted_lines: list[str] = []
     for root in sorted(by_root):
         positions = sorted(by_root[root], key=lambda p: p.account or "")
         unknown_lines.extend(_v2_expiry_root_unknown_lines(root, positions))
         action_lines.extend(await _v2_expiry_root_action_lines(exch, root, positions))
-        demoted_lines.extend(_v2_expiry_root_demoted_lines(exch, root, positions))
 
-    if not unknown_lines and not action_lines and not demoted_lines:
+    if not unknown_lines and not action_lines:
         return None
     # Unknown-price warnings lead — a failed price lookup is itself the
     # most urgent fact in this section (see _v2_expiry_root_unknown_lines).
-    action_lines = unknown_lines + action_lines
-    return f"{label}:\n" + "\n".join(action_lines + demoted_lines)
+    return f"{label}:\n" + "\n".join(unknown_lines + action_lines)
 
 
 def _v2_expiry_context_shim(context: dict | None):
@@ -1535,10 +1531,20 @@ async def _v2_expiry_exchange_breakdown_or_empty(exchange: str) -> str:
     with). Every caller now already knows its own single exchange from
     its own agent's condition — this function never re-derives a set.
 
-    Council finding (2026-10-29, preserved): never render an assurance
-    like "safe"/"hedged, no action needed" for a netted MCX root — state
-    the neutral fact only. Never reuse "netted" wording for NFO —
-    different mechanism (OTM just means "no action", not "paired")."""
+    2026-11-26, same-day follow-up (operator: "only show the required
+    info like the positions that only that need to be closed") — the
+    per-root/per-leg "netted"/"no action (OTM)" demoted lines are gone
+    (see `_v2_expiry_exchange_section`'s own docstring). That changed
+    what `section is None` means: it is now ALSO true when expiring
+    positions genuinely exist but none of them need closing (fully
+    netted MCX roots / all-OTM NFO legs), not only when nothing expires
+    at all. Both fallback branches below therefore use ONE wording that
+    is true in both cases — "need closing", never "are expiring" — so
+    a genuinely-expiring-but-nothing-to-close exchange can never render
+    a self-contradicting "No positions are expiring today" body under
+    an alert title that fired precisely because something expires
+    today (the exact failure class the split above fixed one level up;
+    this closes the same class one level down, inside the renderer)."""
     from backend.api.algo.expiry import ExpiryEngine
 
     engine = ExpiryEngine()
@@ -1550,12 +1556,12 @@ async def _v2_expiry_exchange_breakdown_or_empty(exchange: str) -> str:
 
     all_expiring = engine.state.positions or []
     if not all_expiring:
-        return f"No {exchange} F&O positions are expiring today — nothing to close."
+        return f"No {exchange} F&O positions need closing today — nothing to close."
 
     label = "MCX" if exchange == "MCX" else "NSE/NFO"
     section = await _v2_expiry_exchange_section(exchange, label, all_expiring)
     if section is None:
-        return f"No {exchange} F&O positions are expiring today — nothing to close."
+        return f"No {exchange} F&O positions need closing today — nothing to close."
     return section
 
 
