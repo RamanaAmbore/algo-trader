@@ -466,6 +466,39 @@ class TestLoginCooloffReuse:
         assert outcome.reason == "login_cooling_off"
         conn._attempt_login_with_cooloff.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_sync_account_runs_scrape_off_the_main_event_loop_thread(self, monkeypatch):
+        """2026-11-26 threading fix, discriminating regression test — the
+        first real run against the live Console failed with
+        'It looks like you are using Playwright Sync API inside the
+        asyncio loop' because `sync_account()` used to call the sync,
+        Playwright-touching login/scrape work directly on the main
+        event-loop thread. Confirms the fix: `_console_login_and_scrape_sync`
+        now runs on a DIFFERENT thread than the one driving this test's
+        own event loop, via `asyncio.to_thread()`."""
+        main_thread_ident = threading.get_ident()
+        seen_thread_idents: "list[int]" = []
+
+        def fake_scrape_sync(conn, plan):
+            seen_thread_idents.append(threading.get_ident())
+            return {"login_ok": True, "login_failed": False, "chunks": []}
+
+        monkeypatch.setattr(mod, "_console_login_and_scrape_sync", fake_scrape_sync)
+        monkeypatch.setattr(mod, "build_console_connection", lambda *a, **k: object())
+        row = _fake_broker_account_row("ZCONSOLE_THREAD1")
+
+        outcome = await mod.sync_account(
+            row, plan={"derivatives": (date(2026, 11, 1), date(2026, 11, 30))},
+        )
+
+        assert outcome.ok is True
+        assert len(seen_thread_idents) == 1
+        assert seen_thread_idents[0] != main_thread_ident, (
+            "the Playwright-touching scrape must run off the main event "
+            "loop thread -- calling it directly on this thread is exactly "
+            "the bug a real run hit."
+        )
+
     def test_console_login_error_is_distinct_from_structural_error(self):
         """ConsoleStructuralError (post-login scraping) must NEVER be
         mistaken, by type, for a ConsoleLoginError (pre-login failure) —

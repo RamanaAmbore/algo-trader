@@ -1322,36 +1322,129 @@ class SyncOutcome:
     segment_errors: "list[str]" = field(default_factory=list)
 
 
-async def _pull_and_ingest_one_report(
-    reports, page, masked: str, segment: str, report_type: str,
-    start: date, end: date,
+def _console_login_and_scrape_sync(conn, plan: "dict[str, tuple[date, date]]") -> dict:
+    """Runs the ENTIRE Playwright-touching portion of an account sync —
+    login AND every segment/report-type/chunk's navigate+download —
+    synchronously, on whichever thread calls it.
+
+    2026-11-26 fix (first real run against the live Console found this):
+    Playwright's SYNC API refuses to start inside a thread that already
+    has a running asyncio event loop (`sync_playwright().start()` raises
+    "It looks like you are using Playwright Sync API inside the asyncio
+    loop" — confirmed live, both accounts, zero HTTP ever reached Kite).
+    `sync_account()` (async, called from `main()`'s own running loop) used
+    to call `conn._attempt_login_with_cooloff()` — a SYNC method — directly
+    on the main event-loop thread. This function is the fix: it is plain
+    sync, with no `await` anywhere, and `sync_account()` now runs it via
+    `asyncio.to_thread()`, which hands it a worker thread with no event
+    loop of its own.
+
+    Every Playwright object this creates (browser/context/page) is bound
+    to THAT worker thread per Playwright's own thread-affinity rule, so
+    every later Playwright call (the whole scrape loop, the diagnostics
+    capture on a scrape failure, and the final `shutdown_console_browser`)
+    must also happen in this SAME function call, on this SAME thread —
+    never split across a second `asyncio.to_thread()` call, which the
+    thread pool is not guaranteed to run on the same worker thread.
+
+    CSV parsing/validation/DB-ingestion need no Playwright object at all,
+    so they are deliberately NOT done here — see `_ingest_one_report()`,
+    called by `sync_account()` back on the main event loop after this
+    returns.
+
+    Returns:
+        {"login_ok": bool, "login_failed": bool, "chunks": [...]}
+
+    `login_failed` distinguishes "was already cooling off, never
+    attempted" (login_ok=False, login_failed=False) from "attempted and
+    failed" (login_ok=False, login_failed=True) — only for the caller's
+    logging/alert text; both are treated as not-ok. Each chunk dict is
+    `{"segment", "report_type", "start", "end", "raw_bytes" | None,
+    "scrape_error" | None, "diagnostics" | None}`."""
+    from backend.shared.helpers.utils import mask_account
+    from backend.brokers.connections import _cross_process_login_lock
+
+    masked = mask_account(conn.account)
+    try:
+        if conn.is_login_cooling_off():
+            return {"login_ok": False, "login_failed": False, "chunks": []}
+
+        with conn._login_lock:
+            with _cross_process_login_lock(conn.account):
+                conn._attempt_login_with_cooloff()
+
+        if conn.is_login_cooling_off():
+            return {"login_ok": False, "login_failed": True, "chunks": []}
+
+        page = conn._console_page
+        reports = KiteConsoleReportsPage(page)
+        chunks: "list[dict]" = []
+        for segment, (start, end) in plan.items():
+            for report_type in ("tradebook", "pnl"):
+                for c_start, c_end in chunk_by_calendar_month(start, end):
+                    # pnl ONLY: floor the request's own start to the 1st
+                    # of c_start's month. Still <= ~1 month wide (c_end
+                    # is already bounded by chunk_by_calendar_month), so
+                    # the Console limit still holds — but this makes
+                    # EVERY pnl request for "this calendar month",
+                    # whichever caller/trigger produced it (a one-time
+                    # backfill's own full-month chunk, a later sync's
+                    # narrower expiry-aligned chunk, or a same-day
+                    # re-run), anchor its requested range at the SAME
+                    # start, so they become directly comparable as
+                    # successive snapshots of one month rather than
+                    # genuinely different, non-comparable ranges. See
+                    # `get_accumulated_pnl()`'s own docstring for why
+                    # that comparability is what makes "pick the latest
+                    # one per month, then sum across months" correct —
+                    # without this floor, two pulls for the same month
+                    # with different `pull_range_start` would get
+                    # DIFFERENT `dedup_key`s and silently SUM instead of
+                    # replacing each other, double-counting the overlap.
+                    # Tradebook needs no such floor — trade_id-based
+                    # dedup already makes any overlapping window safe.
+                    req_start = (
+                        date(c_start.year, c_start.month, 1)
+                        if report_type == "pnl" else c_start
+                    )
+                    label = "tradebook" if report_type == "tradebook" else "pnl"
+                    entry = {
+                        "segment": segment, "report_type": report_type,
+                        "start": req_start, "end": c_end,
+                        "raw_bytes": None, "scrape_error": None,
+                        "diagnostics": None,
+                    }
+                    try:
+                        reports.navigate_to_reports(report_type)
+                        reports.select_segment(segment)
+                        reports.set_date_range(req_start, c_end)
+                        download_path = reports.trigger_download()
+                        entry["raw_bytes"] = download_path.read_bytes()
+                    except Exception as e:
+                        entry["scrape_error"] = str(e)
+                        entry["diagnostics"] = capture_diagnostics(
+                            page, masked, f"scrape_{segment}_{label}",
+                        )
+                    chunks.append(entry)
+        return {"login_ok": True, "login_failed": False, "chunks": chunks}
+    finally:
+        shutdown_console_browser(conn)
+
+
+async def _ingest_one_report(
+    masked: str, segment: str, report_type: str,
+    start: date, end: date, raw_bytes: bytes,
 ) -> "tuple[int, list[str]]":
-    """Pulls, parses, validates and ingests ONE (segment, report_type)
-    combination. Extracted out of `sync_account()`'s own loop so that
-    loop stays a flat double-`for` once it covers two report types per
-    segment — keeps `sync_account()` itself under the complexity gate
-    (`radon cc ... -s -n D`) and isolates one report type's structural
-    failure from the other for the same segment, matching this
-    codebase's `@for_all_accounts` per-unit-degrades-not-the-batch
-    convention one level deeper."""
+    """Parses, validates and ingests ONE already-scraped report's raw
+    bytes — touches no Playwright object, so it runs on the main event
+    loop, not the worker thread `_console_login_and_scrape_sync()` runs
+    on. Split out of that function's predecessor (the old
+    `_pull_and_ingest_one_report()`) by the 2026-11-26 threading fix —
+    see that function's own docstring."""
     from backend.api.database import async_session
 
     label = "tradebook" if report_type == "tradebook" else "pnl"
     try:
-        reports.navigate_to_reports(report_type)
-        reports.select_segment(segment)
-        reports.set_date_range(start, end)
-        download_path = reports.trigger_download()
-    except Exception as e:
-        diag = capture_diagnostics(page, masked, f"scrape_{segment}_{label}")
-        await alert_critical(
-            f"Kite Console scraping failed ({segment}/{label})", masked,
-            detail=str(e), diagnostics=diag,
-        )
-        return 0, [f"{segment}/{label}: scrape failed: {e}"]
-
-    try:
-        raw_bytes = download_path.read_bytes()
         if report_type == "tradebook":
             parsed_rows = parse_tradebook_csv(raw_bytes)
             validate_tradebook_rows(parsed_rows, segment=segment, start=start, end=end)
@@ -1382,13 +1475,25 @@ async def sync_account(row, *, plan: "dict[str, tuple[date, date]]") -> SyncOutc
     types (tradebook + pnl) for each segment. One (segment, report_type)
     combination's structural scraping failure never aborts the rest of
     this account's segments/report types or any other account — each is
-    isolated in its own try/except (see `_pull_and_ingest_one_report()`),
-    matching this codebase's `@for_all_accounts`
-    per-account-degrades-not-the-batch convention.
+    isolated per-chunk (see `_console_login_and_scrape_sync()`'s per-entry
+    `scrape_error` and `_ingest_one_report()`'s own try/except), matching
+    this codebase's `@for_all_accounts` per-account-degrades-not-the-batch
+    convention.
 
-    2026-11-26 redesign — BOTH report types now pull `plan`'s own range
-    for a segment, each split into non-overlapping calendar-month chunks
-    via `chunk_by_calendar_month()` (Kite Console's CSV export does not
+    2026-11-26 threading fix — the entire Playwright-touching sequence
+    (login + every segment/report-type/chunk's scrape) now runs via
+    `asyncio.to_thread(_console_login_and_scrape_sync, ...)`, confirmed
+    necessary by a real first run: Playwright's sync API cannot start
+    inside a thread that already has a running asyncio event loop, which
+    this function's caller (`main()`) always does. See that function's
+    own docstring for the full reasoning, including why the scrape loop
+    and the shutdown must stay inside that ONE call rather than being
+    split across a second `asyncio.to_thread()` invocation.
+
+    2026-11-26 redesign (pre-existing, unchanged by the threading fix) —
+    BOTH report types now pull `plan`'s own range for a segment, each
+    split into non-overlapping calendar-month chunks via
+    `chunk_by_calendar_month()` (Kite Console's CSV export does not
     reliably support a range wider than ~1 month). The pnl-statement no
     longer pulls a SEPARATE fixed-anchor-to-today range — that design
     assumed pulls were wide, overlapping, variable-width ranges; every
@@ -1398,74 +1503,48 @@ async def sync_account(row, *, plan: "dict[str, tuple[date, date]]") -> SyncOutc
     chunk's own `pull_range_start`/`pull_range_end` are exactly the
     chunk's own boundaries, never the full un-chunked `plan` range."""
     from backend.shared.helpers.utils import mask_account
-    from backend.brokers.connections import _cross_process_login_lock
 
     account = row.account
     masked = mask_account(account)
     secrets_blob = build_console_secrets_blob(account, row)
     conn = build_console_connection(account, secrets_blob)
-    try:
-        if conn.is_login_cooling_off():
-            logger.warning(
-                "[KITE-CONSOLE-SYNC] %s: login cooling off, skipping this run", masked,
-            )
-            return SyncOutcome(account=masked, ok=False, reason="login_cooling_off")
 
-        with conn._login_lock:
-            with _cross_process_login_lock(conn.account):
-                conn._attempt_login_with_cooloff()
+    result = await asyncio.to_thread(_console_login_and_scrape_sync, conn, plan)
 
-        if conn.is_login_cooling_off():
+    if not result["login_ok"]:
+        if result["login_failed"]:
             await alert_critical(
                 "Kite Console login failed", masked,
                 detail="browser login did not succeed; see [KITE-LOGIN-COOLOFF] logs",
             )
             return SyncOutcome(account=masked, ok=False, reason="login_failed")
-
-        page = conn._console_page
-        reports = KiteConsoleReportsPage(page)
-        total_rows = 0
-        segment_errors: "list[str]" = []
-        for segment, (start, end) in plan.items():
-            for report_type in ("tradebook", "pnl"):
-                for c_start, c_end in chunk_by_calendar_month(start, end):
-                    # pnl ONLY: floor the request's own start to the 1st
-                    # of c_start's month. Still <= ~1 month wide (c_end
-                    # is already bounded by chunk_by_calendar_month), so
-                    # the Console limit still holds — but this makes
-                    # EVERY pnl request for "this calendar month",
-                    # whichever caller/trigger produced it (a one-time
-                    # backfill's own full-month chunk, a later sync's
-                    # narrower expiry-aligned chunk, or a same-day
-                    # re-run), anchor its requested range at the SAME
-                    # start, so they become directly comparable as
-                    # successive snapshots of one month rather than
-                    # genuinely different, non-comparable ranges. See
-                    # `get_accumulated_pnl()`'s own docstring for why
-                    # that comparability is what makes "pick the latest
-                    # one per month, then sum across months" correct —
-                    # without this floor, two pulls for the same month
-                    # with different `pull_range_start` would get
-                    # DIFFERENT `dedup_key`s and silently SUM instead of
-                    # replacing each other, double-counting the overlap.
-                    # Tradebook needs no such floor — trade_id-based
-                    # dedup already makes any overlapping window safe.
-                    req_start = (
-                        date(c_start.year, c_start.month, 1)
-                        if report_type == "pnl" else c_start
-                    )
-                    n, errs = await _pull_and_ingest_one_report(
-                        reports, page, masked, segment, report_type, req_start, c_end,
-                    )
-                    total_rows += n
-                    segment_errors.extend(errs)
-        return SyncOutcome(
-            account=masked, ok=not segment_errors, rows_ingested=total_rows,
-            reason="" if not segment_errors else "segment_errors",
-            segment_errors=segment_errors,
+        logger.warning(
+            "[KITE-CONSOLE-SYNC] %s: login cooling off, skipping this run", masked,
         )
-    finally:
-        shutdown_console_browser(conn)
+        return SyncOutcome(account=masked, ok=False, reason="login_cooling_off")
+
+    total_rows = 0
+    segment_errors: "list[str]" = []
+    for c in result["chunks"]:
+        segment, report_type = c["segment"], c["report_type"]
+        label = "tradebook" if report_type == "tradebook" else "pnl"
+        if c["scrape_error"] is not None:
+            await alert_critical(
+                f"Kite Console scraping failed ({segment}/{label})", masked,
+                detail=c["scrape_error"], diagnostics=c["diagnostics"],
+            )
+            segment_errors.append(f"{segment}/{label}: scrape failed: {c['scrape_error']}")
+            continue
+        n, errs = await _ingest_one_report(
+            masked, segment, report_type, c["start"], c["end"], c["raw_bytes"],
+        )
+        total_rows += n
+        segment_errors.extend(errs)
+    return SyncOutcome(
+        account=masked, ok=not segment_errors, rows_ingested=total_rows,
+        reason="" if not segment_errors else "segment_errors",
+        segment_errors=segment_errors,
+    )
 
 
 # ---------------------------------------------------------------------------
