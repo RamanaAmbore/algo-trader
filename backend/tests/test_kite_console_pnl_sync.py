@@ -1237,8 +1237,24 @@ def _patch_playwright_errors(monkeypatch):
     monkeypatch.setitem(sys.modules, "playwright.sync_api", fake_module)
 
 
+def _get_by_role_dispatcher(button_mock, link_mock):
+    """Real `page.get_by_role()` returns a DIFFERENT locator per
+    (role, name) pair — a single blanket `return_value` conflates the
+    "Login with Kite" button probe and the "Reports" link wait onto one
+    mock, hiding real bugs where one is called the wrong number of times
+    or with the wrong args. This dispatches by the `name=` kwarg, matching
+    the real two distinct locators `verify_logged_in()` asks for."""
+    def _dispatch(role, name=None, exact=None):
+        if name == "Login with Kite":
+            return button_mock
+        if name == "Reports":
+            return link_mock
+        return MagicMock()
+    return _dispatch
+
+
 class TestVerifyLoggedInErrAborted:
-    """2026-11-26 fixes (second and third real runs found these):
+    """2026-11-26 fixes (second, third, fourth real runs found these):
 
     1. `goto()` can raise a bare `Error: net::ERR_ABORTED` — a known
        Playwright/Chromium race where the navigation we started is
@@ -1248,15 +1264,20 @@ class TestVerifyLoggedInErrAborted:
        post-TOTP redirect WIN that race, landing back on kite's own
        dashboard (no Reports link there) instead of console.zerodha.com.
        The fix checks `page.url` after each attempt and retries (bounded,
-       3 attempts) until it genuinely lands on the console host."""
+       3 attempts) until it genuinely lands on the console host.
+    3. Landing on console.zerodha.com is not the same as being
+       authenticated there — the real page is a logged-out marketing
+       landing page with a real "Login with Kite" button (confirmed via
+       the real HTML dump). The fix clicks it when present, as an
+       expected one-time OAuth bounce, not a failure."""
 
     def test_err_aborted_on_goto_is_swallowed_when_landed_url_is_console(self, monkeypatch):
         _patch_playwright_errors(monkeypatch)
         page = MagicMock()
         page.goto.side_effect = _FakePlaywrightError("Page.goto: net::ERR_ABORTED")
         page.url = "https://console.zerodha.com/dashboard"
-        reports_link = MagicMock()
-        page.get_by_role.return_value = reports_link
+        button, reports_link = MagicMock(), MagicMock()
+        page.get_by_role.side_effect = _get_by_role_dispatcher(button, reports_link)
 
         console = mod.KiteConsoleReportsPage(page)
         console.verify_logged_in()  # must not raise
@@ -1278,9 +1299,10 @@ class TestVerifyLoggedInErrAborted:
         page.goto.return_value = None
         page.url = "https://console.zerodha.com/dashboard"
         page.inner_text.return_value = "welcome back"  # no captcha tokens present
-        reports_link = MagicMock()
+        button, reports_link = MagicMock(), MagicMock()
+        button.wait_for.side_effect = _FakePlaywrightTimeoutError("no button")  # already authenticated
         reports_link.wait_for.side_effect = _FakePlaywrightTimeoutError("timed out")
-        page.get_by_role.return_value = reports_link
+        page.get_by_role.side_effect = _get_by_role_dispatcher(button, reports_link)
 
         console = mod.KiteConsoleReportsPage(page)
         with pytest.raises(mod.ConsoleLoginError, match="authenticated dashboard"):
@@ -1297,14 +1319,15 @@ class TestVerifyLoggedInErrAborted:
         page.goto.return_value = None
         page.url = "https://kite.zerodha.com/dashboard"
         page.wait_for_timeout = MagicMock()
-        reports_link = MagicMock()
-        page.get_by_role.return_value = reports_link
+        button, reports_link = MagicMock(), MagicMock()
+        page.get_by_role.side_effect = _get_by_role_dispatcher(button, reports_link)
 
         console = mod.KiteConsoleReportsPage(page)
         with pytest.raises(mod.ConsoleLoginError, match="redirect kept winning"):
             console.verify_logged_in()
 
         assert page.goto.call_count == 3
+        button.wait_for.assert_not_called()
         reports_link.wait_for.assert_not_called()
 
     def test_retry_succeeds_on_second_attempt_after_losing_first_race(self, monkeypatch):
@@ -1324,13 +1347,51 @@ class TestVerifyLoggedInErrAborted:
 
         page.goto.side_effect = _first_attempt_loses_second_wins
         page.wait_for_timeout = MagicMock()
-        reports_link = MagicMock()
-        page.get_by_role.return_value = reports_link
+        button, reports_link = MagicMock(), MagicMock()
+        page.get_by_role.side_effect = _get_by_role_dispatcher(button, reports_link)
 
         console = mod.KiteConsoleReportsPage(page)
         console.verify_logged_in()  # must not raise
 
         assert page.goto.call_count == 2
+        reports_link.wait_for.assert_called_once()
+
+    def test_login_with_kite_button_clicked_when_landing_page_is_logged_out(self, monkeypatch):
+        """The real live case: landing on console.zerodha.com shows the
+        logged-out marketing page with a real "Login with Kite" button
+        (confirmed via live HTML dump). It must be clicked, and the page
+        must settle, before the Reports-link wait."""
+        _patch_playwright_errors(monkeypatch)
+        page = MagicMock()
+        page.goto.return_value = None
+        page.url = "https://console.zerodha.com/"
+        button, reports_link = MagicMock(), MagicMock()
+        page.get_by_role.side_effect = _get_by_role_dispatcher(button, reports_link)
+
+        console = mod.KiteConsoleReportsPage(page)
+        console.verify_logged_in()  # must not raise
+
+        button.wait_for.assert_called_once_with(state="visible", timeout=3000)
+        button.click.assert_called_once()
+        page.wait_for_load_state.assert_called_once_with("domcontentloaded", timeout=20000)
+        reports_link.wait_for.assert_called_once()
+
+    def test_login_with_kite_button_absent_is_a_silent_no_op(self, monkeypatch):
+        """Already-authenticated landing (no button) must not click
+        anything or treat the absence as an error — only the Reports
+        link is checked."""
+        _patch_playwright_errors(monkeypatch)
+        page = MagicMock()
+        page.goto.return_value = None
+        page.url = "https://console.zerodha.com/reports"
+        button, reports_link = MagicMock(), MagicMock()
+        button.wait_for.side_effect = _FakePlaywrightTimeoutError("no button present")
+        page.get_by_role.side_effect = _get_by_role_dispatcher(button, reports_link)
+
+        console = mod.KiteConsoleReportsPage(page)
+        console.verify_logged_in()  # must not raise
+
+        button.click.assert_not_called()
         reports_link.wait_for.assert_called_once()
 
 

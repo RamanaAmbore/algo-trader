@@ -510,7 +510,25 @@ class KiteConsoleReportsPage:
         attempts) until it genuinely lands on the console.zerodha.com
         host, before ever waiting for the Reports link -- the link-wait
         timeout is now reserved for a genuine authentication failure, not
-        a navigation race that just needs one more attempt."""
+        a navigation race that just needs one more attempt.
+
+        2026-11-26 fix (fourth real run found this, via the real HTML
+        dump in `.log/kite_console_diagnostics/`): landing on
+        console.zerodha.com is NOT the same as being authenticated there
+        -- the docstring's original "this same login session carries over
+        to automatically" claim was wrong. The real page shows Console's
+        LOGGED-OUT marketing landing page, with a real
+        `<button class="btn-blue">Login with Kite</button>`. Confirmed via
+        an earlier real research session's own diagnostics
+        (`*_r2_after_submit.*`) that clicking through this button DOES
+        reach an authenticated Reports/Tradebook page in the same browser
+        context (kite.zerodha.com's session is reused by Kite Connect's
+        own OAuth-style authorize flow, which auto-approves for Zerodha's
+        own first-party apps with no extra consent screen) -- so this is
+        an expected one-time bounce, not a failure. The button is clicked
+        when present, with a short existence probe so an already-
+        authenticated landing (no button) is a silent no-op, not an
+        error."""
         from playwright.sync_api import Error as PlaywrightError
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
@@ -534,6 +552,18 @@ class KiteConsoleReportsPage:
                     f"(still on {self.page.url!r}) -- kite.zerodha.com's own "
                     "post-login redirect kept winning the navigation race"
                 )
+            login_with_kite = self.page.get_by_role("button", name="Login with Kite")
+            try:
+                login_with_kite.wait_for(state="visible", timeout=3000)
+                present = True
+            except PlaywrightTimeoutError:
+                present = False
+            if present:
+                login_with_kite.click()
+                try:
+                    self.page.wait_for_load_state("domcontentloaded", timeout=20000)
+                except PlaywrightTimeoutError:
+                    pass
             self.page.get_by_role("link", name="Reports", exact=True).wait_for(timeout=20000)
         except PlaywrightTimeoutError as e:
             if self._looks_like_captcha_or_unexpected_challenge():
