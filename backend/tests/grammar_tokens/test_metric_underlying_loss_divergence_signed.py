@@ -62,15 +62,14 @@ def test_benign_outperformance_is_positive_however_large():
     )
 
 
-def test_sign_differs_from_unsigned_sibling_only_in_the_outperform_case():
-    """Cross-check against the unsigned sibling: for the adverse case,
-    abs(signed) == unsigned; for the benign/outperform case, the signed
-    metric is positive while the unsigned sibling would read the same
-    large magnitude regardless of direction — proving the redesign
-    actually changes which case is alert-eligible, not just the number."""
-    from backend.api.algo.grammar_tokens.metric_underlying_loss_divergence import (
-        _metric_underlying_loss_divergence,
-    )
+def test_sign_disambiguates_adverse_from_benign_at_equal_magnitude():
+    """2026-11-26 — the original unsigned sibling (abs(theoretical -
+    market)) was removed entirely once the real builtin agent moved to
+    this signed metric; it read the same large magnitude for both
+    directions, which was exactly the ambiguity this redesign fixes.
+    This test pins that fix directly: two scenarios with the SAME
+    magnitude but opposite day_change_val sign must resolve to opposite
+    signed divergence, not the same unsigned magnitude."""
     rows_adverse = [{'underlying': 'CRUDEOIL', 'tradingsymbol': 'SYM', 'quantity': 10,
                       'day_change_val': -150000.0}]
     rows_benign = [{'underlying': 'CRUDEOIL', 'tradingsymbol': 'SYM', 'quantity': 10,
@@ -82,15 +81,9 @@ def test_sign_differs_from_unsigned_sibling_only_in_the_outperform_case():
     ctx_benign = Context(position_rows=rows_benign, spot_prices={'CRUDEOIL': 100.0},
                          alert_state=alert_state, now=IST_NOW)
 
-    unsigned_adverse = _metric_underlying_loss_divergence(ctx_adverse, {'underlying': 'CRUDEOIL'})
-    unsigned_benign = _metric_underlying_loss_divergence(ctx_benign, {'underlying': 'CRUDEOIL'})
     signed_adverse = _metric_underlying_loss_divergence_signed(ctx_adverse, {'underlying': 'CRUDEOIL'})
     signed_benign = _metric_underlying_loss_divergence_signed(ctx_benign, {'underlying': 'CRUDEOIL'})
 
-    assert unsigned_adverse == pytest.approx(150000.0) and unsigned_benign == pytest.approx(150000.0), (
-        "the OLD unsigned metric reads the same large magnitude for both "
-        "directions - this is exactly the ambiguity the signed redesign fixes"
-    )
     assert signed_adverse < 0 and signed_benign > 0, (
         f"signed metric must disambiguate direction: adverse={signed_adverse}, "
         f"benign={signed_benign}"

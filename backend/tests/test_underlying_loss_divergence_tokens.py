@@ -1,10 +1,22 @@
 """
-Theoretical-vs-market loss divergence gate, per underlying — four new
-grammar tokens (`positions.any_underlying` scope; `underlying_market_loss`,
-`underlying_theoretical_loss`, `underlying_loss_divergence` metrics) plus
-two structural gap fixes (A, B) and one serialization-survival fix (C)
-required to let a condition tree gate a per-underlying rate-of-change
-alert on this divergence without silently misfiring across underlyings.
+Theoretical-vs-market loss divergence gate, per underlying — grammar
+tokens (`positions.any_underlying` scope; `underlying_market_loss`,
+`underlying_theoretical_loss`, `underlying_loss_divergence_signed`
+metrics) plus two structural gap fixes (A, B), one serialization-survival
+fix (C), and a cross-underlying cooldown-silencing fix (D) required to
+let a condition tree gate a per-underlying rate-of-change alert on this
+divergence without silently misfiring across underlyings.
+
+2026-11-26 — the original UNSIGNED `underlying_loss_divergence_signed` metric
+(abs(theoretical - market)) was removed entirely once the real builtin
+agent moved to the SIGNED `underlying_loss_divergence_signed` variant
+(market - theoretical) — see agent_engine.py's own comment above the
+`loss-positions-underlying-divergence` BUILTIN_AGENTS entry for the full
+redesign rationale. Generic mechanism tests below (latch-key isolation,
+cross-row join, hydration round-trip) still use the metric NAME
+'underlying_loss_divergence_signed' as a representative example — they
+exercise the SAME generic latch/join/hydration machinery regardless of
+which specific metric fires, so no test logic changed, only the name.
 
 Baseline-reprice design (see `grammar.py`'s module comment above
 `_scope_positions_any_underlying` and `agent_engine.py`'s comment above
@@ -47,9 +59,6 @@ from backend.api.algo.grammar_tokens.metric_underlying_market_loss import (
 from backend.api.algo.grammar_tokens.metric_underlying_theoretical_loss import (
     _metric_underlying_theoretical_loss,
 )
-from backend.api.algo.grammar_tokens.metric_underlying_loss_divergence import (
-    _metric_underlying_loss_divergence,
-)
 from backend.api.algo.grammar_tokens.metric_underlying_loss_divergence_signed import (
     _metric_underlying_loss_divergence_signed,
 )
@@ -67,15 +76,18 @@ IST_NOW = datetime(2026, 9, 1, 10, 0, 0)
 # backend/tests/grammar_tokens/test_scope_positions_any_underlying.py
 # (Wave 1, scope batch C of the DSL token-unification plan).
 
-# Resolver-level tests for underlying_market_loss, underlying_theoretical_loss
-# and underlying_loss_divergence (TestMetricUnderlyingMarketLoss,
-# TestMetricUnderlyingTheoreticalLossAndDivergence, and the single most
-# important regression test in this module —
+# Resolver-level tests for underlying_market_loss and underlying_theoretical_loss
+# (TestMetricUnderlyingMarketLoss, TestMetricUnderlyingTheoreticalLossAndDivergence,
+# and the single most important regression test in this module —
 # TestMarketLossGapDayReferencePointFix) moved to
-# backend/tests/grammar_tokens/test_metric_underlying_market_loss.py,
-# test_metric_underlying_theoretical_loss.py, and
-# test_metric_underlying_loss_divergence.py (Wave 1, batch 3 of the DSL
-# token-unification plan). `_fut_baseline` stays here — it is a shared
+# backend/tests/grammar_tokens/test_metric_underlying_market_loss.py and
+# test_metric_underlying_theoretical_loss.py (Wave 1, batch 3 of the DSL
+# token-unification plan). The original unsigned underlying_loss_divergence
+# metric's own dedicated test file (test_metric_underlying_loss_divergence.py)
+# was deleted entirely 2026-11-26 along with the resolver itself — see this
+# file's own module docstring. Its signed sibling's tests live in
+# test_metric_underlying_loss_divergence_signed.py. `_fut_baseline` stays here
+# — it is a shared
 # fixture helper used throughout the REST of this file (TestBaselineWriter,
 # TestFixALatchKeyPerUnderlying, TestEndToEndWiring, ...), not specific to
 # the three moved classes — duplicated (not imported) into each of the
@@ -289,9 +301,9 @@ class TestUpdateUnderlyingPnlHistory:
 
 class TestFixALatchKeyPerUnderlying:
     def test_latch_key_falls_back_to_underlying_when_no_account(self):
-        m_a = {'metric': 'underlying_loss_divergence', 'scope': 'positions.any_underlying',
+        m_a = {'metric': 'underlying_loss_divergence_signed', 'scope': 'positions.any_underlying',
                'account': None, 'underlying': 'NIFTY'}
-        m_b = {'metric': 'underlying_loss_divergence', 'scope': 'positions.any_underlying',
+        m_b = {'metric': 'underlying_loss_divergence_signed', 'scope': 'positions.any_underlying',
                'account': None, 'underlying': 'CRUDEOIL'}
         key_a = ae._latch_key('loss-positions-underlying-divergence', m_a)
         key_b = ae._latch_key('loss-positions-underlying-divergence', m_b)
@@ -305,16 +317,16 @@ class TestFixALatchKeyPerUnderlying:
 
     def test_two_underlyings_breaching_same_tick_get_distinct_latches(self):
         """The single most important test in this plan — two DIFFERENT
-        underlyings breaching `underlying_loss_divergence` in the SAME
+        underlyings breaching `underlying_loss_divergence_signed` in the SAME
         evaluate()/run_cycle pass must produce two DISTINCT `_V2_LATCH`
         keys, not a shared 'TOTAL' one."""
         class _Agent:
             slug = 'loss-positions-underlying-divergence'
 
-        match_a = {'metric': 'underlying_loss_divergence', 'scope': 'positions.any_underlying',
+        match_a = {'metric': 'underlying_loss_divergence_signed', 'scope': 'positions.any_underlying',
                    'account': None, 'underlying': 'NIFTY', 'op': '>', 'threshold': 100000,
                    'value': 150000.0}
-        match_b = {'metric': 'underlying_loss_divergence', 'scope': 'positions.any_underlying',
+        match_b = {'metric': 'underlying_loss_divergence_signed', 'scope': 'positions.any_underlying',
                    'account': None, 'underlying': 'CRUDEOIL', 'op': '>', 'threshold': 100000,
                    'value': 200000.0}
         store: dict = {}
@@ -335,8 +347,8 @@ class TestFixALatchKeyPerUnderlying:
 # ═══════════════════════════════════════════════════════════════════════════
 
 _GATED_CONDITION = {"all": [
-    {"metric": "underlying_loss_divergence", "scope": "positions.any_underlying",
-     "op": ">", "value": 100000},
+    {"metric": "underlying_loss_divergence_signed", "scope": "positions.any_underlying",
+     "op": "<=", "value": -100000},
     {"any": [
         {"metric": "pnl_rate_abs", "scope": "positions.any_underlying", "op": "<=", "value": -10000},
         {"metric": "pnl_rate_pct", "scope": "positions.any_underlying", "op": "<=", "value": -0.25},
@@ -356,10 +368,10 @@ class TestFixBCrossRowJoinOnUnderlying:
     def _wire_registry(self, monkeypatch):
         from backend.api.algo.grammar_registry import REGISTRY
         monkeypatch.setitem(REGISTRY.scopes, 'positions.any_underlying', _scope_positions_any_underlying)
-        monkeypatch.setitem(REGISTRY.metrics, 'underlying_loss_divergence', _metric_underlying_loss_divergence)
+        monkeypatch.setitem(REGISTRY.metrics, 'underlying_loss_divergence_signed',
+                             _metric_underlying_loss_divergence_signed)
         monkeypatch.setitem(REGISTRY.metrics, 'pnl_rate_abs', _metric_pnl_rate_abs)
         monkeypatch.setitem(REGISTRY.metrics, 'pnl_rate_pct', _metric_pnl_rate_pct)
-        monkeypatch.setitem(REGISTRY.operators, '>', g.OPERATORS['>'])
         monkeypatch.setitem(REGISTRY.operators, '<=', g.OPERATORS['<='])
 
     @staticmethod
@@ -449,10 +461,10 @@ class TestFixBCrossRowJoinOnUnderlying:
 class TestFixCHydrationRoundTrip:
     def test_two_underlyings_survive_serialize_then_hydrate(self):
         ae._V2_LATCH.clear()
-        match_a = {'metric': 'underlying_loss_divergence', 'scope': 'positions.any_underlying',
+        match_a = {'metric': 'underlying_loss_divergence_signed', 'scope': 'positions.any_underlying',
                    'account': None, 'underlying': 'NIFTY', 'op': '>', 'threshold': 100000,
                    'value': 150000.0}
-        match_b = {'metric': 'underlying_loss_divergence', 'scope': 'positions.any_underlying',
+        match_b = {'metric': 'underlying_loss_divergence_signed', 'scope': 'positions.any_underlying',
                    'account': None, 'underlying': 'CRUDEOIL', 'op': '>', 'threshold': 100000,
                    'value': 200000.0}
         # Mirror the real write path: _v2_build_evalresult builds `detail`,
@@ -609,7 +621,6 @@ class TestEndToEndWiring:
         monkeypatch.setitem(REGISTRY.scopes, 'positions.any_underlying', _scope_positions_any_underlying)
         monkeypatch.setitem(REGISTRY.metrics, 'underlying_market_loss', _metric_underlying_market_loss)
         monkeypatch.setitem(REGISTRY.metrics, 'underlying_theoretical_loss', _metric_underlying_theoretical_loss)
-        monkeypatch.setitem(REGISTRY.metrics, 'underlying_loss_divergence', _metric_underlying_loss_divergence)
         monkeypatch.setitem(REGISTRY.metrics, 'underlying_loss_divergence_signed',
                              _metric_underlying_loss_divergence_signed)
         monkeypatch.setitem(REGISTRY.metrics, 'pnl_rate_abs', _metric_pnl_rate_abs)
@@ -686,8 +697,8 @@ class TestEndToEndWiring:
              "op": "<=", "value": -1},
             {"metric": "underlying_theoretical_loss", "scope": "positions.any_underlying",
              "op": "<=", "value": 10**9},
-            {"metric": "underlying_loss_divergence", "scope": "positions.any_underlying",
-             "op": ">", "value": 1},
+            {"metric": "underlying_loss_divergence_signed", "scope": "positions.any_underlying",
+             "op": "<=", "value": 10**9},
         ]}
 
         class _FakeAgent:
@@ -703,7 +714,7 @@ class TestEndToEndWiring:
         assert matches, "expected at least one leaf to fire"
         resolved_metrics = {o.get('metric') for o in observations}
         for tok in ('underlying_market_loss', 'underlying_theoretical_loss',
-                    'underlying_loss_divergence'):
+                    'underlying_loss_divergence_signed'):
             assert tok in resolved_metrics, (
                 f"{tok} never resolved (observations={resolved_metrics}) — "
                 f"token is registered but not actually reachable"
@@ -721,7 +732,7 @@ class TestEndToEndWiring:
 class TestAlertRenderingPathWithUnderlyingMatch:
     def test_does_not_raise_and_labels_scope_with_underlying_not_total(self):
         match = {
-            'metric': 'underlying_loss_divergence', 'scope': 'positions.any_underlying',
+            'metric': 'underlying_loss_divergence_signed', 'scope': 'positions.any_underlying',
             'op': '>', 'threshold': 100000, 'value': 150000.0,
             'row': {'underlying': 'CRUDEOIL', 'accounts': ['ACC1'], 'pnl': -150000.0,
                     'day_change_val': -150000.0},
