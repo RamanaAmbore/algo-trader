@@ -180,14 +180,16 @@ class TestExpiryRiskAlertsSplit:
     def test_nfo_shape(self):
         agent = next(a for a in BUILTIN_AGENTS if a["slug"] == "expiry-nfo-risk-alert")
         assert agent["schedule"] == "market_hours"
-        assert agent["cooldown_minutes"] == 60
+        # Raised 60->240 on 2026-11-26 (operator: "too many alerts on
+        # the previous day of expiry of mcx. need to reduce it.").
+        assert agent["cooldown_minutes"] == 240
         assert agent["tier"] == "high"
         assert agent["topic"] == "expiry_warning_nfo"
 
     def test_mcx_shape(self):
         agent = next(a for a in BUILTIN_AGENTS if a["slug"] == "expiry-mcx-risk-alert")
         assert agent["schedule"] == "market_hours"
-        assert agent["cooldown_minutes"] == 60
+        assert agent["cooldown_minutes"] == 240
         assert agent["tier"] == "high"
         assert agent["topic"] == "expiry_warning_mcx"
 

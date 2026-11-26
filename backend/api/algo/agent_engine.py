@@ -2097,6 +2097,87 @@ def _v2_exit_tp_short_option_enrichment(agent, matches: list, context: dict | No
     return "\n".join(parts)
 
 
+def _v2_expiry_risk_alert_enrichment(agent, matches: list, context: dict | None) -> str | None:
+    """Per-leg enrichment appended to `expiry-nfo-risk-alert`'s and
+    `expiry-mcx-risk-alert`'s own rich alert — APPENDED, never
+    replacing, the generic kind/threshold table (same convention as
+    `_v2_exit_tp_short_option_enrichment` above; gated by slug at the
+    `_v2_send_rich_alert` call site, mirroring that same precedent).
+
+    2026-11-26 (operator: "too many alerts on the previous day of
+    expiry of mcx. need to reduce it. make it informative.") — the
+    generic table renders TOTAL-scoped/account-scoped kind+threshold
+    rows with no symbol-level detail at all for these two agents
+    (`positions.expiring_today.{nfo,mcx_unhedged}` matches carry a real
+    per-leg `row`, but the generic renderer never surfaces
+    tradingsymbol/account/DTE). This lists exactly which leg(s) matched,
+    which account each sits in (masked), and how many days remain —
+    so a reminder on the day before expiry reads as a concrete,
+    actionable list rather than a bare threshold breach.
+
+    Returns `None` for an empty `matches` list (same defensive
+    convention as the exit-tp sibling above — not expected in practice,
+    since this is only ever called from a branch that already fired).
+    """
+    if not matches:
+        return None
+
+    from backend.api.algo.derivatives import days_to_expiry
+    from backend.api.algo.grammar import _parsed_or_none
+    from backend.shared.helpers.date_time_utils import close_time_for_exchange
+    from backend.shared.helpers.utils import mask_account
+
+    now = (context or {}).get("now")
+
+    lines: list[str] = []
+    seen: set = set()
+    for m in matches:
+        row = (m or {}).get('row') or {}
+        sym = row.get('tradingsymbol') or '?'
+        account = row.get('account') or ''
+        key = (account, sym)
+        if key in seen:
+            # The condition's own suppression leaf is a second,
+            # TOTAL-scoped leaf with no row of its own — `_eval_all`
+            # can surface both leaves as separate matches for the same
+            # firing leg (see `_v2_reminder_only_line`'s own docstring
+            # for this exact mechanism). De-dup by identity so one
+            # expiring leg renders exactly once here.
+            continue
+        seen.add(key)
+        masked = mask_account(account) if account else '?'
+        dte_phrase = ""
+        parsed = _parsed_or_none(sym)
+        if parsed and parsed.get('expiry'):
+            try:
+                close_time = close_time_for_exchange(row.get('exchange'), parsed['expiry'])
+                if close_time is None:
+                    close_time = (15, 30)
+                d = float(days_to_expiry(parsed['expiry'], ref=now, close_time=close_time))
+                dte_phrase = f" — expires in {d:.1f}d"
+            except Exception:
+                # Best-effort only — a DTE formatting failure must
+                # never drop the leg from the list, it just loses the
+                # trailing phrase.
+                pass
+        lines.append(f"- {sym} ({masked}){dte_phrase}")
+
+    if not lines:
+        return None
+    # Header text matches each agent's own real classification — never
+    # the generic "unhedged" phrasing for NFO, which fires on ITM
+    # options or open futures with no netting/hedge concept at all
+    # (see that agent's own `description`).
+    slug = getattr(agent, 'slug', None)
+    if slug == 'expiry-mcx-risk-alert':
+        header = "Unhedged legs:"
+    elif slug == 'expiry-nfo-risk-alert':
+        header = "ITM options / open futures needing action:"
+    else:
+        header = "Legs needing attention:"
+    return header + "\n" + "\n".join(lines)
+
+
 async def _v2_reminder_line_with_expiry_breakdown(
     agent, reminder_line: str, context: dict | None,
 ) -> tuple[str, str]:
@@ -2232,13 +2313,22 @@ async def _v2_send_rich_alert(agent, matches, now, sim_mode: bool = False,
     # mirroring the `expiry-day-preclose-alert` precedent at this same
     # call site. See `_v2_exit_tp_short_option_enrichment`'s own
     # docstring for why the deadline phrasing is conditional.
-    if getattr(agent, 'slug', None) == 'exit-tp-short-option-90':
+    _enrich_slug = getattr(agent, 'slug', None)
+    if _enrich_slug == 'exit-tp-short-option-90':
         enrichment = _v2_exit_tp_short_option_enrichment(agent, matches, context)
-        if enrichment:
-            tg_body = f"{tg_body}\n\n{enrichment}"
-            email_html = email_html + "".join(
-                f"<p>{html.escape(line)}</p>" for line in enrichment.split("\n")
-            )
+    elif _enrich_slug in ('expiry-nfo-risk-alert', 'expiry-mcx-risk-alert'):
+        # 2026-11-26 (operator: "too many alerts on the previous day of
+        # expiry of mcx. need to reduce it. make it informative.") —
+        # appended, never replacing, the generic kind/threshold table
+        # above. See `_v2_expiry_risk_alert_enrichment`'s own docstring.
+        enrichment = _v2_expiry_risk_alert_enrichment(agent, matches, context)
+    else:
+        enrichment = None
+    if enrichment:
+        tg_body = f"{tg_body}\n\n{enrichment}"
+        email_html = email_html + "".join(
+            f"<p>{html.escape(line)}</p>" for line in enrichment.split("\n")
+        )
     # Single-line agent tag for the email subject (via subject_detail) —
     # format_notification_header's full output carries an embedded
     # newline (agent line + dual-tz timestamp) which must never reach an
@@ -2810,7 +2900,23 @@ BUILTIN_AGENTS.extend(_EXPIRY_AGENTS)
 
 _EXPIRY_RISK_AGENT_DEFAULTS = dict(
     schedule="market_hours",
-    cooldown_minutes=60,
+    # Raised 60→240 (2026-11-26, operator: "too many alerts on the
+    # previous day of expiry of mcx. need to reduce it.") — the base
+    # scope `positions.expiring_today` deliberately looks ahead up to
+    # 1.5 days (see that module's own docstring for why; NOT narrowed
+    # here, since narrowing it would reduce the early-warning behaviour
+    # several other callers share), so a still-unhedged leg can match
+    # on every poll throughout market_hours on the day BEFORE its own
+    # expiry. At the old 60-min cooldown that's up to ~8-14 re-fires
+    # across a full previous-day trading session for ONE leg (latch key
+    # is per account+tradingsymbol — see `_latch_key`). 240 min (4h)
+    # cuts that to ~2-4 re-fires/day while still giving several
+    # reminders before `expiry-day-preclose-alert`/`expiry-day-itm-
+    # auto-close` take over in the final 60/65-minute window on the
+    # actual expiry day (those two use their own short 30-min cooldown
+    # for a different, deliberate reason — see their own comment block
+    # below).
+    cooldown_minutes=240,
     actions=[],
     status="active",
     tier="high",
