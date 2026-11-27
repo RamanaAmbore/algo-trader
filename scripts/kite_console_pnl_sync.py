@@ -1912,10 +1912,28 @@ class SyncOutcome:
     segment_errors: "list[str]" = field(default_factory=list)
 
 
-def _console_login_and_scrape_sync(conn, plan: "dict[str, tuple[date, date]]") -> dict:
+def _console_login_and_scrape_sync(
+    conn, plan: "dict[str, tuple[date, date]]",
+    ledger_range: "tuple[date, date] | None" = None,
+) -> dict:
     """Runs the ENTIRE Playwright-touching portion of an account sync —
     login AND every segment/report-type/chunk's navigate+download —
     synchronously, on whichever thread calls it.
+
+    `ledger_range` (2026-11-27 fix, ninth real run found this): optional
+    override for the ledger pull's date range, independent of `plan`.
+    Without it, the ledger range is the union of whatever segments are in
+    `plan` (see `_scrape_ledger_chunks()`'s own docstring) -- so an
+    operator running one segment at a time via `--segment` (to avoid the
+    browser-degradation issue documented on that flag) still had the
+    ledger's own FULL multi-month range tag along on EVERY segment
+    invocation, redundantly re-scraping months already ingested and
+    adding enough extra page loads that the SAME degradation this flag
+    exists to avoid still showed up by the end of a single-segment run.
+    `--ledger-only` (CLI) passes an empty `plan` (so the segment loop
+    scrapes nothing) plus this explicit range, giving the ledger its own
+    dedicated, lighter invocation -- the same fresh-browser benefit
+    `--segment` already gives each equity/derivatives/commodities pull.
 
     2026-11-26 fix (first real run against the live Console found this):
     Playwright's SYNC API refuses to start inside a thread that already
@@ -1970,7 +1988,7 @@ def _console_login_and_scrape_sync(conn, plan: "dict[str, tuple[date, date]]") -
         reports = KiteConsoleReportsPage(page)
         chunks: "list[dict]" = []
         chunks.extend(_scrape_segment_chunks(reports, page, masked, plan))
-        chunks.extend(_scrape_ledger_chunks(reports, page, masked, plan))
+        chunks.extend(_scrape_ledger_chunks(reports, page, masked, plan, ledger_range))
         return {"login_ok": True, "login_failed": False, "chunks": chunks}
     finally:
         shutdown_console_browser(conn)
@@ -2100,7 +2118,10 @@ def _scrape_segment_chunks(reports, page, masked: str, plan) -> "list[dict]":
     return chunks
 
 
-def _scrape_ledger_chunks(reports, page, masked: str, plan) -> "list[dict]":
+def _scrape_ledger_chunks(
+    reports, page, masked: str, plan,
+    ledger_range: "tuple[date, date] | None" = None,
+) -> "list[dict]":
     """Ledger (Funds Statement) — pulled ONCE per account, not once per
     segment: this report has no segment dimension at all (its own
     Category select is never touched — see parse_ledger_csv's docstring),
@@ -2109,12 +2130,19 @@ def _scrape_ledger_chunks(reports, page, masked: str, plan) -> "list[dict]":
     UNION across every segment in `plan` (min start, max end) — a ledger
     spans every segment's activity regardless of which segments actually
     triggered this sync, so narrowing to one segment's own range would
-    miss margin events tied to a DIFFERENT segment's positions."""
-    if not plan:
+    miss margin events tied to a DIFFERENT segment's positions.
+
+    `ledger_range`, when given, OVERRIDES the plan-derived union entirely
+    — see `_console_login_and_scrape_sync()`'s own docstring for why
+    (`--ledger-only`'s dedicated, segment-free invocation)."""
+    if ledger_range is not None:
+        ledger_start, ledger_end = ledger_range
+    elif plan:
+        ledger_start = min(s for s, _e in plan.values())
+        ledger_end = max(e for _s, e in plan.values())
+    else:
         return []
     chunks: "list[dict]" = []
-    ledger_start = min(s for s, _e in plan.values())
-    ledger_end = max(e for _s, e in plan.values())
     for c_start, c_end in chunk_by_calendar_month(ledger_start, ledger_end):
         entry = _scrape_one_chunk(
             reports, page, masked,
@@ -2175,7 +2203,10 @@ async def _ingest_one_report(
     return n, []
 
 
-async def sync_account(row, *, plan: "dict[str, tuple[date, date]]") -> SyncOutcome:
+async def sync_account(
+    row, *, plan: "dict[str, tuple[date, date]]",
+    ledger_range: "tuple[date, date] | None" = None,
+) -> SyncOutcome:
     """Runs the full login -> scrape -> validate -> ingest cycle for one
     broker_accounts row, across every segment in `plan` AND both report
     types (tradebook + pnl) for each segment. One (segment, report_type)
@@ -2215,7 +2246,7 @@ async def sync_account(row, *, plan: "dict[str, tuple[date, date]]") -> SyncOutc
     secrets_blob = build_console_secrets_blob(account, row)
     conn = build_console_connection(account, secrets_blob)
 
-    result = await asyncio.to_thread(_console_login_and_scrape_sync, conn, plan)
+    result = await asyncio.to_thread(_console_login_and_scrape_sync, conn, plan, ledger_range)
 
     if not result["login_ok"]:
         if result["login_failed"]:
@@ -2727,6 +2758,22 @@ def _build_arg_parser() -> argparse.ArgumentParser:
              "a few minutes apart, per the operator's own instruction.",
     )
     p.add_argument(
+        "--ledger-only", action="store_true",
+        help="Pull ONLY the Funds Statement (ledger), skipping every "
+             "segment's Tradebook/P&L entirely. The ledger range is the "
+             "full resolved plan's own union, computed BEFORE --segment "
+             "narrows anything -- mutually exclusive with --segment in "
+             "effect (a --segment value is ignored when this is set, "
+             "since there are no segment chunks to run at all). Confirmed"
+             " live, 2026-11-27 (ninth real run): the ledger's own full"
+             " multi-month range was tagging along on EVERY --segment"
+             " invocation (redundantly re-scraping months already"
+             " ingested), adding enough extra page loads that the same"
+             " browser-degradation issue --segment exists to avoid still"
+             " showed up by the end of a single-segment run. This gives"
+             " the ledger its own dedicated, lighter invocation instead.",
+    )
+    p.add_argument(
         "--dry-run", action="store_true",
         help="Resolve accounts/segments/date ranges and print the plan "
              "without logging in or scraping anything.",
@@ -2748,6 +2795,34 @@ def _filter_plan_to_segments(
         return plan
     wanted = set(segments)
     return {k: v for k, v in plan.items() if k in wanted}
+
+
+def _resolve_plan_and_ledger_range(
+    plan: "dict[str, tuple[date, date]]", args,
+) -> "tuple[dict[str, tuple[date, date]], tuple[date, date] | None]":
+    """Applies `--ledger-only` / `--segment` to the resolved `plan`.
+    Extracted out of `main()` to keep that function's own complexity
+    under the project's CC gate (`--ledger-only`'s branching pushed it
+    to a D grade) — pure, no I/O, directly unit-testable.
+
+    `--ledger-only` takes priority: the ledger range is computed from
+    the FULL resolved `plan`'s own union BEFORE any `--segment` filter,
+    then `plan` itself is emptied (no segment chunks at all) — see
+    `_console_login_and_scrape_sync()`'s own docstring for why. A bare
+    `--segment` (no `--ledger-only`) only narrows `plan`; `ledger_range`
+    stays `None`, so the ledger pull keeps deriving its own range from
+    whatever segments remain, unchanged from the pre-`--ledger-only`
+    behaviour."""
+    ledger_range: "tuple[date, date] | None" = None
+    if args.ledger_only:
+        if plan:
+            ledger_range = (
+                min(s for s, _e in plan.values()), max(e for _s, e in plan.values()),
+            )
+        plan = {}
+    else:
+        plan = _filter_plan_to_segments(plan, args.segment)
+    return plan, ledger_range
 
 
 async def main(argv: "list[str] | None" = None) -> int:
@@ -2794,13 +2869,16 @@ async def main(argv: "list[str] | None" = None) -> int:
             )
             return 0
 
-    plan = _filter_plan_to_segments(plan, args.segment)
+    plan, ledger_range = _resolve_plan_and_ledger_range(plan, args)
 
     if args.dry_run:
         print(json.dumps({
             "mode": args.mode,
             "accounts": [r.account for r in rows],
             "plan": {k: [str(v[0]), str(v[1])] for k, v in plan.items()},
+            "ledger_range": (
+                [str(ledger_range[0]), str(ledger_range[1])] if ledger_range else None
+            ),
         }, indent=2))
         return 0
 
@@ -2811,7 +2889,7 @@ async def main(argv: "list[str] | None" = None) -> int:
     exit_code = 0
     for row in rows:
         try:
-            outcome = await sync_account(row, plan=plan)
+            outcome = await sync_account(row, plan=plan, ledger_range=ledger_range)
         except Exception as e:  # never let one account's unexpected failure abort the batch
             from backend.shared.helpers.utils import mask_account
             logger.exception("[KITE-CONSOLE-SYNC] unexpected failure for %s", mask_account(row.account))

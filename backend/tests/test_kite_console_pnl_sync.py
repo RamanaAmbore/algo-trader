@@ -901,7 +901,7 @@ class TestLoginCooloffReuse:
         main_thread_ident = threading.get_ident()
         seen_thread_idents: "list[int]" = []
 
-        def fake_scrape_sync(conn, plan):
+        def fake_scrape_sync(conn, plan, ledger_range=None):
             seen_thread_idents.append(threading.get_ident())
             return {"login_ok": True, "login_failed": False, "chunks": []}
 
@@ -2440,7 +2440,7 @@ class TestFilterPlanToSegments:
 
         attempted: "list[str]" = []
 
-        async def _fake_sync_account(row, *, plan, today=None):
+        async def _fake_sync_account(row, *, plan, ledger_range=None, today=None):
             attempted.append(row.account)
             if row.account == "ZCRASH1":
                 raise RuntimeError("unexpected crash")
@@ -2522,6 +2522,101 @@ class TestFilterPlanToSegments:
 # generic trailing lookback window. See `TestChunkByCalendarMonth` /
 # `TestResolveSyncPlan` for this area's current coverage.
 # ===========================================================================
+
+
+# ===========================================================================
+# 15b. --ledger-only — dedicated, segment-free ledger invocation
+# ===========================================================================
+
+class TestLedgerOnlyFlag:
+    """2026-11-27 fix (ninth real run found this): the ledger's own full
+    multi-month range was tagging along on EVERY --segment invocation
+    (the plan-derived union), redundantly re-scraping months already
+    ingested and adding enough extra page loads that the browser-
+    degradation issue --segment exists to avoid still showed up by the
+    end of a single-segment run. --ledger-only gives the ledger its own
+    dedicated, lighter invocation: an empty plan (no segment chunks at
+    all) plus an explicit ledger_range computed from the FULL resolved
+    plan, before any --segment narrowing."""
+
+    @pytest.mark.asyncio
+    async def test_ledger_only_empties_the_plan_and_sets_ledger_range(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            mod, "load_active_kite_accounts",
+            AsyncMock(return_value=[_fake_broker_account_row("ZLEDGER1")]),
+        )
+        rc = await mod.main(["--mode", "backfill", "--ledger-only", "--dry-run"])
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["plan"] == {}
+        assert payload["ledger_range"] == [str(mod._BACKFILL_START), str(payload_today(payload))]
+
+    @pytest.mark.asyncio
+    async def test_ledger_only_ignores_a_segment_flag(self, monkeypatch, capsys):
+        """--segment is a no-op under --ledger-only -- there are no
+        segment chunks to narrow in the first place."""
+        monkeypatch.setattr(
+            mod, "load_active_kite_accounts",
+            AsyncMock(return_value=[_fake_broker_account_row("ZLEDGER2")]),
+        )
+        rc = await mod.main([
+            "--mode", "backfill", "--ledger-only", "--segment", "equity", "--dry-run",
+        ])
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["plan"] == {}
+        assert payload["ledger_range"] is not None
+
+
+def payload_today(payload: dict) -> str:
+    """The dry-run payload's own ledger_range end IS today's date (the
+    backfill's own resolved end) -- read it back rather than
+    re-deriving "today" a second, independent way in the test."""
+    return payload["ledger_range"][1]
+
+
+class TestScrapeLedgerChunksRangeOverride:
+    def test_explicit_ledger_range_overrides_plan_derived_union(self, monkeypatch):
+        """The explicit override must win even when `plan` itself would
+        derive a DIFFERENT (wider) union -- proves this is a real
+        override, not merely a fallback for an empty plan."""
+        reports = MagicMock()
+        page = MagicMock()
+        plan = {"equity": (date(2026, 1, 1), date(2026, 12, 31))}  # would derive a wider range
+        monkeypatch.setattr(mod, "_scrape_one_chunk", lambda *a, **kw: {
+            "segment": kw["segment"], "report_type": kw["report_type"],
+            "start": kw["start"], "end": kw["end"],
+            "raw_bytes": b"ok", "scrape_error": None, "diagnostics": None,
+        })
+
+        chunks = mod._scrape_ledger_chunks(
+            reports, page, "ZLEDGER3", plan,
+            ledger_range=(date(2026, 9, 1), date(2026, 9, 30)),
+        )
+
+        assert all(c["start"] >= date(2026, 9, 1) for c in chunks)
+        assert all(c["end"] <= date(2026, 9, 30) for c in chunks)
+
+    def test_no_override_and_empty_plan_returns_no_chunks(self):
+        reports = MagicMock()
+        page = MagicMock()
+        assert mod._scrape_ledger_chunks(reports, page, "ZLEDGER4", {}) == []
+
+    def test_no_override_falls_back_to_plan_derived_union(self, monkeypatch):
+        reports = MagicMock()
+        page = MagicMock()
+        plan = {"equity": (date(2026, 4, 1), date(2026, 4, 30))}
+        monkeypatch.setattr(mod, "_scrape_one_chunk", lambda *a, **kw: {
+            "segment": kw["segment"], "report_type": kw["report_type"],
+            "start": kw["start"], "end": kw["end"],
+            "raw_bytes": b"ok", "scrape_error": None, "diagnostics": None,
+        })
+
+        chunks = mod._scrape_ledger_chunks(reports, page, "ZLEDGER5", plan)
+
+        assert len(chunks) == 1
+        assert chunks[0]["start"] == date(2026, 4, 1)
+        assert chunks[0]["end"] == date(2026, 4, 30)
 
 
 # ===========================================================================
