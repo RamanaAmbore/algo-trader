@@ -2309,6 +2309,76 @@ class TestMainEntrypoint:
         assert set(payload["plan"].keys()) == {"equity", "derivatives", "commodities"}
 
     @pytest.mark.asyncio
+    async def test_segment_flag_narrows_the_plan(self, monkeypatch, capsys):
+        """2026-11-26 fix (eighth real run found this): a single browser
+        session scraping every segment's full multi-month range can
+        degrade late in the run (a genuinely blank Console render,
+        consistent with resource pressure in one long-lived browser
+        instance). --segment lets an operator split one backfill into
+        one invocation per segment, each starting with a fresh browser --
+        also the natural unit for staggering invocations a few minutes
+        apart."""
+        monkeypatch.setattr(
+            mod, "load_active_kite_accounts",
+            AsyncMock(return_value=[_fake_broker_account_row("ZDRY_SEG")]),
+        )
+        rc = await mod.main(["--mode", "backfill", "--segment", "commodities", "--dry-run"])
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert set(payload["plan"].keys()) == {"commodities"}
+
+    @pytest.mark.asyncio
+    async def test_segment_flag_repeated_narrows_to_both_named(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            mod, "load_active_kite_accounts",
+            AsyncMock(return_value=[_fake_broker_account_row("ZDRY_SEG2")]),
+        )
+        rc = await mod.main([
+            "--mode", "backfill",
+            "--segment", "equity", "--segment", "derivatives",
+            "--dry-run",
+        ])
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert set(payload["plan"].keys()) == {"equity", "derivatives"}
+
+    @pytest.mark.asyncio
+    async def test_segment_flag_rejects_an_unknown_segment(self, monkeypatch):
+        monkeypatch.setattr(
+            mod, "load_active_kite_accounts",
+            AsyncMock(return_value=[_fake_broker_account_row("ZDRY_SEG3")]),
+        )
+        with pytest.raises(SystemExit):
+            await mod.main(["--mode", "backfill", "--segment", "ledger", "--dry-run"])
+
+
+class TestFilterPlanToSegments:
+    def test_no_filter_returns_plan_unchanged(self):
+        plan = {"equity": (date(2026, 4, 1), date(2026, 11, 1))}
+        assert mod._filter_plan_to_segments(plan, None) is plan
+
+    def test_empty_list_filter_returns_plan_unchanged(self):
+        plan = {"equity": (date(2026, 4, 1), date(2026, 11, 1))}
+        assert mod._filter_plan_to_segments(plan, []) is plan
+
+    def test_filters_to_named_segments_only(self):
+        plan = {
+            "equity": (date(2026, 4, 1), date(2026, 11, 1)),
+            "derivatives": (date(2026, 4, 1), date(2026, 11, 1)),
+            "commodities": (date(2026, 4, 1), date(2026, 11, 1)),
+        }
+        out = mod._filter_plan_to_segments(plan, ["commodities"])
+        assert set(out.keys()) == {"commodities"}
+
+    def test_unknown_segment_name_silently_drops_not_errors(self):
+        """Mirrors --account's own silent-narrowing behaviour for a name
+        not present in the active roster -- an empty result, not a
+        KeyError/exception."""
+        plan = {"equity": (date(2026, 4, 1), date(2026, 11, 1))}
+        out = mod._filter_plan_to_segments(plan, ["commodities"])
+        assert out == {}
+
+    @pytest.mark.asyncio
     async def test_dry_run_sync_mode_prints_nothing_when_no_trigger_today(self, monkeypatch, capsys):
         monkeypatch.setattr(
             mod, "load_active_kite_accounts",

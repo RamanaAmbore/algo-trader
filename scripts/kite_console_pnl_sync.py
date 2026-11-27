@@ -2713,11 +2713,41 @@ def _build_arg_parser() -> argparse.ArgumentParser:
              "Default: every active Kite account.",
     )
     p.add_argument(
+        "--segment", action="append", default=None,
+        choices=("equity", "derivatives", "commodities"),
+        help="Restrict to one or more Console segments (repeatable). "
+             "Default: every segment in the resolved plan. Confirmed live,"
+             " 2026-11-26: a single browser session scraping the FULL "
+             "multi-month range across every segment can degrade late in "
+             "the run (a genuinely blank Console render, consistent with "
+             "resource pressure in one long-lived browser instance -- see "
+             "navigate_to_reports()'s own docstring). Splitting the run "
+             "into one invocation per segment (each gets a fresh browser) "
+             "avoids this; also the natural unit for staggering invocations "
+             "a few minutes apart, per the operator's own instruction.",
+    )
+    p.add_argument(
         "--dry-run", action="store_true",
         help="Resolve accounts/segments/date ranges and print the plan "
              "without logging in or scraping anything.",
     )
     return p
+
+
+def _filter_plan_to_segments(
+    plan: "dict[str, tuple[date, date]]", segments: "list[str] | None",
+) -> "dict[str, tuple[date, date]]":
+    """Pure helper for `--segment` — returns `plan` unchanged when no
+    filter was given (the existing default behaviour), otherwise only the
+    named segments' entries, in `plan`'s own original order. A named
+    segment absent from `plan` (e.g. `--segment commodities` on an
+    account/mode whose resolved plan never included it) is silently
+    dropped, not an error -- mirrors `--account`'s own silent-narrowing
+    behaviour for a name not present in the active roster."""
+    if not segments:
+        return plan
+    wanted = set(segments)
+    return {k: v for k, v in plan.items() if k in wanted}
 
 
 async def main(argv: "list[str] | None" = None) -> int:
@@ -2763,6 +2793,8 @@ async def main(argv: "list[str] | None" = None) -> int:
                 today,
             )
             return 0
+
+    plan = _filter_plan_to_segments(plan, args.segment)
 
     if args.dry_run:
         print(json.dumps({
