@@ -6545,6 +6545,18 @@
               <InfoHint popup id="sum-hint-greeks-note"
                 panel title="Greeks (position)" text={'Sum of every leg\'s signed-qty Greeks, including +qty per enabled equity-holding leg (long stock = +1 Δ/share). Θ / 𝒱 / Γ / ρ stay option-only since vanilla stock has zero convexity, decay, IV and rate sensitivity.'} />
             {/snippet}
+            <!-- Empty middle snippet (2026-11-26 addendum) — CardHeader
+                 only renders its `.ch-sep` vertical divider when a
+                 `middle` snippet is passed (see CardHeader.svelte:
+                 `{#if middle}<span class="ch-sep" .../>{/if}`). Snapshot
+                 and Legs both get this divider for free because they
+                 pass real middle content (StrategyPicker / the view
+                 dropdown); Greeks/Risk had none, so they never got the
+                 divider either — confirmed live via screenshot, this is
+                 the actual existing convention the operator meant, not
+                 a new design. An empty snippet is enough to trigger it;
+                 no new CSS needed. -->
+            {#snippet middle()}{/snippet}
           </CardHeader>
           <!-- Header-row + value-row grid: the 5 Greek symbols form ONE
                header row, their 5 values form ONE data row directly below,
@@ -6601,6 +6613,10 @@
               <InfoHint popup id="sum-hint-risk-note"
                 panel title="Risk &amp; expected value" text={'Aggregate risk + expected value across all legs. Probability-weighted outcomes integrated against the lognormal pdf of the underlying using a qty-weighted IV proxy. POP × magnitudes captures the asymmetry that POP alone misses.'} />
             {/snippet}
+            <!-- Empty middle snippet — see the matching comment on the
+                 Greeks CardHeader above for why this is the real,
+                 existing divider convention (CardHeader's `.ch-sep`). -->
+            {#snippet middle()}{/snippet}
           </CardHeader>
           <!-- Each `.kv-pair` is `display: contents` so its own label +
                value cells fall directly into the grid as one row — one

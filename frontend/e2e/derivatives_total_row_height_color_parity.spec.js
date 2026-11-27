@@ -97,7 +97,13 @@ test.describe('derivatives TOTAL row — height + color parity (source)', () => 
   });
 
   test('Snapshot TOTAL label gets explicit font-weight parity with Legs label', () => {
-    expect(PAGE_SRC).toMatch(/\.byund-und-total\s*\{\s*font-weight:\s*800;?\s*\}/);
+    // 2026-11-26: `.byund-und-total` also gained `box-shadow: none` (the
+    // TOTAL row's own right-edge divider removal) in the same rule — this
+    // now checks the rule's CONTENTS contain font-weight:800, rather than
+    // asserting the rule is standalone with nothing else in it.
+    const ruleMatch = PAGE_SRC.match(/\.byund-und-total\s*\{([^}]*)\}/);
+    expect(ruleMatch, '.byund-und-total rule must exist').toBeTruthy();
+    expect(ruleMatch[1]).toMatch(/font-weight:\s*800/);
     // .cand-total-label (Legs grid) already asserts font-weight: 800 — this
     // is the OTHER half of the parity the fix establishes.
     const candLabelMatch = PAGE_SRC.match(/\.cand-total-label\s*\{([^}]*)\}/);
