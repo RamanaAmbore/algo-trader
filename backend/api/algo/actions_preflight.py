@@ -673,8 +673,21 @@ async def _preflight_dhan_groww_close_note(
     `_preflight_emit_margin_blocker` may also make for the same leg —
     cheap (cached 30s broker DataFrame, see `_fetch_net_position_row`),
     and does NOT alter blocking behaviour: this function never appends to
-    any blocker list, it only ever returns `close_exemption`/
-    `close_exemption_note` for the caller to merge into `diag`.
+    any blocker list.
+
+    Returns ONLY `close_exemption_note`, never `close_exemption` itself
+    (post-review correctness fix) — `close_exemption` is set exclusively
+    by `_preflight_emit_margin_blocker`, where it carries a specific,
+    narrower meaning: "a margin-shortfall blocker was about to be
+    appended and was suppressed because this is a verified close". A
+    verified close that never reaches a shortfall at all (the common
+    case this function exists for) was never ABOUT to be blocked, so
+    setting the same flag here would silently widen its meaning to "this
+    order happens to be a verified close" — a real semantic drift with no
+    current reader (confirmed: no production code anywhere reads
+    `diagnostics.close_exemption`, only tests do), but worth keeping
+    precise since a future caller might reasonably assume the narrower
+    meaning still holds.
 
     Returns `{}` (nothing to merge) when not applicable.
     """
@@ -686,7 +699,7 @@ async def _preflight_dhan_groww_close_note(
             symbol, exchange, margin_ctx["side"], account, qty,
             product=margin_ctx.get("product"),
         ):
-            return {"close_exemption": True, "close_exemption_note": _DHAN_GROWW_CLOSE_NOTE}
+            return {"close_exemption_note": _DHAN_GROWW_CLOSE_NOTE}
     except Exception as e:
         logger.debug(
             f"[PREFLIGHT] close-intent verification (note-only) "

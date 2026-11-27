@@ -537,6 +537,73 @@ describe('mergePositionRows — position-state field propagation (2026-10 fix)',
 });
 
 // ============================================================================
+// mergePositionRows — product propagation (2026-11 real-money audit fix,
+// Bug 1)
+//
+// `product` (MIS/NRML/CNC) was never copied from the raw broker row onto
+// the aggregated pulse row at all, so a "Close" click from MarketPulse
+// (_openTicketFromRow) had no way to pre-fill the real product and
+// silently defaulted every close to NRML — a wrong-product close is not a
+// close at all on Kite (which only nets within the SAME product), it's an
+// opposite-direction open in the claimed product next to the still-open
+// position.
+//
+// `lookupKey` is `${sym}::${account}` — it has NO product dimension, so a
+// symbol genuinely held under two products in one account (rare, but
+// real) collapses into ONE row here. Set product only while every
+// contributing leg agrees; a disagreement must leave it null rather than
+// guessing one of the two.
+// ============================================================================
+
+describe('mergePositionRows — product propagation (2026-11 real-money audit fix)', () => {
+  it('a single leg carries its own product through to the aggregated row', () => {
+    const byKey = {};
+    const row = makeOvernightPositionRow({ account: 'ACC1', product: 'MIS' });
+    mergePositionRows(byKey, [row], true, {}, makeCtx());
+    const result = byKey['NIFTY25AUG24000CE::ACC1__pos'];
+    expect(result.product).toBe('MIS');
+  });
+
+  it('two legs for the SAME account agreeing on product keep that product', () => {
+    const byKey = {};
+    const rowA = makeOvernightPositionRow({ account: 'ACC1', product: 'NRML' });
+    const rowB = makeOvernightPositionRow({ account: 'ACC1', product: 'NRML' });
+    mergePositionRows(byKey, [rowA, rowB], true, {}, makeCtx());
+    const result = byKey['NIFTY25AUG24000CE::ACC1__pos'];
+    expect(result.product).toBe('NRML');
+  });
+
+  it('a genuine MIS + NRML split for the SAME account/symbol leaves product null, never guesses', () => {
+    const byKey = {};
+    const rowMis  = makeOvernightPositionRow({ account: 'ACC1', product: 'MIS' });
+    const rowNrml = makeOvernightPositionRow({ account: 'ACC1', product: 'NRML' });
+    mergePositionRows(byKey, [rowMis, rowNrml], true, {}, makeCtx());
+    const result = byKey['NIFTY25AUG24000CE::ACC1__pos'];
+    expect(result.product).toBeNull();
+  });
+
+  it('a missing product field on the raw row yields a null product, not "undefined" or a coerced string', () => {
+    const byKey = {};
+    // makeOvernightPositionRow's own defaults carry no `product` key at
+    // all, so simply omitting the override already exercises "field
+    // genuinely absent".
+    const row = makeOvernightPositionRow({ account: 'ACC1' });
+    mergePositionRows(byKey, [row], true, {}, makeCtx());
+    const result = byKey['NIFTY25AUG24000CE::ACC1__pos'];
+    expect(result.product).toBeNull();
+  });
+
+  it('two separate accounts holding the same symbol each keep their OWN product — no cross-account leakage', () => {
+    const byKey = {};
+    const rowA = makeOvernightPositionRow({ account: 'ACC1', product: 'MIS' });
+    const rowB = makeOvernightPositionRow({ account: 'ACC2', product: 'NRML' });
+    mergePositionRows(byKey, [rowA, rowB], true, {}, makeCtx());
+    expect(byKey['NIFTY25AUG24000CE::ACC1__pos'].product).toBe('MIS');
+    expect(byKey['NIFTY25AUG24000CE::ACC2__pos'].product).toBe('NRML');
+  });
+});
+
+// ============================================================================
 // mergePositionRows — baseline_stale propagation (2026-11 Day P&L audit)
 //
 // A daily_book snapshot-writer gap row (baseline_stale=true, no resolved

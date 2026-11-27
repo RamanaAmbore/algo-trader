@@ -1900,6 +1900,20 @@
     // cash_released are cash-resource events; margin_required and
     // margin_released are margin-resource events.
     const isCashMode = cashFlowKind === 'cash_cost' || cashFlowKind === 'cash_released';
+    // estCredit (post-review fix) — a close-long's broker `required`
+    // figure (basket_margin_used) is near-zero: closing a long needs no
+    // NEW margin/cash commitment, so the broker API reports almost
+    // nothing for the ORDER itself. That is NOT the amount the operator
+    // actually receives on the close — the real credit is this order's
+    // own price × qty (the premium coming back). Rendering the broker's
+    // near-zero figure under a "Cash released" label would say "releases
+    // ₹0", which is false. Null when no limit price is set yet (MARKET,
+    // or an empty price field) — the chip then shows a plain "Releases
+    // cash" with no asserted number rather than guessing one.
+    const estCredit = cashFlowKind === 'cash_released'
+      && Number(_price) > 0 && Number(_qty) > 0
+      ? Number(_price) * Number(_qty)
+      : null;
     // `pairedCount` (parent-+-wing netted margin) was removed — the
     // margin preview below is deliberately NAKED now (no `paired_legs`
     // sent), matching what the real submit-time preflight actually
@@ -1908,6 +1922,7 @@
     return {
       isCashMode,
       cashFlowKind,
+      estCredit,
       cash:         _accountFunds ? Number(_accountFunds.cash || 0)         : null,
       availMargin:  _accountFunds ? Number(_accountFunds.avail_margin || 0) : null,
       usedMargin:   _accountFunds ? Number(_accountFunds.used_margin || 0)  : null,

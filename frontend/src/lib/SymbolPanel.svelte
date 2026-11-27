@@ -1162,6 +1162,7 @@
         loading: true,
         isCashMode: !!_chipMeta?.isCashMode,
         cashFlowKind: _chipMeta?.cashFlowKind ?? null,
+        estCredit: typeof _chipMeta?.estCredit === 'number' ? _chipMeta.estCredit : null,
       };
     }
     const d = _modalMargin.diagnostics ?? {};
@@ -1225,9 +1226,16 @@
     // read as nonsensical/alarming (live example: required=-501045.81)
     // — the pill below relabels it as a released amount instead.
     const requiredNegative = required < 0;
+    // estCredit (post-review fix) — see OrderTicket.svelte's own
+    // `_chipMeta` comment: a close-long's broker `required` is near-zero
+    // (no NEW cash/margin committed by a closing order), so it must
+    // never be shown under a "released"/"Credit" label. estCredit (this
+    // order's own price × qty) is the honest estimate of what actually
+    // comes back; null when no limit price is set yet.
+    const estCredit = typeof _chipMeta?.estCredit === 'number' ? _chipMeta.estCredit : null;
     return {
       required, available, after, afterCls, shortfall, isCashMode,
-      cashFlowKind, requiredNegative, closeExemptionNote,
+      cashFlowKind, requiredNegative, closeExemptionNote, estCredit,
     };
   });
   // Modal notice — single source of truth for error / warning / info
@@ -2882,48 +2890,71 @@
               ?? (_marginInfo.isCashMode ? 'cash_cost' : 'margin_required')}
             {@const _isCash = _cfKind === 'cash_cost' || _cfKind === 'cash_released'}
             {@const _reqNeg = !!_marginInfo.requiredNegative}
-            <!-- Req-row key: a genuinely negative broker `required` always
-                 relabels to 'Released' (any broker/mode — see the
-                 negative-margin sanity check in actions_preflight.py).
-                 Otherwise the key stays an HONEST description of the
-                 raw figure shown — 'Credit' for a close-long (the figure
-                 is usually ~0, framed as credit-side rather than
-                 cost-side), 'Cost'/'Req' unchanged for the open cases.
-                 Deliberately NOT 'Released' for a close-short with a
-                 still-positive `required` — that would assert a release
-                 amount the broker hasn't actually reported. -->
+            {@const _estCredit = _marginInfo.estCredit}
+            <!-- Post-review correctness fix: a close order's broker
+                 `required` figure is near-zero (closing commits no NEW
+                 cash/margin) — it is NEVER the amount actually released.
+                 Showing "Cash released: ₹0.00" or "Margin released:
+                 ₹15,000" (a positive, possibly Dhan/Groww-inflated
+                 requirement) under a "released" label asserts a false
+                 amount. Only a genuinely negative `required` (a real
+                 broker-reported credit) gets the literal 'Released ₹|x|'
+                 treatment. For cash_released, `_estCredit` (this order's
+                 own price × qty — the real premium coming back) stands
+                 in for the broker's meaningless near-zero figure; with
+                 no limit price yet, show no number at all rather than
+                 guess one. For margin_released, there is no equivalent
+                 simple estimate, so the pill keeps the HONEST 'Req ₹X'
+                 figure and the tooltip states the direction without
+                 calling that number a release amount. -->
+            {@const _noCreditYet = _cfKind === 'cash_released' && !_reqNeg && _estCredit == null}
             {@const _reqKey = _reqNeg ? 'Released'
-              : _cfKind === 'cash_released' ? 'Credit'
+              : (_cfKind === 'cash_released' && _estCredit != null) ? 'Credit'
               : _isCash ? 'Cost' : 'Req'}
             {@const _avlKey = _isCash ? 'Cash' : 'Avail'}
-            <!-- `_kind` (tooltip + loading text) carries the direction —
-                 "released" framing for BOTH close cases regardless of the
-                 raw figure's sign, per operator: "when you are short and
-                 when you close it you release margin." -->
-            {@const _kind = _reqNeg ? (_isCash ? 'Cash released' : 'Margin released')
-              : _cfKind === 'cash_released'   ? 'Cash released'
-              : _cfKind === 'margin_released' ? 'Margin released'
-              : _cfKind === 'cash_cost'       ? 'Cash debit'
-              : 'Margin required'}
-            {@const _reqDisplayVal = _reqNeg ? Math.abs(_marginInfo.required) : _marginInfo.required}
+            {@const _reqDisplayVal = _reqNeg ? Math.abs(_marginInfo.required)
+              : (_cfKind === 'cash_released' && _estCredit != null) ? _estCredit
+              : _marginInfo.required}
             {@const _computingWord = _cfKind === 'cash_cost' ? 'cost'
               : _cfKind === 'cash_released'   ? 'cash release'
               : _cfKind === 'margin_released' ? 'margin release'
               : 'margin'}
+            <!-- Tooltip text is built explicitly per case rather than one
+                 generic template — the margin_released and no-estimate
+                 cash_released cases must not pair a "released" verb with
+                 a number that isn't actually the release amount. -->
+            {@const _tooltipText = _marginInfo.error
+              ? `Preview: ${_marginInfo.error}`
+              : _marginInfo.loading
+                ? `Computing ${_computingWord}…`
+                : _reqNeg
+                  ? `${_isCash ? 'Cash released' : 'Margin released'}: ₹${aggFmtMargin(Math.abs(_marginInfo.required))} vs ${_avlKey} ₹${aggFmtMargin(_marginInfo.available ?? 0)}`
+                  : _cfKind === 'cash_released' && _estCredit != null
+                    ? `Cash released (est. premium): ₹${aggFmtMargin(_estCredit)} vs ${_avlKey} ₹${aggFmtMargin(_marginInfo.available ?? 0)}`
+                    : _cfKind === 'cash_released'
+                      ? `Closing releases cash — set a limit price for an estimate vs ${_avlKey} ₹${aggFmtMargin(_marginInfo.available ?? 0)}`
+                      : _cfKind === 'margin_released'
+                        ? `Closing a short releases margin — broker req ₹${aggFmtMargin(_marginInfo.required)} vs ${_avlKey} ₹${aggFmtMargin(_marginInfo.available ?? 0)}`
+                        : `${_cfKind === 'cash_cost' ? 'Cash debit' : 'Margin required'}: ₹${aggFmtMargin(_reqDisplayVal)} vs ${_avlKey} ₹${aggFmtMargin(_marginInfo.available ?? 0)}`}
             <!-- Operator: "for the margin area allocate to two rows
                  of space". Required + Available stack on two lines
                  (kept inline-grid for tight alignment). Buttons
                  below match the new pill height. -->
             <span class="oes-margin-pill oes-margin-pill-{_marginPillCls} oes-margin-pill-stack"
-                  title={_marginInfo.error
-                    ? `Preview: ${_marginInfo.error}`
-                    : _marginInfo.loading
-                      ? `Computing ${_computingWord}…`
-                      : `${_kind}: ₹${aggFmtMargin(_reqDisplayVal)} vs ${_avlKey} ₹${aggFmtMargin(_marginInfo.available ?? 0)}`}>
+                  title={_tooltipText}>
               {#if _marginInfo.error}
                 ⚠ {_marginInfo.error}
               {:else if _marginInfo.loading}
                 Computing {_computingWord}…
+              {:else if _noCreditYet}
+                <span class="oes-margin-pill-row">Releases cash</span>
+                {#if _marginInfo.available != null}
+                  <span class="oes-margin-pill-sep">·</span>
+                  <span class="oes-margin-pill-row">
+                    <span class="oes-margin-pill-key">{_avlKey}</span>
+                    <span class="oes-margin-pill-val">{aggFmtMargin(_marginInfo.available)}</span>
+                  </span>
+                {/if}
               {:else}
                 <span class="oes-margin-pill-row">
                   <span class="oes-margin-pill-key">{_reqKey}</span>

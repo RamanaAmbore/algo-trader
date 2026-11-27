@@ -2189,7 +2189,13 @@ async def test_preflight_dhan_close_note_set_even_without_shortfall():
     codes = [b["code"] for b in result["blocked"]]
     assert "MARGIN_SHORTFALL" not in codes
     assert result["ok"] is True
-    assert result["diagnostics"].get("close_exemption") is True
+    # `close_exemption` itself is NOT set here (post-review fix) — no
+    # blocker was ever about to fire, so nothing was actually exempted.
+    # That flag's narrower meaning is preserved exclusively for
+    # `_preflight_emit_margin_blocker`'s own suppression path (see the
+    # sibling test below). Only the note (always-run, regardless of
+    # shortfall) is asserted here.
+    assert "close_exemption" not in result["diagnostics"]
     note = result["diagnostics"].get("close_exemption_note")
     assert note and "overstated" in note.lower()
     assert "Dhan" in note or "Groww" in note

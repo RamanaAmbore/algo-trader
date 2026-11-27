@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { expiryPnl, expiryPnlWithRealised, AVG_PRICE_IS_COST_BASIS, legExtrinsicDisplay, positionExpPnl, positionExpPnlPieces, buildPositionRowFromBroker } from '../../data/expiryPnl.js';
+import { expiryPnl, expiryPnlWithRealised, AVG_PRICE_IS_COST_BASIS, legExtrinsicDisplay, positionExpPnl, positionExpPnlPieces, buildPositionRowFromBroker, splitClosedReopened } from '../../data/expiryPnl.js';
 
 describe('expiryPnl', () => {
   const spot = 100;
@@ -620,5 +620,56 @@ describe('buildPositionRowFromBroker — baseline_stale passthrough', () => {
     const p = { tradingsymbol: 'RELIANCE', account: 'ZG0790', baseline_stale: 1 };
     const row = buildPositionRowFromBroker(p, 'live');
     expect(row.baseline_stale).toBe(false);
+  });
+});
+
+// ============================================================================
+// buildPositionRowFromBroker — product field passthrough (2026-11
+// real-money audit fix, Bug 1) — same whitelist-drop class as
+// baseline_stale/is_orphan/pair_group_key/has_gtt above: `product`
+// (MIS/NRML/CNC) was never copied onto the normalised row at all, so the
+// derivatives Legs grid's close-ticket opener (`closePosition` in
+// +page.svelte) had no way to pre-fill the real product and silently
+// defaulted every close to NRML.
+// ============================================================================
+
+describe('buildPositionRowFromBroker — product passthrough (2026-11 real-money audit fix)', () => {
+  it('copies a real product value through, upper-cased', () => {
+    const p = { tradingsymbol: 'NIFTY25AUG24000CE', account: 'ZG0790', product: 'mis' };
+    const row = buildPositionRowFromBroker(p, 'live');
+    expect(row.product).toBe('MIS');
+  });
+
+  it('defaults to null when absent — never guesses NRML/CNC', () => {
+    const p = { tradingsymbol: 'RELIANCE', account: 'ZG0790' };
+    const row = buildPositionRowFromBroker(p, 'live');
+    expect(row.product).toBeNull();
+  });
+
+  it('survives splitClosedReopened on the intraday-round-trip branch (fully closed today)', () => {
+    const p = buildPositionRowFromBroker({
+      tradingsymbol: 'NIFTY25AUG24000CE', account: 'ZG0790', product: 'NRML',
+      quantity: 0, overnight_quantity: 0,
+      day_buy_quantity: 50, day_sell_quantity: 50,
+      day_buy_value: 6000, day_sell_value: 6500,
+      pnl: 500, realised: 500, unrealised: 0,
+    }, 'live');
+    const pieces = splitClosedReopened(p);
+    expect(pieces.length).toBeGreaterThan(0);
+    for (const piece of pieces) expect(piece.product).toBe('NRML');
+  });
+
+  it('survives splitClosedReopened on the closed+reopened overnight-carry branch', () => {
+    const p = buildPositionRowFromBroker({
+      tradingsymbol: 'NIFTY25AUG24000CE', account: 'ZG0790', product: 'MIS',
+      quantity: 25, overnight_quantity: 50,
+      day_buy_quantity: 0, day_sell_quantity: 25,
+      day_buy_value: 0, day_sell_value: 3250,
+      average_price: 120, last_price: 130, previous_close: 125,
+      pnl: 500, realised: 0, unrealised: 250,
+    }, 'live');
+    const pieces = splitClosedReopened(p);
+    expect(pieces.length).toBeGreaterThan(0);
+    for (const piece of pieces) expect(piece.product).toBe('MIS');
   });
 });
