@@ -271,6 +271,76 @@ class TestAeDispatchActionsEndToEnd:
         mock_dispatch.assert_called_once()
 
 
+class TestActionLiveExpiryAutoCloseReachedAfterGateFix:
+    """Closes a gap the fix above does not, by itself, prove closed:
+    the exchange gate is only the FIRST half of the real dispatch path.
+    `_al_dispatch_by_mode` would route a live `expiry_auto_close` action
+    to `_action_live_expiry_auto_close`, which independently re-derives
+    its own "which exchange is in its pre-close window right now" via
+    `_expiry_preclose_exchanges()` / `expiry_context_shim()` — a SEPARATE
+    mechanism from the gate this file's other tests fix. If THAT path
+    silently found "no exchange in window" for any reason, the fix above
+    would make the gate pass while the action still did nothing —
+    i.e. it would look fixed (no more `action_skipped` row) while still
+    not closing a single position. This test drives that function for
+    real, past the (now-fixed) gate, with a real MCX short-option
+    position expiring exactly on the incident's own date, and proves
+    `ExpiryEngine.close_positions()` is actually reached with that leg."""
+
+    @pytest.mark.asyncio
+    async def test_real_mcx_expiring_short_leg_reaches_close_positions(self):
+        from backend.api.algo.agent_engine import _build_context
+        from backend.api.algo.actions_live import _action_live_expiry_auto_close
+        from backend.api.algo.expiry import ExpiryEngine
+
+        # GOLD26NOV123000PE's real expiry is confirmed 2026-11-27
+        # (test_expiry_day_and_preclose_agents.py's own fixture, cross-
+        # checked against test_scope_positions_expiring_today.py) — the
+        # exact incident night. 23:50 IST is inside MCX's real winter
+        # close (23:55) and inside the 60-minute pre-close window.
+        # `now` MUST be IST-tz, not UTC — `_build_context`'s
+        # `now.replace(hour=...)` keeps the original tzinfo, so a UTC
+        # `now` silently shifts every comparison by 5h30m (see
+        # `_build_now_ctx`'s own docstring warning about exactly this).
+        now = datetime(2026, 11, 27, 23, 50, tzinfo=IST)
+        base_ctx = _build_context(now)
+        assert base_ctx["mcx_open"] is True, base_ctx
+
+        context = {
+            "now": now,
+            "segment_flags": dict(base_ctx),
+            "position_rows": [
+                {"tradingsymbol": "GOLD26NOV123000PE", "exchange": "MCX",
+                 "quantity": -100, "account": "ZG0790"},
+            ],
+        }
+
+        agent = MagicMock()
+        agent.id = 119
+        agent.slug = "expiry-day-mcx-itm-auto-close"
+
+        fake_position = MagicMock()
+        fake_position.exchange = "MCX"
+        fake_position.tradingsymbol = "GOLD26NOV123000PE"
+
+        with patch.object(ExpiryEngine, "scan_positions",
+                          return_value=[fake_position]), \
+             patch.object(ExpiryEngine, "close_positions",
+                          new=AsyncMock()) as mock_close:
+            await _action_live_expiry_auto_close(
+                agent, context, {"exchange": "MCX"},
+            )
+
+        mock_close.assert_called_once()
+        closed_arg = mock_close.call_args.args[0]
+        assert closed_arg == [fake_position], (
+            "the real MCX expiring short leg never reached "
+            "close_positions() — the gate fix alone is not sufficient "
+            "if this independent exchange-window re-derivation inside "
+            "_action_live_expiry_auto_close itself is broken"
+        )
+
+
 class TestSymbolExchangeOpenMissingKeyIsLoud:
     """Defense-in-depth: a genuinely absent flag key must never be
     silently treated the same as a confirmed-False/closed value (the
