@@ -219,7 +219,11 @@ async def _place_order_on_failure(
     }
     try:
         broker = get_broker(account)
-        diag = await diagnose_live_failure(broker, diag_order, str(e))
+        # is_close defaults to False: place_order (and its hedge leg)
+        # always opens a fresh position, never a close.
+        diag = await diagnose_live_failure(
+            broker, diag_order, str(e), account=account,
+        )
     except Exception:
         diag = "diagnosis unavailable"
     logger.error(f"[LIVE] place_order failed for {account} {exchange}/{symbol} "
@@ -1002,7 +1006,15 @@ async def _close_position_on_failure(
     }
     try:
         if broker is not None:
-            diag = await diagnose_live_failure(broker, diag_order, str(e))
+            # is_close=True: this failure handler is wired to the
+            # `close_position` action only — `_al_close_resolve_position`
+            # (the caller of chase_order() that raised `e`) already
+            # server-verified this is a genuine close against the real
+            # broker position before chase_order() was ever invoked, so
+            # this is a verified close, not a raw unverified claim.
+            diag = await diagnose_live_failure(
+                broker, diag_order, str(e), is_close=True, account=account,
+            )
         else:
             diag = "broker resolve failed — no diagnosis available"
     except Exception:
@@ -2149,12 +2161,22 @@ def _al_parse_failure_row(
 
 
 async def _al_diagnose_chase_result(acct: str, diag_order: dict) -> str:
-    """Run diagnose_live_failure for one chase task; returns the diagnosis string."""
+    """Run diagnose_live_failure for one chase task; returns the diagnosis string.
+
+    is_close=True: this is the sole diagnostic path for
+    `chase_close_positions` (see `_action_live_chase_close_positions`'s
+    own docstring: "Close every open position in scope..."). `side` in
+    `diag_order` is derived directly from the REAL held position's own
+    sign by `_al_parse_failure_row` (SELL for long, BUY for short) —
+    not a client-claimed intent — so this is already a verified close.
+    """
     from backend.brokers import get_broker
 
     try:
         broker = get_broker(acct)
-        return await diagnose_live_failure(broker, diag_order, "")
+        return await diagnose_live_failure(
+            broker, diag_order, "", is_close=True, account=acct,
+        )
     except Exception:
         return "diagnosis unavailable"
 

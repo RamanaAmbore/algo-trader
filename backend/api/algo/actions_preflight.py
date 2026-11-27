@@ -1272,7 +1272,152 @@ async def run_preflight(
     }
 
 
-async def diagnose_live_failure(broker, order: dict, kite_error: str) -> str:
+def _dlf_close_note(is_close: bool, broker) -> str:
+    """
+    Build the close-awareness suffix for `diagnose_live_failure`'s
+    returned message (2026-11 real-money audit fix, item 3).
+
+    A margin rejection on a server-VERIFIED close is a materially
+    different, more concerning situation than a rejection on a fresh
+    open — closes should essentially never be margin-blocked when the
+    system's own close-detection is working. We only ever state the
+    FACT that this was a close; we never assert a specific cause (e.g.
+    "product mismatch") — that would repeat the exact over-certainty
+    mistake the 2026-10-31 fix already corrected for the generic case.
+
+    `is_dhan_groww` is derived the same way `_preflight_margin_policy`
+    does (`broker.broker_id` against the explicit allowlist), not from a
+    new string literal, so this never drifts from the real preflight
+    gate's own notion of which brokers price a close "naked".
+    """
+    if not is_close:
+        return ""
+    bid = str(getattr(broker, "broker_id", "") or "")
+    if bid in ("dhan", "groww"):
+        # Dhan's margin_calculator and Groww's get_order_margin_details
+        # price every order independently of the account's existing
+        # book (no `consider_positions` equivalent) — same reason the
+        # real preflight gate exempts a verified close from these two
+        # brokers' margin-shortfall block. Reuse the SAME constant that
+        # gate already shows the operator (it already opens with
+        # "Verified close —"), rather than a second, possibly-divergent
+        # lead-in sentence that would just repeat the same word.
+        return " " + _DHAN_GROWW_CLOSE_NOTE + "."
+    return (
+        " This was a verified CLOSE order — a margin rejection on a "
+        "close is unexpected and should be reviewed."
+    )
+
+
+def _dlf_inconclusive_message(bm_result: object, close_note: str, orig: str) -> str:
+    """
+    Message for the `required is None` case — the re-check's own
+    basket-margin call returned no usable total.
+
+    2026-11 real-money audit fix (item 2): Dhan's `_margin_for_order`
+    and Groww's `basket_order_margins` catch their own SDK failures
+    internally and return `{"total": None, "error": "..."}` — they
+    never raise. The old code treated "basket_margin_fn didn't raise"
+    as "margin now reports sufficient", so this case was ALWAYS read as
+    a false "sufficient" for Dhan/Groww. Deliberately does NOT route the
+    error text through the margin/fund/shortfall keyword classifier
+    the raised-exception branch uses below — a transport-layer failure
+    (e.g. a TypeError naming `get_order_margin_details`) can contain the
+    word "margin" purely because of the method name, which would
+    otherwise be misclassified as a confident margin-shortfall
+    diagnosis. The broker's real error text is surfaced verbatim
+    instead, same convention as the original kite_error preservation.
+    """
+    leg_errors = _preflight_collect_leg_errors(bm_result)
+    err_text = " | ".join(leg_errors)[:160] if leg_errors else "no error detail returned"
+    return (
+        "margin re-check inconclusive — the broker's margin call returned "
+        f"no usable total ({err_text}); this does NOT mean margin is "
+        f"sufficient.{close_note}{orig}"
+    )
+
+
+async def _dlf_resolve_available_margin(
+    broker, loop, exchange: str, account: "str | None",
+) -> "float | None":
+    """
+    Resolve the account's real available margin for the re-check's own
+    exchange/segment, mirroring the SAME `m_enabled` gate
+    `_preflight_handle_positive_margin` applies — compare only when the
+    broker reports the segment as enabled AND a numeric net balance.
+    Returns None (never a guessed number) on any lookup failure, a
+    disabled segment, or an unparseable response — `_dlf_margin_verdict`
+    treats None as "cannot confirm sufficiency", never as "sufficient".
+    """
+    segment = _EXCHANGE_SEGMENT.get(exchange, "equity")
+    try:
+        margins_res = await _preflight_fetch_account_margins(broker, loop, segment)
+        m_enabled, available = _preflight_resolve_available_margin(
+            margins_res, segment, account or "unknown",
+        )
+        return available if m_enabled else None
+    except Exception as e:
+        logger.debug(
+            f"[PREFLIGHT] diagnose_live_failure: available-margin lookup "
+            f"failed: {e}"
+        )
+        return None
+
+
+def _dlf_margin_verdict(
+    required: float, available: "float | None", close_note: str, orig: str,
+) -> str:
+    """
+    Compare the re-checked `required` total against the account's real
+    available margin and render the final message.
+
+    2026-11 real-money audit fix (item 1): `basket_order_margins` is a
+    pure CALCULATOR — it returns a required-margin NUMBER, it never
+    verifies sufficiency against available funds itself. The old code
+    treated "the re-check call didn't raise" as "sufficient" without
+    ever comparing the two numbers. `required <= 0` means the re-check
+    itself reports no margin is needed (a genuine credit/zero case,
+    e.g. the position nets to a credit) — that is sufficient on its own
+    terms and needs no available-margin lookup at all. Everything else
+    is only ever called "sufficient" once `required` is actually
+    confirmed <= the real available figure.
+    """
+    if required <= 0:
+        return (
+            "margin now reports sufficient via basket_margin (re-checked "
+            f"total required ₹{required:,.0f} — no shortfall; re-checked "
+            "after the failure — may have recovered since, e.g. during "
+            "concurrent chase/basket activity on this account; this does "
+            f"not confirm a segment/permission issue).{close_note}{orig}"
+        )
+    if available is None:
+        return (
+            f"margin re-check: basket_margin now reports required "
+            f"₹{required:,.0f}, but available margin could not be "
+            f"confirmed for this segment — NOT claiming sufficiency; "
+            f"this does not confirm a segment/permission issue "
+            f"either.{close_note}{orig}"
+        )
+    if required <= available:
+        return (
+            f"margin now appears sufficient — required ₹{required:,.0f} is "
+            f"within available ₹{available:,.0f} (re-checked after the "
+            "failure — may have recovered since, e.g. during concurrent "
+            "chase/basket activity on this account; this does not confirm "
+            f"a segment/permission issue).{close_note}{orig}"
+        )
+    gap = required - available
+    return (
+        f"margin re-check: required ₹{required:,.0f} still exceeds "
+        f"available ₹{available:,.0f} (short by ₹{gap:,.0f}) — margin has "
+        f"NOT recovered.{close_note}{orig}"
+    )
+
+
+async def diagnose_live_failure(
+    broker, order: dict, kite_error: str,
+    *, is_close: bool = False, account: "str | None" = None,
+) -> str:
     """
     When a place_order call raises, re-run basket_order_margins as a
     SECONDARY data point — NOT a root-cause diagnosis.
@@ -1293,17 +1438,61 @@ async def diagnose_live_failure(broker, order: dict, kite_error: str) -> str:
     the real required/available figures at the moment of failure)
     instead of discarding it after a debug-only log line.
 
-      - basket_margin succeeds  →  margin now reports sufficient; may
-                                   mean the original failure was
-                                   transient (margin recovered since),
-                                   OR a segment/permission issue — this
-                                   check alone cannot distinguish them
-      - basket_margin fails with margin/fund/shortfall keywords → margin
-      - basket_margin fails with the same generic error → unclear
+    2026-11 real-money audit fix (this entry) — the re-check itself was
+    affirmatively reporting SUCCESS in cases it never actually
+    confirmed:
+
+      1. `basket_order_margins` only returns a required-margin NUMBER;
+         it never checks that number against the account's actual
+         available margin. "The re-check call didn't raise" is not
+         "margin is sufficient" — the two are now compared explicitly
+         (`_dlf_margin_verdict`).
+      2. Dhan's and Groww's own `basket_order_margins` catch their SDK
+         failures internally and return `{"total": None, "error":
+         ...}` — they never raise. That response is now treated as
+         "re-check inconclusive", never as "sufficient"
+         (`_dlf_inconclusive_message`). A leg can also carry a genuine
+         `error` string ALONGSIDE a parsed total of 0.0 (confirmed
+         live, pre-fix Groww signature bug) — the `required is None`
+         check alone would not have caught that shape, so any leg
+         carrying an `error` routes to inconclusive regardless of what
+         its `total` parsed to.
+      3. When the original failed order was a server-verified close,
+         the message now says so explicitly — a margin block on a
+         verified close is a different, more concerning situation than
+         one on a fresh open (`_dlf_close_note`).
+
+      - basket_margin reports required <= 0 with NO leg error, or
+        required <= the real available margin → sufficient; may mean
+        the original failure was transient (margin recovered since), OR
+        a segment/permission issue — this check alone cannot
+        distinguish them
+      - basket_margin reports required > available, or available could
+        not be confirmed → NOT claimed sufficient; the real gap (or the
+        fact that it's unconfirmed) is stated instead
+      - the re-check itself returns no usable total, OR any leg carries
+        its own `error` string (Dhan/Groww-shaped failure, even
+        alongside a parsed total) → inconclusive, broker's own error
+        text surfaced
+      - basket_margin RAISES with margin/fund/shortfall keywords →
+        margin shortfall (unchanged — this is a genuine Kite-side
+        exception path, distinct from the Dhan/Groww no-raise case above)
+      - basket_margin raises with the same generic error → unclear
 
     `broker` is a `Broker` adapter from the registry. For backwards
     compatibility we still accept a raw SDK handle and reach for its
     `basket_order_margins` method — callers should pass the adapter.
+
+    `is_close` (keyword-only, default False): pass True only when the
+    caller has already SERVER-VERIFIED this was a close (sign,
+    magnitude, and ideally product, against the real broker position)
+    — never a raw, unverified client-claimed intent. See the
+    "Verified-intent propagation" invariant in CLAUDE.md.
+
+    `account` (keyword-only, optional): used only to resolve the real
+    available-margin figure for the comparison above and for log
+    context — never embedded in the returned message, so a raw account
+    code never reaches an operator-facing string from this function.
     """
     import asyncio
     from backend.brokers.adapters.kite import get_lot_size
@@ -1333,22 +1522,35 @@ async def diagnose_live_failure(broker, order: dict, kite_error: str) -> str:
         "price":            order.get("price") or 0,
         "variety":          order.get("variety", "regular"),
     }
+    close_note = _dlf_close_note(is_close, broker)
+    # Kite's own original error carries the real required/available
+    # figures at the moment of failure; preserve it instead of
+    # replacing it with a guessed cause.
+    orig = f" Original: {kite_error[:200]}" if kite_error else ""
     try:
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, basket_margin_fn, [basket_order])
-        # basket_margin now reports sufficient — this is a re-check made
-        # AFTER the failure, not a root-cause diagnosis (see docstring).
-        # Kite's own original error carries the real required/available
-        # figures at the moment of failure; preserve it instead of
-        # replacing it with a guessed cause.
-        orig = f" Original: {kite_error[:200]}" if kite_error else ""
-        return ("margin now reports sufficient via basket_margin (re-checked "
-                "after the failure — may have recovered since, e.g. during "
-                "concurrent chase/basket activity on this account; this does "
-                "not confirm a segment/permission issue)." + orig)
+        bm_result = await loop.run_in_executor(None, basket_margin_fn, [basket_order])
     except Exception as bm_e:
+        # Kite's basket_order_margins CAN raise (unlike Dhan/Groww,
+        # which catch internally — see _dlf_inconclusive_message above).
+        # Unchanged from the pre-2026-11 behaviour aside from close_note.
         bm_msg = str(bm_e)
         low = bm_msg.lower()
         if any(k in low for k in ("margin", "fund", "shortfall", "balance")):
-            return f"margin shortfall (basket_margin: {bm_msg[:160]})"
-        return f"basket_margin also failed ({bm_msg[:160]}); cause unclear"
+            return f"margin shortfall (basket_margin: {bm_msg[:160]}){close_note}"
+        return f"basket_margin also failed ({bm_msg[:160]}); cause unclear{close_note}"
+
+    required = _preflight_parse_basket_margin(bm_result)
+    # A leg can carry a genuine `error` string AND a parsed total of
+    # 0.0 at the same time (confirmed live, pre-fix Groww signature bug:
+    # `[{"total": 0.0, "error": "...unexpected keyword argument
+    # 'trading_symbol'", "raw": None}]`) — `required is None` alone does
+    # NOT catch that shape, and without this check it reads as a false
+    # "sufficient" via the `required <= 0` branch below, reproducing the
+    # exact bug this fix exists to remove. ANY leg carrying an `error`
+    # routes to inconclusive, regardless of what its `total` parsed to.
+    if required is None or _preflight_collect_leg_errors(bm_result):
+        return _dlf_inconclusive_message(bm_result, close_note, orig)
+
+    available = await _dlf_resolve_available_margin(broker, loop, _exch, account)
+    return _dlf_margin_verdict(required, available, close_note, orig)

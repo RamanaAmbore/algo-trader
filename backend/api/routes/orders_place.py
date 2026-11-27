@@ -1463,7 +1463,31 @@ async def _ticket_handle_live_place_error(
         "variety":  data.variety or "regular",
     }
     try:
-        diag = await diagnose_live_failure(_broker_for(account), diag_order, kite_msg)
+        # is_close: `data.intent` was mutated in place to the
+        # server-VERIFIED value by `_ticket_enforce_lot_and_fat_finger`
+        # (called unconditionally before `_ticket_place_live`, the only
+        # path that can reach this handler) — but ONLY for an F&O
+        # exchange with a known lot size; for anything else (equity, or
+        # an F&O symbol whose lot size couldn't be resolved) that
+        # function returns early without touching `data.intent`, so it
+        # may still carry the client's raw, UNVERIFIED claim there.
+        # `diagnose_live_failure`'s own message asserts "verified" when
+        # is_close is True, so this must gate on the exact same
+        # condition the mutation itself gates on — never just read the
+        # raw field — or an unverified claim could be mislabeled
+        # "verified" in operator-facing text. Known residual: an F&O
+        # order whose lot size couldn't be resolved still gets
+        # is_close=False here even if the client's claim happened to be
+        # correct — acceptable, since this flag only ever adds
+        # explanatory text and never loosens a real gate.
+        diag = await diagnose_live_failure(
+            _broker_for(account), diag_order, kite_msg,
+            is_close=(
+                data.exchange in _FO_EXCHANGES
+                and getattr(data, "intent", None) == "close"
+            ),
+            account=account,
+        )
     except Exception:
         diag = "diagnosis unavailable"
     logger.error(
