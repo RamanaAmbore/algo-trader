@@ -159,7 +159,11 @@ test.describe('Payoff chart — Exp P&L bottom pill, label renames, legend marke
     const src = readFileSync(PAYOFF_PATH, 'utf8');
     const pillIdx = src.indexOf('Exp P&L pill — bottom of chart');
     expect(pillIdx, 'bottom Exp P&L pill comment not found').toBeGreaterThan(-1);
-    const block = src.slice(pillIdx, pillIdx + 3600);
+    // Widened from 3600 → 4400 (2026-11-27 same-day follow-up): the
+    // pill's own comment grew a "Z-order" paragraph explaining the
+    // foreground-svg relocation fix, pushing the actual <rect>/<text>
+    // markup further from the comment's start index.
+    const block = src.slice(pillIdx, pillIdx + 4400);
 
     // Same guard shape as the spot pill (spot >= sMin && spot <= sMax),
     // plus the curve must actually be resolved.
@@ -219,15 +223,22 @@ test.describe('Payoff chart — Exp P&L bottom pill, label renames, legend marke
     const expRow = overlay.locator('.ps-row', { has: page.locator('.ps-k', { hasText: 'Exp P&L' }) }).first();
     const expText = (await expRow.locator('.ps-v').textContent()) || '';
 
-    const chartSvg = page.locator('.payoff-svg').first();
-    await expect(chartSvg).toBeVisible({ timeout: 15_000 });
-    const pillTexts = await chartSvg.locator('text').allTextContents();
+    // Scoped to .payoff-svg-stack (the wrapper around BOTH svg layers),
+    // not .payoff-svg alone — 2026-11-27 same-day follow-up moved both
+    // pills into the foreground svg (.payoff-svg-fg) so curves/darts/the
+    // vertical spot line can never paint over them (see the "Z-order"
+    // comments in OptionsPayoff.svelte next to each pill).
+    const chartStack = page.locator('.payoff-svg-stack').first();
+    await expect(chartStack).toBeVisible({ timeout: 15_000 });
+    const pillTexts = await chartStack.locator('text').allTextContents();
     const cleaned = (s) => s.replace(/[₹,\s]/g, '');
     const matchFound = pillTexts.some((t) => cleaned(t) !== '' && cleaned(t) === cleaned(expText));
     expect(matchFound, `expected a chart <text> matching the Exp P&L stat row's own text (${expText}); saw: ${JSON.stringify(pillTexts)}`).toBe(true);
 
-    // Two <rect>s for the top spot pill, two more for the new bottom pill.
-    const rectCount = await chartSvg.locator('rect').count();
+    // Two <rect>s for the top spot pill, two more for the new bottom pill
+    // (mask + pill each) — now in the foreground svg layer, still inside
+    // the same .payoff-svg-stack wrapper.
+    const rectCount = await chartStack.locator('rect').count();
     expect(rectCount, 'expected at least 4 <rect> elements (2 top spot pill + 2 new bottom Exp P&L pill)').toBeGreaterThanOrEqual(4);
   });
 
@@ -267,6 +278,84 @@ test.describe('Payoff chart — Exp P&L bottom pill, label renames, legend marke
     expect(expStyle.stroke, 'bottom pill must have a stroke colour').not.toBe('none');
     // Same border WEIGHT across both pills ("consistent treatment").
     expect(parseFloat(spotStyle.strokeWidth)).toBeCloseTo(parseFloat(expStyle.strokeWidth), 1);
+  });
+
+  test('SOURCE (2026-11-27 same-day follow-up): both pills live in the foreground svg, never the background one, so a curve/dart/vertical-spot-line can never paint over them', () => {
+    // Operator: "the current underlying price shown with background and
+    // border in payoff chart is not clearly visible, may be because of
+    // background." Root cause: the pills used to live in the background
+    // svg (.payoff-svg, z-index 1), while the today/expiry curves and
+    // the vertical spot line are redrawn in the foreground svg
+    // (.payoff-svg-fg, z-index 4) — which paints OVER the whole
+    // background layer regardless of document order inside it. A curve
+    // whose value at spotX landed near a pill's fixed top/bottom band
+    // sliced straight across its fill/border/digits. Fix: both pills
+    // (mask + rect + text) now render as the LAST children of the
+    // foreground svg, so they are always painted after every curve,
+    // dart and the vertical spot line in both layers.
+    const src = readFileSync(PAYOFF_PATH, 'utf8');
+
+    const bgOpenIdx = src.indexOf('class="payoff-svg"');
+    const bgCloseIdx = src.indexOf('</svg>', bgOpenIdx);
+    const fgOpenIdx = src.indexOf('class="payoff-svg-fg"');
+    const fgCloseIdx = src.indexOf('</svg>', fgOpenIdx);
+    expect(bgOpenIdx, '.payoff-svg not found').toBeGreaterThan(-1);
+    expect(fgOpenIdx, '.payoff-svg-fg not found').toBeGreaterThan(-1);
+    expect(fgOpenIdx, 'foreground svg must come after the background svg in document order').toBeGreaterThan(bgCloseIdx);
+
+    const bgBlock = src.slice(bgOpenIdx, bgCloseIdx);
+    const fgBlock = src.slice(fgOpenIdx, fgCloseIdx);
+
+    // Neither pill's class hook may appear in the background svg...
+    expect(bgBlock).not.toMatch(/class="payoff-spot-pill"/);
+    expect(bgBlock).not.toMatch(/class="payoff-exp-pill"/);
+    // ...both must appear in the foreground svg instead.
+    expect(fgBlock).toMatch(/class="payoff-spot-pill"/);
+    expect(fgBlock).toMatch(/class="payoff-exp-pill"/);
+
+    // Both pills must be the LAST drawable content in the foreground
+    // svg — i.e. after every <path> (curves) and <circle> (darts) —
+    // so nothing paints on top of them within that layer either.
+    const lastPathIdx = fgBlock.lastIndexOf('<path');
+    const lastCircleIdx = fgBlock.lastIndexOf('<circle');
+    const spotPillIdx = fgBlock.indexOf('class="payoff-spot-pill"');
+    const expPillIdx = fgBlock.indexOf('class="payoff-exp-pill"');
+    expect(spotPillIdx, 'spot pill must come after every curve <path>').toBeGreaterThan(lastPathIdx);
+    expect(spotPillIdx, 'spot pill must come after every dart <circle>').toBeGreaterThan(lastCircleIdx);
+    expect(expPillIdx, 'Exp P&L pill must come after every curve <path>').toBeGreaterThan(lastPathIdx);
+    expect(expPillIdx, 'Exp P&L pill must come after every dart <circle>').toBeGreaterThan(lastCircleIdx);
+  });
+
+  test('LIVE (2026-11-27 same-day follow-up): a curve forced to the pill\'s own y-band no longer paints across it', async ({ page }) => {
+    // Flat payoff curve (today_value and expiry_value identical at every
+    // mocked spot) means the WHOLE visible chart width is one horizontal
+    // line at a single y — deterministically forces that line through
+    // whichever pill's fixed y-band happens to sit near that value,
+    // reproducing the reported occlusion without depending on real
+    // market data or a hand-picked spot/curve shape.
+    await gotoNiftyStrategy(page, { expPnl: 2345, todayPnl: 1500 });
+
+    const spotPill = page.locator('.payoff-spot-pill').first();
+    await expect(spotPill).toBeVisible({ timeout: 15_000 });
+
+    // Every <path> (curve) and the vertical spot <line> must render
+    // BEFORE the spot pill in the foreground svg's actual DOM order —
+    // Playwright's accessibility/DOM query order matches paint order
+    // for SVG siblings with no z-index of their own.
+    const fgSvg = page.locator('.payoff-svg-fg').first();
+    const fgChildTags = await fgSvg.evaluate((svg) =>
+      Array.from(svg.children).map((c) => `${c.tagName}.${c.getAttribute('class') || ''}`)
+    );
+    const spotPillFgIdx = fgChildTags.findIndex((t) => t.includes('payoff-spot-pill'));
+    const expPillFgIdx = fgChildTags.findIndex((t) => t.includes('payoff-exp-pill'));
+    expect(spotPillFgIdx, 'spot pill must be present in the fg svg child list').toBeGreaterThan(-1);
+    expect(expPillFgIdx, 'Exp P&L pill must be present in the fg svg child list').toBeGreaterThan(-1);
+    const lastPathFgIdx = fgChildTags.map((t, i) => (t.startsWith('path') ? i : -1)).filter((i) => i >= 0).pop() ?? -1;
+    const lastCircleFgIdx = fgChildTags.map((t, i) => (t.startsWith('circle') ? i : -1)).filter((i) => i >= 0).pop() ?? -1;
+    expect(spotPillFgIdx).toBeGreaterThan(lastPathFgIdx);
+    expect(spotPillFgIdx).toBeGreaterThan(lastCircleFgIdx);
+    expect(expPillFgIdx).toBeGreaterThan(lastPathFgIdx);
+    expect(expPillFgIdx).toBeGreaterThan(lastCircleFgIdx);
   });
 
   test('top-left overlay renames: "Mark P&L" and "MARK ADJ" render; "DAY P&L"/"Exp P&L" are untouched', async ({ page }) => {
