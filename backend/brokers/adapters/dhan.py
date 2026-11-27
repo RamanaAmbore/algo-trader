@@ -1010,7 +1010,14 @@ class DhanBroker(Broker):
         Returns per-(date, segment) summary rows for daily_book upsert.
         Delegates aggregation to `_dhan_ledger_aggregate`.
         """
-        ledger_method_name = "get_ledger_report"
+        # 2026-11-27 fix: this was "get_ledger_report", a name that does
+        # not exist anywhere in the installed dhanhq SDK (confirmed via
+        # direct introspection of dhanhq.dhanhq / dhanhq.Statement) -- the
+        # real method is `ledger_report(from_date, to_date)`. The existence
+        # check below therefore always failed silently (logged a WARNING,
+        # returned []), so this method has never actually returned real
+        # ledger data in production.
+        ledger_method_name = "ledger_report"
         if getattr(self.dhan, ledger_method_name, None) is None:
             logger.warning(
                 "DhanBroker.funds_ledger: SDK is missing "

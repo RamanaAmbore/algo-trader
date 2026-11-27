@@ -1073,6 +1073,70 @@ class TestDhanLedgerFunctions:
         assert mock_sdk.get_transaction_detail.call_count == 2
         assert result["status"] == "success"
 
+
+class TestDhanFundsLedgerRealSdkMethodName:
+    """2026-11-27 fix: `DhanBroker.funds_ledger()` called
+    `self.dhan.get_ledger_report` -- a method name that does not exist
+    anywhere in the installed dhanhq SDK (confirmed live via direct
+    introspection of `dhanhq.dhanhq`/`dhanhq.Statement`; the real method
+    is `ledger_report(from_date, to_date)`). The existence check
+    (`getattr(self.dhan, ledger_method_name, None) is None`) therefore
+    always failed silently and the method has never returned real
+    ledger data in production -- confirmed to fail before this fix."""
+
+    def setup_method(self):
+        self.mock_conn = MagicMock()
+        self.mock_conn.account = "TEST_ACCOUNT"
+        self.mock_conn.client_id = "TEST_CLIENT"
+        self.broker = DhanBroker(self.mock_conn)
+
+    def test_funds_ledger_calls_the_real_sdk_method_and_returns_rows(self):
+        mock_sdk = MagicMock(spec=["ledger_report"])
+        mock_sdk.ledger_report.return_value = {
+            "status": "success",
+            "data": [
+                {
+                    "voucherdate": "2026-07-01", "exchange": "MCX",
+                    "debit": "100.0", "credit": "0.0", "runbal": "50000.0",
+                },
+                {
+                    "voucherdate": "2026-07-01", "exchange": "MCX",
+                    "debit": "0.0", "credit": "200.0", "runbal": "50200.0",
+                },
+            ],
+        }
+        self.mock_conn.get_dhan_conn.return_value = mock_sdk
+
+        rows = self.broker.funds_ledger("2026-07-01", "2026-07-31")
+
+        assert len(rows) == 1  # one (date, segment) group
+        assert rows[0]["net"] == 50200.0
+        assert rows[0]["realised_m2m"] == 100.0  # 200 credit - 100 debit
+        mock_sdk.ledger_report.assert_called_once()
+
+    def test_funds_ledger_returns_empty_when_sdk_truly_lacks_the_method(self):
+        """A genuinely stripped-down SDK (no ledger_report at all) must
+        still degrade to [] with a warning, not raise -- the existence
+        check itself is correct, only the checked name was wrong."""
+        mock_sdk = MagicMock(spec=[])  # no attributes at all
+        self.mock_conn.get_dhan_conn.return_value = mock_sdk
+
+        rows = self.broker.funds_ledger("2026-07-01", "2026-07-31")
+
+        assert rows == []
+
+    def test_real_installed_sdk_confirms_ledger_report_not_get_ledger_report(self):
+        """Golden/regression guard against the real installed dependency
+        -- if a future dhanhq upgrade renames this method again, this
+        test (not just the mocked ones above) catches the drift."""
+        import dhanhq
+
+        assert hasattr(dhanhq.dhanhq, "ledger_report")
+        assert not hasattr(dhanhq.dhanhq, "get_ledger_report")
+        import inspect
+        sig = inspect.signature(dhanhq.dhanhq.ledger_report)
+        assert list(sig.parameters) == ["self", "from_date", "to_date"]
+
     def test_dhan_ledger_aggregate_groups_by_date_segment(self):
         """_dhan_ledger_aggregate groups ledger entries by date + segment."""
         from backend.brokers.adapters.dhan import _dhan_ledger_aggregate
