@@ -100,7 +100,14 @@ async function gotoNiftyStrategy(page, { expPnl, todayPnl, spot = 20000 }) {
     ],
     strategyResponse: {
       underlying: 'NIFTY', spot, spot_prev_close: spot,
-      spot_anchor_contract: null, spot_source: 'index',
+      // Synthetic anchor (test-only determinism knob, same convention as
+      // derivatives_payoff_dart_number_parity.spec.js's Case (b)/(d)) —
+      // guarantees payoffSpot resolves to `spot` regardless of any
+      // live/poll underlying-quote tick (the real NIFTY LTP in this test
+      // account can sit numerically outside the mocked curve's domain,
+      // which would otherwise suppress both the spot pill and this new
+      // Exp P&L pill via their shared spot-in-domain guard).
+      spot_anchor_contract: 'NIFTY_TEST_SPOT_ANCHOR', spot_source: 'futures',
       legs: [
         { symbol: SYM, qty: 1, strike: spot, opt_type: 'CE', greeks: { delta: 0.5, gamma: 0.01, theta: -0.3, vega: 0.2, rho: 0.01 } },
       ],
@@ -121,18 +128,20 @@ async function gotoNiftyStrategy(page, { expPnl, todayPnl, spot = 20000 }) {
 }
 
 test.describe('Payoff chart — Exp P&L bottom pill, label renames, legend markers', () => {
-  // The bottom pill's exact live rendering depends on `spot` landing
-  // inside the mocked curve's x-domain — in this dev/test account the
-  // real-time NIFTY quote (a separate live data source from the mocked
-  // `strategy-analytics` response) can sit well outside that mocked
-  // domain, which correctly SUPPRESSES both the existing top spot pill
-  // and this new bottom pill via their shared `spot >= sMin && spot <=
-  // sMax` guard — confirmed live via screenshot: the stat-overlay
-  // renames and the 3-marker legend both render exactly as designed in
-  // that same run, just with an off-screen/out-of-domain curve. Pinning
-  // the pill's exact numeric text therefore needs a source-scan guard
-  // (deterministic) rather than a live text match (would need mocking
-  // every quote source that can drive `spot`, out of scope here).
+  // The bottom pill's live rendering depends on `spot` landing inside
+  // the mocked curve's x-domain. A first attempt with
+  // `spot_anchor_contract: null` (index-sourced) let the real-time
+  // NIFTY quote — a separate live data source from the mocked
+  // `strategy-analytics` response — drive `payoffSpot` instead, which
+  // sat well outside the mocked domain and correctly SUPPRESSED both
+  // the existing top spot pill and this new bottom pill via their
+  // shared `spot >= sMin && spot <= sMax` guard. `gotoNiftyStrategy()`
+  // below instead uses the same synthetic-anchor determinism knob
+  // `derivatives_payoff_dart_number_parity.spec.js`'s Case (b)/(d)
+  // already establish (`spot_anchor_contract: 'NIFTY_TEST_SPOT_ANCHOR'`,
+  // `spot_source: 'futures'`), which guarantees `payoffSpot` resolves to
+  // the mocked `spot` regardless of any live tick — the LIVE test below
+  // asserts the pill's exact rendered text, not just its source shape.
   test('SOURCE: the bottom Exp P&L pill reads curveAtSpot.expiry_value directly (C1 invariant) and shares the spot pill\'s guard + decoration technique', () => {
     const src = readFileSync(PAYOFF_PATH, 'utf8');
     const pillIdx = src.indexOf('Exp P&L pill — bottom of chart');
@@ -154,12 +163,23 @@ test.describe('Payoff chart — Exp P&L bottom pill, label renames, legend marke
     expect(block).toMatch(/expChipY = height - PAD_B - expChipH - 3/);
   });
 
-  test('LIVE (best-effort): chart renders without console errors with the new pill wired in', async ({ page }) => {
-    const errors = [];
-    page.on('pageerror', (e) => errors.push(String(e)));
-    await gotoNiftyStrategy(page, { expPnl: 2345, todayPnl: 1500 });
-    await page.waitForTimeout(500);
-    expect(errors, `unexpected console/page errors: ${errors.join('; ')}`).toEqual([]);
+  test('LIVE: bottom Exp P&L pill renders with the exact same text as the Exp P&L stat row', async ({ page }) => {
+    const EXP_PNL = 2345;
+    const overlay = await gotoNiftyStrategy(page, { expPnl: EXP_PNL, todayPnl: 1500 });
+
+    const expRow = overlay.locator('.ps-row', { has: page.locator('.ps-k', { hasText: 'Exp P&L' }) }).first();
+    const expText = (await expRow.locator('.ps-v').textContent()) || '';
+
+    const chartSvg = page.locator('.payoff-svg').first();
+    await expect(chartSvg).toBeVisible({ timeout: 15_000 });
+    const pillTexts = await chartSvg.locator('text').allTextContents();
+    const cleaned = (s) => s.replace(/[₹,\s]/g, '');
+    const matchFound = pillTexts.some((t) => cleaned(t) !== '' && cleaned(t) === cleaned(expText));
+    expect(matchFound, `expected a chart <text> matching the Exp P&L stat row's own text (${expText}); saw: ${JSON.stringify(pillTexts)}`).toBe(true);
+
+    // Two <rect>s for the top spot pill, two more for the new bottom pill.
+    const rectCount = await chartSvg.locator('rect').count();
+    expect(rectCount, 'expected at least 4 <rect> elements (2 top spot pill + 2 new bottom Exp P&L pill)').toBeGreaterThanOrEqual(4);
   });
 
   test('top-left overlay renames: "Mark P&L" and "MARK ADJ" render; "DAY P&L"/"Exp P&L" are untouched', async ({ page }) => {
