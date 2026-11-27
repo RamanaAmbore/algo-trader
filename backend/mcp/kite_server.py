@@ -25,7 +25,8 @@ Tools (Phase 1, read-only):
 
 Tools (multi-day history, read-only, wraps /api/admin/history/*):
     get_order_history, get_trade_history, get_funds_history,
-    get_realized_pnl_history
+    get_realized_pnl_history, get_historical_tradebook,
+    get_historical_ledger, get_pnl_summary
 
 Run:
     python -m backend.mcp.kite_server
@@ -932,16 +933,23 @@ async def get_order_events(order_id: int) -> dict:
     return {"events": rows or [], "count": len(rows or [])}
 
 
-# ── Multi-day history (orders / trades / funds / realized P&L) ────────
-# Wraps the four `/api/admin/history/*` endpoints (`backend/api/routes/
+# ── Multi-day history (orders / trades / funds / Kite Console backfill)
+# Wraps the seven `/api/admin/history/*` endpoints (`backend/api/routes/
 # history.py`) — the forensic surface the operator's own admin UI uses
 # for "what happened over the last N days", distinct from the
 # live/current-session tools above (get_positions/get_holdings) and
 # from get_pnl_attribution (per-agent attribution, not a row-level
-# ledger). All four are cap-gated `view_audit` server-side
+# ledger). All seven are cap-gated `view_audit` server-side
 # (designated/risk/admin) — the MCP server's own bound credential
 # already satisfies this, same as the admin-level place_order/
 # cancel_order/activate_agent tools above.
+#
+# get_historical_tradebook / get_historical_ledger / get_pnl_summary
+# (added alongside get_realized_pnl_history's `broker` param) surface
+# the FULL Kite Console backfill (raw per-fill trades, raw funds-
+# ledger vouchers, and a win/loss aggregate over the P&L reconciliation
+# data) — segmented by instrument type and intended as pattern-
+# analysis input, not a backtester.
 
 @app.tool()
 async def get_order_history(
@@ -1079,6 +1087,7 @@ async def get_realized_pnl_history(
     symbol_root: str | None = None,
     expiry_from: str | None = None,
     expiry_to: str | None = None,
+    broker: str | None = None,
 ) -> dict:
     """Realized P&L ground truth, by (account, symbol root, expiry
     cycle) — sourced from the Kite Console P&L-statement backfill
@@ -1101,6 +1110,10 @@ async def get_realized_pnl_history(
         expiry_from:     'YYYY-MM-DD', inclusive. Filters by contract
             expiry date, not trade date.
         expiry_to:       'YYYY-MM-DD', inclusive.
+        broker:          'kite' (or omitted) matches everything — every
+            row ingested so far is Kite-sourced. Any other value
+            returns an empty result until the underlying data gains a
+            real per-row broker dimension.
 
     Returns:
         dict with `rows` list — each row carries account (masked,
@@ -1114,8 +1127,180 @@ async def get_realized_pnl_history(
     if symbol_root:      params["symbol_root"]     = symbol_root
     if expiry_from:      params["expiry_from"]     = expiry_from
     if expiry_to:        params["expiry_to"]       = expiry_to
+    if broker:           params["broker"]          = broker
     rows = await _get("/api/admin/history/realized-pnl", params)
     return {"rows": rows or [], "count": len(rows or [])}
+
+
+@app.tool()
+async def get_historical_tradebook(
+    from_date: str | None = None,
+    to_date: str | None = None,
+    account: str | None = None,
+    segment: str | None = None,
+    instrument_type: str | None = None,
+    symbol_root: str | None = None,
+    exchange: str | None = None,
+    broker: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict:
+    """Raw Kite Console tradebook — ground truth for "what did I
+    actually fill, and at what price" — sourced from
+    `scripts/kite_console_pnl_sync.py` (`report_type='tradebook'`),
+    NOT derived from AlgoOrder rows (use get_order_history for the
+    algo-engine's own order log; this is the broker-reported fill feed
+    behind every realized P&L number). One row per broker trade_id.
+
+    Unlike get_order_history/get_trade_history, there is NO default
+    date window — omit both from_date and to_date to pull the entire
+    backfilled history.
+
+    Args:
+        from_date: 'YYYY-MM-DD', inclusive. Filters on trade_date.
+        to_date:   'YYYY-MM-DD', inclusive.
+        account:   Broker account code (e.g. "ZG0790") or its already-
+            masked display form (e.g. "Z1####"). Omit for all accounts.
+        segment:         'equity' / 'derivatives' / 'commodities'.
+        instrument_type: 'equity' / 'future' / 'option'.
+        symbol_root:     Underlying root, e.g. "GOLDM", "CRUDEOIL".
+        exchange:        e.g. "MCX", "NFO", "NSE".
+        broker:          'kite' (or omitted) matches everything until
+            the data gains a real per-row broker dimension.
+        limit:     Max rows (default 50, max 500).
+        offset:    Pagination offset.
+
+    Returns:
+        dict with `rows` list (trade_date descending) — each row
+        carries account, broker, segment, symbol, exchange,
+        instrument_type, symbol_root, expiry (typed, approximate for
+        MCX options — see console_expiry for the Console-reported
+        value), console_expiry, trade_date, trade_id, order_id,
+        buy_qty, sell_qty, buy_value, sell_value, price, trade_type
+        ('buy'/'sell'), order_execution_time — plus `total`, `limit`,
+        `offset`.
+    """
+    params: dict[str, Any] = {"limit": max(1, min(int(limit or 50), 500)),
+                               "offset": max(0, int(offset or 0))}
+    if from_date:        params["from_date"]        = from_date
+    if to_date:          params["to_date"]           = to_date
+    if account:          params["account"]           = account
+    if segment:          params["segment"]           = segment
+    if instrument_type:  params["instrument_type"]   = instrument_type
+    if symbol_root:      params["symbol_root"]       = symbol_root
+    if exchange:         params["exchange"]          = exchange
+    if broker:           params["broker"]            = broker
+    res = await _get("/api/admin/history/tradebook", params)
+    return res or {"rows": [], "total": 0, "limit": params["limit"], "offset": params["offset"]}
+
+
+@app.tool()
+async def get_historical_ledger(
+    from_date: str | None = None,
+    to_date: str | None = None,
+    account: str | None = None,
+    segment: str | None = None,
+    broker: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict:
+    """Raw Kite Console Funds Statement ledger — every margin block/
+    reversal, net-obligation and other cash-ledger voucher, sourced
+    from `scripts/kite_console_pnl_sync.py` (`report_type='ledger'`).
+    NOT derived from daily_book — use get_funds_history for the daily
+    cash SNAPSHOT (one row per account+segment+day); this is the
+    voucher-level feed behind it.
+
+    No default date window — omit both from_date and to_date to pull
+    the entire backfilled history.
+
+    Args:
+        from_date: 'YYYY-MM-DD', inclusive. Filters on the voucher's
+            own posting date.
+        to_date:   'YYYY-MM-DD', inclusive.
+        account:   Broker account code or its already-masked display
+            form. Omit for all accounts.
+        segment:   'equity' / 'derivatives' / 'commodities' — DERIVED
+            from the voucher's own cost_center label, not a stored
+            column (Zerodha's Funds Statement has no per-row segment
+            of its own). An unrecognised/missing cost_center is
+            excluded whenever this filter is set.
+        broker:    'kite' (or omitted) matches everything until the
+            data gains a real per-row broker dimension.
+        limit:     Max rows (default 50, max 500).
+        offset:    Pagination offset.
+
+    Returns:
+        dict with `rows` list (posting_date descending) — each row
+        carries account, broker, posting_date, cost_center, segment
+        (derived, may be null), voucher_type, particulars, debit,
+        credit, net_balance (an ACCOUNT-WIDE running total — only
+        meaningful read across the full unfiltered series) — plus
+        `total`, `limit`, `offset`.
+    """
+    params: dict[str, Any] = {"limit": max(1, min(int(limit or 50), 500)),
+                               "offset": max(0, int(offset or 0))}
+    if from_date: params["from_date"] = from_date
+    if to_date:   params["to_date"]   = to_date
+    if account:   params["account"]   = account
+    if segment:   params["segment"]   = segment
+    if broker:    params["broker"]    = broker
+    res = await _get("/api/admin/history/ledger", params)
+    return res or {"rows": [], "total": 0, "limit": params["limit"], "offset": params["offset"]}
+
+
+@app.tool()
+async def get_pnl_summary(
+    account: str | None = None,
+    segment: str | None = None,
+    symbol_root: str | None = None,
+    broker: str | None = None,
+    expiry_from: str | None = None,
+    expiry_to: str | None = None,
+) -> dict:
+    """Win/loss aggregate over the realized P&L ground truth
+    (get_realized_pnl_history's own data), grouped by (symbol_root,
+    segment) — a first-pass input for "which symbols/segments have
+    been consistently profitable", meant to help decide which traded
+    patterns are worth converting into an algo agent. This is NOT a
+    backtester and does NOT mine patterns itself — it only aggregates
+    win/loss/avg figures per symbol root.
+
+    Each counted unit is one CONTRACT-EXPIRY CYCLE (e.g. one option
+    strike's full life from entry to expiry, summed across however
+    many Console pulls covered it) — not a single fill; use
+    get_historical_tradebook for fill-level detail.
+
+    Args:
+        account:     Broker account code or its already-masked display
+            form. Omit for all accounts.
+        segment:     'equity' / 'derivatives' / 'commodities'.
+        symbol_root: Underlying root, e.g. "GOLDM", "CRUDEOIL".
+        broker:      'kite' (or omitted) matches everything until the
+            underlying data gains a real per-row broker dimension.
+        expiry_from: 'YYYY-MM-DD', inclusive. Filters by contract
+            expiry date (every pnl row has a null trade date, so this
+            is the only date dimension available).
+        expiry_to:   'YYYY-MM-DD', inclusive.
+
+    Returns:
+        dict with `rows` list (sorted by total_pnl descending — most
+        profitable bucket first) — each row carries symbol_root,
+        segment, trade_count (contract-expiry cycles), win_count,
+        loss_count, flat_count (realized_pnl exactly 0 — neither a win
+        nor a loss), total_pnl, win_rate, avg_win (null if no wins),
+        avg_loss (null if no losses) — plus `total` (number of
+        buckets).
+    """
+    params: dict[str, Any] = {}
+    if account:     params["account"]     = account
+    if segment:     params["segment"]     = segment
+    if symbol_root: params["symbol_root"] = symbol_root
+    if broker:      params["broker"]      = broker
+    if expiry_from: params["expiry_from"] = expiry_from
+    if expiry_to:   params["expiry_to"]   = expiry_to
+    res = await _get("/api/admin/history/pnl-summary", params)
+    return res or {"rows": [], "total": 0}
 
 
 @app.tool()

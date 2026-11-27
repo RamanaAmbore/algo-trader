@@ -27,7 +27,8 @@ EXPECTED_READ_TOOLS = {
     "get_order_events", "get_server_info", "list_agents",
     "list_research_threads", "dry_run_agent",
     "get_order_history", "get_trade_history", "get_funds_history",
-    "get_realized_pnl_history",
+    "get_realized_pnl_history", "get_historical_tradebook",
+    "get_historical_ledger", "get_pnl_summary",
 }
 FORBIDDEN_TOOLS = {
     "place_order", "cancel_order", "modify_order", "activate_agent",
