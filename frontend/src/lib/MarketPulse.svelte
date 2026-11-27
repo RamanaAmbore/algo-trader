@@ -4237,6 +4237,14 @@
       account:    preAccount,
       currentQty: posQty,
       action:     posQty !== 0 ? 'close' : 'open',
+      // 2026-11 real-money audit fix — pass the row's own REAL product
+      // (MIS/NRML/CNC) so a "Close" click prepares a close in the SAME
+      // product the position is actually held in. `r.product` is only
+      // set when every leg merged into this row agreed on one product
+      // (see mergePositionRows); `undefined` here lets OrderTicket fall
+      // back to its own default (NRML for F&O / CNC for equity) exactly
+      // as before this fix, rather than guessing a possibly-wrong one.
+      product:    posQty !== 0 ? (r.product || undefined) : undefined,
     });
   }
 

@@ -975,6 +975,16 @@
       // just wrote via mergeSymbolUpdate, for deterministic percentage math
       // regardless of how many warm-up retries were needed.
       /** @type {any} */ (window).__stores.getSnapshot = getSnapshot;
+      // Also exposes `openOrderTicketModal` (2026-11 real-money audit fix
+      // specs) so a Playwright spec can open the order ticket with an
+      // EXACT prefill (symbol/side/currentQty/product/account) — the
+      // margin/cash chip's close-long vs close-short label depends on
+      // `currentQty`, which is only ever reachable through a real open
+      // position in the live UI otherwise. No new behaviour: this is the
+      // same `openOrderTicketModal(prefill)` every real "Close" click
+      // already calls (MarketPulse/PerformancePage/derivatives), just
+      // reachable from a spec without needing live position data.
+      /** @type {any} */ (window).__stores.openOrderTicketModal = openOrderTicketModal;
     }
     // Market-gated quote stream gate. Starts the SSE if any segment is
     // open right now; runs a 30 s visibility-aware watcher that pauses /

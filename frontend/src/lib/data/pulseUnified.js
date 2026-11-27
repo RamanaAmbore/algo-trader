@@ -451,6 +451,28 @@ export function mergePositionRows(byKey, pos, includePos, cq, ctx) {
     // tradingsymbol as their key — we propagate it explicitly so the field
     // is always present for consumers that prefer quote_symbol over tradingsymbol.
     if (!row.quote_symbol) row.quote_symbol = sym;
+    // product (2026-11 real-money audit fix) — threaded through so a
+    // "Close" click (_openTicketFromRow) can pre-fill the ticket's real
+    // product (MIS/NRML/CNC) instead of silently defaulting to NRML.
+    // Kite only nets a close within the SAME product, so a wrong
+    // default here would open an opposite-direction order in a
+    // DIFFERENT product next to the still-open position, not a close.
+    // `lookupKey` is `sym::account` (no product dimension), so a
+    // symbol genuinely held under two products in one account merges
+    // into ONE row here. Set product only while every contributing leg
+    // agrees; a disagreement leaves it null (OrderTicket then falls
+    // back to its own NRML default, same as before this fix) rather
+    // than guessing — this one row cannot safely represent two real
+    // positions' products at once. Known gap, not fixed by this
+    // change: see the handback report for why the merge key itself is
+    // left unchanged.
+    const _legProduct = r.product != null ? String(r.product).toUpperCase() : null;
+    if (row._productSeen === undefined) {
+      row.product = _legProduct;
+      row._productSeen = true;
+    } else if (row.product !== _legProduct) {
+      row.product = null;
+    }
     row.src.p = true;
     const q   = Number(r.quantity) || 0;
     const avg = Number(r.average_price) || 0;

@@ -19,6 +19,20 @@ logger = get_logger(__name__)
 MCX_MAX_LOTS = 20
 FO_FAT_FINGER_LOT_CAP = 5
 
+# 2026-11 real-money audit fix ("show both" — operator-confirmed): Dhan's
+# margin_calculator and Groww's get_order_margin_details price every order
+# INDEPENDENTLY of the account's existing book (no `consider_positions`
+# equivalent), unlike Kite's basket_order_margins. For a server-verified
+# close, that naked figure can be a real but overstated requirement — the
+# close exemption already stops it from BLOCKING the order (see
+# `_preflight_emit_margin_blocker`); this note explains the still-displayed
+# number rather than leaving it unexplained. Kite never gets this note —
+# gated on `margin_ctx["is_dhan_groww"]` everywhere it's set.
+_DHAN_GROWW_CLOSE_NOTE = (
+    "Verified close — broker margin figure may be overstated "
+    "(Dhan/Groww do not net against existing positions)"
+)
+
 
 def _live_positions_in_scope(context: dict, params: dict) -> list[dict]:
     """
@@ -476,10 +490,20 @@ def _preflight_margin_shortfall_fix_qty(
         return ""
 
 
-def _preflight_margin_policy(broker, account: str, side: str) -> dict:
+def _preflight_margin_policy(
+    broker, account: str, side: str, product: str | None = None,
+) -> dict:
     """
     Build the `margin_ctx` dict threaded through every margin-blocker
     emission site (item 6).
+
+    `product` (2026-11 real-money audit fix): the order's claimed
+    product (MIS/NRML/CNC), carried alongside `side` on the returned
+    `margin_ctx` so every downstream consumer of that dict
+    (`_preflight_emit_margin_blocker`'s close exemption,
+    `_preflight_handle_positive_margin`'s always-run Dhan/Groww note
+    below) can verify sign+magnitude+product without each one needing
+    its own extra parameter threaded through from `run_preflight`.
 
     Kite's gate is always enforced — numerically trustworthy, already
     enforcing today, and `basket_order_margins` already nets a close via
@@ -514,6 +538,7 @@ def _preflight_margin_policy(broker, account: str, side: str) -> dict:
         "is_dhan_groww": bid in ("dhan", "groww"),
         "enforce": enforce,
         "side": side,
+        "product": product,
         "broker_id": bid,
     }
 
@@ -550,11 +575,12 @@ async def _preflight_emit_margin_blocker(
        and could get wrongly blocked by the very gate that exists to
        let margin-tight closes through.
 
-       SERVER-VERIFIED ONLY — via `_verify_close_intent` (sign AND
-       magnitude checked against the REAL broker position). The raw
-       caller-claimed `order["intent"] == "close"` is read only to
-       decide whether `run_preflight` even bypasses G2 (unrelated, pre-
-       existing behaviour); it is NEVER trusted here. This re-verifies
+       SERVER-VERIFIED ONLY — via `_verify_close_intent` (sign, magnitude
+       AND product — MIS/NRML/CNC, 2026-11 fix — all checked against the
+       REAL broker position). The raw caller-claimed `order["intent"] ==
+       "close"` is read only to decide whether `run_preflight` even
+       bypasses G2 (unrelated, pre-existing behaviour); it is NEVER
+       trusted here. This re-verifies
        inside the shared gate itself rather than trusting any caller's
        own prior verification, so every current and future
        `run_preflight` caller gets the same real protection uniformly —
@@ -568,13 +594,26 @@ async def _preflight_emit_margin_blocker(
        in `diag["margin_would_block"]` and logged at WARNING instead of
        being appended to `blockers`, so the order is never actually
        blocked.
+
+    `diag["close_exemption_note"]` (2026-11 "show both" fix, operator-
+    confirmed): set alongside `close_exemption` here too, so a close that
+    reaches this gate (one that would otherwise have been blocked) also
+    gets the explanatory note — the SAME note set unconditionally (even
+    when no blocker would fire) in `_preflight_handle_positive_margin`
+    just below `diag["basket_margin_used"]`. Both sites write the exact
+    same `_DHAN_GROWW_CLOSE_NOTE` constant via `setdefault`, so whichever
+    runs first wins and the two can never show different wording.
     """
     side = margin_ctx.get("side") or ""
     if margin_ctx.get("is_dhan_groww") and side and qty:
         try:
             from backend.api.routes.orders_place import _verify_close_intent
-            if await _verify_close_intent(symbol, exchange, side, account, qty):
+            if await _verify_close_intent(
+                symbol, exchange, side, account, qty,
+                product=margin_ctx.get("product"),
+            ):
                 diag["close_exemption"] = True
+                diag.setdefault("close_exemption_note", _DHAN_GROWW_CLOSE_NOTE)
                 logger.info(
                     f"[PREFLIGHT] close exemption granted for {account}/{symbol} "
                     f"({exchange}) — server-verified close, {blocker.get('code')} "
@@ -615,6 +654,47 @@ def _preflight_collect_leg_errors(bm_result: object) -> list[str]:
     return errors
 
 
+async def _preflight_dhan_groww_close_note(
+    margin_ctx: dict, *, account: str, symbol: str, exchange: str, qty: int,
+) -> dict:
+    """ALWAYS-run Dhan/Groww close-exemption note (2026-11 "show both"
+    fix, operator-confirmed) — extracted from `_preflight_handle_positive_
+    margin` purely to stay under the CC-gate D-grade threshold; no
+    behaviour change from inlining it there.
+
+    `_preflight_emit_margin_blocker`'s own close-exemption check only
+    ever runs when a blocker is ABOUT to be appended — the common case
+    for a close on these brokers is the naked `required` figure still
+    fits under `available`, so no blocker fires and the operator never
+    learns the displayed number may be inflated. This check is
+    unconditional (gated only on `is_dhan_groww`), so the note reaches
+    the frontend regardless of whether a shortfall ever materialises.
+    Deliberately duplicates the ONE verification call
+    `_preflight_emit_margin_blocker` may also make for the same leg —
+    cheap (cached 30s broker DataFrame, see `_fetch_net_position_row`),
+    and does NOT alter blocking behaviour: this function never appends to
+    any blocker list, it only ever returns `close_exemption`/
+    `close_exemption_note` for the caller to merge into `diag`.
+
+    Returns `{}` (nothing to merge) when not applicable.
+    """
+    if not (margin_ctx.get("is_dhan_groww") and margin_ctx.get("side") and qty):
+        return {}
+    try:
+        from backend.api.routes.orders_place import _verify_close_intent
+        if await _verify_close_intent(
+            symbol, exchange, margin_ctx["side"], account, qty,
+            product=margin_ctx.get("product"),
+        ):
+            return {"close_exemption": True, "close_exemption_note": _DHAN_GROWW_CLOSE_NOTE}
+    except Exception as e:
+        logger.debug(
+            f"[PREFLIGHT] close-intent verification (note-only) "
+            f"failed for {account}: {e}"
+        )
+    return {}
+
+
 async def _preflight_handle_positive_margin(
     required: float,
     margins_res: tuple,
@@ -632,7 +712,10 @@ async def _preflight_handle_positive_margin(
     Parses available margin, emits INSUFFICIENT_FUNDS when available=0,
     computes shortfall, and builds MARGIN_SHORTFALL blockers — both
     routed through `_preflight_emit_margin_blocker` (close exemption +
-    enforce-vs-log-only policy, item 6).
+    enforce-vs-log-only policy, item 6). Also unconditionally computes
+    the Dhan/Groww close-exemption note (`diag["close_exemption_note"]`)
+    regardless of whether a shortfall ever fires — see the comment at
+    its call site for why that can't live only inside the blocker gate.
 
     Returns ``(new_blockers, diag_partial)``.
     """
@@ -648,6 +731,12 @@ async def _preflight_handle_positive_margin(
     diag["available_margin"]   = available
     diag["margin_wallet"]      = ((margins_res or (None, None))[0] or {}).get("_wallet", segment)
     diag["margin_shortfall"]   = None
+
+    # Dhan/Groww close-exemption note — ALWAYS computed, not only when a
+    # blocker would fire. See the helper's own docstring.
+    diag.update(await _preflight_dhan_groww_close_note(
+        margin_ctx, account=account, symbol=symbol, exchange=exchange, qty=qty,
+    ))
 
     # ── Available-is-zero gate ────────────────────────────────────
     # When available=0 AND required>0 AND segment is enabled, the
@@ -1135,7 +1224,7 @@ async def run_preflight(
     # is a rupee total, not a per-lot figure.
     from backend.brokers.adapters.kite import get_lot_size as _pf_margin_lot_fn
     _margin_lot_size = await _pf_margin_lot_fn(exchange, symbol)
-    _margin_ctx = _preflight_margin_policy(broker, account, side)
+    _margin_ctx = _preflight_margin_policy(broker, account, side, product)
     # TEMPORARY diagnostic for the item 4/5 live-verification gate — runs
     # in THIS process (backend/api/algo/, never the conn_service), so it
     # fires on dev even before a conn-service restart. In conn-

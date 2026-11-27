@@ -305,6 +305,14 @@ export function buildPositionRowFromBroker(p, source) {
     is_orphan:       p?.is_orphan === true,
     pair_group_key:  p?.pair_group_key ?? null,
     has_gtt:         p?.has_gtt === true,
+    // product (2026-11 real-money audit fix) — same whitelist-drop class
+    // as the fields above: previously missing entirely, so the
+    // derivatives Legs grid's close-ticket opener (`closePosition` in
+    // +page.svelte) had no way to pre-fill the real product (MIS/NRML/
+    // CNC) and silently defaulted every close to NRML. `splitClosedReopened`
+    // spreads this row verbatim, so the field survives the closed/
+    // reopened split and the lot-pairing split untouched.
+    product:         p?.product != null ? String(p.product).toUpperCase() : null,
   };
 }
 

@@ -1157,7 +1157,13 @@
   const _marginInfo = $derived.by(() => {
     if (!_modalMargin && !_modalMarginLoading) return null;
     if (_modalMargin?.error) return { error: _modalMargin.error };
-    if (!_modalMargin) return { loading: true, isCashMode: !!_chipMeta?.isCashMode };
+    if (!_modalMargin) {
+      return {
+        loading: true,
+        isCashMode: !!_chipMeta?.isCashMode,
+        cashFlowKind: _chipMeta?.cashFlowKind ?? null,
+      };
+    }
     const d = _modalMargin.diagnostics ?? {};
     const required  = Number(d.basket_margin_used) || 0;
     // Pick the "available" figure based on whether the leg consumes
@@ -1166,10 +1172,25 @@
     // margin comes from broker.margins().net. Same shape downstream so
     // the chip + colour bands work the same way.
     const isCashMode = !!_chipMeta?.isCashMode;
+    // cashFlowKind (2026-11 real-money audit fix) — one of 'cash_cost'
+    // | 'margin_required' | 'cash_released' | 'margin_released'. Falls
+    // back to the old two-way isCashMode mapping so this derived never
+    // breaks if `_chipMeta` hasn't emitted the new field yet (e.g. a
+    // stale cached meta object from before a reload).
+    const cashFlowKind = _chipMeta?.cashFlowKind
+      ?? (isCashMode ? 'cash_cost' : 'margin_required');
     const available = isCashMode
       ? (typeof _chipMeta?.cash === 'number' ? _chipMeta.cash : null)
       : d.available_margin;
-    const shortfall = isCashMode
+    // closeExemptionNote (2026-11 "show both" fix, operator-confirmed)
+    // — Dhan/Groww price every order independently of the account's
+    // existing book, so a verified close's `required` figure above can
+    // be a real but overstated number. The backend sets this ONLY for
+    // a server-verified close on Dhan/Groww (never Kite, which already
+    // nets a close via consider_positions=True) — see
+    // `actions_preflight.py`'s `_DHAN_GROWW_CLOSE_NOTE`.
+    const closeExemptionNote = d.close_exemption_note || null;
+    let shortfall = isCashMode
       ? (typeof available === 'number' && available < required ? (required - available) : 0)
       : (Number(d.margin_shortfall) || 0);
     let afterCls = '';
@@ -1179,13 +1200,35 @@
       const pct = available > 0 ? (after / available) * 100 : 0;
       afterCls = after < 0 || pct < 10 ? 'err' : pct < 40 ? 'warn' : '';
     }
+    // The backend already decided NOT to block this order (close
+    // exemption granted) — a shortfall/err colour derived from Dhan/
+    // Groww's overstated naked figure would directly contradict that
+    // decision and alarm the operator over a non-problem. Suppress the
+    // urgency signal; the raw numbers themselves are still shown
+    // honestly above, alongside the explanatory InfoHint note.
+    if (closeExemptionNote) {
+      shortfall = 0;
+      afterCls = '';
+    }
     // `pairedCount`/"+wing" netted-margin annotation removed —
     // OrderTicket's margin preview is deliberately NAKED now (no
     // `paired_legs` sent), matching what the real submit-time preflight
     // enforces. Showing a netted figure here was a display bug: the
     // wing is only placed on parent fill via template attach, so at
     // submit time the broker only ever sees the naked parent order.
-    return { required, available, after, afterCls, shortfall, isCashMode };
+    //
+    // requiredNegative (2026-11 real-money audit fix) — Kite's
+    // basket_order_margins can return a NEGATIVE `required` when an
+    // existing opposite position nets with this leg to release margin
+    // (see backend `_preflight_check_margin`'s own "Negative-margin
+    // sanity check"). Rendering that raw negative number under "Req"
+    // read as nonsensical/alarming (live example: required=-501045.81)
+    // — the pill below relabels it as a released amount instead.
+    const requiredNegative = required < 0;
+    return {
+      required, available, after, afterCls, shortfall, isCashMode,
+      cashFlowKind, requiredNegative, closeExemptionNote,
+    };
   });
   // Modal notice — single source of truth for error / warning / info
   // banners surfaced in the action footer's LEFT slot. Priority:
@@ -2831,10 +2874,42 @@
                  basket-aggregate rows rendered above the basket bar
                  are the operator's single source of truth. -->
 
-            {@const _isCash = !!_marginInfo.isCashMode}
-            {@const _reqKey = _isCash ? 'Cost' : 'Req'}
+            <!-- cashFlowKind (2026-11 real-money audit fix, operator-
+                 corrected) — one of 'cash_cost' | 'margin_required' |
+                 'cash_released' | 'margin_released'. Falls back to the
+                 old two-way isCashMode mapping for safety. -->
+            {@const _cfKind = _marginInfo.cashFlowKind
+              ?? (_marginInfo.isCashMode ? 'cash_cost' : 'margin_required')}
+            {@const _isCash = _cfKind === 'cash_cost' || _cfKind === 'cash_released'}
+            {@const _reqNeg = !!_marginInfo.requiredNegative}
+            <!-- Req-row key: a genuinely negative broker `required` always
+                 relabels to 'Released' (any broker/mode — see the
+                 negative-margin sanity check in actions_preflight.py).
+                 Otherwise the key stays an HONEST description of the
+                 raw figure shown — 'Credit' for a close-long (the figure
+                 is usually ~0, framed as credit-side rather than
+                 cost-side), 'Cost'/'Req' unchanged for the open cases.
+                 Deliberately NOT 'Released' for a close-short with a
+                 still-positive `required` — that would assert a release
+                 amount the broker hasn't actually reported. -->
+            {@const _reqKey = _reqNeg ? 'Released'
+              : _cfKind === 'cash_released' ? 'Credit'
+              : _isCash ? 'Cost' : 'Req'}
             {@const _avlKey = _isCash ? 'Cash' : 'Avail'}
-            {@const _kind = _isCash ? 'Cash debit' : 'Margin required'}
+            <!-- `_kind` (tooltip + loading text) carries the direction —
+                 "released" framing for BOTH close cases regardless of the
+                 raw figure's sign, per operator: "when you are short and
+                 when you close it you release margin." -->
+            {@const _kind = _reqNeg ? (_isCash ? 'Cash released' : 'Margin released')
+              : _cfKind === 'cash_released'   ? 'Cash released'
+              : _cfKind === 'margin_released' ? 'Margin released'
+              : _cfKind === 'cash_cost'       ? 'Cash debit'
+              : 'Margin required'}
+            {@const _reqDisplayVal = _reqNeg ? Math.abs(_marginInfo.required) : _marginInfo.required}
+            {@const _computingWord = _cfKind === 'cash_cost' ? 'cost'
+              : _cfKind === 'cash_released'   ? 'cash release'
+              : _cfKind === 'margin_released' ? 'margin release'
+              : 'margin'}
             <!-- Operator: "for the margin area allocate to two rows
                  of space". Required + Available stack on two lines
                  (kept inline-grid for tight alignment). Buttons
@@ -2843,16 +2918,16 @@
                   title={_marginInfo.error
                     ? `Preview: ${_marginInfo.error}`
                     : _marginInfo.loading
-                      ? `Computing ${_kind.toLowerCase()}…`
-                      : `${_kind}: ₹${aggFmtMargin(_marginInfo.required)} vs ${_avlKey} ₹${aggFmtMargin(_marginInfo.available ?? 0)}`}>
+                      ? `Computing ${_computingWord}…`
+                      : `${_kind}: ₹${aggFmtMargin(_reqDisplayVal)} vs ${_avlKey} ₹${aggFmtMargin(_marginInfo.available ?? 0)}`}>
               {#if _marginInfo.error}
                 ⚠ {_marginInfo.error}
               {:else if _marginInfo.loading}
-                Computing {_isCash ? 'cost' : 'margin'}…
+                Computing {_computingWord}…
               {:else}
                 <span class="oes-margin-pill-row">
                   <span class="oes-margin-pill-key">{_reqKey}</span>
-                  <span class="oes-margin-pill-val">{aggFmtMargin(_marginInfo.required)}</span>
+                  <span class="oes-margin-pill-val">{aggFmtMargin(_reqDisplayVal)}</span>
                 </span>
                 {#if _marginInfo.available != null}
                   <span class="oes-margin-pill-sep">·</span>
@@ -2863,6 +2938,14 @@
                 {/if}
               {/if}
             </span>
+            {#if _marginInfo.closeExemptionNote}
+              <!-- Bug 3 "show both" fix (operator-confirmed) — Dhan/Groww
+                   price a verified close independently of the account's
+                   existing book, so the figure above may be overstated.
+                   Shown ONLY when the backend sets this note (Dhan/Groww
+                   verified close); never for Kite, which already nets. -->
+              <InfoHint popup text={_marginInfo.closeExemptionNote} />
+            {/if}
           {/if}
           <!-- Ticket-only side preview label REMOVED (2026-09-29, operator:
                "remove the text before order submit in order ticket") —

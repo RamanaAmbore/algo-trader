@@ -16,6 +16,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   classifyIntent,
+  marginChipMode,
   buildModifyPayload,
   buildOnSubmitPayload,
   buildPlacePayload,
@@ -54,6 +55,74 @@ describe('classifyIntent', () => {
   test('accepts string currentQty via Number() coercion', () => {
     // currentQty may arrive as a string from broker row
     assert.strictEqual(classifyIntent('10', 'SELL'), 'close');
+  });
+});
+
+// ── marginChipMode (2026-11 real-money audit fix, operator-corrected) ────────
+// Four cases: open long = cost, open short = margin required,
+// close long = cash released, close short = margin released.
+
+describe('marginChipMode', () => {
+  test('BUY to open a long option (no position) → cash_cost', () => {
+    assert.strictEqual(
+      marginChipMode({ isEquity: false, kind: 'CE', side: 'BUY', currentQty: 0 }),
+      'cash_cost',
+    );
+  });
+
+  test('BUY to add to an existing long option → cash_cost', () => {
+    assert.strictEqual(
+      marginChipMode({ isEquity: false, kind: 'PE', side: 'BUY', currentQty: 5 }),
+      'cash_cost',
+    );
+  });
+
+  test('SELL to open a short option (no position) → margin_required', () => {
+    assert.strictEqual(
+      marginChipMode({ isEquity: false, kind: 'CE', side: 'SELL', currentQty: 0 }),
+      'margin_required',
+    );
+  });
+
+  test('SELL to add to an existing short option → margin_required', () => {
+    assert.strictEqual(
+      marginChipMode({ isEquity: false, kind: 'PE', side: 'SELL', currentQty: -5 }),
+      'margin_required',
+    );
+  });
+
+  test('SELL to close a long option (currentQty>0) → cash_released', () => {
+    assert.strictEqual(
+      marginChipMode({ isEquity: false, kind: 'CE', side: 'SELL', currentQty: 10 }),
+      'cash_released',
+    );
+  });
+
+  test('BUY to close a short option (currentQty<0) → margin_released — ' +
+       'operator: "when you are short and when close it you release margin"', () => {
+    assert.strictEqual(
+      marginChipMode({ isEquity: false, kind: 'PE', side: 'BUY', currentQty: -10 }),
+      'margin_released',
+    );
+  });
+
+  test('equity is always cash_cost regardless of close/open', () => {
+    assert.strictEqual(
+      marginChipMode({ isEquity: true, kind: 'EQ', side: 'SELL', currentQty: 10 }),
+      'cash_cost',
+    );
+    assert.strictEqual(
+      marginChipMode({ isEquity: true, kind: 'EQ', side: 'BUY', currentQty: 0 }),
+      'cash_cost',
+    );
+  });
+
+  test('a future (non-option, non-equity kind) stays margin_required ' +
+       '— futures close framing is explicitly out of scope for this fix', () => {
+    assert.strictEqual(
+      marginChipMode({ isEquity: false, kind: 'FUT', side: 'SELL', currentQty: 10 }),
+      'margin_required',
+    );
   });
 });
 

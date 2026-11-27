@@ -6,6 +6,7 @@
 //
 // Section order mirrors the submit() flow:
 //   1. classifyIntent      — close vs open detection
+//   1b. marginChipMode     — cash/margin × open/close chip-label mode (2026-11)
 //   2. buildModifyPayload  — modify-branch request body
 //   3. buildOnSubmitPayload — outer onSubmit payload (all modes)
 //   4. buildPlacePayload   — placeTicketOrder arguments (paper/live)
@@ -29,6 +30,48 @@ export function classifyIntent(currentQty, side) {
   if (Number(currentQty) > 0 && side === 'SELL') return 'close';
   if (Number(currentQty) < 0 && side === 'BUY')  return 'close';
   return 'open';
+}
+
+/**
+ * Classify which resource (cash vs margin) an order touches, and
+ * whether that resource is being consumed (open/add) or returned
+ * (close) — drives the margin/cash chip's label in OrderTicket +
+ * SymbolPanel (2026-11 real-money audit fix, operator-corrected).
+ *
+ * Four cases, option legs only (equity is always 'cash_cost' — it has
+ * no margin-blocked concept here):
+ *
+ *   BUY  to open/add a LONG option   → 'cash_cost'       (pay premium)
+ *   SELL to open/add a SHORT option  → 'margin_required' (margin blocked)
+ *   SELL to close a LONG option      → 'cash_released'   (premium returns)
+ *   BUY  to close a SHORT option     → 'margin_released' (margin frees up)
+ *
+ * The exposure side an order TOUCHES is independent of its own
+ * direction: a BUY either opens/adds a long (consumes cash) or closes
+ * a short (releases margin); a SELL either opens/adds a short
+ * (consumes margin) or closes a long (releases cash). This is the
+ * corrected model — an earlier draft of this fix wrongly treated every
+ * BUY as a cash event regardless of close/open; operator correction:
+ * "when you are short and when you close it you release margin."
+ *
+ * @param {{isEquity: boolean, kind: string, side: 'BUY'|'SELL', currentQty: number}} args
+ * @returns {'cash_cost'|'margin_required'|'cash_released'|'margin_released'}
+ */
+export function marginChipMode({ isEquity, kind, side, currentQty }) {
+  if (isEquity) return 'cash_cost';
+  const isOption = kind === 'CE' || kind === 'PE';
+  if (!isOption) {
+    // Futures / unresolved kind — margin-mode only, same as a naked
+    // short option open. Closing a future still frees margin, but that
+    // framing is explicitly out of scope for this fix (see handback
+    // report) — kept as plain 'margin_required' to match pre-fix
+    // behaviour for this leg type exactly.
+    return 'margin_required';
+  }
+  const closing = classifyIntent(currentQty, side) === 'close';
+  const touchesLong = side === 'BUY' ? !closing : closing;
+  if (touchesLong) return closing ? 'cash_released' : 'cash_cost';
+  return closing ? 'margin_released' : 'margin_required';
 }
 
 /**

@@ -400,6 +400,7 @@ async def _is_offsetting_position(sym: str, exchange: str, side: str, account: s
 
 async def _verify_close_intent(
     sym: str, exchange: str, side: str, account: str, contracts: int,
+    *, product: str | None = None,
 ) -> bool:
     """Server-side verification that a CLIENT-CLAIMED 'close' intent is
     real — both sign (the order genuinely offsets the held position) AND
@@ -415,19 +416,35 @@ async def _verify_close_intent(
     every quantity safety net specifically because the sign happened to
     match. This function is the missing magnitude check.
 
+    `product` (2026-11 real-money audit fix): Kite only nets a close
+    against the SAME product (MIS vs NRML vs CNC) — a claimed close that
+    offsets the sign/magnitude of a position carrying a DIFFERENT product
+    is not a close at all, it's a fresh opposite-direction order in the
+    claimed product sitting next to the still-open position. Optional and
+    additive: `None` (the default) preserves the pre-fix product-agnostic
+    "does ANY row net offset" behaviour for any caller that genuinely has
+    no product context. A caller that DOES know the order's claimed
+    product (ticket, basket leg) MUST pass it so a product mismatch fails
+    verification instead of silently passing.
+
     Fails CLOSED (returns False) on any position-fetch error or when no
     matching position row exists — unlike `_is_offsetting_position`'s
     fail-open design. That function's False just keeps a template
     attached (safe default for a low-stakes decision); this function's
     False forces the caller back onto the FULL G1/G2/ceiling safety path
     (safe default for a decision that grants a cap bypass) — inability to
-    verify must never grant the bypass.
+    verify must never grant the bypass. A product mismatch degrades to
+    this same fail-closed path (the `_fetch_net_position_qty` product
+    filter returns `None` for "no matching row"), not a separate branch.
 
     @param contracts  the order's contract quantity (already lots × lot_size)
-    @returns True only when `side` genuinely offsets the held position AND
-        `contracts` does not exceed the absolute held quantity.
+    @param product    the order's claimed product (MIS/NRML/CNC), or None
+        to skip the product filter (pre-fix behaviour)
+    @returns True only when `side` genuinely offsets a held position OF THE
+        SAME PRODUCT (when `product` is given) AND `contracts` does not
+        exceed the absolute held quantity of that same row.
     """
-    net_qty = await _fetch_net_position_qty(sym, exchange, account)
+    net_qty = await _fetch_net_position_qty(sym, exchange, account, product=product)
     if net_qty is None:
         return False
     side_upper = side.upper()
@@ -935,9 +952,16 @@ async def _ticket_enforce_lot_and_fat_finger(
     _is_close = False
     if _claimed_close:
         side_upper = (getattr(data, "side", None) or "").upper()
+        # 2026-11 real-money audit fix: pass the order's claimed product
+        # (MIS/NRML/CNC) so a close claim against the WRONG product (e.g.
+        # an MIS long position closed via a SELL NRML order) fails
+        # verification instead of silently passing on sign/magnitude
+        # alone. `data.product` always carries a real value (msgspec
+        # default "NRML"), never an empty string.
         _is_close = await _verify_close_intent(
             sym=sym, exchange=str(data.exchange), side=side_upper,
             account=account, contracts=contracts,
+            product=(getattr(data, "product", None) or None),
         )
         if not _is_close:
             logger.warning(

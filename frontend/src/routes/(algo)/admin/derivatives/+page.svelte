@@ -4001,6 +4001,12 @@
       currentQty: effectiveSignedQty,
       accounts: ticketAccounts,
       account:  _rowTicketAccount(c),
+      // 2026-11 real-money audit fix — pass the row's own REAL product
+      // (MIS/NRML/CNC) so the close ticket targets the SAME product the
+      // position is actually held in. `c.product` comes from
+      // `buildPositionRowFromBroker`; `undefined` falls back to
+      // OrderTicket's own default when genuinely unknown.
+      product:  c.product || undefined,
     });
   }
 

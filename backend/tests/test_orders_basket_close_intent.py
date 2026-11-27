@@ -286,6 +286,73 @@ class TestBasketCloseIntentVerification:
                 f"Expected place_order intent='close', got {place_order_kwargs.get('intent')}"
 
     @pytest.mark.asyncio
+    async def test_close_claim_wrong_product_rejected_for_nfo(
+        self, mock_request, mock_lot_sizes, mock_positions_df, mock_broker
+    ):
+        """2026-11 real-money audit fix: NFO SELL 10 lots (claimed close,
+        product=NRML), but the real held position is under MIS, same
+        sign/magnitude. Kite only nets a close within the SAME product —
+        a claimed close against the WRONG product is not a close at
+        all, it's an opposite-direction NRML order sitting next to the
+        still-open MIS position. Verification must fail; the 5-lot cap
+        must NOT be bypassed."""
+        from backend.api.routes.orders_basket import basket_order_handler
+
+        leg = BasketLeg(
+            tradingsymbol="NIFTY25APRFUT",
+            exchange="NFO",
+            transaction_type="SELL",
+            quantity=10,   # 10 lots = 750 contracts
+            order_type="LIMIT",
+            price=22000.0,
+            intent="close",
+            product="NRML",
+        )
+        request_data = BasketOrderRequest(groups=[
+            BasketGroup(account="TEST001", legs=[leg])
+        ])
+
+        # Held LONG 1500 contracts, but under MIS — not the NRML the
+        # leg claims.
+        positions_df = mock_positions_df("TEST001", [
+            {"tradingsymbol": "NIFTY25APRFUT", "quantity": 1500, "product": "MIS"}
+        ])
+
+        with patch("backend.api.routes.orders_basket.is_admin_request", return_value=True), \
+             patch("backend.api.routes.orders_basket._broker_for", return_value=mock_broker), \
+             patch("backend.brokers.registry._loaded_accounts", return_value=["TEST001"]), \
+             patch("backend.api.routes.orders_basket._resolve_target_pct", return_value=0.0), \
+             patch("backend.brokers.adapters.kite.get_lot_size", new=mock_lot_sizes), \
+             patch("backend.brokers.broker_apis.fetch_positions", return_value=[positions_df]), \
+             patch("backend.api.algo.actions.run_preflight", return_value={"ok": True, "blocked": []}), \
+             patch("backend.api.algo.agent_engine._symbol_exchange_open", return_value=True), \
+             patch("backend.api.algo.agent_engine._build_now_ctx", return_value=MagicMock()), \
+             patch("backend.shared.helpers.utils.is_prod_branch", return_value=True), \
+             patch("backend.shared.helpers.settings.get_bool", return_value=False), \
+             patch("backend.api.database.async_session") as mock_session:
+
+            mock_session_inst = AsyncMock()
+            mock_session_inst.__aenter__.return_value = mock_session_inst
+            mock_session_inst.__aexit__.return_value = False
+            _next_fake_id = [5000]
+            def _fake_add(obj):
+                if getattr(obj, "id", None) is None:
+                    obj.id = _next_fake_id[0]
+                    _next_fake_id[0] += 1
+            mock_session_inst.add = MagicMock(side_effect=_fake_add)
+            mock_session_inst.commit = AsyncMock()
+            mock_session.return_value = mock_session_inst
+
+            result = await basket_order_handler(request_data, mock_request)
+
+            leg_result = result.groups[0].results[0]
+            assert leg_result.status == "error", \
+                f"Expected error status, got {leg_result.status}"
+            assert "safety cap" in leg_result.error.lower() or "5" in leg_result.error, \
+                f"Expected safety cap error, got {leg_result.error}"
+            mock_broker.place_order.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_close_claim_mcx_no_position_rejected(
         self, mock_request, mock_lot_sizes, mock_positions_df, mock_broker
     ):

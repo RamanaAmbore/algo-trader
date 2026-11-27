@@ -451,9 +451,17 @@ async def basket_order_handler(
                 _leg_claimed_close = (getattr(leg, "intent", None) or "").lower() == "close"
                 _leg_close = False
                 if _leg_claimed_close:
+                    # 2026-11 real-money audit fix: thread the leg's own
+                    # claimed product (MIS/NRML/CNC) so a close claim
+                    # against the WRONG product fails verification
+                    # instead of silently passing on sign/magnitude alone
+                    # — same fix as /ticket's `_ticket_enforce_lot_and_
+                    # fat_finger`. `leg.product` always carries a real
+                    # value (msgspec default "NRML"), never empty.
                     _leg_close = await _verify_close_intent(
                         sym=sym, exchange=exch, side=side,
                         account=account, contracts=qty,
+                        product=(getattr(leg, "product", None) or None),
                     )
                     if not _leg_close:
                         logger.warning(

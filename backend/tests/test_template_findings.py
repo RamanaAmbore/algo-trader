@@ -254,6 +254,94 @@ class TestCloseOffsetGate:
             )
         assert result is False
 
+    # ── 2026-11 real-money audit fix: product filter ──────────────────────
+    # Kite only nets a close within the SAME product (MIS/NRML/CNC). A
+    # mixed frame (both products open at once) must verify per-product,
+    # not pick whichever row happens to come first.
+
+    @pytest.mark.asyncio
+    async def test_verify_close_intent_product_match_within_cap(self):
+        """MIS long 2 + NRML long 5, same account/symbol/exchange — a
+        SELL 2 claiming product=MIS must verify against the MIS row
+        (qty=2), not the NRML row (qty=5)."""
+        import pandas as pd
+        from backend.api.routes.orders_place import _verify_close_intent
+
+        df = pd.DataFrame([
+            {"tradingsymbol": "NIFTY25JUL24000CE", "quantity": 2,
+             "account": "ZG0001", "exchange": "NFO", "product": "MIS"},
+            {"tradingsymbol": "NIFTY25JUL24000CE", "quantity": 5,
+             "account": "ZG0001", "exchange": "NFO", "product": "NRML"},
+        ])
+        with patch("backend.brokers.broker_apis.fetch_positions", return_value=[df]):
+            result = await _verify_close_intent(
+                sym="NIFTY25JUL24000CE", exchange="NFO", side="SELL",
+                account="ZG0001", contracts=2, product="MIS",
+            )
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_verify_close_intent_product_match_over_cap_fails(self):
+        """Same mixed frame — SELL 3 claiming product=MIS exceeds the
+        MIS row's own qty (2), even though the NRML row alone would
+        have covered it. Must fail: this is Bug 1's exact real-money
+        scenario (a wrong-product close reads as a fresh opposite
+        position, not an offset)."""
+        import pandas as pd
+        from backend.api.routes.orders_place import _verify_close_intent
+
+        df = pd.DataFrame([
+            {"tradingsymbol": "NIFTY25JUL24000CE", "quantity": 2,
+             "account": "ZG0001", "exchange": "NFO", "product": "MIS"},
+            {"tradingsymbol": "NIFTY25JUL24000CE", "quantity": 5,
+             "account": "ZG0001", "exchange": "NFO", "product": "NRML"},
+        ])
+        with patch("backend.brokers.broker_apis.fetch_positions", return_value=[df]):
+            result = await _verify_close_intent(
+                sym="NIFTY25JUL24000CE", exchange="NFO", side="SELL",
+                account="ZG0001", contracts=3, product="MIS",
+            )
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_verify_close_intent_product_mismatch_when_only_other_product_held(self):
+        """Only an MIS position exists; the order claims NRML — a plain
+        sign/magnitude check (no product filter) would have wrongly
+        verified this as a close. Must fail: there is no NRML position
+        to close."""
+        import pandas as pd
+        from backend.api.routes.orders_place import _verify_close_intent
+
+        df = pd.DataFrame([{
+            "tradingsymbol": "NIFTY25JUL24000CE", "quantity": 2,
+            "account": "ZG0001", "exchange": "NFO", "product": "MIS",
+        }])
+        with patch("backend.brokers.broker_apis.fetch_positions", return_value=[df]):
+            result = await _verify_close_intent(
+                sym="NIFTY25JUL24000CE", exchange="NFO", side="SELL",
+                account="ZG0001", contracts=2, product="NRML",
+            )
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_verify_close_intent_no_product_filter_when_product_omitted(self):
+        """`product=None` (the default) preserves the pre-fix,
+        product-agnostic behaviour for any caller with no product
+        context — same single-row frame, no product column filter
+        applied."""
+        import pandas as pd
+        from backend.api.routes.orders_place import _verify_close_intent
+
+        df = pd.DataFrame([{
+            "tradingsymbol": "NIFTY25JUL24000CE", "quantity": 50, "account": "ZG0001",
+        }])
+        with patch("backend.brokers.broker_apis.fetch_positions", return_value=[df]):
+            result = await _verify_close_intent(
+                sym="NIFTY25JUL24000CE", exchange="NFO", side="SELL",
+                account="ZG0001", contracts=50,
+            )
+        assert result is True
+
     @pytest.mark.asyncio
     async def test_verify_close_intent_fails_closed_on_fetch_error(self):
         """Position-fetch error → fails CLOSED (False), unlike
@@ -324,6 +412,63 @@ class TestCloseOffsetGate:
                 data, account="ZG0001", sym="NIFTY25JUL24000CE",
                 contracts=10 * 50, lot_size=50,
             )
+
+    # ── 2026-11 real-money audit fix: _ticket_enforce_lot_and_fat_finger ──────
+    # threads the ORDER's claimed product through to _verify_close_intent, so
+    # a close claimed against the WRONG product can't bypass the cap either.
+
+    @pytest.mark.asyncio
+    async def test_enforce_rejects_close_claim_with_wrong_product_over_cap(self):
+        """Position is held under MIS; the order claims a close in NRML
+        (the exact Bug 1 scenario — "close" opened from a position row
+        with no product context, silently defaulting to NRML). Must
+        fail verification and fall back to the full 5-lot cap."""
+        from backend.api.schemas import TicketOrderRequest
+        from backend.api.routes.orders_place import _ticket_enforce_lot_and_fat_finger
+        from litestar.exceptions import HTTPException
+        import pandas as pd
+
+        data = TicketOrderRequest(
+            mode="live", side="SELL", tradingsymbol="NIFTY25JUL24000CE",
+            quantity=1, exchange="NFO", account="ZG0001", intent="close",
+            product="NRML",
+        )
+        mis_df = pd.DataFrame([{
+            "tradingsymbol": "NIFTY25JUL24000CE", "quantity": 500,
+            "account": "ZG0001", "exchange": "NFO", "product": "MIS",
+        }])
+        with patch("backend.brokers.broker_apis.fetch_positions", return_value=[mis_df]):
+            with pytest.raises(HTTPException) as exc_info:
+                await _ticket_enforce_lot_and_fat_finger(
+                    data, account="ZG0001", sym="NIFTY25JUL24000CE",
+                    contracts=10 * 50, lot_size=50,
+                )
+        assert exc_info.value.status_code == 400
+        assert data.intent is None  # verification failed → scrubbed, not left as 'close'
+
+    @pytest.mark.asyncio
+    async def test_enforce_allows_close_claim_with_matching_product_over_cap(self):
+        """Same held position, same product claimed on the order — the
+        verified close legitimately bypasses the 5-lot cap."""
+        from backend.api.schemas import TicketOrderRequest
+        from backend.api.routes.orders_place import _ticket_enforce_lot_and_fat_finger
+        import pandas as pd
+
+        data = TicketOrderRequest(
+            mode="live", side="SELL", tradingsymbol="NIFTY25JUL24000CE",
+            quantity=1, exchange="NFO", account="ZG0001", intent="close",
+            product="MIS",
+        )
+        mis_df = pd.DataFrame([{
+            "tradingsymbol": "NIFTY25JUL24000CE", "quantity": 500,
+            "account": "ZG0001", "exchange": "NFO", "product": "MIS",
+        }])
+        with patch("backend.brokers.broker_apis.fetch_positions", return_value=[mis_df]):
+            await _ticket_enforce_lot_and_fat_finger(
+                data, account="ZG0001", sym="NIFTY25JUL24000CE",
+                contracts=10 * 50, lot_size=50,
+            )
+        assert data.intent == "close"
 
     # ── 2026-09-27 audit deepened: verified intent must propagate to EVERY ────
     # downstream consumer of data.intent, not just this function's own local

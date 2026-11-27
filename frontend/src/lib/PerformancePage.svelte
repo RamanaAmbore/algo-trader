@@ -232,6 +232,12 @@
       // position; the bottom submit button still shows the resolved
       // BUY / SELL.
       currentQty: heldQty,
+      // 2026-11 real-money audit fix — pass the row's own REAL product
+      // (MIS/NRML/CNC), straight off the raw broker row ag-Grid is
+      // bound to, so the close ticket targets the SAME product the
+      // position is actually held in instead of silently defaulting
+      // to NRML.
+      product:  row.product || undefined,
       // Pre-fill account from the row (real value when admin sees
       // unmasked data); ticket auto-fetches /api/accounts/ as a
       // backstop when this is empty or masked.

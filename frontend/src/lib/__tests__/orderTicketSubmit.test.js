@@ -21,7 +21,9 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { nextTriggerState, formatSubmitLabel, buildPlacePayload } from '$lib/order/orderTicketSubmit.js';
+import {
+  nextTriggerState, formatSubmitLabel, buildPlacePayload, marginChipMode,
+} from '$lib/order/orderTicketSubmit.js';
 
 describe('nextTriggerState (D4 — atomic submit-trigger guard)', () => {
   it('never fires on the initial render (prevSeen=-1)', () => {
@@ -178,5 +180,55 @@ describe('buildPlacePayload — draft_id threading (2026-10 Bug A fix)', () => {
 
   it('collapses an explicit null draftId to null', () => {
     expect(buildPlacePayload({ ...baseCtx, draftId: null }).draft_id).toBeNull();
+  });
+});
+
+// marginChipMode (2026-11 real-money audit fix, operator-corrected) —
+// cash/margin × open/close chip-label mode. SSOT coverage lives in
+// scripts/orderTicketSubmit.test.js; mirrored here (same 5 cases) so the
+// project's canonical `npx vitest run` gate also exercises it directly.
+//
+// Five quality dimensions per feedback_test_dimensions.md:
+//  1. SSOT  — imports the same orderTicketSubmit.js module, no duplicated logic
+//  2. Perf  — pure unit, no I/O, no component mount
+//  3. Stale — pins the operator's own correction ("when you are short and
+//             when close it you release margin") against an earlier,
+//             wrong draft of this fix that labeled close-short as a cost
+//  4. Reuse — same module OrderTicket.svelte + SymbolPanel.svelte import
+//  5. UX    — covers all four cases the margin/cash chip renders, plus the
+//             equity and futures carve-outs
+describe('marginChipMode (2026-11 real-money audit fix)', () => {
+  it('open long (BUY, no position) → cash_cost', () => {
+    expect(marginChipMode({ isEquity: false, kind: 'CE', side: 'BUY', currentQty: 0 }))
+      .toBe('cash_cost');
+  });
+
+  it('open short (SELL, no position) → margin_required', () => {
+    expect(marginChipMode({ isEquity: false, kind: 'PE', side: 'SELL', currentQty: 0 }))
+      .toBe('margin_required');
+  });
+
+  it('close long (SELL, currentQty>0) → cash_released', () => {
+    expect(marginChipMode({ isEquity: false, kind: 'CE', side: 'SELL', currentQty: 20 }))
+      .toBe('cash_released');
+  });
+
+  it('close short (BUY, currentQty<0) → margin_released — NOT cost/debit', () => {
+    // Operator's own correction, verbatim: "when you are short and when
+    // close it you release margin." An earlier draft of this fix wrongly
+    // returned a cost/debit-style classification here.
+    const mode = marginChipMode({ isEquity: false, kind: 'PE', side: 'BUY', currentQty: -20 });
+    expect(mode).toBe('margin_released');
+    expect(mode).not.toBe('cash_cost');
+  });
+
+  it('equity never gets "released" framing regardless of close/open', () => {
+    expect(marginChipMode({ isEquity: true, kind: 'EQ', side: 'SELL', currentQty: 100 }))
+      .toBe('cash_cost');
+  });
+
+  it('a future stays margin_required — close framing is out of scope here', () => {
+    expect(marginChipMode({ isEquity: false, kind: 'FUT', side: 'BUY', currentQty: -1 }))
+      .toBe('margin_required');
   });
 });

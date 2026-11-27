@@ -43,6 +43,7 @@
     buildPlacePayload,
     formatPlacementOk,
     classifyIntent,
+    marginChipMode,
     nextTriggerState,
   } from './orderTicketSubmit.js';
   import { fundsStore } from '$lib/data/marketDataStores.svelte.js';
@@ -1886,9 +1887,19 @@
   //      it was hidden on the Chain tab. Surfacing it via the host
   //      keeps it visible across every modal tab.
   const _chipMeta = $derived.by(() => {
-    const isCashMode =
-      isEquity ||
-      ((kind === 'CE' || kind === 'PE') && _side === 'BUY');
+    // cashFlowKind (2026-11 real-money audit fix, operator-corrected) —
+    // one of 'cash_cost' | 'margin_required' | 'cash_released' |
+    // 'margin_released'. Replaces the old close-blind boolean, which
+    // treated EVERY BUY as "cash mode" regardless of open vs close —
+    // so closing a short option (BUY to close, which actually RELEASES
+    // margin) wrongly read as a plain cash debit. See marginChipMode's
+    // own docstring for the corrected open/close × long/short model.
+    const cashFlowKind = marginChipMode({ isEquity, kind, side: _side, currentQty });
+    // isCashMode kept for backward compat — decides which "available"
+    // figure the host reads (cash vs margin). Both cash_cost and
+    // cash_released are cash-resource events; margin_required and
+    // margin_released are margin-resource events.
+    const isCashMode = cashFlowKind === 'cash_cost' || cashFlowKind === 'cash_released';
     // `pairedCount` (parent-+-wing netted margin) was removed — the
     // margin preview below is deliberately NAKED now (no `paired_legs`
     // sent), matching what the real submit-time preflight actually
@@ -1896,6 +1907,7 @@
     // would be false after that fix, so there is nothing to surface here.
     return {
       isCashMode,
+      cashFlowKind,
       cash:         _accountFunds ? Number(_accountFunds.cash || 0)         : null,
       availMargin:  _accountFunds ? Number(_accountFunds.avail_margin || 0) : null,
       usedMargin:   _accountFunds ? Number(_accountFunds.used_margin || 0)  : null,

@@ -2145,6 +2145,183 @@ async def test_preflight_kite_close_never_reaches_dhan_groww_exemption_path():
     verify_mock.assert_not_called()
 
 
+# ── 2026-11 real-money audit fix: Bug 3 "show both" — the close-exemption ────
+# note must reach the frontend EVEN WHEN no blocker would fire, and the
+# exemption itself must carry the order's claimed product through to
+# _verify_close_intent via margin_ctx.
+
+@pytest.mark.asyncio
+async def test_preflight_dhan_close_note_set_even_without_shortfall():
+    """THE Bug 3 gap this fixes: the naked Dhan/Groww required figure
+    comfortably fits under available margin (no shortfall, no blocker
+    ever appended) — before this fix, `close_exemption`/
+    `close_exemption_note` were only ever set INSIDE
+    `_preflight_emit_margin_blocker`, which never runs when no blocker
+    fires, so the operator never learned the displayed figure might be
+    overstated. Now computed unconditionally in
+    `_preflight_handle_positive_margin`."""
+    from backend.api.algo.actions import run_preflight
+
+    broker = _make_broker_stub(
+        broker_id="dhan", basket_required_total=10000.0, margin_net=500000.0,
+    )
+    conns = _conns_with("ZG0790")
+
+    with patch("backend.brokers.connections.Connections", return_value=conns), \
+         patch("backend.brokers.registry.get_broker", return_value=broker), \
+         patch("backend.brokers.adapters.kite.get_lot_size",
+               new=AsyncMock(return_value=50)), \
+         patch("backend.shared.helpers.settings.get_bool", return_value=True), \
+         patch("backend.api.routes.orders_place._verify_close_intent",
+               new=AsyncMock(return_value=True)):
+        result = await run_preflight("ZG0790", {
+            "exchange":      "NFO",
+            "tradingsymbol": "NIFTY25APRFUT",
+            "quantity":      100,
+            "order_type":    "LIMIT",
+            "product":       "NRML",
+            "variety":       "regular",
+            "side":          "SELL",
+            "intent":        "close",
+            "price":         22000.0,
+        })
+
+    codes = [b["code"] for b in result["blocked"]]
+    assert "MARGIN_SHORTFALL" not in codes
+    assert result["ok"] is True
+    assert result["diagnostics"].get("close_exemption") is True
+    note = result["diagnostics"].get("close_exemption_note")
+    assert note and "overstated" in note.lower()
+    assert "Dhan" in note or "Groww" in note
+
+
+@pytest.mark.asyncio
+async def test_preflight_dhan_no_note_when_close_not_verified():
+    """An unverified close (not server-confirmed) never gets the note —
+    only a genuine, server-verified close does."""
+    from backend.api.algo.actions import run_preflight
+
+    broker = _make_broker_stub(
+        broker_id="dhan", basket_required_total=10000.0, margin_net=500000.0,
+    )
+    conns = _conns_with("ZG0790")
+
+    with patch("backend.brokers.connections.Connections", return_value=conns), \
+         patch("backend.brokers.registry.get_broker", return_value=broker), \
+         patch("backend.brokers.adapters.kite.get_lot_size",
+               new=AsyncMock(return_value=50)), \
+         patch("backend.shared.helpers.settings.get_bool", return_value=True), \
+         patch("backend.api.routes.orders_place._verify_close_intent",
+               new=AsyncMock(return_value=False)):
+        result = await run_preflight("ZG0790", {
+            "exchange":      "NFO",
+            "tradingsymbol": "NIFTY25APRFUT",
+            "quantity":      100,
+            "order_type":    "LIMIT",
+            "product":       "NRML",
+            "variety":       "regular",
+            "side":          "SELL",
+            "intent":        "close",
+            "price":         22000.0,
+        })
+
+    assert "close_exemption" not in result["diagnostics"]
+    assert "close_exemption_note" not in result["diagnostics"]
+
+
+@pytest.mark.asyncio
+async def test_preflight_kite_never_gets_close_exemption_note():
+    """Kite is never scoped into the note either — its own
+    basket_order_margins already nets a close, so `is_dhan_groww` is
+    always False and the note-computation branch is never reached."""
+    from backend.api.algo.actions import run_preflight
+
+    broker = _make_broker_stub(
+        broker_id="zerodha_kite", basket_required_total=10000.0, margin_net=500000.0,
+    )
+    conns = _conns_with("ZG0790")
+
+    verify_mock = AsyncMock(return_value=True)
+    with patch("backend.brokers.connections.Connections", return_value=conns), \
+         patch("backend.brokers.registry.get_broker", return_value=broker), \
+         patch("backend.brokers.adapters.kite.get_lot_size",
+               new=AsyncMock(return_value=50)), \
+         patch("backend.api.routes.orders_place._verify_close_intent",
+               new=verify_mock):
+        result = await run_preflight("ZG0790", {
+            "exchange":      "NFO",
+            "tradingsymbol": "NIFTY25APRFUT",
+            "quantity":      100,
+            "order_type":    "LIMIT",
+            "product":       "NRML",
+            "variety":       "regular",
+            "side":          "SELL",
+            "intent":        "close",
+            "price":         22000.0,
+        })
+
+    assert "close_exemption_note" not in result["diagnostics"]
+    verify_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_preflight_margin_ctx_carries_product_for_close_verification():
+    """_preflight_margin_policy threads `product` onto margin_ctx so the
+    close-exemption verification (both the always-run note computation
+    and the blocker-gated check) can refuse a close claimed against the
+    WRONG product (2026-11 real-money audit fix, Bug 1)."""
+    from backend.api.algo.actions_preflight import _preflight_margin_policy
+
+    broker = MagicMock()
+    broker.broker_id = "dhan"
+    ctx = _preflight_margin_policy(broker, "ZG0790", "SELL", "MIS")
+    assert ctx["product"] == "MIS"
+    assert ctx["side"] == "SELL"
+    assert ctx["is_dhan_groww"] is True
+
+
+@pytest.mark.asyncio
+async def test_preflight_dhan_close_product_mismatch_denies_exemption_and_note():
+    """A claimed close whose PRODUCT doesn't match the real position's
+    product must fail verification — _verify_close_intent's own product
+    filter returns None (no matching row), so the always-run note check
+    denies both the note AND the exemption, exactly as a sign/magnitude
+    mismatch already does."""
+    import pandas as pd
+    from backend.api.algo.actions import run_preflight
+
+    broker = _make_broker_stub(
+        broker_id="dhan", basket_required_total=10000.0, margin_net=500000.0,
+    )
+    conns = _conns_with("ZG0790")
+    # Real position is held under MIS; the order claims NRML.
+    df = pd.DataFrame([{
+        "tradingsymbol": "NIFTY25APRFUT", "quantity": 100,
+        "account": "ZG0790", "exchange": "NFO", "product": "MIS",
+    }])
+
+    with patch("backend.brokers.connections.Connections", return_value=conns), \
+         patch("backend.brokers.registry.get_broker", return_value=broker), \
+         patch("backend.brokers.adapters.kite.get_lot_size",
+               new=AsyncMock(return_value=50)), \
+         patch("backend.shared.helpers.settings.get_bool", return_value=True), \
+         patch("backend.brokers.broker_apis.fetch_positions", return_value=[df]):
+        result = await run_preflight("ZG0790", {
+            "exchange":      "NFO",
+            "tradingsymbol": "NIFTY25APRFUT",
+            "quantity":      100,
+            "order_type":    "LIMIT",
+            "product":       "NRML",
+            "variety":       "regular",
+            "side":          "SELL",
+            "intent":        "close",
+            "price":         22000.0,
+        })
+
+    assert "close_exemption" not in result["diagnostics"]
+    assert "close_exemption_note" not in result["diagnostics"]
+
+
 @pytest.mark.asyncio
 async def test_preflight_dhan_real_flat_shape_through_run_preflight_blocks_when_enforced():
     """Reproduces item 4's exact bug end-to-end through run_preflight
