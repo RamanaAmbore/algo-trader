@@ -915,7 +915,19 @@ def _symbol_exchange_open(exchange: str, ctx: dict) -> bool:
     Mapping:
       equity-segment exchanges (NSE/BSE/NFO/BFO/CDS/BCD) → ctx['nse_open']
       commodity-segment exchanges (MCX/NCO)              → ctx['mcx_open']
-      unknown → False (never wrongly allow)
+      unknown exchange → False (never wrongly allow)
+      known exchange but the key is genuinely ABSENT from `ctx` → False
+      *and* a CRITICAL log line, never a quiet False (missing-vs-zero
+      convention — see CLAUDE.md). A caller handing this function a
+      context that was never actually built via `_build_context()` (or
+      its `segment_flags` mirror) means we genuinely don't know whether
+      the exchange is open; failing closed is still the safe choice for
+      a real-money gate, but a silent fail-closed here is exactly what
+      let `_exchange_gate_passes` block a live expiry auto-close for 3
+      straight cycles on 2026-11-27 while MCX was genuinely open, with
+      only a routine INFO `action_skipped` line to show for it — see
+      that function's own fix comment for the root cause this guards
+      against recurring in some other, not-yet-found caller.
 
     Pure function — no DB / broker calls. Designed to be called from
     the action layer, the ticket route, and the MCP gated paths
@@ -926,11 +938,19 @@ def _symbol_exchange_open(exchange: str, ctx: dict) -> bool:
         return False
     if not isinstance(ctx, dict):
         return False
-    if seg_name == "equity":
-        return bool(ctx.get("nse_open"))
-    if seg_name == "commodity":
-        return bool(ctx.get("mcx_open"))
-    return False
+    key = "nse_open" if seg_name == "equity" else "mcx_open"
+    if key not in ctx:
+        logger.critical(
+            f"[EXCHANGE-GATE-MISSING-KEY] _symbol_exchange_open({exchange!r}): "
+            f"ctx has no {key!r} key — caller did not pass a context "
+            f"built via _build_context()/segment_flags, so whether "
+            f"{exchange} is open is genuinely UNKNOWN, not confirmed "
+            f"closed. Failing closed rather than guessing; this must "
+            f"not happen for any real caller — see this function's own "
+            f"docstring for the 2026-11-27 incident this guards against."
+        )
+        return False
+    return bool(ctx.get(key))
 
 
 def _build_now_ctx() -> dict:

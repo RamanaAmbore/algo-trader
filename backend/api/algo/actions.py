@@ -160,9 +160,35 @@ def _exchange_gate_passes(action_type: str, params: dict, context: dict) -> tupl
         return True, ""
 
     from backend.api.algo.agent_engine import _symbol_exchange_open
-    # context carries flat nse_open / mcx_open flags from _build_context,
-    # not a nested 'segments' list. Pass the whole context dict.
-    closed = [e for e in targets if not _symbol_exchange_open(e, context)]
+    # BUG FIX (2026-11-27, live incident — expiry-day-mcx-itm-auto-close
+    # skipped 3x the night of a real MCX GOLD26NOV expiry with
+    # "exchange closed: MCX" while MCX was genuinely open): `context`
+    # here is `run_cycle`'s TOP-LEVEL dict (threaded through
+    # `_ae_dispatch_actions`'s `action_ctx = dict(context)`). `run_cycle`
+    # computes the real open/closed flags into a LOCAL `base_ctx` and
+    # ONLY EVER merges them into `context["segment_flags"]` (see
+    # `_build_context`'s docstring + `run_cycle`'s own
+    # `context["segment_flags"] = dict(base_ctx)` line) — it never
+    # flattens them onto `context` itself. The comment this replaced
+    # ("context carries flat nse_open / mcx_open flags from
+    # _build_context") was wrong the day it was written (commit
+    # dbe6f1100, 2026-05-26) and has been wrong ever since: every
+    # action fired by a saved cycle agent (the only real-world caller of
+    # `execute()`) read `context.get('nse_open')`/`context.get('mcx_open')`
+    # as `None`, which `_symbol_exchange_open` treats as closed. The gate
+    # stayed a silent no-op for any action whose `_action_target_
+    # exchanges()` returned [] (nothing to check), so this was invisible
+    # until 2026-11-26 wired a real `exchange` param onto
+    # `expiry_auto_close`'s action for the first time — at which point
+    # the gate began actively (and always incorrectly) blocking it.
+    # Prefer the nested `segment_flags` dict `run_cycle` actually
+    # populates; fall back to `context` itself for a caller that hands
+    # this function an already-flat dict directly (e.g. `_build_now_ctx()`
+    # output, or a hand-built test context with no `segment_flags` key).
+    flags = context.get("segment_flags")
+    if not isinstance(flags, dict):
+        flags = context
+    closed = [e for e in targets if not _symbol_exchange_open(e, flags)]
     if not closed:
         return True, ""
     return False, (
