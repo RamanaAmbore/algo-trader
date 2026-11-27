@@ -336,6 +336,12 @@ export function buildSpreadGatePlan(basket, account, positionRows, maxSpreadPct)
  * @property {SpreadGateLegResult[]} legs
  * @property {number} attempts
  * @property {string} lastError
+ * @property {boolean} [rechecking] - true only while a background re-poll
+ *   is in flight AND the externally-visible `phase` is being held sticky
+ *   (not regressed to 'checking') because a known problem phase
+ *   ('wide'/'error'/'timeout') was already showing. A caller MAY render a
+ *   quiet indicator off this flag without ever branching its main UI on
+ *   it — `phase` itself never flips away from the sticky value mid-recheck.
  */
 
 /**
@@ -379,7 +385,7 @@ export function createSpreadGate({
   let _startedAt = 0;
   let _errorCount = 0;
   /** @type {SpreadGateState} */
-  let _state = { phase: 'idle', legs: [], attempts: 0, lastError: '' };
+  let _state = { phase: 'idle', legs: [], attempts: 0, lastError: '', rechecking: false };
 
   function _emit(/** @type {Partial<SpreadGateState>} */ partial) {
     _state = { ..._state, ...partial };
@@ -404,7 +410,23 @@ export function createSpreadGate({
     const ac = new AbortController();
     _controller = ac;
     const to = setTimeout(() => ac.abort(), fetchTimeoutMs);
-    _emit({ phase: 'checking', attempts: _state.attempts + 1 });
+    // Only transition the externally-visible `phase` to 'checking' on a
+    // genuinely FIRST check. A background re-poll (every `pollMs`, see
+    // the module header) that lands while a known problem phase is
+    // already showing ('wide'/'error'/'timeout') must NOT regress the
+    // phase back to 'checking' and then forward again once the result
+    // lands — a UI branching on `phase` via `{#if}/{:else if}` would
+    // unmount and remount on every single poll tick (operator: "'Place
+    // anyway' keeps blinking"). `rechecking: true` is a sticky-phase
+    // marker a caller MAY use to show a quiet "rechecking…" indicator
+    // without losing the stable branch/legs data; `attempts` still
+    // advances either way so a caller's attempt counter stays accurate.
+    const sticky = _state.phase === 'wide' || _state.phase === 'error' || _state.phase === 'timeout';
+    if (sticky) {
+      _emit({ attempts: _state.attempts + 1, rechecking: true });
+    } else {
+      _emit({ phase: 'checking', attempts: _state.attempts + 1, rechecking: false });
+    }
     let result;
     try {
       result = await checkLegs({ signal: ac.signal });
@@ -414,11 +436,11 @@ export function createSpreadGate({
       _errorCount += 1;
       const msg = String(/** @type {any} */ (e)?.message || e || 'spread check failed');
       if (_errorCount >= maxErrors) {
-        _emit({ phase: 'error', lastError: msg });
+        _emit({ phase: 'error', lastError: msg, rechecking: false });
         _clearTimer();
         return;
       }
-      _emit({ lastError: msg });
+      _emit({ lastError: msg, rechecking: false });
       _scheduleNext(gen);
       return;
     }
@@ -426,18 +448,18 @@ export function createSpreadGate({
     if (gen !== _gen) return; // superseded while awaiting
     _errorCount = 0;
     if (result?.ok) {
-      _emit({ phase: 'passed', legs: result.legs || [], lastError: '' });
+      _emit({ phase: 'passed', legs: result.legs || [], lastError: '', rechecking: false });
       _clearTimer();
       return;
     }
-    _emit({ phase: 'wide', legs: result?.legs || [], lastError: '' });
+    _emit({ phase: 'wide', legs: result?.legs || [], lastError: '', rechecking: false });
     _scheduleNext(gen);
   }
 
   function _scheduleNext(/** @type {number} */ gen) {
     if (gen !== _gen) return;
     if (Date.now() - _startedAt >= maxWaitMs) {
-      _emit({ phase: 'timeout' });
+      _emit({ phase: 'timeout', rechecking: false });
       _clearTimer();
       return;
     }
@@ -451,7 +473,7 @@ export function createSpreadGate({
     const gen = _gen;
     _startedAt = Date.now();
     _errorCount = 0;
-    _state = { phase: 'checking', legs: [], attempts: 0, lastError: '' };
+    _state = { phase: 'checking', legs: [], attempts: 0, lastError: '', rechecking: false };
     _tick(gen);
   }
 

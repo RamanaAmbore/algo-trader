@@ -232,6 +232,69 @@ describe('createSpreadGate', () => {
     expect(gate.getState().phase).toBe('passed');
   });
 
+  it('a background re-poll while already "wide" never regresses phase to "checking" (2026-11-26 blink fix)', async () => {
+    // Regression for operator report: "Place anyway keeps blinking" —
+    // root cause was `_tick` unconditionally emitting `phase:'checking'`
+    // at the start of EVERY poll, including a background re-poll while
+    // a known problem ('wide') was already showing. A UI branching on
+    // `phase` via `{#if}/{:else if}` unmounted and remounted its
+    // "Place anyway" button every single poll tick as a result.
+    let call = 0;
+    /** @type {string[]} */
+    const phaseHistory = [];
+    const checkLegs = vi.fn(async () => {
+      call += 1;
+      // Always wide — a spread that never recovers on its own, so the
+      // gate keeps re-polling indefinitely (bounded only by maxWaitMs).
+      return { ok: false, legs: [{ label: 'X', tradingsymbol: 'X', ok: false, spread_pct: 20, bid: 1, ask: 2, maxSpreadPct: 10 }] };
+    });
+    const gate = createSpreadGate({
+      checkLegs, pollMs: 50, maxWaitMs: 100_000,
+      onUpdate: (s) => phaseHistory.push(s.phase),
+    });
+    gate.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(gate.getState().phase).toBe('wide');
+    expect(gate.getState().rechecking).toBe(false);
+
+    // Three more background re-poll ticks — phase must stay 'wide' the
+    // ENTIRE time, never visiting 'checking' again once a problem phase
+    // has been reached. `rechecking` flips true for the in-flight
+    // instant of each of these ticks (a caller MAY use it for a quiet
+    // indicator) but `phase` itself is untouched.
+    for (let i = 0; i < 3; i++) {
+      await vi.advanceTimersByTimeAsync(50);
+      expect(gate.getState().phase).toBe('wide');
+    }
+    expect(call).toBe(4); // 1 initial + 3 re-polls
+    expect(gate.getState().rechecking).toBe(false); // settled back to false once each result lands
+
+    // The FIRST tick transitions 'checking' → 'wide' (legitimate, a
+    // genuinely first check). Every tick after that must never emit
+    // 'checking' again.
+    expect(phaseHistory[0]).toBe('checking');
+    expect(phaseHistory.slice(1).every((p) => p === 'wide')).toBe(true);
+  });
+
+  it('recheck() while already "wide" (e.g. a Spread% edit) also stays sticky — no blink on an edit-triggered recheck either', async () => {
+    const checkLegs = vi.fn(async () => ({ ok: false, legs: [{ label: 'X', tradingsymbol: 'X', ok: false, spread_pct: 20, bid: 1, ask: 2, maxSpreadPct: 10 }] }));
+    /** @type {string[]} */
+    const phaseHistory = [];
+    const gate = createSpreadGate({
+      checkLegs, pollMs: 5_000, maxWaitMs: 100_000,
+      onUpdate: (s) => phaseHistory.push(s.phase),
+    });
+    gate.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(gate.getState().phase).toBe('wide');
+
+    gate.recheck(); // operator edited Spread% mid-wait, still wide
+    await vi.advanceTimersByTimeAsync(0);
+    expect(gate.getState().phase).toBe('wide');
+    expect(phaseHistory.every((p) => p === 'checking' || p === 'wide')).toBe(true);
+    expect(phaseHistory.filter((p) => p === 'checking').length).toBe(1); // only the genuine first check
+  });
+
   it('confirmOverride() moves straight to overridden and stops polling', async () => {
     const checkLegs = vi.fn(async () => ({ ok: false, legs: [] }));
     const gate = createSpreadGate({ checkLegs, pollMs: 10, maxWaitMs: 100_000 });
