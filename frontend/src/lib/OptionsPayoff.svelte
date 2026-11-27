@@ -1024,10 +1024,10 @@
           <span class="ps-k" bind:this={_psHintAnchor.pnl} role="button" tabindex="0"
                 aria-expanded={_psHintOpen.pnl}
                 onclick={() => { _psHintOpen.pnl = !_psHintOpen.pnl; }}
-                onkeydown={(e) => _psHintKeydown(e, () => _psHintOpen.pnl = !_psHintOpen.pnl)}>P&amp;L
+                onkeydown={(e) => _psHintKeydown(e, () => _psHintOpen.pnl = !_psHintOpen.pnl)}>Mark P&amp;L
             <InfoHint popup hideButton id="ps-hint-pnl" anchor={_psHintAnchor.pnl} bind:open={_psHintOpen.pnl}
-              panel title="P&amp;L" text={realizedPnl !== 0
-              ? `Position lifetime P&amp;L at the current spot (open + closed legs combined). Adjusted to match the dashboard's per-underlying ₹ exactly. ADJ row shows the offset folded in.`
+              panel title="Mark P&amp;L" text={realizedPnl !== 0
+              ? `Position lifetime P&amp;L at the current spot (open + closed legs combined). Adjusted to match the dashboard's per-underlying ₹ exactly. MARK ADJ row shows the offset folded in.`
               : "Position lifetime P&amp;L at the current spot — Black-Scholes value of all open legs minus entry cost. NOT today's intraday move — use the DAY P&amp;L row above for that."} />
           </span>
           <span class={'ps-v ' + ((curveAtSpot?.today_value ?? 0) >= 0 ? 'ps-pos' : 'ps-neg')}>
@@ -1046,9 +1046,9 @@
             <span class="ps-k" bind:this={_psHintAnchor.adj} role="button" tabindex="0"
                   aria-expanded={_psHintOpen.adj}
                   onclick={() => { _psHintOpen.adj = !_psHintOpen.adj; }}
-                  onkeydown={(e) => _psHintKeydown(e, () => _psHintOpen.adj = !_psHintOpen.adj)}>ADJ
+                  onkeydown={(e) => _psHintKeydown(e, () => _psHintOpen.adj = !_psHintOpen.adj)}>MARK ADJ
               <InfoHint popup hideButton id="ps-hint-adj" anchor={_psHintAnchor.adj} bind:open={_psHintOpen.adj}
-                panel title="ADJ" text="Adjustment folded into TODAY so chart matches dashboard exactly. Includes realised P&amp;L from today's closed positions + theoretical-vs-LTP gap on open legs." />
+                panel title="MARK ADJ" text="Adjustment folded into TODAY so chart matches dashboard exactly. Includes realised P&amp;L from today's closed positions + theoretical-vs-LTP gap on open legs." />
             </span>
             <span class={'ps-v ' + (realizedPnl >= 0 ? 'ps-pos' : 'ps-neg')}>
               {fmtMoney(realizedPnl)}
@@ -1468,6 +1468,41 @@
         </text>
       {/if}
 
+      <!-- Exp P&L pill — bottom of chart, near the current-price line
+           (2026-11-26, operator: mirror the spot-price pill's shaded
+           decoration for Exp P&L, at the bottom). Same navy-mask +
+           colour-pill + bold-dark-text structure as the spot pill
+           above, same x-column (spotX) so the two pills visually tie
+           to the same vertical reference line. Sky-blue (#7dd3fc)
+           ties it to the expiry curve/dart's own hue rather than
+           reusing the spot pill's cyan, so the two are never confused
+           for the same quantity. Reads `curveAtSpot.expiry_value`
+           directly — the identical value the Exp P&L stat row and the
+           expiry dart's own y-position already use (C1 invariant, see
+           CLAUDE.md "Payoff chart Exp P&L basis") — no second,
+           independently-computed figure. -->
+      {#if curveAtSpot != null && curveAtSpot.expiry_value != null && spot >= sMin && spot <= sMax}
+        {@const expLabel = fmtMoney(curveAtSpot.expiry_value)}
+        {@const expChipW = expLabel.length * 8 + 14}
+        {@const expChipH = 18}
+        {@const expChipY = height - PAD_B - expChipH - 3}
+        <!-- Navy mask underneath, same technique as the spot pill. -->
+        <rect x={spotX - expChipW / 2 - 1} y={expChipY - 1}
+              width={expChipW + 2} height={expChipH + 2} rx="5"
+              fill="#0d1829"/>
+        <!-- Sky-blue pill — horizontal, rx 4, text centered. -->
+        <rect x={spotX - expChipW / 2} y={expChipY}
+              width={expChipW} height={expChipH} rx="4"
+              fill="#7dd3fc" stroke="#0369a1" stroke-width="1"/>
+        <text x={spotX} y={expChipY + expChipH / 2 + 4}
+              text-anchor="middle"
+              fill="#0c1830"
+              font-size="12" font-weight="800"
+              style="font-family: var(--font-numeric); font-variant-numeric: tabular-nums">
+          {expLabel}
+        </text>
+      {/if}
+
       <!-- Hover crosshair — vertical line only; SPOT/TDAY/EXP values
            are rendered in the HTML .chart-tooltip overlay below,
            matching ChartWorkspace's popup approach so both chart
@@ -1598,11 +1633,30 @@
            per-leg breakdown is already in the Candidates panel below
            the chart; surfacing the same list inside the chart card
            was duplication. The Today / Expiry / BE / Spot key items
-           below are the only legend pieces the chart needs. -->
+           below are the only legend pieces the chart needs.
+
+           Three dart-coloured markers (2026-11-26, operator: "only two
+           are shown presently" — Theoretical/Exp P&L had plain line
+           swatches, and the violet real-money dart had no legend entry
+           at all). Each `.legend-dart` replicates the on-chart dart's
+           own two-circle ring+fill look (see the `<circle r="6" .../>
+           <circle r="3" .../>` pairs a few hundred lines above) as a
+           small CSS pseudo-element pair, colour-matched via
+           `currentColor` to the SAME hex literal each dart already
+           uses: amber (today/theoretical), sky (expiry), violet
+           (actual/market, `dayPnl`-driven). "Market P&L" is gated on
+           `dayPnl != null`, identical to its dart's own guard, so the
+           legend never advertises a marker the chart isn't drawing. -->
       <span class="legend-item">
-        <span class="legend-line legend-today"></span>
-        P&L
+        <span class="legend-dart legend-dart-today"></span>
+        Theoretical P&L
       </span>
+      {#if dayPnl != null}
+        <span class="legend-item">
+          <span class="legend-dart legend-dart-actual"></span>
+          Market P&L
+        </span>
+      {/if}
       {#each intermediatePaths as ip (ip.elapsed)}
         <!-- Intermediate-DTE legend chips render in temporal order
              between Today and Expiry. Stroke colour matches the
@@ -1615,7 +1669,7 @@
         </span>
       {/each}
       <span class="legend-item">
-        <span class="legend-line legend-expiry"></span>
+        <span class="legend-dart legend-dart-expiry"></span>
         Exp P&L
       </span>
       <span class="legend-item legend-be">
@@ -1841,8 +1895,46 @@
     width: 16px;
     height: 0;
   }
-  .legend-today  { border-top: 2px solid var(--c-action); }
-  .legend-expiry { border-top: 1.5px dashed #7dd3fc; }
+  /* Dart-style legend marker (2026-11-26) — replaces the old
+     `.legend-today`/`.legend-expiry` line swatches (now dead; deleted)
+     for the three at-current-spot quantities (Theoretical/Market/Exp
+     P&L), each coloured to match its own on-chart dart (amber/violet/
+     sky). Two pseudo-elements replicate the dart's own ring+fill —
+     identical opacity values (0.55 ring / 0.85 fill) and the same
+     `#0c1830` fill-stroke the chart's `<circle r="3" stroke="#0c1830">`
+     uses — so the legend key and the chart marker read as the same
+     visual language, just smaller. `currentColor` lets one rule serve
+     all three hues via a `color` override per modifier class, with no
+     literal duplicated across them. Breakeven/Spot keep their existing
+     `.legend-mark` vertical-dash treatment, unchanged (out of scope —
+     they are not point-value darts). */
+  .legend-dart {
+    position: relative;
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    flex-shrink: 0;
+  }
+  .legend-dart::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    border: 1.25px solid currentColor;
+    opacity: 0.55;
+  }
+  .legend-dart::after {
+    content: '';
+    position: absolute;
+    top: 3px; right: 3px; bottom: 3px; left: 3px;
+    border-radius: 50%;
+    background: currentColor;
+    opacity: 0.85;
+    box-shadow: 0 0 0 1px #0c1830;
+  }
+  .legend-dart-today  { color: #fbbf24; }
+  .legend-dart-expiry { color: #7dd3fc; }
+  .legend-dart-actual { color: #c084fc; }
   /* Intermediate-DTE swatch — the stroke colour comes inline via
      `style="border-top-color: …"` because each slice gets its own
      interpolated hsl(). Dashed, matching the chart curve. */

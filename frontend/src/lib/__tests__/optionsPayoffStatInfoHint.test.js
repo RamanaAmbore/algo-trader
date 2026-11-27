@@ -43,8 +43,10 @@ describe('OptionsPayoff.svelte — stat overlay rows wire InfoHint instead of ti
     }
   });
 
-  it('LTP, CHG%, CLOSE, DAY P&L, P&L, ADJ, Exp P&L, DTE, and IV rows each have an InfoHint popup (hideButton mode)', () => {
-    const labels = ['LTP', 'CHG%', 'CLOSE', 'DAY P&amp;L', 'P&amp;L', 'ADJ', 'Exp P&amp;L', 'DTE'];
+  it('LTP, CHG%, CLOSE, DAY P&L, Mark P&L, MARK ADJ, Exp P&L, DTE, and IV rows each have an InfoHint popup (hideButton mode)', () => {
+    // "P&L" → "Mark P&L" and "ADJ" → "MARK ADJ" (2026-11-26 rename, operator
+    // request) — the amber today-value row and its realised-offset row.
+    const labels = ['LTP', 'CHG%', 'CLOSE', 'DAY P&amp;L', 'Mark P&amp;L', 'MARK ADJ', 'Exp P&amp;L', 'DTE'];
     for (const label of labels) {
       // In hideButton mode, the .ps-k span has additional attributes (bind:this, role, tabindex, aria-expanded, onclick, onkeydown)
       // spread across multiple lines. Look for class="ps-k" followed by the closing > and label text, then InfoHint hideButton.
