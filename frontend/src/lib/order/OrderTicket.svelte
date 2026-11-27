@@ -1905,12 +1905,16 @@
     // NEW margin/cash commitment, so the broker API reports almost
     // nothing for the ORDER itself. That is NOT the amount the operator
     // actually receives on the close — the real credit is this order's
-    // own price × qty (the premium coming back). Rendering the broker's
-    // near-zero figure under a "Cash released" label would say "releases
-    // ₹0", which is false. Null when no limit price is set yet (MARKET,
-    // or an empty price field) — the chip then shows a plain "Releases
-    // cash" with no asserted number rather than guessing one.
-    const estCredit = cashFlowKind === 'cash_released'
+    // own price × qty (the premium coming back; qty is CONTRACTS, same
+    // unit the /preflight request's own `quantity` field carries — same
+    // price×qty convention derivativesMath.js's legCost/cost-basis
+    // formula already uses). Null when no limit price is set yet (MARKET,
+    // or an empty price field) — `showLimit` gates this the same way it
+    // gates the real preflight payload's own `price` field below, so a
+    // stale `_price` can never leak an estimate into a MARKET/SL-M order.
+    // The chip then shows a plain "Releases cash" with no asserted
+    // number rather than guessing one.
+    const estCredit = cashFlowKind === 'cash_released' && showLimit
       && Number(_price) > 0 && Number(_qty) > 0
       ? Number(_price) * Number(_qty)
       : null;

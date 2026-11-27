@@ -137,9 +137,14 @@ test.describe('Margin/cash chip — close-long releases cash, close-short releas
     console.log(`[close-long] pill title: "${title}" · text: "${text}"`);
     expect(title.toLowerCase()).toContain('released');
     expect(title.toLowerCase()).not.toContain('margin required');
-    // Never the broker's near-zero figure under "released" framing.
-    expect(title).not.toMatch(/released.*₹\s*0(\.00)?\b/i);
+    // Never the broker's near-zero figure under "released" framing —
+    // scoped to the credit clause only (before " vs "), since the
+    // Avail/Cash side of the tooltip legitimately can read ₹0.00 for a
+    // fake test account with no real funds row.
+    const creditClause = title.split(' vs ')[0];
+    expect(creditClause).not.toMatch(/released.*₹\s*0(\.00)?\b/i);
     // The real estimate (25,000) appears instead.
+    expect(creditClause).toMatch(/25,000|25000/);
     expect(text).toMatch(/25,000|25000/);
   });
 
@@ -167,9 +172,19 @@ test.describe('Margin/cash chip — close-long releases cash, close-short releas
     const text = (await pill.textContent()) || '';
     console.log(`[close-long-no-price] pill text: "${text}"`);
     expect(text.toLowerCase()).toContain('releases cash');
-    // Must never show the broker's meaningless ₹0.00 as if it were the
-    // release amount.
-    expect(text).not.toMatch(/₹\s*0(\.00)?\b/);
+    // Must never show the broker's meaningless 0 as if it were the
+    // release amount — assert the DOM structure directly (the "Releases
+    // cash" row renders as plain text with no `.oes-margin-pill-val`
+    // child at all), not just a `₹` string match, which would be
+    // vacuously true regardless of this fix (no `₹` glyph is ever
+    // rendered in the pill's VISIBLE text to begin with — only in the
+    // `title` tooltip attribute).
+    const releasesCashRow = pill.locator('.oes-margin-pill-row', { hasText: 'Releases cash' });
+    await expect(releasesCashRow).toBeVisible();
+    expect(await releasesCashRow.locator('.oes-margin-pill-val').count()).toBe(0);
+    // Belt-and-suspenders: no standalone "0" or "0.00" token anywhere in
+    // the rendered text either.
+    expect(text).not.toMatch(/(^|\s)0(\.00)?(\s|$)/);
   });
 
   test('close a short option (BUY, currentQty<0) → "releases margin" wording, the honest Req figure, NOT a cost/debit, NOT asserted as the release amount', async ({ page }) => {
