@@ -399,3 +399,179 @@ class TestPendingOpenPinIncidentReplication:
         )
         acct_row = summary.filter(pl.col("account") == "ZG0790")
         assert acct_row["day_change_val"][0] == pytest.approx(0.0)
+
+
+class TestIsSegmentPendingOpenAfterClose:
+    """2026-11-27 live incident: account ZG0790's GOLD expiry-day book
+    showed Exp P&L +39,400 against a real ~-6,89,550/-5,64,500/-6,03,900
+    book because `is_segment_pending_open` returned True AFTER MCX's own
+    23:55 (winter DST) close too — `not _segment_is_open(...)` is True
+    both before today's open AND after today's close, with no
+    distinction. The fix adds a lower bound: pending-open only applies
+    before today's own resolved opening time, never after it.
+
+    Confirmed live via the `positions: pending_open pin applied to
+    21/21 rows (exchanges=['MCX'])` log line firing at 18:26:09 UTC
+    (23:56:09 IST) on prod, well after MCX's real close."""
+
+    def test_mcx_not_pending_right_after_winter_close(self):
+        from backend.api.helpers.snapshot_gate import is_segment_pending_open
+        # Friday 2026-11-27, winter DST window — real MCX close is 23:55,
+        # not the summer-DST 23:30 (see CLAUDE.md "MCX DST-aware non-agri
+        # close time"). 23:56 is the operator's own reported screenshot
+        # time, 1 minute after close.
+        now = datetime(2026, 11, 27, 23, 56, tzinfo=IST)
+        p1, p2 = _patch_calendar()
+        with p1, p2:
+            assert is_segment_pending_open("MCX", now) is False
+
+    def test_mcx_not_pending_well_after_close_past_midnight_gap(self):
+        """Any point in the broad 08:00-23:31 connectivity window AFTER
+        the segment's own session has already run today must read False
+        — not just the exact minute after close."""
+        from backend.api.helpers.snapshot_gate import is_segment_pending_open
+        now = datetime(2026, 11, 27, 23, 25, tzinfo=IST)  # just before the
+        # system's own 23:31 broker-disconnect, still well after MCX's
+        # real intraday session has been running since 09:00.
+        p1, p2 = _patch_calendar()
+        with p1, p2:
+            assert is_segment_pending_open("MCX", now) is False
+
+    def test_nse_not_pending_after_1530_close(self):
+        """The same post-close bug applied to equity/NFO too — this is
+        not an MCX-only fix."""
+        from backend.api.helpers.snapshot_gate import is_segment_pending_open
+        now = datetime(2026, 11, 27, 15, 45, tzinfo=IST)
+        p1, p2 = _patch_calendar()
+        with p1, p2:
+            assert is_segment_pending_open("NSE", now) is False
+            assert is_segment_pending_open("NFO", now) is False
+
+    def test_mcx_still_pending_before_real_0900_open_unaffected(self):
+        """The ORIGINAL pre-open case this mechanism exists for is
+        untouched by the lower-bound fix."""
+        from backend.api.helpers.snapshot_gate import is_segment_pending_open
+        now = datetime(2026, 11, 27, 8, 47, tzinfo=IST)
+        p1, p2 = _patch_calendar()
+        with p1, p2:
+            assert is_segment_pending_open("MCX", now) is True
+
+    def test_mcx_pending_true_all_day_on_a_plain_holiday(self):
+        """A plain holiday (no evening session) never opens today at
+        all — pending stays True the whole day (same semantics as the
+        pre-existing `test_holiday_correctness_preserved_not_bypassed`
+        equity case above), not flipped to False by the new lower bound."""
+        from backend.api.helpers.snapshot_gate import is_segment_pending_open
+        now = datetime(2026, 11, 27, 23, 0, tzinfo=IST)  # late in the day
+        holiday_date = now.date()
+        with patch(
+            "backend.brokers.broker_apis.fetch_holidays",
+            side_effect=lambda exch: {holiday_date} if exch.upper() == "NSE" else set(),
+        ), patch(
+            "backend.brokers.broker_apis.fetch_special_sessions", side_effect=_fake_special_sessions,
+        ):
+            assert is_segment_pending_open("NFO", now) is True
+
+    def test_mcx_evening_holiday_not_pending_after_evening_close(self):
+        """An MCX evening-open holiday (evening_open_on_holidays=True)
+        opens at 17:00 and still closes at its normal evening close time
+        — pending must go False after THAT close too, not stay True all
+        night the way the pre-fix code would have."""
+        from backend.api.helpers.snapshot_gate import is_segment_pending_open
+        now = datetime(2026, 11, 27, 23, 56, tzinfo=IST)
+        holiday_date = now.date()
+        with patch(
+            "backend.brokers.broker_apis.fetch_holidays",
+            side_effect=lambda exch: {holiday_date} if exch.upper() == "MCX" else set(),
+        ), patch(
+            "backend.brokers.broker_apis.fetch_special_sessions", side_effect=_fake_special_sessions,
+        ):
+            assert is_segment_pending_open("MCX", now) is False
+
+
+class TestPostCloseExpiryPinRegression:
+    """Direct reproduction of the 2026-11-27 GOLD expiry-night incident
+    using two of the real six ZG0790 GOLD26NOV* legs (confirmed via a
+    read-only prod `daily_book`/live-fetch-shape query): a leg closed
+    TODAY (qty=0, Kite's own `realised` field stuck at 0, real lifetime
+    `pnl`=115,550) and a leg still open today (qty=-300, real avg_cost
+    846.6667, real mark pnl=-123,100). Before the fix, BOTH were
+    re-pinned to yesterday's (2026-11-26) settlement at 23:56 IST,
+    erasing the closed leg's entire realised gain and re-marking the
+    open leg at yesterday's close instead of today's real exit/mark.
+    """
+
+    def _closed_leg(self) -> dict:
+        return dict(
+            account="ZG0790", tradingsymbol="GOLD26NOV123000CE", exchange="MCX",
+            quantity=0, overnight_quantity=-100, average_price=0.0,
+            last_price=1650.0, prev_close=713.0,  # Nov-26 EOD ltp (yesterday's settlement)
+            realised=0.0, pnl=115550.0,
+            day_change_val=0.0, day_change=0.0, day_change_percentage=0.0,
+            pnl_percentage=0.0,
+        )
+
+    def _open_leg(self) -> dict:
+        return dict(
+            account="ZG0790", tradingsymbol="GOLD26NOV124000CE", exchange="MCX",
+            quantity=-300, overnight_quantity=0, average_price=846.6666666666666,
+            last_price=1257.0, prev_close=435.5,  # Nov-26 EOD ltp (yesterday's settlement)
+            realised=0.0, pnl=-123100.0,
+            day_change_val=208.5, day_change=208.5, day_change_percentage=0.0,
+            pnl_percentage=0.0,
+        )
+
+    def test_post_close_no_longer_pinned_realised_pnl_survives(self):
+        from backend.api.routes.positions import (
+            _resolve_pending_open_exchanges, _pin_pending_open_rows,
+        )
+        df = pd.DataFrame([self._closed_leg(), self._open_leg()])
+        now = datetime(2026, 11, 27, 23, 56, tzinfo=IST)
+        p1, p2 = _patch_calendar()
+        with p1, p2, patch(
+            "backend.shared.helpers.date_time_utils.timestamp_indian", return_value=now,
+        ):
+            pending = _resolve_pending_open_exchanges(df)
+            assert pending == set(), (
+                "MCX must not be reported pending-open 1 minute after its "
+                "own winter-DST 23:55 close"
+            )
+            _pin_pending_open_rows(df, pending)
+
+        closed = df.iloc[0]
+        open_ = df.iloc[1]
+        # Untouched — the closed leg's real realised gain survives, the
+        # open leg's real mark-to-market survives.
+        assert closed["pnl"] == pytest.approx(115550.0)
+        assert closed["last_price"] == pytest.approx(1650.0)
+        assert open_["pnl"] == pytest.approx(-123100.0)
+        assert open_["last_price"] == pytest.approx(1257.0)
+
+    def test_pre_fix_behaviour_would_have_erased_the_realised_gain(self):
+        """Documents the bug this fix closes: replaying the EXACT same
+        `is_segment_pending_open` predicate the pre-fix code used (`not
+        _segment_is_open(...)`, no lower bound) against this fixture
+        reproduces the exact pnl=0 / pnl=+1,23,350 corruption."""
+        from backend.api.routes.positions import _pin_pending_open_rows
+        from backend.shared.helpers.date_time_utils import _segment_is_open
+
+        df = pd.DataFrame([self._closed_leg(), self._open_leg()])
+        now = datetime(2026, 11, 27, 23, 56, tzinfo=IST)
+        p1, p2 = _patch_calendar()
+        with p1, p2:
+            from backend.shared.helpers.utils import config as _cfg
+            seg_cfg = next(
+                s for s in _cfg.get("market_segments", {}).values()
+                if "MCX" in {e.upper() for e in (s.get("exchanges") or [s.get("holiday_exchange", "")])}
+                or (s.get("holiday_exchange") or "").upper() == "MCX"
+            )
+            pre_fix_pending = not _segment_is_open(seg_cfg, now)
+            assert pre_fix_pending is True  # the bug's own trigger condition
+            _pin_pending_open_rows(df, {"MCX"})
+
+        closed = df.iloc[0]
+        open_ = df.iloc[1]
+        # The exact corruption: realised gain erased to 0, open leg
+        # re-marked at yesterday's close.
+        assert closed["pnl"] == pytest.approx(0.0)
+        assert open_["pnl"] == pytest.approx((435.5 - 846.6666666666666) * -300)

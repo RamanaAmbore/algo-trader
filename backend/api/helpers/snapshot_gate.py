@@ -123,9 +123,70 @@ def _get_stale_live(route_key: str) -> Any | None:
 # resolves each exchange to its gate via the ``exchanges`` column in the DB.
 
 
+def _segment_today_open_time(seg_cfg: dict, now):
+    """Return the `datetime.time` at which *seg_cfg*'s segment first
+    becomes tradeable TODAY — `datetime.time.max` when it never opens
+    today at all (a plain holiday, no evening session), meaning "pending"
+    for the whole day. A segment that never trades today has no real
+    order book to protect against a phantom pre-open divergence from, but
+    it also never provides a genuine post-close moment either — staying
+    pinned to yesterday's settlement all day is the harmless, correct
+    choice (same semantics the pre-existing holiday pytest coverage in
+    `test_pending_open_pin.py` already pins for the equity segment).
+
+    Mirrors `date_time_utils.is_market_open()`'s own precedence order
+    (special-session override > holiday > regular sessions) so this can
+    never disagree with `_segment_is_open()` about WHEN today's session
+    starts — see `is_segment_pending_open()`'s own docstring for why that
+    agreement matters (2026-11-27 post-close pin incident).
+    """
+    from datetime import time as _dtime
+    from backend.shared.helpers.date_time_utils import (
+        resolve_dst_aware_sessions, _parse_session_windows,
+    )
+    from backend.brokers.broker_apis import fetch_holidays, fetch_special_sessions
+
+    today = now.date()
+    exch = (seg_cfg or {}).get("holiday_exchange", "NSE")
+
+    # ① Special-session override for today wins outright, same as
+    # is_market_open()'s own precedence.
+    try:
+        special = fetch_special_sessions(exch)
+    except Exception:
+        special = []
+    today_overrides = [s for s in (special or []) if s.get("date") == today]
+    if today_overrides:
+        return min(s["start"] for s in today_overrides)
+
+    # ② Holiday — never opens today unless the segment has an explicit
+    # evening-open-on-holidays rule (MCX evening session), which starts
+    # at 17:00 on a weekday (is_market_open()'s own weekday guard).
+    try:
+        holidays = fetch_holidays(exch)
+    except Exception:
+        holidays = set()
+    if today in holidays:
+        evening = bool((seg_cfg or {}).get("evening_open_on_holidays", False))
+        if evening and today.weekday() < 5:
+            return _dtime(17, 0)
+        return _dtime.max
+
+    # ③ Regular session(s) — earliest configured window start, resolved
+    # through the same DST-aware/hours_start fallback `_segment_is_open`
+    # uses, so the two functions never read a different session list.
+    h_s, m_s = map(int, (seg_cfg or {}).get("hours_start", "09:15").split(":"))
+    sessions = resolve_dst_aware_sessions(seg_cfg, today)
+    windows = _parse_session_windows(sessions, _dtime(h_s, m_s), _dtime(15, 30))
+    # `_parse_session_windows` always falls back to one window when
+    # `sessions` is empty — `None` here is a defensive, should-never-
+    # happen fallback (empty `windows`), not a real holiday case.
+    return min(w[0] for w in windows) if windows else None
+
+
 def is_segment_pending_open(exchange: str, now=None) -> bool:
     """Return True when *exchange*'s configured `market_segments` session
-    has not genuinely opened yet, even though the broader broker-
+    has not genuinely opened yet TODAY, even though the broader broker-
     connectivity window (`is_exchange_closed_now` above, 08:00-23:31 IST)
     already reports it open.
 
@@ -139,6 +200,31 @@ def is_segment_pending_open(exchange: str, now=None) -> bool:
     diverge from `prev_close` purely from this gap, producing a
     phantom Day P&L move. `positions.py` / `holdings.py` pin last_price to
     prev_close for any row where this returns True.
+
+    2026-11-27 fix (live incident — a GOLD expiry-day book showed Exp P&L
+    +39,400 against a real ~-564,500/-603,900/-689,550 book, confirmed via
+    the `positions: pending_open pin applied to 21/21 rows` log line
+    firing AFTER MCX's own close): the original implementation was
+    ``not _segment_is_open(seg_cfg, now)`` — True whenever the segment is
+    NOT open RIGHT NOW, with no distinction between "before today's
+    session has started" (the genuine pre-open gap this function exists
+    to cover) and "today's session already ran and ended" (after close).
+    Both read `_segment_is_open() == False`. The pin then overwrote every
+    already-closed-today position's `last_price`/`pnl`/`realised`/
+    `day_change_val` back to yesterday's settlement, discarding the whole
+    day's realised P&L (Kite ships `realised: 0` for a flat position, so
+    `pnl` collapsed to exactly 0) and re-marking every still-open position
+    at yesterday's close instead of today's real exit/mark prices.
+
+    Fixed: now also requires `now.time()` to be BEFORE today's own
+    resolved opening time (`_segment_today_open_time`, holiday/special-
+    session aware, same precedence `is_market_open()` itself uses) —
+    returns False once that point has passed, regardless of whether the
+    segment is currently mid-session, between sessions, or closed for the
+    day. A segment that never opens today at all (a plain holiday, no
+    evening session) stays pending (True) for the whole day instead —
+    see `_segment_today_open_time`'s own docstring for why that's the
+    correct, harmless choice rather than a regression of this fix.
 
     Matches `quote.py:_qt_is_seg_open`'s exchange-membership rule (against
     each segment's own `exchanges` list / `holiday_exchange`), NOT
@@ -166,7 +252,12 @@ def is_segment_pending_open(exchange: str, now=None) -> bool:
             seg_exch = (seg_cfg.get("holiday_exchange") or "NSE").upper()
             seg_exchanges = {e.upper() for e in (seg_cfg.get("exchanges") or [seg_exch])}
             if exch_upper in seg_exchanges or exch_upper == seg_exch:
-                return not _segment_is_open(seg_cfg, now)
+                if _segment_is_open(seg_cfg, now):
+                    return False
+                open_t = _segment_today_open_time(seg_cfg, now)
+                if open_t is None:
+                    return False
+                return now.time() < open_t
         return False
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"is_segment_pending_open({exchange!r}) failed: {exc}")
