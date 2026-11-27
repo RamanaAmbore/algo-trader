@@ -1759,7 +1759,14 @@
     min-width: 0;
   }
   .oct-toolbar-row1 > * { flex-shrink: 0; }
-  .oct-toolbar-row1 .oct-expiry-pick { flex-shrink: 1; }
+  /* The Expiry Select's own standalone rule (below, unchanged) already
+     sets `flex: 0 1 auto`, which overrides the `flex-shrink: 0` above
+     by later source order and equal specificity — no extra override
+     rule is needed here. Do not re-add one scoped under this selector:
+     a compound rule ending in that class name, immediately followed by
+     an open brace, collides with a source-scan test elsewhere in this
+     suite that locates the Select's standalone rule by a non-greedy
+     regex anchored on that exact class-then-brace text. */
   /* Row 2 — CHASE / DRAFT / HEDGE (+ B%/S% fields). Every child is a
      fixed-size control (chip/input/toggle), so each gets
      `flex-shrink: 0` and the CONTAINER scrolls horizontally instead of

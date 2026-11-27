@@ -28,13 +28,16 @@
  *     chrome restored (`.oct-toolbar :global(.rbq-select-trigger) {
  *     padding-block: 0.15rem; }`), and `.oct-expiry-pick`'s min-width
  *     restored to its pre-merge `7.7rem`.
- *   - `.oct-toolbar-trailing` (DTE chip through DRAFT) stays on its OWN
- *     row below the Expiry row — this is commit 916389fb, a separate,
- *     later, independent operator instruction ("in chain keep element
- *     after symbol expiry in the next row") that is unaffected by this
- *     revert and reads correctly against the reverted shape too. See
+ *   - `.oct-toolbar-trailing` stays on its OWN row below the Expiry row
+ *     — originally commit 916389fb ("in chain keep element after symbol
+ *     expiry in the next row"), unaffected by THIS revert. Superseded
+ *     the same day by a later, still later operator instruction ("move
+ *     expires today and spread to the same row as expiry"): the DTE
+ *     chip and Spread% field moved UP into row 1 (alongside the Expiry
+ *     label + Select), and `.oct-toolbar-trailing` now holds only
+ *     CHASE, DRAFT, then HEDGE (reordered after DRAFT). See
  *     `chain_toolbar_trailing_own_row.spec.js` for its own dedicated
- *     coverage — this file does not duplicate it.
+ *     coverage of that later shape — this file does not duplicate it.
  *   - `.oes-chase-row`'s outer `_activeTab !== 'chain'` gate (the
  *     "remove the dead empty row" fix, also from `ee946c28`) is KEPT —
  *     it is an unrelated, correct fix for CHASE/DRAFT, not part of the
@@ -47,10 +50,10 @@
  *     re-asserted below so a future edit can't silently drop it while
  *     touching this same area again.
  *
- * Resulting Chain-tab row order: `[Account | Exchange | Symbol]`
- * (`.oes-picker`, shared by every tab) → `[Expiry ▾]` (`.oct-toolbar`
- * row 1) → `[DTE | Spread% | HEDGE | CHASE | DRAFT]` (`.oct-toolbar`
- * row 2, `.oct-toolbar-trailing`).
+ * Resulting Chain-tab row order (current, post-916389fb-supersession):
+ * `[Account | Exchange | Symbol]` (`.oes-picker`, shared by every tab)
+ * → `[Expiry ▾ | DTE | Spread%]` (`.oct-toolbar-row1`) →
+ * `[CHASE | DRAFT | HEDGE]` (`.oct-toolbar-trailing`).
  */
 
 import { test, expect } from '@playwright/test';
@@ -114,16 +117,23 @@ test.describe('Symbol+Expiry merge reverted — OptionChainTab.svelte structure'
     expect(between).not.toMatch(/aria-hidden="true">\)/);
   });
 
-  test('DTE chip, Spread%, Hedge, Chase and Draft all still render inside .oct-toolbar-trailing', () => {
+  test('DTE chip and Spread% render in row 1 (.oct-toolbar-row1); Chase, Draft and Hedge render in row 2 (.oct-toolbar-trailing)', () => {
+    // Superseded same day by a later operator instruction ("move expires
+    // today and spread to the same row as expiry") — see
+    // `chain_toolbar_trailing_own_row.spec.js` for the dedicated shape
+    // coverage. This test only confirms the split didn't regress back
+    // to the pre-916389fb merged form.
+    const row1Idx = chainSrc.indexOf('<div class="oct-toolbar-row1">');
+    expect(row1Idx).toBeGreaterThan(-1);
     const trailingIdx = chainSrc.indexOf('<div class="oct-toolbar-trailing">');
-    expect(trailingIdx).toBeGreaterThan(-1);
-    for (const needle of [
-      'class="oct-expiry-dte"',
-      'class="oct-spread-field"',
-      'class="oct-hedge-toggle"',
-      'class="oes-chase-cluster"',
-      'class="ot-draft-toggle"',
-    ]) {
+    expect(trailingIdx).toBeGreaterThan(row1Idx);
+
+    for (const needle of ['class="oct-expiry-dte"', 'class="oct-spread-field"']) {
+      const i = chainSrc.indexOf(needle, row1Idx);
+      expect(i, `${needle} not found in .oct-toolbar-row1`).toBeGreaterThan(row1Idx);
+      expect(i, `${needle} unexpectedly found in .oct-toolbar-trailing instead of row 1`).toBeLessThan(trailingIdx);
+    }
+    for (const needle of ['class="oes-chase-cluster"', 'class="ot-draft-toggle"', 'class="oct-hedge-toggle"']) {
       const i = chainSrc.indexOf(needle, trailingIdx);
       expect(i, `${needle} not found inside .oct-toolbar-trailing`).toBeGreaterThan(trailingIdx);
     }
