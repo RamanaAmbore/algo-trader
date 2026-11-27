@@ -209,6 +209,30 @@ describe('createSpreadGate', () => {
     expect(gate.getState().phase).toBe('passed');
   });
 
+  it('retry() from a bounded "error" state shows "checking" immediately, not stuck on "error" (2026-11-26 regression — the blink fix above must not make error/timeout sticky)', async () => {
+    const checkLegs = vi.fn(async () => { throw new Error('boom'); });
+    const gate = createSpreadGate({ checkLegs, pollMs: 10, maxErrors: 1, maxWaitMs: 100_000 });
+    gate.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(gate.getState().phase).toBe('error');
+
+    // A pending (never-resolving within this assertion window) checkLegs
+    // lets us observe the transient 'checking' phase retry() must show
+    // immediately — before this fix, the sticky-phase condition wrongly
+    // included 'error'/'timeout', which left the banner stuck reading
+    // "Spread check failed" for the entire retry attempt instead.
+    /** @type {(v: any) => void} */
+    let resolveRetry = () => {};
+    checkLegs.mockImplementationOnce(() => new Promise((res) => { resolveRetry = res; }));
+    gate.retry();
+    expect(gate.getState().phase).toBe('checking');
+    expect(gate.getState().rechecking).toBe(false);
+
+    resolveRetry({ ok: true, legs: [] });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(gate.getState().phase).toBe('passed');
+  });
+
   it('recheck() fires an immediate re-check and discards the superseded in-flight response', async () => {
     /** @type {(v: any) => void} */
     let resolveStale = () => {};

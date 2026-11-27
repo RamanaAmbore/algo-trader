@@ -338,9 +338,12 @@ export function buildSpreadGatePlan(basket, account, positionRows, maxSpreadPct)
  * @property {string} lastError
  * @property {boolean} [rechecking] - true only while a background re-poll
  *   is in flight AND the externally-visible `phase` is being held sticky
- *   (not regressed to 'checking') because a known problem phase
- *   ('wide'/'error'/'timeout') was already showing. A caller MAY render a
- *   quiet indicator off this flag without ever branching its main UI on
+ *   at 'wide' (not regressed to 'checking'). Deliberately excludes
+ *   'error'/'timeout' — those phases never see a background re-poll
+ *   (`_scheduleNext` clears the timer the moment either is reached), and
+ *   `retry()` genuinely needs 'checking' to show immediately. A caller
+ *   MAY render a quiet indicator off this flag without ever branching
+ *   its main UI on
  *   it — `phase` itself never flips away from the sticky value mid-recheck.
  */
 
@@ -412,16 +415,27 @@ export function createSpreadGate({
     const to = setTimeout(() => ac.abort(), fetchTimeoutMs);
     // Only transition the externally-visible `phase` to 'checking' on a
     // genuinely FIRST check. A background re-poll (every `pollMs`, see
-    // the module header) that lands while a known problem phase is
-    // already showing ('wide'/'error'/'timeout') must NOT regress the
-    // phase back to 'checking' and then forward again once the result
-    // lands — a UI branching on `phase` via `{#if}/{:else if}` would
-    // unmount and remount on every single poll tick (operator: "'Place
-    // anyway' keeps blinking"). `rechecking: true` is a sticky-phase
-    // marker a caller MAY use to show a quiet "rechecking…" indicator
-    // without losing the stable branch/legs data; `attempts` still
-    // advances either way so a caller's attempt counter stays accurate.
-    const sticky = _state.phase === 'wide' || _state.phase === 'error' || _state.phase === 'timeout';
+    // the module header) that lands while 'wide' is already showing
+    // must NOT regress the phase back to 'checking' and then forward
+    // again once the result lands — a UI branching on `phase` via
+    // `{#if}/{:else if}` would unmount and remount on every single poll
+    // tick (operator: "'Place anyway' keeps blinking"). `rechecking:
+    // true` is a sticky-phase marker a caller MAY use to show a quiet
+    // "rechecking…" indicator without losing the stable branch/legs
+    // data; `attempts` still advances either way so a caller's attempt
+    // counter stays accurate.
+    //
+    // Deliberately NOT 'error'/'timeout' here, even though those are
+    // also "known problem" phases: `_scheduleNext()` calls
+    // `_clearTimer()` the moment either is reached, so NO background
+    // re-poll ever lands while the gate is sitting in 'error'/'timeout'
+    // — the only way `_tick` runs again from there is `retry()`, which
+    // calls `_tick` directly WITHOUT resetting `_state.phase` first.
+    // Including them here was a real regression, caught in review: it
+    // left the banner stuck on "Spread check failed"/"timed out" for
+    // the entire retry attempt (up to `fetchTimeoutMs`) instead of
+    // showing "Checking spread…" immediately, as it did before this fix.
+    const sticky = _state.phase === 'wide';
     if (sticky) {
       _emit({ attempts: _state.attempts + 1, rechecking: true });
     } else {
