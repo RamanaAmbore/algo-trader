@@ -227,4 +227,30 @@ describe('buildCandidatePositions — Friday expiry, instrument PURGED from cach
       expect(!!row._expiredFrozen).toBe(expected);
     }
   });
+
+  it('REGRESSION: an active expiry-selector filter must not drop this leg during the grace window (root-authoritative miss bypasses matchExpiry, same as a cache-miss always did)', () => {
+    // Before this fix, `isUnresolvable` was unconditionally true for a
+    // root-authoritative cache-miss, so the expiry-selector bypass
+    // (`!isUnresolvable && ...`) always fired for it too. Once
+    // `isUnresolvable` deferred to the (now weekend-aware) `isExpiredFrozen`
+    // value, a leg genuinely inside its grace window (isUnresolvable=false)
+    // would otherwise run through `matchExpiry(sym)` — which can NEVER
+    // match, since `getInstrument(sym)` is null by definition here — and
+    // get silently dropped by ANY active expiry-selector filter. This is
+    // the exact 2026-09 GOLDM "vanished leg" regression class, reproduced
+    // specifically for this new combination.
+    setISTTime('2026-11-28T08:01:00'); // Saturday — the incident instant
+    const result = buildCandidatePositions({
+      ...PARAMS,
+      positions: [makePos(SYM)],
+      getInstrument,
+      hasFNO,
+      // An operator has some OTHER (unrelated, known) expiry selected —
+      // this symbol's own (unresolvable) expiry can never be in this list.
+      selectedExpiries: ['2026-12-25'],
+    });
+    const row = result.find(r => r.symbol === SYM);
+    expect(row, 'leg must not be dropped by the active expiry selector').toBeTruthy();
+    expect(row._expired).toBeUndefined();
+  });
 });

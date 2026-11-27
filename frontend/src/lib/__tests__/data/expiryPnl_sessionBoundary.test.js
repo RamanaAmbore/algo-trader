@@ -50,7 +50,7 @@ vi.mock('$lib/data/instruments.js', () => ({
   hasFNO: (/** @type {string} */ root) => _mockCache.fnoRoots.has(root),
 }));
 
-import { isExpiredHeldContract } from '$lib/data/expiryPnl.js';
+import { isExpiredHeldContract, positionExpPnl, resolveExpiryAnchor } from '$lib/data/expiryPnl.js';
 
 beforeEach(() => {
   _mockCache.byInst = {};
@@ -206,6 +206,38 @@ describe('isExpiredHeldContract — WEEKEND-AWARE boundary (2026-11-27 incident 
       _mockCache.fnoRoots = new Set(['GOLDM']);
       setISTTime('2026-09-28T11:00:00'); // Monday, weeks after the real Sep-5 expiry
       expect(isExpiredHeldContract('GOLDM26SEPFUT', 1)).toBe(true);
+    });
+  });
+
+  describe('downstream valuation during the grace window — "normal" (not-yet-frozen) path must still produce a finite Exp P&L', () => {
+    // portfolioStore.svelte.js's _posTier2 branches on isExpiredHeldContract:
+    // when FALSE (this scenario, during the grace window), it calls
+    // positionExpPnl(p, kind, anchor) — the SAME function this test drives
+    // directly. `anchor` for an option leg is always `rootSpot`
+    // (resolveExpiryAnchor with isOpt=true never consults getInstrument for
+    // THIS symbol), and the strike/opt_type come from decomposeSymbol's pure
+    // regex parse of the symbol text — neither depends on `_inst` being
+    // present for GOLD26NOV124000CE itself, only on the ROOT's spot (GOLD),
+    // which is independently available via GOLD26DECFUT/the index quote.
+    it('a root-authoritative purged option leg still resolves to a finite Exp P&L at Saturday 08:01 IST (not null, not NaN)', () => {
+      setISTTime('2026-11-28T08:01:00');
+      const row = {
+        symbol: 'GOLD26NOV124000CE', account: 'ZG0790', quantity: -300,
+        overnight_quantity: 0, day_buy_quantity: 0, day_sell_quantity: 300,
+        average_price: 846.6666666666666, last_price: 1257, pnl: -123100, realised: 0,
+      };
+      // Confirms isExpiredHeldContract genuinely returns false here (the
+      // bug this whole fix closes) — otherwise this test would be
+      // exercising the WRONG (frozen) branch.
+      expect(isExpiredHeldContract(row.symbol, row.quantity, () => null, (root) => root === 'GOLD')).toBe(false);
+
+      const rootSpot = 124669.0; // GOLD root spot, independently resolved via GOLD26DECFUT
+      const anchor = resolveExpiryAnchor({ isOpt: true, rootSpot });
+      expect(anchor).toBe(rootSpot);
+
+      const expPnl = positionExpPnl(row, 'opt', anchor);
+      expect(expPnl).not.toBeNull();
+      expect(Number.isFinite(expPnl)).toBe(true);
     });
   });
 });

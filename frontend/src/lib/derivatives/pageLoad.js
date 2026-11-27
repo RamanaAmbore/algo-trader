@@ -521,7 +521,19 @@ export function buildCandidatePositions({
     // a row we can't resolve at all (isUnresolvable) or a flat (qty=0)
     // historical row (matchExpiry itself already no-ops on those via the
     // qty!==0 guard below, preserved from the original code).
-    if (!isUnresolvable && qty !== 0 && !matchExpiry(sym)) continue;
+    //
+    // 2026-11-27 fix: also bypass for `rootAuthoritativeMiss` REGARDLESS of
+    // `isUnresolvable`'s now-nuanced value. `matchExpiry` resolves via
+    // `getInstrument(sym).x`, which is null here by definition (`_inst` is
+    // missing) — it can NEVER match a selected expiry for this leg, whether
+    // or not the leg is currently inside its weekend/holiday grace window.
+    // Without this, a leg still genuinely inside that window (isUnresolvable
+    // now correctly false) would be silently DROPPED by an active expiry
+    // filter — reproducing the 2026-09 GOLDM "vanished leg" regression this
+    // file's own 2026-09 fix exists to prevent, specifically for this one
+    // new combination (root-authoritative miss + not-yet-frozen) that the
+    // weekend-aware fix above introduced.
+    if (!isUnresolvable && !rootAuthoritativeMiss && qty !== 0 && !matchExpiry(sym)) continue;
     real.push({
       ...p,
       kind: isFut ? 'fut' : 'opt',
