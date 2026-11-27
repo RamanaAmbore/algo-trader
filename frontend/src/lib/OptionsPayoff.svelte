@@ -1553,20 +1553,44 @@
            even text decoration. add it to spot price." Cyan pill
            centered on the spot vertical, identical shape to the
            breakeven pill the chart used to wear. Navy backing
-           rect masks any σ tick label or curve segment behind it;
-           cyan fill with bold dark numerals so it reads as THE
-           prominent reference marker on the chart.
-           Border (2026-11-27, operator: "add a border to the market
-           value box") — the pill always carried a 1px stroke, but at
-           `#0891b2` (a darker shade of the SAME cyan fill) it read as
-           no border at all, the exact complaint that also applies to
-           the Exp P&L pill below. The rim is now a light, high-
-           contrast `#ffffff` at reduced opacity rather than a second,
-           similarly-toned teal — it needs to read against BOTH the
-           bright cyan fill and the dark navy mask behind it, and a
-           darker-cyan rim does neither. Weight (1.5px) matches the Exp
-           P&L pill's own border below, per the "consistent treatment
-           across both pills" request.
+           rect masks any σ tick label or curve segment behind it.
+           Z-order (2026-11-27, same day) — this pill (and the Exp
+           P&L pill below) used to live in the BACKGROUND svg, where
+           the today/expiry curves and the vertical spot line — all
+           redrawn in THIS foreground svg, which paints on top of the
+           whole background layer — could cut straight across the
+           pill's fill, border or digits whenever the curve's value
+           at spotX landed near the pill's fixed top/bottom band.
+           Moving the pill here, as the LAST element painted in the
+           LAST (topmost) svg layer, guarantees it is never occluded
+           by a curve, dart or the vertical spot line, regardless of
+           where the current price or P&L value falls.
+           Fill/border scheme (2026-11-27, later same day, operator
+           again: "background color and border not clearly visible...
+           use better color scheme" — the z-order fix above did not
+           address this; it's a genuinely separate contrast defect).
+           The prior solid-bright-cyan-fill + dark-text + light-white-
+           border version read, in a real rendered screenshot, as a
+           flat, washed-out cyan blob: a 1.5px white rim at 0.85
+           opacity sits only marginally lighter than the `#22d3ee`
+           fill it outlines, so the border all but disappears, and the
+           solid fill gives the pill no visible depth against the dark
+           chart background it sits on. The bottom Exp P&L pill (same
+           chart, same session, operator confirmed "looks good") uses
+           a different recipe entirely — a translucent colour-tinted
+           WASH fill + a full-brightness colour border + full-
+           brightness colour text — and that recipe genuinely reads
+           clearly in the same screenshot. This pill now reuses that
+           exact recipe, keeping the cyan hue (cyan still means
+           "spot/current price" everywhere else on this chart — the
+           spot line, the spot flash, the LTP chip — so only the fill/
+           border/text TREATMENT changes, not what the colour means):
+           `--algo-cyan-bg-strong`/`--algo-cyan-border` (the same
+           soft-tint-fill + full-colour-border + full-colour-text
+           shape `.algo-status-pill` and the Exp P&L pill both use),
+           full-brightness `#22d3ee` text instead of dark `#0c1830` —
+           dark text only reads cleanly against a solid bright fill,
+           which this pill no longer has.
            `vector-effect="non-scaling-stroke"` — this SVG uses
            `preserveAspectRatio="none"`, so the two axes scale
            independently; without this, a 1.5-unit stroke can render
@@ -1577,22 +1601,7 @@
            every other SVG element in this chart is styled via inline
            presentation attributes, not CSS classes, and that
            convention is kept here; the classes carry no `<style>`
-           rule of their own.
-           Z-order (2026-11-27, later same day, operator: "not clearly
-           visible... may be because of background") — this pill (and
-           the Exp P&L pill below) used to live in the BACKGROUND svg,
-           where the today/expiry curves and the vertical spot line
-           — all redrawn in THIS foreground svg, which paints on top
-           of the whole background layer — could cut straight across
-           the pill's fill, border or digits whenever the curve's
-           value at spotX landed near the pill's fixed top/bottom
-           band. Moving the pill here, as the LAST element painted in
-           the LAST (topmost) svg layer, guarantees it is never
-           occluded by a curve, dart or the vertical spot line,
-           regardless of where the current price or P&L value falls.
-           No colour/fill/border change was needed — the pill was
-           never actually low-contrast on its own, it was being
-           drawn under other chart content. -->
+           rule of their own. -->
       {#if spot > 0 && spot > sMin && spot < sMax}
         {@const spotLabel = spot.toFixed(0)}
         {@const spotChipW = spotLabel.length * 8 + 14}
@@ -1603,15 +1612,18 @@
         <rect x={spotX - spotChipW / 2 - 1} y={spotChipY - 1}
               width={spotChipW + 2} height={spotChipH + 2} rx="5"
               fill="#0d1829"/>
-        <!-- Cyan pill — horizontal, rx 4, text centered. -->
+        <!-- Cyan-tinted WASH pill — translucent fill (not a solid
+             bright fill), bright cyan border + bright cyan text, same
+             recipe as the Exp P&L pill below. -->
         <rect class="payoff-spot-pill"
               x={spotX - spotChipW / 2} y={spotChipY}
               width={spotChipW} height={spotChipH} rx="4"
-              fill="#22d3ee" stroke="#ffffff" stroke-opacity="0.85" stroke-width="1.5"
+              fill="var(--algo-cyan-bg-strong, rgba(34,211,238,0.22))"
+              stroke="#22d3ee" stroke-width="1.5"
               vector-effect="non-scaling-stroke"/>
         <text class="payoff-spot-pill-text" x={spotX} y={spotChipY + spotChipH / 2 + 4}
               text-anchor="middle"
-              fill="#0c1830"
+              fill="#22d3ee"
               font-size="12" font-weight="800"
               style="font-family: var(--font-numeric); font-variant-numeric: tabular-nums">
           {spotLabel}
@@ -1645,13 +1657,20 @@
            and picking a different accent here would break that
            colour-to-meaning mapping chart-wide. The result is a dark,
            sky-tinted WASH pill (not a solid bright fill) with a bright
-           sky rim and bright sky text — structurally a different
-           fill treatment from the spot pill above (solid bright fill
-           / dark text), not merely a different shade of the same
-           treatment. Border weight (1.5px) matches the spot pill's
-           own, per "consistent treatment across both pills"; see that
-           pill's comment for the `vector-effect`/class-hook rationale,
-           applied identically here.
+           sky rim and bright sky text. Border weight (1.5px) matches
+           the spot pill's own.
+           (2026-11-27, later the same day — this wash recipe is now
+           ALSO the spot pill's own treatment above, swapped to the
+           cyan hue; see that pill's "Fill/border scheme" comment for
+           why its original solid-bright-fill/dark-text version read
+           as low-contrast and was changed to match this one. The two
+           pills are therefore no longer "structurally different" —
+           they share one recipe, distinguished only by hue, which is
+           fine: nothing here ever claimed the colour-to-MEANING
+           mapping — cyan=spot, sky=Exp P&L — needed to differ in
+           fill TREATMENT as well as hue.) See that pill's comment for
+           the `vector-effect`/class-hook rationale, applied
+           identically here.
            Z-order (2026-11-27, later same day) — moved here from the
            background svg for the identical reason as the spot pill
            above: this foreground svg's own today/expiry curves could

@@ -18,18 +18,34 @@
  *     guard), "Exp P&L" (sky, same text, now a dart marker instead of a
  *     dashed-line swatch).
  *
- * 2026-11-27 follow-up (operator: "different background color scheme
+ * 2026-11-27 follow-up #1 (operator: "different background color scheme
  * [from the top pill], not just a shade variant" + "add a border to
  * [both] the Exp P&L pill and the market value box") — the bottom Exp
  * P&L pill no longer mirrors the top pill's exact solid-fill/dark-text
  * structure. It keeps the sky hue (still means "Exp P&L" everywhere
  * else on this chart) but switches to the app's translucent "info
  * pill" treatment (soft sky-tinted fill + bright sky border + bright
- * sky text), genuinely distinct from the top pill's solid bright
- * cyan fill + dark text + light-white border. Both pills now carry a
- * clearly visible, matching-weight (1.5px) border. See the "Decoration"
- * comments above each pill in OptionsPayoff.svelte for the full
- * rationale.
+ * sky text), genuinely distinct from the top pill's (then still)
+ * solid bright cyan fill + dark text + light-white border. Both pills
+ * carried a clearly visible, matching-weight (1.5px) border.
+ *
+ * 2026-11-27 follow-up #2, same day, operator again: "the underlying
+ * price text with background color and border is not clearly
+ * visible... use better color scheme" — a real rendered screenshot
+ * confirmed the complaint: the top pill's then-current solid-bright-
+ * cyan-fill + light-white-border version read as a flat, washed-out
+ * cyan blob, because a 1.5px white rim at 0.85 opacity sits only
+ * marginally lighter than the `#22d3ee` fill it's meant to outline.
+ * The bottom Exp P&L pill's own translucent-wash recipe (from follow-
+ * up #1 above) was confirmed, in the same screenshot, to read clearly.
+ * The top spot pill now reuses that EXACT recipe — translucent
+ * `--algo-cyan-bg-strong` wash fill + full-brightness `#22d3ee`
+ * border + full-brightness `#22d3ee` text — keeping its own cyan hue
+ * (cyan still means "spot/current price" chart-wide), so the two
+ * pills are now visually IDENTICAL in structure, distinguished only
+ * by hue (cyan vs sky), not by fill treatment. See the "Fill/border
+ * scheme" comment above the spot pill in OptionsPayoff.svelte for the
+ * full rationale and root-cause screenshot description.
  *
  * Reuses the same mock-endpoint pattern as
  * `derivatives_payoff_dart_number_parity.spec.js` (flat payoff curve,
@@ -179,37 +195,47 @@ test.describe('Payoff chart — Exp P&L bottom pill, label renames, legend marke
     expect(block).toMatch(/expChipY = height - PAD_B - expChipH - 3/);
   });
 
-  test('SOURCE: the bottom Exp P&L pill uses a genuinely different fill treatment from the top spot pill, and both carry a matching-weight visible border (2026-11-27)', () => {
+  test('SOURCE: the top spot pill and bottom Exp P&L pill share one translucent-wash recipe, distinguished only by hue (2026-11-27, follow-up #2)', () => {
     const src = readFileSync(PAYOFF_PATH, 'utf8');
 
     const spotIdx = src.indexOf('class="payoff-spot-pill"');
     expect(spotIdx, 'top spot pill (.payoff-spot-pill) not found').toBeGreaterThan(-1);
     const spotBlock = src.slice(spotIdx, spotIdx + 400);
-    // Top pill: solid bright cyan fill, dark text (unchanged structure),
-    // but now a genuinely VISIBLE border — a light, high-contrast rim,
-    // not a darker shade of the same cyan.
-    expect(spotBlock).toMatch(/fill="#22d3ee"/);
-    expect(spotBlock).toMatch(/stroke="#ffffff"/);
+    // Top pill now uses the SAME translucent-wash recipe as the bottom
+    // pill (cyan hue): no solid "#22d3ee" fill, no light-white rim —
+    // both were found to read as a flat, low-contrast blob in a real
+    // screenshot. Translucent wash fill + full-brightness cyan border
+    // + full-brightness cyan text instead.
+    expect(spotBlock).toMatch(/fill="var\(--algo-cyan-bg-strong/);
+    expect(spotBlock).not.toMatch(/fill="#22d3ee"/);
+    expect(spotBlock).not.toMatch(/stroke="#ffffff"/);
+    expect(spotBlock).toMatch(/stroke="#22d3ee"/);
     expect(spotBlock).toMatch(/stroke-width="1\.5"/);
     expect(spotBlock).toMatch(/vector-effect="non-scaling-stroke"/);
+
+    const spotTextIdx = src.indexOf('class="payoff-spot-pill-text"');
+    expect(spotTextIdx, 'top spot pill text (.payoff-spot-pill-text) not found').toBeGreaterThan(-1);
+    const spotTextBlock = src.slice(spotTextIdx, spotTextIdx + 150);
+    // Bright cyan text (readable against the dark translucent fill),
+    // not the dark "#0c1830" text the old solid-fill version used.
+    expect(spotTextBlock).toMatch(/fill="#22d3ee"/);
+    expect(spotTextBlock).not.toMatch(/fill="#0c1830"/);
 
     const expIdx = src.indexOf('class="payoff-exp-pill"');
     expect(expIdx, 'bottom Exp P&L pill (.payoff-exp-pill) not found').toBeGreaterThan(-1);
     const expBlock = src.slice(expIdx, expIdx + 400);
     // Bottom pill: translucent sky-tinted WASH fill (soft info-pill
-    // convention), NOT the solid "#7dd3fc" bright fill the original
-    // 2026-11-26 version used — this is the "genuinely different
-    // background color scheme, not just a shade variant" fix. Keeps
-    // the sky hue (still means "Exp P&L" chart-wide) as its border.
+    // convention) — the SAME recipe as the top pill above, just the
+    // sky hue (still means "Exp P&L" chart-wide) instead of cyan.
     expect(expBlock).toMatch(/fill="var\(--algo-sky-bg-strong/);
     expect(expBlock).not.toMatch(/fill="#7dd3fc"/);
     expect(expBlock).toMatch(/stroke="#7dd3fc"/);
     expect(expBlock).toMatch(/stroke-width="1\.5"/);
     expect(expBlock).toMatch(/vector-effect="non-scaling-stroke"/);
 
-    // Bottom pill's TEXT is now bright sky (readable against the dark
-    // translucent fill), not the dark "#0c1830" text the solid-fill
-    // version used.
+    // Bottom pill's TEXT is bright sky (readable against the dark
+    // translucent fill), not the dark "#0c1830" text the old
+    // solid-fill version used.
     const expTextIdx = src.indexOf('class="payoff-exp-pill-text"');
     expect(expTextIdx, 'bottom Exp P&L pill text (.payoff-exp-pill-text) not found').toBeGreaterThan(-1);
     const expTextBlock = src.slice(expTextIdx, expTextIdx + 150);
@@ -242,7 +268,7 @@ test.describe('Payoff chart — Exp P&L bottom pill, label renames, legend marke
     expect(rectCount, 'expected at least 4 <rect> elements (2 top spot pill + 2 new bottom Exp P&L pill)').toBeGreaterThanOrEqual(4);
   });
 
-  test('LIVE (2026-11-27): the two pills render with genuinely different computed fills, and both have a visible, non-zero border', async ({ page }) => {
+  test('LIVE (2026-11-27 follow-up #2): both pills render the same translucent-wash recipe, distinguished only by hue, each with a visible, non-zero border', async ({ page }) => {
     await gotoNiftyStrategy(page, { expPnl: 2345, todayPnl: 1500 });
 
     const spotPill = page.locator('.payoff-spot-pill').first();
@@ -257,18 +283,24 @@ test.describe('Payoff chart — Exp P&L bottom pill, label renames, legend marke
     const spotStyle = await styleOf(spotPill);
     const expStyle = await styleOf(expPill);
 
-    // Genuinely different fill (not merely a different shade of the
-    // same solid-fill treatment) — the top pill is a fully opaque
-    // solid colour, the bottom pill is a translucent (alpha < 1) wash.
-    expect(spotStyle.fill, 'top pill fill').not.toBe(expStyle.fill);
     const alphaOf = (rgbaStr) => {
       const m = rgbaStr.match(/rgba?\(([^)]+)\)/);
       if (!m) return 1;
       const parts = m[1].split(',').map((s) => parseFloat(s.trim()));
       return parts.length === 4 ? parts[3] : 1;
     };
-    expect(alphaOf(spotStyle.fill), 'top pill fill must be fully opaque').toBeCloseTo(1, 1);
+    // Both pills now use the SAME translucent-wash recipe (2026-11-27
+    // follow-up #2) — the top pill's prior fully-opaque solid fill was
+    // found, in a real screenshot, to read as a flat, low-contrast
+    // blob next to the bottom pill's already-good wash treatment.
+    // Neither pill's fill is a solid, fully-opaque colour any more.
+    expect(alphaOf(spotStyle.fill), 'top pill fill must be a translucent wash, not a solid fill').toBeLessThan(0.9);
     expect(alphaOf(expStyle.fill), 'bottom pill fill must be a translucent wash, not a solid fill').toBeLessThan(0.9);
+    // The two pills still carry genuinely different HUE (cyan vs sky —
+    // the colour-to-meaning mapping is unchanged), even though the fill
+    // TREATMENT (translucent wash) is now shared.
+    expect(spotStyle.fill, 'top pill fill').not.toBe(expStyle.fill);
+    expect(spotStyle.stroke, 'top pill stroke').not.toBe(expStyle.stroke);
 
     // Both pills must carry a real, visible border (non-zero stroke
     // width, with a stroke colour set).
