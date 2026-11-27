@@ -610,3 +610,96 @@ for (const width of [1179, 1181]) {
     });
   });
 }
+
+// ── Suite 5: alternating visual-row background on Risk & EV (2026-11-27) ──
+//
+// Mirrors the Snapshot grid's own `.byund-row:nth-of-type(odd) > span`
+// convention. Groups cells by their RENDERED top (a real visual row —
+// 2 pairs below 1180px, 3 pairs at >=1180px), then asserts every cell in
+// one row shares the same background and adjacent rows genuinely differ —
+// this tests the logical-row requirement directly rather than re-encoding
+// the CSS nth-of-type math, which the implementation itself already
+// documents at length. Uses `gotoDerivativesLive` (the real GOLD picker,
+// which fails loudly on a timeout) rather than `gotoDerivativesWithStrategy`,
+// which silently annotates and returns when no strategy loads — a green
+// result there could mean nothing ran.
+
+async function measureRiskRowBackgrounds(page) {
+  return page.evaluate(() => {
+    const risk = document.querySelector('.opt-kv-risk');
+    if (!risk) return null;
+    const pairs = [...risk.querySelectorAll('.kv-pair')];
+    const cells = pairs.flatMap((p) => [...p.querySelectorAll('.kv-k, .kv-v')]);
+    return cells.map((c) => {
+      const r = c.getBoundingClientRect();
+      return { top: Math.round(r.top), bg: getComputedStyle(c).backgroundColor };
+    });
+  });
+}
+
+/** Cluster cells into visual rows by rendered top (<=3px tolerance). */
+function clusterRows(cells) {
+  const sorted = [...cells].sort((a, b) => a.top - b.top);
+  const rows = [];
+  for (const c of sorted) {
+    const row = rows.find((r) => Math.abs(r[0].top - c.top) <= 3);
+    if (row) row.push(c); else rows.push([c]);
+  }
+  return rows;
+}
+
+for (const vp of [
+  { name: 'mobile-360', width: 360, height: 800 },
+  { name: 'narrow-1179', width: 1179, height: 900 },
+  { name: 'wide-1181', width: 1181, height: 900 },
+  { name: 'desktop-1440', width: 1440, height: 900 },
+]) {
+  test.describe(`Live — Risk & EV alternating row background [${vp.name}]`, () => {
+    test.setTimeout(150_000);
+    test.use({ viewport: { width: vp.width, height: vp.height } });
+    test.beforeEach(({}, testInfo) => {
+      test.skip(testInfo.project.name !== 'chromium-desktop', 'viewport is set per test');
+    });
+
+    test('every cell in a visual row shares one background; adjacent rows differ', async ({ page }) => {
+      await gotoDerivativesLive(page);
+      const cells = await measureRiskRowBackgrounds(page);
+      expect(cells, '.opt-kv-risk must render on the live GOLD strategy').not.toBeNull();
+      expect(cells.length, 'at least one Risk & EV data cell must render').toBeGreaterThan(0);
+
+      const rows = clusterRows(cells);
+      // At least 2 visual rows must exist to prove alternation at all
+      // (5-6 pairs at 2/row = >=3 rows narrow, >=2 rows wide).
+      expect(rows.length, 'at least 2 visual rows of Risk & EV data').toBeGreaterThanOrEqual(2);
+
+      for (let i = 0; i < rows.length; i++) {
+        const bgs = new Set(rows[i].map((c) => c.bg));
+        expect(bgs.size, `row ${i} must share one background across all its cells`).toBe(1);
+      }
+      for (let i = 0; i < rows.length - 1; i++) {
+        expect(rows[i][0].bg, `row ${i} and row ${i + 1} must alternate (different backgrounds)`)
+          .not.toBe(rows[i + 1][0].bg);
+      }
+    });
+
+    test('the striped background is not fully transparent (a real colour is applied)', async ({ page }) => {
+      await gotoDerivativesLive(page);
+      const cells = await measureRiskRowBackgrounds(page);
+      expect(cells).not.toBeNull();
+      const rows = clusterRows(cells);
+      // Exactly one of every adjacent pair of rows is the "striped" one —
+      // at least one row across the whole card must carry a real,
+      // non-transparent fill (rgba(...,0) / 'transparent' would mean the
+      // stripe never actually painted anything).
+      const hasRealFill = rows.some((row) => {
+        const bg = row[0].bg;
+        if (bg === 'transparent' || bg === 'rgba(0, 0, 0, 0)') return false;
+        const m = bg.match(/rgba?\(([^)]+)\)/);
+        if (!m) return true;
+        const parts = m[1].split(',').map((s) => parseFloat(s.trim()));
+        return parts.length < 4 || parts[3] > 0;
+      });
+      expect(hasRealFill, `expected at least one striped row with a real fill; saw: ${JSON.stringify(rows.map((r) => r[0].bg))}`).toBe(true);
+    });
+  });
+}

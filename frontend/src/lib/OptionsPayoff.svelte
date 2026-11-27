@@ -1443,9 +1443,31 @@
            even text decoration. add it to spot price." Cyan pill
            centered on the spot vertical, identical shape to the
            breakeven pill the chart used to wear. Navy backing
-           rect masks any σ tick label behind it; cyan fill +
-           dark border with bold dark numerals so it reads as
-           THE prominent reference marker on the chart. -->
+           rect masks any σ tick label behind it; cyan fill with bold
+           dark numerals so it reads as THE prominent reference marker
+           on the chart.
+           Border (2026-11-27, operator: "add a border to the market
+           value box") — the pill always carried a 1px stroke, but at
+           `#0891b2` (a darker shade of the SAME cyan fill) it read as
+           no border at all, the exact complaint that also applies to
+           the Exp P&L pill below. The rim is now a light, high-
+           contrast `#ffffff` at reduced opacity rather than a second,
+           similarly-toned teal — it needs to read against BOTH the
+           bright cyan fill and the dark navy mask behind it, and a
+           darker-cyan rim does neither. Weight (1.5px) matches the Exp
+           P&L pill's own border below, per the "consistent treatment
+           across both pills" request.
+           `vector-effect="non-scaling-stroke"` — this SVG uses
+           `preserveAspectRatio="none"`, so the two axes scale
+           independently; without this, a 1.5-unit stroke can render
+           thinner than 1 real CSS px on a narrow mobile viewport (or
+           thicker in fullscreen), rather than a constant visual
+           weight. `.payoff-spot-pill`/`-text` classes are selector
+           hooks for Playwright `getComputedStyle` assertions only —
+           every other SVG element in this chart is styled via inline
+           presentation attributes, not CSS classes, and that
+           convention is kept here; the classes carry no `<style>`
+           rule of their own. -->
       {#if spot > 0 && spot > sMin && spot < sMax}
         {@const spotLabel = spot.toFixed(0)}
         {@const spotChipW = spotLabel.length * 8 + 14}
@@ -1456,10 +1478,12 @@
               width={spotChipW + 2} height={spotChipH + 2} rx="5"
               fill="#0d1829"/>
         <!-- Cyan pill — horizontal, rx 4, text centered. -->
-        <rect x={spotX - spotChipW / 2} y={spotChipY}
+        <rect class="payoff-spot-pill"
+              x={spotX - spotChipW / 2} y={spotChipY}
               width={spotChipW} height={spotChipH} rx="4"
-              fill="#22d3ee" stroke="#0891b2" stroke-width="1"/>
-        <text x={spotX} y={spotChipY + spotChipH / 2 + 4}
+              fill="#22d3ee" stroke="#ffffff" stroke-opacity="0.85" stroke-width="1.5"
+              vector-effect="non-scaling-stroke"/>
+        <text class="payoff-spot-pill-text" x={spotX} y={spotChipY + spotChipH / 2 + 4}
               text-anchor="middle"
               fill="#0c1830"
               font-size="12" font-weight="800"
@@ -1470,17 +1494,38 @@
 
       <!-- Exp P&L pill — bottom of chart, near the current-price line
            (2026-11-26, operator: mirror the spot-price pill's shaded
-           decoration for Exp P&L, at the bottom). Same navy-mask +
-           colour-pill + bold-dark-text structure as the spot pill
-           above, same x-column (spotX) so the two pills visually tie
-           to the same vertical reference line. Sky-blue (#7dd3fc)
-           ties it to the expiry curve/dart's own hue rather than
-           reusing the spot pill's cyan, so the two are never confused
-           for the same quantity. Reads `curveAtSpot.expiry_value`
-           directly — the identical value the Exp P&L stat row and the
-           expiry dart's own y-position already use (C1 invariant, see
-           CLAUDE.md "Payoff chart Exp P&L basis") — no second,
-           independently-computed figure. -->
+           decoration for Exp P&L, at the bottom). Reads
+           `curveAtSpot.expiry_value` directly — the identical value
+           the Exp P&L stat row and the expiry dart's own y-position
+           already use (C1 invariant, see CLAUDE.md "Payoff chart Exp
+           P&L basis") — no second, independently-computed figure.
+           Decoration (2026-11-27, operator: bottom pill must use a
+           genuinely different background scheme from the top pill,
+           not just a shade variant, plus a visible border) — the
+           original version kept the spot pill's EXACT structure
+           (solid bright fill + dark text), only swapping hue from
+           cyan (#22d3ee) to sky (#7dd3fc). Those two hues are close
+           enough in both channels (same B, similar G) that at a
+           glance the two pills read as near-identical blue chips —
+           the "shade variant" the operator flagged.
+           This now reuses the app's own translucent "info pill"
+           convention instead (`--algo-sky-bg-strong`/`--algo-sky-
+           border`/`--algo-sky` — see `.algo-status-pill` in app.css
+           and `.payoff-anchor-chip` in this file's own CSS below, the
+           same soft-tint-fill + full-colour-border + full-colour-text
+           shape), rather than moving to a different hue entirely —
+           sky already means "Exp P&L" everywhere else on this chart
+           (the expiry curve stroke, the expiry dart, the legend dart),
+           and picking a different accent here would break that
+           colour-to-meaning mapping chart-wide. The result is a dark,
+           sky-tinted WASH pill (not a solid bright fill) with a bright
+           sky rim and bright sky text — structurally a different
+           fill treatment from the spot pill above (solid bright fill
+           / dark text), not merely a different shade of the same
+           treatment. Border weight (1.5px) matches the spot pill's
+           own, per "consistent treatment across both pills"; see that
+           pill's comment for the `vector-effect`/class-hook rationale,
+           applied identically here. -->
       {#if curveAtSpot != null && curveAtSpot.expiry_value != null && spot >= sMin && spot <= sMax}
         {@const expLabel = fmtMoney(curveAtSpot.expiry_value)}
         {@const expChipW = expLabel.length * 8 + 14}
@@ -1490,13 +1535,17 @@
         <rect x={spotX - expChipW / 2 - 1} y={expChipY - 1}
               width={expChipW + 2} height={expChipH + 2} rx="5"
               fill="#0d1829"/>
-        <!-- Sky-blue pill — horizontal, rx 4, text centered. -->
-        <rect x={spotX - expChipW / 2} y={expChipY}
+        <!-- Sky-tinted wash pill — translucent fill (not a solid bright
+             fill), bright sky border + bright sky text. -->
+        <rect class="payoff-exp-pill"
+              x={spotX - expChipW / 2} y={expChipY}
               width={expChipW} height={expChipH} rx="4"
-              fill="#7dd3fc" stroke="#0369a1" stroke-width="1"/>
-        <text x={spotX} y={expChipY + expChipH / 2 + 4}
+              fill="var(--algo-sky-bg-strong, rgba(125,211,252,0.22))"
+              stroke="#7dd3fc" stroke-width="1.5"
+              vector-effect="non-scaling-stroke"/>
+        <text class="payoff-exp-pill-text" x={spotX} y={expChipY + expChipH / 2 + 4}
               text-anchor="middle"
-              fill="#0c1830"
+              fill="#7dd3fc"
               font-size="12" font-weight="800"
               style="font-family: var(--font-numeric); font-variant-numeric: tabular-nums">
           {expLabel}

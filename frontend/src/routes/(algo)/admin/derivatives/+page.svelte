@@ -7705,6 +7705,144 @@
       padding-right: 0.2rem;
     }
   }
+  /* Alternating visual-row background (2026-11-27, operator: "like
+     the Snapshot grid") — mirrors `.byund-row:nth-of-type(odd) >
+     span` above (identical token/fallback + alpha).
+     Parity: `.byund-headrow` is a <div> sibling of `.byund-row`, and
+     `:nth-of-type` counts same-TAG siblings regardless of class, so
+     the header shifts the count by one — the FIRST real underlying
+     row lands on an even div-of-type index and stays plain; the
+     SECOND real row is the first one actually striped. This grid's
+     own header cells are <span>s (`.kv-risk-colhdr`), not <div>s, so
+     they never share a tag-based nth-of-type count with the 6
+     `.kv-pair` <div>s — pair index 1-6 below maps directly onto
+     document order with no header-shift correction needed. To keep
+     the SAME real parity Snapshot produces (1st row plain, 2nd row
+     struck), pairs 1-2 (narrow) / 1-3 (wide) — "RowA" — stay plain,
+     and pairs 3-4 (narrow) / 4-6 (wide) — "RowB" — are the first
+     striped group.
+     `.kv-pair` is `display: contents` (no box of its own — see the
+     markup comment above `.opt-kv-risk`'s own markup), so the fill
+     paints each `.kv-k`/`.kv-v` CHILD cell directly — same reasoning
+     as Snapshot's own (also `display: contents`) `.byund-row`.
+     Unlike `.byund-grid` (flush columns, no gap), `.opt-kv-risk` has
+     a real 0.6rem `column-gap` — a plain per-cell `background-color`
+     alone would leave a visible gap between adjacent cells, the exact
+     "fragmented boxed cells" look the operator rejected for the
+     header treatment two years' worth of commits above (the reverted
+     2026-11-25 box-shadow addition, see the `.kv-risk-colhdr` comment
+     above). Each striped cell therefore ALSO carries one or two
+     zero-blur, zero-spread box-shadow layers offset by half the
+     column-gap (0.3rem) toward its row-neighbour(s), bleeding the
+     stripe color across the gutter. box-shadow is a pure paint effect
+     — it never affects layout geometry, `scrollWidth`, or any
+     `getBoundingClientRect()` measurement, so this cannot disturb the
+     column-alignment/overflow assertions in
+     derivatives_greeks_risk_restructure.spec.js. The bleed is
+     one-sided at the grid's own left/right edges: the first pair in a
+     striped row never bleeds left (grid edge), the TRUE last column
+     (the same cells the divider-exclusion rules above already
+     identify via `:nth-child(4n+2)`/`:nth-child(6n)`) never bleeds
+     right and carries no divider. Each striped cell's complete
+     box-shadow (divider + bleed) is restated explicitly rather than
+     relying on cascade order against those exclusion rules — the
+     extra `.kv-pair:nth-of-type(N)` compound gives every selector
+     below strictly higher specificity ((0,4,0) vs (0,3,0)) than those
+     rules, so it always wins regardless of source order.
+     Literal pair numbers, not an algebraic nth-of-type formula, since
+     the markup caps at exactly 6 pairs — a third striped row never
+     exists today. EV/cost (pair 6) is conditionally absent (`{#if}`
+     guard, see the markup comment above); these selectors then simply
+     never match — no error, no blank-row artifact, same "accepted
+     cosmetic residual" precedent the divider-exclusion comment above
+     already establishes for this exact 5-vs-6-pair case. */
+  .opt-kv-risk {
+    --risk-stripe: var(--ag-odd-row-background-color, rgba(13,22,42,0.30));
+  }
+  /* Narrow (default, <1180px, 2 pairs/row): RowB = pairs 3-4. */
+  .opt-kv-risk .kv-pair:nth-of-type(3) > .kv-k,
+  .opt-kv-risk .kv-pair:nth-of-type(3) > .kv-v,
+  .opt-kv-risk .kv-pair:nth-of-type(4) > .kv-k,
+  .opt-kv-risk .kv-pair:nth-of-type(4) > .kv-v {
+    background-color: var(--risk-stripe);
+  }
+  .opt-kv-risk .kv-pair:nth-of-type(3) > .kv-k {
+    /* First pair of the striped row — no left bleed (grid edge);
+       always bleeds right into its own value cell. */
+    box-shadow: inset -1px 0 0 0 var(--sep-color),
+                0.3rem 0 0 0 var(--risk-stripe);
+  }
+  .opt-kv-risk .kv-pair:nth-of-type(3) > .kv-v {
+    /* Internal column at narrow (not the true last column) — divider
+       stays; bleeds both toward its own label and toward pair 4. */
+    box-shadow: inset -1px 0 0 0 var(--sep-color),
+                -0.3rem 0 0 0 var(--risk-stripe),
+                0.3rem 0 0 0 var(--risk-stripe);
+  }
+  .opt-kv-risk .kv-pair:nth-of-type(4) > .kv-k {
+    /* Internal column — bleeds both toward pair 3 and its own value. */
+    box-shadow: inset -1px 0 0 0 var(--sep-color),
+                -0.3rem 0 0 0 var(--risk-stripe),
+                0.3rem 0 0 0 var(--risk-stripe);
+  }
+  .opt-kv-risk .kv-pair:nth-of-type(4) > .kv-v {
+    /* Last pair of the striped row AND the grid's true last column at
+       narrow (matches `:nth-child(4n+2)` above) — no divider, no
+       right bleed (grid edge). */
+    box-shadow: -0.3rem 0 0 0 var(--risk-stripe);
+  }
+  @media (min-width: 1180px) {
+    /* Pair 3 rejoins RowA (unstriped) in the wide 3-pairs/row
+       grouping — reset back to its plain divider-only state. */
+    .opt-kv-risk .kv-pair:nth-of-type(3) > .kv-k,
+    .opt-kv-risk .kv-pair:nth-of-type(3) > .kv-v {
+      background-color: transparent;
+      box-shadow: inset -1px 0 0 0 var(--sep-color);
+    }
+    /* Pair 4 is now the FIRST pair of RowB (wide) — its own bleed
+       side flips from "internal" (narrow) to "row-start". */
+    .opt-kv-risk .kv-pair:nth-of-type(4) > .kv-k {
+      box-shadow: inset -1px 0 0 0 var(--sep-color),
+                  0.3rem 0 0 0 var(--risk-stripe);
+    }
+    .opt-kv-risk .kv-pair:nth-of-type(4) > .kv-v {
+      /* Internal column at wide (col 2 of 6, restored by the
+         `:nth-child(4n+2)` re-on rule above) — divider stays, bleeds
+         both toward its own label and toward pair 5. */
+      box-shadow: inset -1px 0 0 0 var(--sep-color),
+                  -0.3rem 0 0 0 var(--risk-stripe),
+                  0.3rem 0 0 0 var(--risk-stripe);
+    }
+    /* RowB (wide) = pairs 4-6 — pairs 5 and 6 newly join the stripe. */
+    .opt-kv-risk .kv-pair:nth-of-type(5) > .kv-k,
+    .opt-kv-risk .kv-pair:nth-of-type(5) > .kv-v,
+    .opt-kv-risk .kv-pair:nth-of-type(6) > .kv-k,
+    .opt-kv-risk .kv-pair:nth-of-type(6) > .kv-v {
+      background-color: var(--risk-stripe);
+    }
+    .opt-kv-risk .kv-pair:nth-of-type(5) > .kv-k {
+      /* Middle pair of RowB — bleeds both ways. */
+      box-shadow: inset -1px 0 0 0 var(--sep-color),
+                  -0.3rem 0 0 0 var(--risk-stripe),
+                  0.3rem 0 0 0 var(--risk-stripe);
+    }
+    .opt-kv-risk .kv-pair:nth-of-type(5) > .kv-v {
+      box-shadow: inset -1px 0 0 0 var(--sep-color),
+                  -0.3rem 0 0 0 var(--risk-stripe),
+                  0.3rem 0 0 0 var(--risk-stripe);
+    }
+    .opt-kv-risk .kv-pair:nth-of-type(6) > .kv-k {
+      /* Internal column (col 5 of 6) — bleeds both ways. */
+      box-shadow: inset -1px 0 0 0 var(--sep-color),
+                  -0.3rem 0 0 0 var(--risk-stripe),
+                  0.3rem 0 0 0 var(--risk-stripe);
+    }
+    .opt-kv-risk .kv-pair:nth-of-type(6) > .kv-v {
+      /* True last column at wide (col 6, matches `:nth-child(6n)`
+         above) — no divider, no right bleed (grid edge). */
+      box-shadow: -0.3rem 0 0 0 var(--risk-stripe);
+    }
+  }
   .kv-pos { color: var(--c-long); }
   .kv-neg { color: var(--c-short); }
   .kv-sub { color: var(--text-muted); font-size: var(--fs-md); margin-left: 0.2rem; }
