@@ -188,7 +188,8 @@ def test_mcx_unhedged_surfaces_unknown_moneyness_lone_leg():
     """No spot price at all for the root ⇒ moneyness is UNKNOWN. The
     scope must still surface the leg (never a silent all-clear for
     unconfirmed data) — matches the alert renderer's own explicit
-    UNKNOWN warning (`_v2_expiry_root_unknown_lines`)."""
+    UNKNOWN warning (`agent_engine._v2_expiry_account_lines`'s
+    "Check (price unavailable)" line)."""
     today = date(2025, 5, 29)
     today_dt = datetime(today.year, today.month, today.day, 22, 0, tzinfo=timezone.utc)
     ctx = _ctx(now=today_dt, position_rows=[

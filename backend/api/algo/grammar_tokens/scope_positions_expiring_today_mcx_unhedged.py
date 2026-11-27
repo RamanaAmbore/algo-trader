@@ -151,9 +151,10 @@ def _scope_positions_expiring_today_mcx_unhedged(ctx):
 
     UNKNOWN-moneyness rows (no spot price for that root in
     `ctx.spot_prices`) are INCLUDED, not excluded — `ExpiryEngine`
-    itself treats "can't confirm moneyness" as a loud warning
-    (`_v2_expiry_root_unknown_lines`), never a silent all-clear; this
-    scope must agree. This is a DELIBERATE change from the old crude
+    itself treats "can't confirm moneyness" as a loud warning (the
+    pre-close alert's own "Check (price unavailable)" line, rendered by
+    `agent_engine._v2_expiry_account_lines`), never a silent all-clear;
+    this scope must agree. This is a DELIBERATE change from the old crude
     heuristic's "unconfirmable net qty → excluded" rule: that rule was
     about malformed QUANTITY data (a genuinely different failure, where
     nothing about the position can be known at all); a missing SPOT

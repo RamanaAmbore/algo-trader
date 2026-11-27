@@ -1390,112 +1390,90 @@ def _v2_reminder_only_line(agent, matches: list[dict]) -> str | None:
     return f"{prefix} — {' — '.join(notes)}"
 
 
-async def _v2_expiry_qty_display(exchange: str, tradingsymbol: str, qty_contracts: int) -> str:
-    """Convert a raw contracts qty to a lot-count string for display only
-    (never feeds a broker call — this is read-only alert text). Falls
-    back to the raw contracts with an explicit unit label when lot_size
-    can't be resolved (0 is `get_lot_size`'s own "unknown" sentinel —
-    never divide by it as if it were a real size)."""
-    try:
-        from backend.brokers.adapters.kite import get_lot_size
-        lot_size = await get_lot_size(exchange, tradingsymbol)
-    except Exception:
-        lot_size = 0
-    if lot_size and lot_size > 0 and qty_contracts % lot_size == 0:
-        lots = qty_contracts // lot_size
-        return f"{lots} lot{'s' if lots != 1 else ''}"
-    return f"{qty_contracts} (contracts)"
+def _v2_expiry_account_lines(exch_positions: list) -> list[str]:
+    """Group one exchange's expiring positions by ACCOUNT and render a
+    compact "Account: ... / Close: SYM1, SYM2" block per account that
+    has at least one leg genuinely needing closure.
 
+    2026-11-27 (operator: "the exp alerts can show the only the options
+    that need to be closed. you can show account, the symbol list to be
+    closed. update exp alert messages to keep it simple and easy to
+    understand") — replaces the old per-ROOT breakdown that showed
+    side/qty-in-lots and the engine's own `close_reason` narrative
+    (e.g. "MCX unhedged ITM after 4-rule netting (residual qty +1;
+    theta=-1.200)") with ONLY the account + a plain symbol list. The
+    engine's `close_reason`/`theta`/`residual_qty` fields are untouched
+    — this function simply stops rendering them in the alert text; they
+    remain available on the position object for anything else that
+    reads it (e.g. the Positions grid / Exp-close tab).
 
-async def _v2_expiry_root_action_lines(exch: str, root: str, positions: list) -> list[str]:
-    """Action-needed lines for one (exchange, root)'s positions —
-    masked account, side, qty in lots, the engine's own `close_reason`.
-    Extracted from `_v2_expiry_position_breakdown` to keep it below the
-    CC gate."""
+    A leg with `moneyness == "UNKNOWN"` (underlying LTP lookup failed,
+    so the engine could not determine ITM/OTM and therefore also could
+    not set `needs_close`) is NEVER silently dropped — that would be a
+    false "all clear" on exactly the kind of failure the removed
+    `_v2_expiry_root_unknown_lines` existed to surface loudly. It is
+    rendered under a separate "Check (price unavailable):" line in the
+    SAME account block, kept distinct from "Close:" so a symbol that
+    genuinely needs closing is never confused with one that merely
+    couldn't be evaluated.
+
+    `mask_account` is called exactly once per account (not idempotent —
+    see its own docstring). Symbols are de-duplicated and sorted within
+    each account (the same tradingsymbol can appear more than once,
+    e.g. under different products), and accounts are sorted so the
+    output is deterministic."""
     from backend.shared.helpers.utils import mask_account
 
-    lines: list[str] = []
-    for p in positions:
-        if not p.needs_close:
+    by_acct: dict[str, dict[str, set]] = {}
+    for p in exch_positions:
+        if p.needs_close:
+            bucket_key = "close"
+        elif p.moneyness == "UNKNOWN":
+            bucket_key = "unknown"
+        else:
             continue
-        signed = p.residual_qty if exch == "MCX" else p.quantity
-        side = "SELL" if signed > 0 else "BUY"
-        qty_str = await _v2_expiry_qty_display(p.exchange, p.tradingsymbol, abs(signed))
         acct = mask_account(p.account or "")
-        lines.append(f"  {root} {acct} {side} {qty_str} — {p.close_reason}")
+        bucket = by_acct.setdefault(acct, {"close": set(), "unknown": set()})
+        bucket[bucket_key].add(p.tradingsymbol)
+
+    lines: list[str] = []
+    for acct in sorted(by_acct):
+        bucket = by_acct[acct]
+        lines.append(f"Account: {acct}")
+        if bucket["close"]:
+            lines.append(f"  Close: {', '.join(sorted(bucket['close']))}")
+        if bucket["unknown"]:
+            lines.append(f"  Check (price unavailable): {', '.join(sorted(bucket['unknown']))}")
     return lines
 
 
-def _v2_expiry_root_unknown_lines(root: str, positions: list) -> list[str]:
-    """Explicit warning line(s) for a leg whose moneyness could not be
-    determined (underlying LTP fetch failed or returned nothing — see
-    `ExpiryEngine._classify_moneyness`, which returns "UNKNOWN" rather
-    than guessing ITM/OTM). Audit finding (2026-10-29): without this,
-    an UNKNOWN leg silently fell into the "needs no action" branch and
-    rendered as a false all-clear on exactly the kind of failure this
-    whole function's try/except was built to surface loudly. Checked
-    per-leg, both exchanges — moneyness is computed for every expiring
-    position regardless of exchange.
-
-    2026-11-26 (operator: "only show the required info like the
-    positions that only that need to be closed") — this is now the ONLY
-    non-action content this module ever renders. A leg needing no
-    action (MCX: netted; NFO: OTM) is omitted from the alert entirely,
-    not mentioned with reassuring/neutral wording — see
-    `_v2_expiry_exchange_section`'s own docstring.
-
-    2026-11-26 audit fix: `mask_account` had no import in this
-    function's scope at all — a genuinely UNKNOWN-moneyness leg would
-    have crashed this render with `NameError` instead of surfacing the
-    warning it exists to show. Found while auditing this exact
-    function for the demoted-line removal above; fixed alongside it."""
-    from backend.shared.helpers.utils import mask_account
-
-    return [
-        f"  {root} {mask_account(p.account or '')} price unavailable — moneyness unknown, not evaluated"
-        for p in positions if p.moneyness == "UNKNOWN"
-    ]
-
-
 async def _v2_expiry_exchange_section(exch: str, label: str, all_expiring: list) -> str | None:
-    """Render one exchange's root-grouped breakdown section — ONLY the
-    legs that genuinely need attention (action-needed lines, then
-    UNKNOWN-moneyness warnings), or None when this exchange has nothing
-    that needs attention (no expiring positions at all, OR every
-    expiring leg is already netted/OTM with nothing to close).
-    Extracted from `_v2_expiry_position_breakdown` to keep it below the
-    CC gate.
+    """Render one exchange's account-grouped breakdown section — ONLY
+    the accounts holding a symbol that genuinely needs attention (a
+    needs_close leg, or an UNKNOWN-moneyness leg), or None when this
+    exchange has nothing that needs attention (no expiring positions at
+    all, OR every expiring leg is already netted/OTM with nothing to
+    close and nothing unconfirmed).
 
-    2026-11-26 (operator: "only show the required info like the
-    positions that only that need to be closed") — a leg that needs no
-    action (MCX: fully netted within its root; NFO: OTM) used to render
-    as a demoted "netted: ROOT" / "no action (OTM): ROOT" line. That is
-    exactly the non-required noise the operator asked to drop — it is
-    now omitted from the alert entirely, never mentioned at all. The
-    caller (`_v2_expiry_exchange_breakdown_or_empty`) renders an
-    explicit "nothing to close" fallback when this function returns
-    None, so a position needing no action is never silently blank —
-    it is just not itemised per-root/per-leg inside this section."""
+    2026-11-27 (operator: "show account, the symbol list to be closed...
+    keep it simple") — this used to group by ROOT and render one line
+    per leg with side/qty/the engine's internal close_reason narrative.
+    It now groups by ACCOUNT and renders only the plain symbol list via
+    `_v2_expiry_account_lines()`. A leg that needs no action (MCX: fully
+    netted within its root; NFO: OTM) is still never mentioned at all —
+    that "omit, don't demote" rule (2026-11-26) is unchanged, only the
+    presentation of what IS shown is simplified further. The caller
+    (`_v2_expiry_exchange_breakdown_or_empty`) renders an explicit
+    "nothing to close" fallback when this function returns None, so a
+    position needing no action is never silently blank."""
     exch_positions = [p for p in all_expiring if (p.exchange or "").upper() == exch]
     if not exch_positions:
         return None
 
-    by_root: dict[str, list] = {}
-    for p in exch_positions:
-        by_root.setdefault(p.underlying or "?", []).append(p)
-
-    unknown_lines: list[str] = []
-    action_lines: list[str] = []
-    for root in sorted(by_root):
-        positions = sorted(by_root[root], key=lambda p: p.account or "")
-        unknown_lines.extend(_v2_expiry_root_unknown_lines(root, positions))
-        action_lines.extend(await _v2_expiry_root_action_lines(exch, root, positions))
-
-    if not unknown_lines and not action_lines:
+    lines = _v2_expiry_account_lines(exch_positions)
+    if not lines:
         return None
-    # Unknown-price warnings lead — a failed price lookup is itself the
-    # most urgent fact in this section (see _v2_expiry_root_unknown_lines).
-    return f"{label}:\n" + "\n".join(unknown_lines + action_lines)
+    return f"{label}:\n" + "\n".join(lines)
 
 
 def _v2_expiry_context_shim(context: dict | None):
