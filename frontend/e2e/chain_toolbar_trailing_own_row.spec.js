@@ -1,34 +1,25 @@
 /**
  * chain_toolbar_trailing_own_row.spec.js
  *
- * Operator: "in chain keep element after symbol expiry in the next row."
+ * Operator: "in chain keep element after symbol expiry in the next row"
+ * (commit 916389fb) — originally put the DTE chip through DRAFT on a
+ * SECOND row below a plain "Expiry label + Select" row 1.
  *
- * `OptionChainTab.svelte`'s `.oct-toolbar-trailing` (DTE chip through
- * DRAFT) forces itself onto a fresh second row via `.oct-toolbar`'s
- * `flex-wrap: wrap` plus `.oct-toolbar-trailing`'s own `flex: 0 1 100%`
- * (a 100%-basis flex item always starts a new line in a wrapping flex
- * container). Row 1 is the Expiry picker: a plain `.oct-toolbar-label`
- * ("Expiry") span plus the `.oct-expiry-pick` Select, both direct
- * children of `.oct-toolbar`.
+ * SUPERSEDED same day, 2026-11-26 (this revision) — a later, more
+ * specific operator instruction: "move expires today and spread to the
+ * same row as expiry". Row 1 now carries the Expiry label + Select
+ * PLUS the DTE chip and Spread% field, wrapped in a new
+ * `.oct-toolbar-row1` container (its own `flex-wrap: nowrap;
+ * overflow-x: auto` scroller, same established pattern
+ * `.oct-toolbar-trailing` already used). `.oct-toolbar-trailing`
+ * (unchanged name) keeps its own row below, now holding CHASE / DRAFT /
+ * HEDGE (+ B%/S% fields) — HEDGE moved to AFTER DRAFT in the same pass
+ * (operator: "reorder: hedge after draft").
  *
- * AMENDED 2026-11-26 (separate revert, same day) — row 1 used to be
- * `.oct-sym-expiry` ("SYMBOL (EXPIRY)"), the 2026-11-25/26 merge of this
- * tab's Expiry picker with SymbolPanel's Symbol search box. That merge
- * was reverted per a later operator instruction ("revert chain symbol
- * and expiry elements changes and make them two elements in different
- * rows like before") — `.oct-sym-expiry` no longer exists. Symbol is
- * back in its own row in SymbolPanel.svelte's `.oes-picker` (shared by
- * every tab, Chain included); this file's own row-1/row-2 split, below,
- * is UNCHANGED by that revert — it still applies correctly to Expiry
- * alone instead of to the merged "SYMBOL (EXPIRY)" unit. The assertions
- * below were updated in place to reference `.oct-toolbar-label` +
- * `.oct-expiry-pick` (row 1) instead of the retired `.oct-sym-expiry`.
- *
- * This is NOT a regression of the 2026-11-25 "dead empty row" bug —
- * that bug was an EMPTY `<div>` with nothing in it, sitting between two
- * OTHER rows. `.oct-toolbar-trailing` always has real content (the
- * DRAFT `<label>` renders unconditionally, at minimum), so a non-empty
- * second row here is the current, explicit intent.
+ * `.oct-toolbar` itself is no longer the single flex-wrap:wrap row that
+ * used a 100%-basis trick to force a second line — it's now a plain
+ * `flex-direction: column` wrapper holding two explicit, independently
+ * scrollable rows.
  */
 
 import { test, expect } from '@playwright/test';
@@ -43,9 +34,8 @@ const CHAIN_TAB_PATH = path.resolve(DIR, '../src/lib/order/OptionChainTab.svelte
 /**
  * Strips `/* ... *\/` block comments before matching a CSS rule's actual
  * declarations — several rules in this file carry long historical
- * comments that legitimately quote OLD property values (e.g. "was
- * `flex-wrap: nowrap`") for context, which would otherwise false-fail a
- * naive "this value must not appear anywhere in the rule" assertion.
+ * comments that legitimately quote OLD property values for context,
+ * which would otherwise false-fail a naive substring assertion.
  * @param {string} rule
  */
 function _declsOnly(rule) {
@@ -56,71 +46,77 @@ function _declsOnly(rule) {
 // Source-scan — structural/CSS guarantees (no browser needed)
 // ──────────────────────────────────────────────────────────────────
 
-test.describe('Toolbar trailing moves to its own row, source-scan', () => {
+test.describe('Toolbar row 1 gains DTE/Spread%; row 2 keeps CHASE/DRAFT/HEDGE, source-scan', () => {
   let src = '';
 
   test.beforeAll(() => {
     src = readFileSync(CHAIN_TAB_PATH, 'utf8');
   });
 
-  test('.oct-toolbar is flex-wrap: wrap (keeps row 1 / row 2 split through the Symbol+Expiry revert)', () => {
+  test('.oct-toolbar is a column wrapper — the old single-row flex-wrap:wrap trick is gone', () => {
     const rule = src.match(/\.oct-toolbar\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
     expect(rule, '.oct-toolbar rule').not.toBe('');
     const decls = _declsOnly(rule);
-    expect(decls).toMatch(/flex-wrap:\s*wrap;/);
-    expect(decls).not.toMatch(/flex-wrap:\s*nowrap/);
+    expect(decls).toMatch(/flex-direction:\s*column;/);
+    expect(decls).not.toMatch(/flex-wrap:\s*wrap/);
   });
 
-  test('.oct-toolbar-trailing has a 100% flex-basis, forcing it onto its own row', () => {
+  test('.oct-toolbar-row1 exists, holding Expiry label/Select + DTE + Spread%, as its own nowrap/overflow-x:auto scroller', () => {
+    const rule = src.match(/\.oct-toolbar-row1\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
+    expect(rule, '.oct-toolbar-row1 rule').not.toBe('');
+    const decls = _declsOnly(rule);
+    expect(decls).toMatch(/flex-wrap:\s*nowrap/);
+    expect(decls).toMatch(/overflow-x:\s*auto/);
+
+    const markupIdx = src.indexOf('<div class="oct-toolbar-row1">');
+    expect(markupIdx, 'oct-toolbar-row1 markup not found').toBeGreaterThan(-1);
+    // The row's OWN closing tag, not the first nested `</div>` (the
+    // Select wrapper `.oct-expiry-pick` closes well before DTE/Spread%).
+    const row1End = src.indexOf('\n      </div>', markupIdx);
+    const row1Markup = src.slice(markupIdx, row1End);
+    expect(row1Markup).toMatch(/oct-toolbar-label/);
+    expect(row1Markup).toMatch(/oct-expiry-pick/);
+    expect(row1Markup).toMatch(/oct-expiry-dte/);
+    expect(row1Markup).toMatch(/oct-spread-field/);
+  });
+
+  test('.oct-toolbar-trailing no longer forces a 100%-basis new line (the column wrapper handles row separation now), and keeps its own internal scroll', () => {
     const rule = src.match(/\.oct-toolbar-trailing\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
     expect(rule, '.oct-toolbar-trailing rule').not.toBe('');
     const decls = _declsOnly(rule);
-    expect(decls).toMatch(/flex:\s*0 1 100%/);
-    expect(decls).not.toMatch(/flex:\s*0 1 auto/);
-    // Internal scroll-not-wrap behaviour for ITS OWN children is unchanged.
+    expect(decls).not.toMatch(/flex:\s*0 1 100%/);
     expect(decls).toMatch(/flex-wrap:\s*nowrap/);
     expect(decls).toMatch(/overflow-x:\s*auto/);
   });
 
-  test('row 1 is a plain Expiry label + Select — the retired .oct-sym-expiry/symbolPicker merge markup is gone', () => {
-    expect(src).not.toMatch(/\.oct-sym-expiry/);
-    // A bare historical mention of the retired prop's name inside a
-    // code comment is fine — this checks there is no live declaration
-    // or usage left behind.
-    expect(src).not.toMatch(/symbolPicker\s*\?:/);
-    expect(src).not.toMatch(/symbolPicker\s*=\s*\/\*\*/);
-    expect(src).not.toMatch(/\{#if symbolPicker/);
-    expect(src).not.toMatch(/\{@render symbolPicker/);
-    expect(src).not.toMatch(/oct-expiry-paren/);
-    const labelRule = src.match(/\.oct-toolbar-label\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
-    expect(labelRule, '.oct-toolbar-label rule').not.toBe('');
+  test('row 2 order is CHASE, then DRAFT, then HEDGE (+ B%/S% fields) — HEDGE moved after DRAFT', () => {
+    const trailingStart = src.indexOf('<div class="oct-toolbar-trailing">');
+    expect(trailingStart, 'oct-toolbar-trailing markup not found').toBeGreaterThan(-1);
+    const trailingEnd = src.indexOf('\n      </div>', trailingStart);
+    const trailingMarkup = src.slice(trailingStart, trailingEnd);
+
+    const chaseIdx = trailingMarkup.indexOf('oes-chase-cluster');
+    const draftIdx = trailingMarkup.indexOf('ot-draft-toggle');
+    const hedgeIdx = trailingMarkup.indexOf('oct-hedge-toggle');
+    expect(chaseIdx).toBeGreaterThan(-1);
+    expect(draftIdx).toBeGreaterThan(-1);
+    expect(hedgeIdx).toBeGreaterThan(-1);
+    expect(draftIdx).toBeGreaterThan(chaseIdx);
+    expect(hedgeIdx).toBeGreaterThan(draftIdx);
   });
 
-  test('the comment documenting the wrap decision references the operator instruction and commit 916389fb', () => {
-    const idx = src.indexOf('.oct-toolbar {');
-    expect(idx, '.oct-toolbar selector not found').toBeGreaterThan(-1);
-    const slice = src.slice(idx, idx + 1600);
-    // \s+ (not a literal space) between words — the source comment
-    // wraps across lines, so "element" and "after" are separated by a
-    // newline + indentation in the actual file, not a plain space.
-    expect(slice).toMatch(/in chain keep element\s+after/i);
-    expect(slice).toMatch(/916389fb/);
-  });
-
-  test('DRAFT (and every other trailing control) still renders unconditionally enough that row 2 is never the old empty-row bug', () => {
-    // The DRAFT <label> has no {#if} gate around it inside .oct-toolbar —
-    // confirming the second row this change creates is never empty.
+  test('DRAFT still renders unconditionally (never the old empty-row bug) and is never disabled by Hedge', () => {
     const toolbarIdx = src.indexOf('<div class="oct-toolbar">');
     const draftIdx = src.indexOf('class="ot-draft-toggle"', toolbarIdx);
     const toolbarCloseIdx = src.indexOf('\n    </div>', toolbarIdx);
     expect(draftIdx).toBeGreaterThan(toolbarIdx);
     expect(draftIdx).toBeLessThan(toolbarCloseIdx);
-    // Walk backward from the draft label to the nearest {#if} — it must
-    // belong to the CHASE gate (!draftMode), not a second, closer gate
-    // that could make DRAFT itself conditional.
-    const nearestIfIdx = src.lastIndexOf('{#if', draftIdx);
-    const nearestIfLine = src.slice(nearestIfIdx, src.indexOf('\n', nearestIfIdx));
-    expect(nearestIfLine).toMatch(/!draftMode/);
+
+    // The DRAFT <label>'s own markup block must never carry a `disabled`
+    // binding — only HEDGE does, per the asymmetric mutual-exclusivity
+    // rule (Draft always wins; Draft is never disabled by Hedge).
+    const draftLabelBlock = src.slice(draftIdx, src.indexOf('</label>', draftIdx));
+    expect(draftLabelBlock).not.toMatch(/disabled=/);
   });
 });
 
@@ -145,29 +141,6 @@ async function _openNiftyChain(page, sym = 'NIFTY') {
   await chainTab.click();
 }
 
-/**
- * Row 1's bounding box — the union of `.oct-toolbar-label` ("Expiry")
- * and `.oct-expiry-pick` (the Select), the two direct children that
- * make up row 1 post-revert. There is no longer a single wrapper div
- * for row 1 (that was `.oct-sym-expiry`, now retired), so this unions
- * the two sibling elements' rects instead of reading one element's box.
- */
-async function _row1Box(page) {
-  return page.evaluate(() => {
-    const label = document.querySelector('.oct-toolbar-label');
-    const pick = document.querySelector('.oct-expiry-pick');
-    if (!label || !pick) return null;
-    const a = label.getBoundingClientRect();
-    const b = pick.getBoundingClientRect();
-    return {
-      x: Math.min(a.left, b.left),
-      y: Math.min(a.top, b.top),
-      width: Math.max(a.right, b.right) - Math.min(a.left, b.left),
-      height: Math.max(a.bottom, b.bottom) - Math.min(a.top, b.top),
-    };
-  });
-}
-
 for (const [label, viewport] of [
   ['desktop (1440px)', { width: 1440, height: 900 }],
   ['mobile (375px)', { width: 375, height: 800 }],
@@ -175,58 +148,67 @@ for (const [label, viewport] of [
   test.describe(`Live — ${label}`, () => {
     test.use({ viewport });
 
-    test('.oct-toolbar-trailing renders on its own row, below the Expiry label + Select (row 1)', async ({ page }) => {
+    test('DTE chip and Spread% field render on the SAME row as the Expiry label + Select', async ({ page }) => {
       await loginAsAdmin(page);
       await _openNiftyChain(page);
 
-      const trailing = page.locator('.oct-toolbar-trailing').first();
-      await expect(page.locator('.oct-toolbar-label')).toBeVisible({ timeout: 15_000 });
-      await expect(trailing).toBeVisible({ timeout: 15_000 });
+      const row1 = page.locator('.oct-toolbar-row1').first();
+      await expect(row1).toBeVisible({ timeout: 15_000 });
+      await expect(row1.locator('.oct-toolbar-label')).toBeVisible();
+      await expect(row1.locator('.oct-expiry-pick')).toBeVisible();
+      await expect(row1.locator('.oct-expiry-dte')).toBeVisible();
+      await expect(row1.locator('.oct-spread-field')).toBeVisible();
 
-      const row1Box = await _row1Box(page);
-      const trailingBox = await trailing.boundingBox();
-      expect(row1Box, 'row 1 (Expiry label + Select) box').toBeTruthy();
-      expect(trailingBox, '.oct-toolbar-trailing box').toBeTruthy();
-
-      // Not overlapping, not the same row — trailing's top is at or
-      // below row 1's own bottom.
-      expect(trailingBox.y, `trailing top (${trailingBox.y}) overlaps row 1 bottom (${row1Box.y + row1Box.height})`)
-        .toBeGreaterThanOrEqual(row1Box.y + row1Box.height - 1);
-
-      // Still left-aligned with row 1 (no rightward drift).
-      expect(Math.abs(trailingBox.x - row1Box.x), 'row 2 left edge should match row 1 left edge')
-        .toBeLessThan(4);
-    });
-
-    // Trailing's own internal scroll still works on its own, now
-    // full-width, row (doesn't regress now that it's no longer squeezed
-    // against row 1 on the same row).
-    test('.oct-toolbar-trailing keeps its internal controls on one line (scrolls, never wraps internally)', async ({ page }) => {
-      await loginAsAdmin(page);
-      await _openNiftyChain(page);
-
-      const trailing = page.locator('.oct-toolbar-trailing').first();
-      await expect(trailing).toBeVisible({ timeout: 15_000 });
-      await expect(page.locator('.oct-expiry-dte')).toBeVisible({ timeout: 15_000 });
-
-      const info = await trailing.evaluate((el) => {
+      // All four sit on one visual row — tops within a loose tolerance.
+      const tops = await row1.evaluate((el) => {
         const kids = Array.from(el.children).filter((c) => {
           const r = c.getBoundingClientRect();
           return r.width > 0 && r.height > 0;
         });
-        const tops = kids.map((c) => c.getBoundingClientRect().top);
+        return kids.map((c) => c.getBoundingClientRect().top);
+      });
+      expect(Math.max(...tops) - Math.min(...tops), 'row 1 children should share one visual line').toBeLessThan(20);
+    });
+
+    test('.oct-toolbar-trailing (CHASE/DRAFT/HEDGE) renders on its own row, below row 1', async ({ page }) => {
+      await loginAsAdmin(page);
+      await _openNiftyChain(page);
+
+      const row1 = page.locator('.oct-toolbar-row1').first();
+      const trailing = page.locator('.oct-toolbar-trailing').first();
+      await expect(row1).toBeVisible({ timeout: 15_000 });
+      await expect(trailing).toBeVisible({ timeout: 15_000 });
+
+      const row1Box = await row1.boundingBox();
+      const trailingBox = await trailing.boundingBox();
+      expect(row1Box, 'row 1 box').toBeTruthy();
+      expect(trailingBox, '.oct-toolbar-trailing box').toBeTruthy();
+
+      expect(trailingBox.y, `trailing top (${trailingBox.y}) overlaps row 1 bottom (${row1Box.y + row1Box.height})`)
+        .toBeGreaterThanOrEqual(row1Box.y + row1Box.height - 1);
+      expect(Math.abs(trailingBox.x - row1Box.x), 'row 2 left edge should match row 1 left edge')
+        .toBeLessThan(4);
+    });
+
+    test('row 2 order is CHASE, DRAFT, then HEDGE, left to right', async ({ page }) => {
+      await loginAsAdmin(page);
+      await _openNiftyChain(page);
+
+      const trailing = page.locator('.oct-toolbar-trailing').first();
+      await expect(trailing).toBeVisible({ timeout: 15_000 });
+
+      const order = await trailing.evaluate((el) => {
+        const children = Array.from(el.children);
+        const findIdx = (sel) => children.findIndex((c) => c.matches(sel) || c.querySelector(sel));
         return {
-          maxTop: Math.max(...tops),
-          minTop: Math.min(...tops),
-          scrollWidth: el.scrollWidth,
-          clientWidth: el.clientWidth,
+          chase: findIdx('.oes-chase-cluster'),
+          draft: findIdx('.ot-draft-toggle'),
+          hedge: findIdx('.oct-hedge-toggle'),
         };
       });
-      // All visible direct children still share one line (no internal
-      // wrap) — a loose tolerance since align-items:center can vary top
-      // slightly across differently-sized children.
-      expect(info.maxTop - info.minTop, `trailing children tops vary by ${info.maxTop - info.minTop}px — looks like an internal wrap`)
-        .toBeLessThan(20);
+      expect(order.chase).toBeGreaterThanOrEqual(0);
+      expect(order.draft).toBeGreaterThan(order.chase);
+      expect(order.hedge).toBeGreaterThan(order.draft);
     });
   });
 }

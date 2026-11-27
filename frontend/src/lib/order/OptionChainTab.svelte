@@ -129,6 +129,24 @@
   let hedgeBuyPct   = $state(50);
   let hedgeSellPct  = $state(25);
 
+  // Hedge/Draft mutual exclusivity (2026-11-26, operator ask). Draft
+  // always wins over Hedge, never the reverse: turning Draft ON forces
+  // Hedge off, and the HEDGE toggle is disabled (non-interactive) the
+  // whole time Draft is on (see `disabled={draftMode}` on its checkbox
+  // below). Draft is NEVER disabled by Hedge and stays clickable in
+  // either direction — this is the intentionally asymmetric half of the
+  // rule. Because Hedge is disabled whenever `draftMode` is true, the
+  // only way this effect's condition can be reached by direct user
+  // interaction is impossible (a disabled checkbox fires no change
+  // event); it still needs to run for the case where `draftMode` flips
+  // true from an EXTERNAL source — the Ticket tab's own Draft toggle
+  // shares the same `_sharedDraftMode` prop (see SymbolPanel.svelte) —
+  // so Hedge can't silently stay "on" while Draft becomes active via a
+  // different tab.
+  $effect(() => {
+    if (draftMode) hedgeOn = false;
+  });
+
   // CHASE tooltip trigger — own copy of SymbolPanel's click-to-pin
   // InfoHint anchor (T3.3, bracket-removal, CHASE relocated into this
   // tab's own Expiry toolbar). Local to this component; each tab's
@@ -1091,6 +1109,15 @@
    * into a tracked dependency of a spread-gate recheck loop.
    */
   function _buildGatePlan() {
+    // Draft never places a real broker order, so a liquidity sanity
+    // check meant to protect a NEW real entry is meaningless here
+    // (2026-11-26, operator: "suppress the spread-warning entirely in
+    // Draft mode"). Returning no targets makes `_checkLegs` resolve
+    // `{ok:true, legs:[]}` immediately and makes `runPreSubmitGate()`'s
+    // own `items.length === 0` fast-path return `true` right away — the
+    // gate is bypassed, not merely hidden, so Submit in Draft can never
+    // hang waiting on a check that would never matter.
+    if (draftMode) return [];
     const positionRows = untrack(() => portfolioStore.positions.rows);
     return buildSpreadGatePlan(chainBasket, _account, positionRows, _effMaxSpreadPct());
   }
@@ -1166,11 +1193,13 @@
   function _gateCancel()      { _gate?.cancel(); }
   function _gateRetry()       { _gate?.retry(); }
 
-  // Immediate re-check triggers: a Spread% edit or a basket-leg
-  // add/remove — only while the gate is actually open (not idle/
+  // Immediate re-check triggers: a Spread% edit, a basket-leg
+  // add/remove, or toggling Draft on mid-check (`_buildGatePlan`
+  // above clears to no targets, so this recheck resolves the gate
+  // right away) — only while the gate is actually open (not idle/
   // resolved).
   $effect(() => {
-    void spreadMaxPctOverride; void chainBasket;
+    void spreadMaxPctOverride; void chainBasket; void draftMode;
     untrack(() => {
       if (_gate && !_isGateTerminal(_gateState.phase)) _gate.recheck();
     });
@@ -1232,76 +1261,55 @@
        When the picked expiry is within 3 days the chip flips amber
        so the operator sees the imminent roll.
 
-       Two separate elements, two separate rows (2026-11-26 revert —
-       operator: "revert chain symbol and expiry elements changes and
-       make them two elements in different rows like before"). A
-       2026-11-25/26 merge briefly combined this tab's Expiry picker
-       with SymbolPanel's Symbol search box into one "SYMBOL (EXPIRY)"
-       unit (`symbolPicker` snippet prop); that merge is reverted here.
-       Symbol lives in its own row again, in SymbolPanel.svelte's
-       `.oes-picker` (rendered for every tab including Chain); this
-       row is Expiry's own row, label + Select, exactly as before the
-       merge. `.oct-toolbar-trailing` (DTE chip through DRAFT) is kept
-       on its own row below this one — that's a later, independent
-       operator instruction ("in chain keep element after symbol
-       expiry in the next row", commit 916389fb) that still reads
-       correctly against this reverted two-row Expiry shape. -->
+       Two rows (2026-11-26, same-day follow-up to the Symbol/Expiry
+       revert above): row 1 is Expiry's own label + Select, PLUS the
+       DTE chip and Spread% field — operator: "move expires today and
+       spread to the same row as expiry". This supersedes the
+       immediately-prior same-day instruction that had put the DTE
+       chip through DRAFT on their own row below Expiry (commit
+       916389fb) — DTE/Spread% move back up; CHASE/DRAFT/HEDGE stay on
+       their own row below (`.oct-toolbar-trailing`, unchanged name).
+       Each row is its own `flex-wrap: nowrap; overflow-x: auto`
+       scroller (same established pattern `.oct-toolbar-trailing`
+       already used) so neither row squeezes a control illegible on a
+       320-375px viewport — it scrolls instead. -->
   {#if chainUnderlying && chainExpiries.length}
     {@const _dte = _daysToExpiry(chainExpiry)}
     <div class="oct-toolbar">
-      <span class="oct-toolbar-label">Expiry</span>
-      <div class="oct-expiry-pick">
-        <Select
-          bind:value={chainExpiry}
-          options={_chainExpiryOptions}
-          ariaLabel="Chain expiry"
-          placeholder="Pick expiry…" />
+      <div class="oct-toolbar-row1">
+        <span class="oct-toolbar-label">Expiry</span>
+        <div class="oct-expiry-pick">
+          <Select
+            bind:value={chainExpiry}
+            options={_chainExpiryOptions}
+            ariaLabel="Chain expiry"
+            placeholder="Pick expiry…" />
+        </div>
+        {#if _dte != null && chainExpiry}
+          <span class="oct-expiry-dte"
+                class:oct-expiry-dte-warn={_dte <= 3}
+                title="Days until this contract's expiry">
+            {_dte === 0 ? 'expires today' : `${_dte}d`}
+          </span>
+        {/if}
+        <!-- Spread% — pre-submit bid/ask-spread gate threshold (T3.3,
+             bracket-removal; relocated from the deleted TemplateBar.svelte,
+             next to Expiry per the operator's ask). Genuine, Bracket-
+             independent risk control: `runPreSubmitGate()` above checks
+             every staged CE/PE leg's own spread against this threshold
+             before Submit is allowed through. Same state variable
+             (`spreadMaxPctOverride`), same 0.5 default, same live gate —
+             only WHERE it renders changed. Suppressed entirely in Draft
+             mode (see `_buildGatePlan()` below) — Draft never places a
+             real order, so the gate is meaningless there. -->
+        <label class="oct-spread-field" title="Max bid/ask spread % allowed on a staged option leg before Chain submit warns.">
+          <span>Spread %</span>
+          <input type="number" step="0.5" min="0"
+                 placeholder="0.5"
+                 bind:value={spreadMaxPctOverride} />
+        </label>
       </div>
       <div class="oct-toolbar-trailing">
-      {#if _dte != null && chainExpiry}
-        <span class="oct-expiry-dte"
-              class:oct-expiry-dte-warn={_dte <= 3}
-              title="Days until this contract's expiry">
-          {_dte === 0 ? 'expires today' : `${_dte}d`}
-        </span>
-      {/if}
-      <!-- Spread% — pre-submit bid/ask-spread gate threshold (T3.3,
-           bracket-removal; relocated from the deleted TemplateBar.svelte,
-           next to Expiry per the operator's ask). Genuine, Bracket-
-           independent risk control: `runPreSubmitGate()` above checks
-           every staged CE/PE leg's own spread against this threshold
-           before Submit is allowed through. Same state variable
-           (`spreadMaxPctOverride`), same 0.5 default, same live gate —
-           only WHERE it renders changed. -->
-      <label class="oct-spread-field" title="Max bid/ask spread % allowed on a staged option leg before Chain submit warns.">
-        <span>Spread %</span>
-        <input type="number" step="0.5" min="0"
-               placeholder="0.5"
-               bind:value={spreadMaxPctOverride} />
-      </label>
-      <!-- HEDGE — Part A. Auto-stage a second, opposite-side leg
-           further OTM whenever a BUY/SELL option leg is added — BUY
-           hedges with a SELL (debit spread), SELL hedges with a BUY
-           (credit spread). Basket mode only; ticket mode has no basket
-           to stage a hedge leg into. -->
-      <label class="oct-hedge-toggle" title="Auto-stage a hedge leg when adding an option (basket mode only).">
-        <input type="checkbox" bind:checked={hedgeOn} />
-        <span class="oct-hedge-label" class:on={hedgeOn}>HEDGE</span>
-      </label>
-      {#if hedgeOn}
-        <label class="oct-hedge-field" title="BUY leg hedges with a SELL further OTM, targeting this % of the bought premium (debit spread).">
-          <span>B%</span>
-          <input type="number" step="5" min="1"
-                 placeholder="50"
-                 bind:value={hedgeBuyPct} />
-        </label>
-        <label class="oct-hedge-field" title="SELL leg hedges with a BUY further OTM, targeting this % of the sold premium (credit spread).">
-          <span>S%</span>
-          <input type="number" step="5" min="1"
-                 placeholder="25"
-                 bind:value={hedgeSellPct} />
-        </label>
-      {/if}
       <!-- CHASE — relocated verbatim from SymbolPanel's shared
            CHASE/DRAFT row (T3.3, bracket-removal — "merge CHASE into
            OptionChainTab's .oct-toolbar"). Chase is unconditionally
@@ -1340,6 +1348,38 @@
                onchange={(e) => onDraftToggleChange?.(/** @type {HTMLInputElement} */ (e.currentTarget).checked)} />
         <span class="ot-draft-label" class:on={draftMode}>DRAFT</span>
       </label>
+      <!-- HEDGE — Part A. Auto-stage a second, opposite-side leg
+           further OTM whenever a BUY/SELL option leg is added — BUY
+           hedges with a SELL (debit spread), SELL hedges with a BUY
+           (credit spread). Basket mode only; ticket mode has no basket
+           to stage a hedge leg into.
+
+           Reordered after DRAFT, and made mutually exclusive with it
+           (2026-11-26, operator ask): Draft always wins — turning Draft
+           ON forces Hedge off AND disables it (see the `$effect` below);
+           Draft itself is NEVER disabled by Hedge and stays clickable
+           either way. -->
+      <label class="oct-hedge-toggle" class:oct-hedge-toggle-disabled={draftMode}
+             title={draftMode
+               ? 'Hedge is disabled while Draft is on.'
+               : 'Auto-stage a hedge leg when adding an option (basket mode only).'}>
+        <input type="checkbox" bind:checked={hedgeOn} disabled={draftMode} />
+        <span class="oct-hedge-label" class:on={hedgeOn}>HEDGE</span>
+      </label>
+      {#if hedgeOn}
+        <label class="oct-hedge-field" title="BUY leg hedges with a SELL further OTM, targeting this % of the bought premium (debit spread).">
+          <span>B%</span>
+          <input type="number" step="5" min="1"
+                 placeholder="50"
+                 bind:value={hedgeBuyPct} />
+        </label>
+        <label class="oct-hedge-field" title="SELL leg hedges with a BUY further OTM, targeting this % of the sold premium (credit spread).">
+          <span>S%</span>
+          <input type="number" step="5" min="1"
+                 placeholder="25"
+                 bind:value={hedgeSellPct} />
+        </label>
+      {/if}
       </div>
     </div>
   {/if}
@@ -1417,8 +1457,14 @@
             {@const activeRow = activeOptionRow?.strike === k}
             {@const ceQ = chainQuotesMap?.[String(k)]?.ce}
             {@const peQ = chainQuotesMap?.[String(k)]?.pe}
-            {@const ceSpreadWide = ceQ?.bid > 0 && ceQ?.ask > 0 && (ceQ.ask - ceQ.bid) / ((ceQ.ask + ceQ.bid) / 2) > 0.10}
-            {@const peSpreadWide = peQ?.bid > 0 && peQ?.ask > 0 && (peQ.ask - peQ.bid) / ((peQ.ask + peQ.bid) / 2) > 0.10}
+            <!-- Suppressed entirely in Draft mode (2026-11-26, operator:
+                 "when draft is selected, suppress the spread warning
+                 message entirely") — Draft never places a real order,
+                 so a liquidity warning is meaningless; `&& !draftMode`
+                 feeds every `.chain-cell-spread-warn-on` render site
+                 below via these two shared consts. -->
+            {@const ceSpreadWide = !draftMode && ceQ?.bid > 0 && ceQ?.ask > 0 && (ceQ.ask - ceQ.bid) / ((ceQ.ask + ceQ.bid) / 2) > 0.10}
+            {@const peSpreadWide = !draftMode && peQ?.bid > 0 && peQ?.ask > 0 && (peQ.ask - peQ.bid) / ((peQ.ask + peQ.bid) / 2) > 0.10}
             {@const ceLeg = _basketLegByKey.get(`${k}:CE`)}
             {@const peLeg = _basketLegByKey.get(`${k}:PE`)}
             {#if isAtm}
@@ -1668,8 +1714,8 @@
   .oct-toolbar {
     --ctl-h: 1.4rem;
     display: flex;
-    align-items: center;
-    gap: 0.4rem;
+    flex-direction: column;
+    gap: 0.3rem;
     /* Left padding matches the shell's 0.4rem left-edge convention
        (`.oes-picker`, `.oes-tabs`, `.oes-chase-row` in SymbolPanel.svelte
        all use 0.4rem) — was 0.1rem, which pulled the Expiry label
@@ -1681,18 +1727,6 @@
     /* Dashed border-bottom removed (2026-09-30, operator: "the dotted
        line is not needed") — it sat directly above the CE/Strike/PE
        header row and read as a stray second separator. */
-    /* Two rows (2026-11-26 revert of the 2026-11-25/26 Symbol+Expiry
-       merge — "SYMBOL (EXPIRY)" is gone; Expiry is back to its own
-       plain label + Select, row 1 here). `flex-wrap: wrap` plus
-       `.oct-toolbar-trailing`'s own `flex: 0 1 100%` below (a 100%
-       basis always starts a fresh line in a wrapping container) keeps
-       row 1 (Expiry label + Select) and row 2 (DTE chip through DRAFT,
-       `.oct-toolbar-trailing`) separate — the shape the operator asked
-       for in a later, independent instruction ("in chain keep element
-       after symbol expiry in the next row", commit 916389fb), which
-       still applies correctly now that row 1 is Expiry alone rather
-       than the merged "SYMBOL (EXPIRY)" unit. */
-    flex-wrap: wrap;
     min-width: 0;
   }
   .oct-toolbar :global(.rbq-select-trigger) {
@@ -1707,30 +1741,37 @@
     color: rgba(251, 191, 36, 0.7);
     flex-shrink: 0;
   }
-  /* The rest of the toolbar (DTE chip through DRAFT) — every child is
-     a fixed-size control (chip/input/toggle), so each gets
+  /* Row 1 — Expiry label + Select, DTE chip, Spread% (2026-11-26,
+     operator: "move expires today and spread to the same row as
+     expiry"). Every trailing child (DTE chip, Spread% field) is a
+     fixed-size control, so it gets `flex-shrink: 0` and the row
+     scrolls horizontally instead of squeezing one illegible — the
+     Select itself (`.oct-expiry-pick`) keeps its own `flex: 0 1 auto`
+     shrink floor, same as before this row gained two more siblings.
+     `flex-wrap: nowrap` + `overflow-x: auto` is the same established
+     pattern `.oct-toolbar-trailing` already used below. */
+  .oct-toolbar-row1 {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    min-width: 0;
+  }
+  .oct-toolbar-row1 > * { flex-shrink: 0; }
+  .oct-toolbar-row1 .oct-expiry-pick { flex-shrink: 1; }
+  /* Row 2 — CHASE / DRAFT / HEDGE (+ B%/S% fields). Every child is a
+     fixed-size control (chip/input/toggle), so each gets
      `flex-shrink: 0` and the CONTAINER scrolls horizontally instead of
      squeezing any one of them illegible. None of these controls own an
-     in-place (non-`fixed`) popup — Select's own dropdown panel is
-     `position: fixed` (floatingPanel.js) and InfoHint's popup is also
-     `position: fixed` — both escape this container's overflow clipping
-     regardless of scroll position, so `overflow-x: auto` here is safe.
-
-     Own row, below the Expiry label + Select (2026-11-26, operator:
-     "in chain keep element after symbol expiry in the next row") —
-     `flex: 0 1 100%` sets a 100%-basis, which in a `flex-wrap: wrap`
-     container (`.oct-toolbar`, see its own comment) always forces this
-     item onto a fresh line, regardless of how much width row 1's own
-     content used. `flex-shrink: 1` is kept (not 0) so this row can
-     still shrink as a whole if the viewport is narrower than its own
-     content needs — `overflow-x: auto` below is the real mechanism
-     that absorbs that squeeze; shrink on the container itself is just
-     the other half of that same contract. */
+     in-place (non-`fixed`) popup — InfoHint's popup is `position:
+     fixed` — so it escapes this container's overflow clipping
+     regardless of scroll position, and `overflow-x: auto` here is
+     safe. */
   .oct-toolbar-trailing {
     display: flex;
     align-items: center;
     gap: 0.4rem;
-    flex: 0 1 100%;
     min-width: 0;
     flex-wrap: nowrap;
     overflow-x: auto;
@@ -1821,6 +1862,16 @@
     width: 0.85rem;
     height: 0.85rem;
     cursor: pointer;
+  }
+  /* Hard-disabled while Draft is on (2026-11-26) — asymmetric half of
+     the Hedge/Draft mutual-exclusivity rule; Draft itself never gets
+     this treatment. */
+  .oct-hedge-toggle-disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+  }
+  .oct-hedge-toggle-disabled input[type="checkbox"] {
+    cursor: not-allowed;
   }
   .oct-hedge-label {
     font-family: monospace;

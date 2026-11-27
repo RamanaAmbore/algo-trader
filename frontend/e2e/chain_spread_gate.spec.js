@@ -104,21 +104,36 @@ test.describe('A wide-spread result blocks submission and shows a warning', () =
   });
 
   test('every staged CE/PE leg is its own check target — futures legs are excluded', () => {
-    const fnIdx = chainSrc.indexOf('function _buildGatePlan()');
+    // The CE/PE filter itself lives in `buildSpreadGatePlan()`
+    // (spreadGate.js) — `_buildGatePlan()` in OptionChainTab.svelte only
+    // delegates to it (plus, as of 2026-11-26, a Draft-mode bypass; see
+    // the test below). This is a pre-existing structural fact, confirmed
+    // unchanged by the 2026-11-26 Draft-mode fix.
+    expect(chainSrc).toContain('function _buildGatePlan()');
+    const fnIdx = gateLibSrc.indexOf('export function buildSpreadGatePlan');
     expect(fnIdx).toBeGreaterThan(-1);
-    const body = chainSrc.slice(fnIdx, fnIdx + 900);
+    const body = gateLibSrc.slice(fnIdx, fnIdx + 500);
     expect(body).toMatch(/leg\?\.optType !== 'CE' && leg\?\.optType !== 'PE'/);
     expect(body).toContain('tradingsymbol: leg.sym');
+  });
+
+  test('_buildGatePlan() bypasses the gate entirely in Draft mode (2026-11-26, operator: "suppress the spread-warning entirely in Draft mode")', () => {
+    const fnMatch = chainSrc.match(/function _buildGatePlan\(\) \{[\s\S]*?\n  \}/);
+    expect(fnMatch).toBeTruthy();
+    const body = fnMatch[0];
+    expect(body).toMatch(/if \(draftMode\) return \[\];/);
+    expect(body).toContain('buildSpreadGatePlan(');
   });
 });
 
 test.describe('Changing Spread% or the basket triggers an immediate re-check', () => {
-  test('the gate re-check $effect watches spreadMaxPctOverride and chainBasket', () => {
+  test('the gate re-check $effect watches spreadMaxPctOverride, chainBasket, and (2026-11-26) draftMode', () => {
     const effIdx = chainSrc.indexOf('// Immediate re-check triggers');
     expect(effIdx).toBeGreaterThan(-1);
-    const body = chainSrc.slice(effIdx, effIdx + 400);
+    const body = chainSrc.slice(effIdx, effIdx + 600);
     expect(body).toContain('void spreadMaxPctOverride');
     expect(body).toContain('void chainBasket');
+    expect(body).toContain('void draftMode');
     expect(body).toContain('_gate.recheck()');
   });
 
@@ -151,9 +166,11 @@ test.describe('An explicit confirm-override allows submission despite a persiste
 
 test.describe('No CE/PE leg staged skips the check entirely', () => {
   test('_buildGatePlan() returns an empty plan when the basket has no CE/PE leg', () => {
-    const fnIdx = chainSrc.indexOf('function _buildGatePlan()');
+    // See the "futures legs are excluded" test above — the real
+    // CE/PE-only filter lives in `buildSpreadGatePlan()` (spreadGate.js).
+    const fnIdx = gateLibSrc.indexOf('export function buildSpreadGatePlan');
     expect(fnIdx).toBeGreaterThan(-1);
-    const body = chainSrc.slice(fnIdx, fnIdx + 900);
+    const body = gateLibSrc.slice(fnIdx, fnIdx + 500);
     expect(body).toMatch(/continue;\s*\/\/ futures legs out of scope/);
   });
 
