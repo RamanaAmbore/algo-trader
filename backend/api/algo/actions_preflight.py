@@ -853,25 +853,47 @@ async def _preflight_check_margin(
             raise bm_exception
 
         required = _preflight_parse_basket_margin(bm_result)
+        _leg_errors = _preflight_collect_leg_errors(bm_result)
 
-        # ── Unknown-margin gate (item 4/5) ────────────────────────────
+        # ── Unknown-margin / leg-error gate (item 4/5; extended 2026-11
+        # real-money audit follow-up) ─────────────────────────────────
         # `required` is None when no leg's margin could be parsed at
         # all (missing/unparseable fields on every leg — a genuinely
         # different situation from Kite's "negative required" credit
-        # case below, which is a real parsed number). Fail OPEN on the
-        # WHOLE basket rather than silently treating an unknown amount
-        # as zero: if any leg carried its own `error` string, route that
-        # text through the SAME keyword-matching classification the
+        # case below, which is a real parsed number).
+        #
+        # A leg can ALSO carry a genuine `error` string ALONGSIDE a
+        # parsed numeric total of 0.0 (confirmed live, pre-fix Groww
+        # signature-mismatch payload: `[{"total": 0.0, "error":
+        # "...unexpected keyword argument 'trading_symbol'", "raw":
+        # None}]` — see the identical shape `diagnose_live_failure`'s
+        # own `_dlf_inconclusive_message` fix, same file/session, was
+        # built to stop misreading). `required is None` alone does NOT
+        # catch that shape: `required` here parses to a real `0.0`, not
+        # `None`, so without this check the `elif required < 0` /
+        # `else` branches below would read it as "required == 0, no
+        # margin needed" and silently pass the order through a GENUINE
+        # broker-side margin-check FAILURE — this is the live, real-
+        # money order GATE (unlike `diagnose_live_failure`, which only
+        # produces after-the-fact diagnostic text), so that silent pass
+        # is the actual bug.
+        #
+        # Fail OPEN on the WHOLE basket rather than silently treating an
+        # unknown or failed amount as a confirmed zero: ANY leg carrying
+        # an `error` — regardless of what its own `total` parsed to —
+        # routes through the SAME keyword-matching classification the
         # raised-exception branch below already applies (re-raising
-        # reuses that logic rather than duplicating it) so a genuine
-        # Dhan/Groww-side margin failure still surfaces as
-        # MARGIN_SHORTFALL; otherwise log and skip — broker's own
-        # place_order remains the real backstop.
-        if required is None:
+        # reuses that logic rather than inventing a third behaviour), so
+        # a genuine Dhan/Groww-side margin failure still surfaces as
+        # MARGIN_SHORTFALL (subject to the same enforce-vs-log-only
+        # `preflight.enforce_margin_dhan`/`enforce_margin_groww` toggle
+        # every other margin blocker on this gate already respects);
+        # otherwise (no leg error, required genuinely unparseable) log
+        # and skip — broker's own place_order remains the real backstop.
+        if required is None or _leg_errors:
             diag["basket_margin_used"] = None
             diag["available_margin"]   = None
             diag["margin_shortfall"]   = None
-            _leg_errors = _preflight_collect_leg_errors(bm_result)
             if _leg_errors:
                 raise RuntimeError(" | ".join(_leg_errors)[:240])
             logger.info(
