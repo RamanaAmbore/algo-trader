@@ -11,8 +11,9 @@
  *   loadPositions (cc=76), loadStrategy (cc=50), candidatePositions (cc=43).
  */
 
-import { todayIST, tradingSessionDateIST } from '$lib/dateFormat.js';
+import { todayIST, tradingSessionDateIST, isPastExpiryFreezeWindow } from '$lib/dateFormat.js';
 import { buildAcctMatcher, isFOSymbol } from '$lib/data/derivativesMath.js';
+import { decomposeSymbol } from '$lib/data/decomposeSymbol.js';
 import { buildPositionRowFromBroker, splitClosedReopened, isExpiredHeldContract, expiredLegFrozenPnl, expiryPnlWithRealised } from '$lib/data/expiryPnl.js';
 import { splitPairedLots } from '$lib/data/lotPairSplit.js';
 
@@ -444,6 +445,7 @@ export function buildCandidatePositions({
     if (!isFut && !isOpt) continue;
     const qty = Number(p?.qty || 0);
     const _inst = getInstrument(sym);
+    const sessionToday = tradingSessionDateIST();
     // A HELD row (qty!==0) whose contract can't be resolved against the
     // live instruments master — either missing entirely (expired and
     // removed by Kite) or carrying an `x` (expiry) date that's already
@@ -464,7 +466,32 @@ export function buildCandidatePositions({
     // already used the correct boundary) made the same call, excluding it
     // from the chart's Exp P&L sum and offset calc while those two kept
     // showing the right mark-to-spot value.
-    const isUnresolvable = qty !== 0 && (!_inst || (_inst.x && _inst.x < tradingSessionDateIST()));
+    //
+    // 2026-11-27 fix: `isPastExpiryFreezeWindow` replaces the bare
+    // `_inst.x < sessionToday` compare (same weekend-boundary fix as
+    // isExpiredHeldContract's branch 1 — see that function's docstring).
+    //
+    // Root-authoritative cache-miss (hasFNO(root) true, `_inst` null):
+    // this used to be an UNCONDITIONAL `true` regardless of
+    // `isExpiredFrozen`'s own (now weekend-aware) answer for the SAME
+    // symbol — before the 08:00-IST-refresh purge bug this was harmless
+    // (both flags always agreed, since isExpiredHeldContract's own branch
+    // 2 was also unconditional `true`), but once that branch became
+    // weekend-aware (below), an unconditional `true` here would tag a
+    // leg still genuinely inside its weekend/holiday freeze-grace window
+    // as `_expired` (excluded from the backend payload AND the chart's
+    // valuation — see buildCleanLegs) while `_expiredFrozen` correctly
+    // stayed `false` — reproducing the exact chart-vs-Snapshot divergence
+    // class the 2026-09 GOLD/GOLDM fix exists to prevent (NavStrip/
+    // Snapshot, which call isExpiredHeldContract directly, would show the
+    // leg live while the chart/Legs TOTAL dropped it). Deferring to the
+    // SAME `isExpiredFrozen` value below (computed once, reused — not a
+    // second, independent call) keeps the two flags structurally unable
+    // to disagree for this branch. The BFO/cold-start branch (`!_inst`
+    // and NOT root-authoritative) is untouched — still unconditionally
+    // unresolvable, per the comment below.
+    const root = (decomposeSymbol(sym).root || '').toUpperCase();
+    const rootAuthoritativeMiss = !_inst && !!root && !!hasFNO && !!hasFNO(root);
     // 2026-09 audit fix (Defect 2 follow-up): `_expired` above stays the
     // BROAD, cache-resolvability signal — it ONLY gates the
     // /strategy-analytics REQUEST payload exclusion below (buildCleanLegs),
@@ -483,6 +510,11 @@ export function buildCandidatePositions({
     // the SAME symbol (which won't tag it expired either, from the SAME
     // predicate) — no NEW divergence between the two surfaces.
     const isExpiredFrozen = qty !== 0 && isExpiredHeldContract(sym, qty, getInstrument, hasFNO);
+    const isUnresolvable = qty !== 0 && (
+      rootAuthoritativeMiss
+        ? isExpiredFrozen
+        : (!_inst || (_inst.x && isPastExpiryFreezeWindow(_inst.x, sessionToday)))
+    );
     // The operator's expiry SELECTOR (selectedExpiries) is a genuine UI
     // filter for KNOWN, unexpired contracts that simply aren't in the
     // chosen selection — it must still apply to those. Only bypass it for
@@ -669,13 +701,19 @@ export function buildCleanLegs(legs, getInstrument) {
         expiry,
       };
     })
-    // 2026-10-23 fix (3D): same tradingSessionDateIST() boundary swap as
-    // isUnresolvable above — this safety-net filter must not drop a leg
-    // during the 00:00-08:00 IST overnight window following its own
-    // expiry day (the backend's /strategy-analytics T-to-expiry math
+    // 2026-10-23 fix (3D), weekend-aware as of 2026-11-27: same
+    // isPastExpiryFreezeWindow boundary swap as isUnresolvable above —
+    // this safety-net filter must not drop a leg during the closed
+    // overnight window OR the weekend/holiday grace window following its
+    // own expiry day (the backend's /strategy-analytics T-to-expiry math
     // floors at 0 for an at-or-past-expiry leg, so including it here is
     // safe — see pageLoad_sessionBoundary.test.js for the regression).
-    .filter(l => l.symbol && l.qty && !(l.expiry && l.expiry < tradingSessionDateIST()));
+    // `l.expiry` is null when the instrument was missing from the cache
+    // (see the `.map` above) — the filter condition is then false
+    // (fail-open), and the backend's own `_leg_expiry_iso` fallback
+    // (`parse_tradingsymbol`, last-Friday-for-MCX-options / last-Thursday
+    // -for-NFO) recovers the real expiry server-side.
+    .filter(l => l.symbol && l.qty && !(l.expiry && isPastExpiryFreezeWindow(l.expiry, tradingSessionDateIST())));
 }
 
 /**

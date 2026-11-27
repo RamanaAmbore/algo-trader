@@ -34,6 +34,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { buildCandidatePositions, buildCleanLegs } from '$lib/derivatives/pageLoad.js';
+import { isExpiredHeldContract } from '$lib/data/expiryPnl.js';
 
 /** Set the fake system clock to a specific IST wall-clock instant. */
 function setISTTime(/** @type {string} */ isoDateNoOffset) {
@@ -131,5 +132,99 @@ describe('buildCleanLegs — safety-net filter uses the 08:00 IST session bounda
     const legs = [{ kind: 'opt', symbol: SYM, qty: 50, avg_cost: 5, source: 'live' }];
     const result = buildCleanLegs(legs, getInst);
     expect(result).toHaveLength(0);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2026-11-27 incident fixture — Friday expiry, weekend grace window.
+//
+// GOLD26NOV124000CE, real expiry Friday 2026-11-27, GOLD26DECFUT as the
+// live sibling future (confirms hasFNO('GOLD') once the exact Nov
+// contract is purged from the instruments cache). Covers BOTH branches:
+// instrument still present (pre-purge) and instrument purged but
+// root-authoritative (post Saturday-08:00-IST instruments refresh).
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('buildCandidatePositions — Friday expiry stays resolvable through the whole weekend (instrument still cached)', () => {
+  const SYM = 'GOLD26NOV124000CE';
+  const getInstrument = makeGetInst({ [SYM]: '2026-11-27' });
+  const PARAMS = { ...BASE_PARAMS, target: 'GOLD' };
+
+  it('Friday, expiry day itself — not tagged `_expired`', () => {
+    setISTTime('2026-11-27T20:00:00');
+    const result = buildCandidatePositions({ ...PARAMS, positions: [makePos(SYM)], getInstrument });
+    expect(result.find(r => r.symbol === SYM)._expired).toBeUndefined();
+  });
+
+  it('THE BUG THIS FIXES: Saturday 08:01 IST — still NOT tagged `_expired`', () => {
+    setISTTime('2026-11-28T08:01:00');
+    const result = buildCandidatePositions({ ...PARAMS, positions: [makePos(SYM)], getInstrument });
+    expect(result.find(r => r.symbol === SYM)._expired).toBeUndefined();
+  });
+
+  it('Sunday — still not tagged', () => {
+    setISTTime('2026-11-29T12:00:00');
+    const result = buildCandidatePositions({ ...PARAMS, positions: [makePos(SYM)], getInstrument });
+    expect(result.find(r => r.symbol === SYM)._expired).toBeUndefined();
+  });
+
+  it('Monday, one minute before the real boundary (07:59 IST) — still not tagged', () => {
+    setISTTime('2026-11-30T07:59:00');
+    const result = buildCandidatePositions({ ...PARAMS, positions: [makePos(SYM)], getInstrument });
+    expect(result.find(r => r.symbol === SYM)._expired).toBeUndefined();
+  });
+
+  it('Monday, at the real boundary (08:00 IST) — NOW tagged `_expired`', () => {
+    setISTTime('2026-11-30T08:00:00');
+    const result = buildCandidatePositions({ ...PARAMS, positions: [makePos(SYM)], getInstrument });
+    expect(result.find(r => r.symbol === SYM)._expired).toBe(true);
+  });
+});
+
+describe('buildCandidatePositions — Friday expiry, instrument PURGED from cache (root-authoritative), stays resolvable through the weekend', () => {
+  const SYM = 'GOLD26NOV124000CE';
+  const getInstrument = () => null; // purged
+  const hasFNO = (root) => root === 'GOLD'; // GOLD26DECFUT sibling still live
+  const PARAMS = { ...BASE_PARAMS, target: 'GOLD' };
+
+  it('THE BUG THIS FIXES: Saturday 08:01 IST — `_expired` and `_expiredFrozen` AGREE (both false), leg flows through to buildCleanLegs', () => {
+    setISTTime('2026-11-28T08:01:00');
+    const result = buildCandidatePositions({ ...PARAMS, positions: [makePos(SYM)], getInstrument, hasFNO });
+    const row = result.find(r => r.symbol === SYM);
+    expect(row).toBeTruthy();
+    expect(row._expired).toBeUndefined();
+    expect(row._expiredFrozen).toBeUndefined();
+    // The leg must not be excluded from the backend /strategy-analytics
+    // payload (buildCleanLegs filters out any `_expired`-tagged leg) —
+    // this is the chart-vs-Snapshot divergence class the 2026-09
+    // GOLD/GOLDM fix exists to prevent.
+    const legs = buildCleanLegs([row], getInstrument);
+    expect(legs).toHaveLength(1);
+    expect(legs[0].expiry).toBeNull(); // backend's own fallback derives the real expiry server-side
+  });
+
+  it('Monday, at the real boundary (08:00 IST) — NOW tagged both `_expired` and `_expiredFrozen` (consistent)', () => {
+    setISTTime('2026-11-30T08:00:00');
+    const result = buildCandidatePositions({ ...PARAMS, positions: [makePos(SYM)], getInstrument, hasFNO });
+    const row = result.find(r => r.symbol === SYM);
+    expect(row._expired).toBe(true);
+    expect(row._expiredFrozen).toBe(true);
+    // Excluded from the backend payload once genuinely frozen.
+    const legs = buildCleanLegs([row], getInstrument);
+    expect(legs).toHaveLength(0);
+  });
+
+  it('`_expired` never disagrees with the shared isExpiredHeldContract predicate at any instant across the weekend', () => {
+    for (const iso of [
+      '2026-11-27T20:00:00', '2026-11-28T08:01:00', '2026-11-29T12:00:00',
+      '2026-11-30T07:59:00', '2026-11-30T08:00:00', '2026-11-30T11:00:00',
+    ]) {
+      setISTTime(iso);
+      const result = buildCandidatePositions({ ...PARAMS, positions: [makePos(SYM)], getInstrument, hasFNO });
+      const row = result.find(r => r.symbol === SYM);
+      const expected = isExpiredHeldContract(SYM, 50, getInstrument, hasFNO);
+      expect(!!row._expired).toBe(expected);
+      expect(!!row._expiredFrozen).toBe(expected);
+    }
   });
 });

@@ -129,3 +129,83 @@ describe('isExpiredHeldContract — stays NOT-expired through the whole overnigh
     expect(isExpiredHeldContract(EXPIRING_SYM, 1)).toBe(true);
   });
 });
+
+describe('isExpiredHeldContract — WEEKEND-AWARE boundary (2026-11-27 incident fixture)', () => {
+  // Real contract from the reported incident: GOLD26NOV124000CE, real
+  // expiry Friday 2026-11-27, with GOLD26DECFUT as the live sibling
+  // future proving `hasFNO('GOLD')` is true once the exact Nov contract
+  // is purged from the instruments cache.
+  const EXPIRING_SYM = 'GOLD26NOV124000CE';
+  const EXPIRY_ISO = '2026-11-27'; // confirmed Friday
+
+  describe('branch 1 — instrument STILL present in cache (pre-purge)', () => {
+    beforeEach(() => {
+      _mockCache.byInst = { [EXPIRING_SYM]: { x: EXPIRY_ISO } };
+    });
+
+    it('Friday, expiry day itself (20:00 IST) — NOT expired', () => {
+      setISTTime('2026-11-27T20:00:00');
+      expect(isExpiredHeldContract(EXPIRING_SYM, 1)).toBe(false);
+    });
+
+    it('THE BUG THIS FIXES: Saturday 08:01 IST — still NOT expired (was flipping to expired here)', () => {
+      setISTTime('2026-11-28T08:01:00');
+      expect(isExpiredHeldContract(EXPIRING_SYM, 1)).toBe(false);
+    });
+
+    it('Sunday, any time — still NOT expired', () => {
+      setISTTime('2026-11-29T12:00:00');
+      expect(isExpiredHeldContract(EXPIRING_SYM, 1)).toBe(false);
+    });
+
+    it('Monday, one minute before the real session boundary (07:59 IST) — still NOT expired', () => {
+      setISTTime('2026-11-30T07:59:00');
+      expect(isExpiredHeldContract(EXPIRING_SYM, 1)).toBe(false);
+    });
+
+    it('Monday, at the real next-trading-day boundary (08:00 IST) — NOW expired', () => {
+      setISTTime('2026-11-30T08:00:00');
+      expect(isExpiredHeldContract(EXPIRING_SYM, 1)).toBe(true);
+    });
+  });
+
+  describe('branch 2 — instrument PURGED from cache, root-authoritative (GOLD26DECFUT sibling present)', () => {
+    beforeEach(() => {
+      // GOLD26NOV124000CE itself is gone (purged); GOLD26DECFUT is a
+      // live sibling, so hasFNO('GOLD') is true — the exact "daily
+      // instruments refresh already purged this settled contract" signal.
+      _mockCache.byInst = {};
+      _mockCache.fnoRoots = new Set(['GOLD']);
+    });
+
+    it('Saturday 08:01 IST (the earliest the purge can realistically land) — NOT expired', () => {
+      setISTTime('2026-11-28T08:01:00');
+      expect(isExpiredHeldContract(EXPIRING_SYM, 1)).toBe(false);
+    });
+
+    it('Sunday, any time — still NOT expired', () => {
+      setISTTime('2026-11-29T12:00:00');
+      expect(isExpiredHeldContract(EXPIRING_SYM, 1)).toBe(false);
+    });
+
+    it('Monday, one minute before the real session boundary (07:59 IST) — still NOT expired', () => {
+      setISTTime('2026-11-30T07:59:00');
+      expect(isExpiredHeldContract(EXPIRING_SYM, 1)).toBe(false);
+    });
+
+    it('Monday, at the real next-trading-day boundary (08:00 IST) — NOW expired', () => {
+      setISTTime('2026-11-30T08:00:00');
+      expect(isExpiredHeldContract(EXPIRING_SYM, 1)).toBe(true);
+    });
+
+    it('regression guard: a genuinely long-dead contract (weeks past its early-month expiry) still resolves expired on an ordinary weekday', () => {
+      // GOLDM expires early in the month (~5th) — guessExpiryYmdFromSymbol's
+      // month-end approximation (Sep 30) would wrongly say "not expired yet"
+      // if trusted directly; the lastWeekdayIsoBefore(sessionToday) tightening
+      // must still resolve this correctly on any ordinary weekday "today".
+      _mockCache.fnoRoots = new Set(['GOLDM']);
+      setISTTime('2026-09-28T11:00:00'); // Monday, weeks after the real Sep-5 expiry
+      expect(isExpiredHeldContract('GOLDM26SEPFUT', 1)).toBe(true);
+    });
+  });
+});

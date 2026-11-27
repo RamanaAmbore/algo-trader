@@ -1,7 +1,7 @@
 import { decomposeSymbol, guessExpiryYmdFromSymbol } from './decomposeSymbol.js';
 import { baseDayPnlForPosition, currentTotalProfit } from './nav.js';
 import { getInstrument as _getInstrumentDefault, hasFNO as _hasFNODefault } from './instruments.js';
-import { tradingSessionDateIST } from '../dateFormat.js';
+import { tradingSessionDateIST, isPastExpiryFreezeWindow, lastWeekdayIsoBefore } from '../dateFormat.js';
 
 // Structural tail regexes mirroring decomposeSymbol's own _OPT_MONTHLY /
 // _OPT_WEEKLY shapes (YY+MON+strike+CE/PE, or YY+month-code+DD+strike+
@@ -751,23 +751,41 @@ export function resolveExpiryAnchor({ isOpt, rootSpot, ownLiveLtp = 0, ownPolled
  *     one-exchange-download-failed window.
  * Fixed: a cache miss is NEVER treated as "expired" by itself. Three-
  * branch decision, in order:
- *   1. Instrument FOUND in cache → use its own precise expiry date
- *      (`inst.x < today`) — the authoritative case.
+ *   1. Instrument FOUND in cache → use its own precise expiry date,
+ *      weekend-aware (`isPastExpiryFreezeWindow` — see that function's
+ *      docstring in dateFormat.js) — the authoritative case.
  *   2. Instrument MISSING, but the cache has OTHER live F&O for this same
  *      root (`hasFNOFn(root)` true) — the relevant exchange WAS fetched,
  *      so a miss on this EXACT symbol means Kite has already dropped it
  *      from the live dump (its own documented behaviour for a settled
- *      contract) — trust it as expired. This is what correctly catches
- *      the GOLD/GOLDM regression case (a specific expired MCX contract
- *      delisted while sibling GOLD/GOLDM contracts remain in cache).
+ *      contract). This confirms the contract's OWN expiry day has
+ *      genuinely passed, but NOT by itself whether the freeze/grace
+ *      window (next real weekday's 08:00 IST open) has also ended — a
+ *      symbol-parsed guess (`guessExpiryYmdFromSymbol`) is month-end-
+ *      biased and can wildly OVERestimate a commodity future's real
+ *      (often early-month) expiry, so it's tightened down to
+ *      `min(guess, lastWeekdayIsoBefore(sessionToday))` — the daily
+ *      instruments refresh can only have purged a contract AFTER its own
+ *      expiry day fully elapsed, so the real expiry is never later than
+ *      the last real weekday before `sessionToday`. 2026-11-27 incident:
+ *      without this tightening, a contract purged the very next session
+ *      after a Friday expiry (GOLD26NOV, purged Saturday 08:00 IST) was
+ *      unconditionally trusted as "expired" immediately — two full days
+ *      before the real Monday 08:00 IST freeze-window boundary. The
+ *      tightened candidate still correctly resolves "true" for a
+ *      genuinely long-dead contract (e.g. GOLDM expiring on the 5th of
+ *      a month, viewed weeks later) because on any WEEKDAY session the
+ *      tightened `lastWeekdayIsoBefore(sessionToday)` candidate's own
+ *      freeze boundary always lands exactly on `sessionToday` itself.
  *   3. Instrument MISSING and the cache has NOTHING for this root at all
  *      (BFO never fetched, cold start, or a failed download for that
- *      exchange) — the cache is NOT authoritative here. Fall back to a
+ *      exchange) — the cache is NOT authoritative here, so there is no
+ *      "confirmed gone" signal to tighten against. Fall back to the
  *      conservative symbol-parsed date guess (`guessExpiryYmdFromSymbol`,
  *      decomposeSymbol.js — reuses the SAME regexes already used to parse
- *      F&O symbols elsewhere, not a new mechanism) instead of assuming
- *      expired. A miss now means "we don't know the lot size" or similar
- *      cache-dependent concerns, NOT "assume expired".
+ *      F&O symbols elsewhere, not a new mechanism), weekend-aware, instead
+ *      of assuming expired. A miss now means "we don't know the lot size"
+ *      or similar cache-dependent concerns, NOT "assume expired".
  *
  * Extracted here, PARAMETERIZED on both lookups (default to the real
  * `getInstrument`/`hasFNO`), so `portfolioStore.svelte.js`'s Snapshot
@@ -793,17 +811,25 @@ export function isExpiredHeldContract(sym, qty, getInstrumentFn = _getInstrument
   // TRUE branch triggers exactly that collapse everywhere it's consumed:
   // the payoff chart, Legs grid, Snapshot grid, and NavStrip's P-pill) just
   // because the wall-clock calendar date ticked over at midnight, several
-  // hours before the next trading session even opens.
+  // hours before the next trading session even opens. Computed ONCE and
+  // passed explicitly to isPastExpiryFreezeWindow everywhere below (rather
+  // than relying on that function's own default-parameter re-derivation)
+  // so a test that mocks `tradingSessionDateIST()` always controls the
+  // whole computation — a default-parameter expression inside
+  // dateFormat.js itself would bind to the REAL (unmocked) function.
   const sessionToday = tradingSessionDateIST();
   if (inst) {
-    return !!(inst.x && inst.x < sessionToday);
+    return !!(inst.x && isPastExpiryFreezeWindow(inst.x, sessionToday));
   }
   const root = (decomposeSymbol(sym).root || '').toUpperCase();
   if (root && hasFNOFn(root)) {
-    return true;
+    const guess = guessExpiryYmdFromSymbol(sym);
+    const lastKnownWeekday = lastWeekdayIsoBefore(sessionToday);
+    const candidate = guess && guess < lastKnownWeekday ? guess : lastKnownWeekday;
+    return isPastExpiryFreezeWindow(candidate, sessionToday);
   }
   const guess = guessExpiryYmdFromSymbol(sym);
-  return !!(guess && guess < sessionToday);
+  return isPastExpiryFreezeWindow(guess, sessionToday);
 }
 
 /**

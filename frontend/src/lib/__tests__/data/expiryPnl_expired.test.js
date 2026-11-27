@@ -41,10 +41,30 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // (08:00 IST rollover), not todayIST() (midnight rollover) — see that
 // function's own describe block below for the fix this session-boundary
 // swap addresses.
-vi.mock('$lib/dateFormat.js', () => ({
-  todayIST: () => '2026-09-27',
-  tradingSessionDateIST: () => '2026-09-27',
-}));
+//
+// Pinned to a WEEKDAY (2026-09-28, Monday) rather than the old
+// 2026-09-27 (a Sunday) — 2026-11-27 weekend-boundary fix: the
+// root-authoritative branch (case 4/7 below, GOLDM26SEPFUT) is now
+// weekend-aware, and asserting "expired" against a Sunday "today" would
+// no longer hold (see expiryPnl_sessionBoundary.test.js's dedicated
+// weekend-boundary cases for that scenario instead). None of this file's
+// other date-relative assertions depend on which weekday "today" is.
+//
+// Spreads the REAL module via `importOriginal` (rather than replacing it
+// outright) so every OTHER real export this file's production code calls
+// — isPastExpiryFreezeWindow, lastWeekdayIsoBefore — stays genuinely
+// wired through the pinned tradingSessionDateIST override below (every
+// call site in expiryPnl.js passes `sessionToday` explicitly rather than
+// relying on isPastExpiryFreezeWindow's own default parameter, which
+// would bind to the UNMOCKED tradingSessionDateIST across this boundary).
+vi.mock('$lib/dateFormat.js', async (importOriginal) => {
+  const actual = /** @type {object} */ (await importOriginal());
+  return {
+    ...actual,
+    todayIST: () => '2026-09-28',
+    tradingSessionDateIST: () => '2026-09-28',
+  };
+});
 
 // Controllable fake instruments cache. getInstrument mirrors the real
 // module's exact-symbol lookup; hasFNO mirrors "does this ROOT have ANY

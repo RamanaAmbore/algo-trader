@@ -95,6 +95,80 @@ function _firstWeekdayIsoAfter(dateIso) {
 }
 
 /**
+ * Last WEEKDAY (Mon–Fri, IST) strictly BEFORE `dateIso` (YYYY-MM-DD),
+ * returned as YYYY-MM-DD. Symmetric sibling of `_firstWeekdayIsoAfter`
+ * above — used by `isExpiredHeldContract`'s (`expiryPnl.js`) root-
+ * authoritative instruments-cache-miss branch to derive the LATEST date
+ * an already-purged contract's real expiry can possibly be (a daily
+ * instruments refresh only purges a contract once its own expiry day has
+ * fully elapsed, so if it's missing as of `dateIso`'s session, its real
+ * expiry is no later than the last real weekday before that session).
+ *
+ * @param {string} dateIso
+ * @returns {string}
+ */
+export function lastWeekdayIsoBefore(dateIso) {
+  let d = new Date(`${dateIso}T00:00:00+05:30`);
+  const dateFmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit',
+  });
+  const wdFmt = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', weekday: 'short' });
+  for (let i = 0; i < 7; i++) {
+    d = new Date(d.getTime() - 24 * 60 * 60 * 1000);
+    const wd = wdFmt.format(d);
+    if (wd !== 'Sat' && wd !== 'Sun') return dateFmt.format(d);
+  }
+  return dateFmt.format(d);
+}
+
+/**
+ * Exchange-agnostic (NFO and MCX alike) weekend-aware equivalent of the
+ * bare `expiryIso < tradingSessionDateIST()` compare used throughout the
+ * expiry-freeze display logic (Payoff chart, Legs grid, Snapshot grid,
+ * NavStrip P-pill). True once the trading session has rolled PAST the
+ * first real weekday that follows `expiryIso` — i.e. the contract's
+ * freeze/grace window has ended and display must flip from "still
+ * current / theoretical" to "frozen / settled".
+ *
+ * 2026-11-27 incident: every caller of `tradingSessionDateIST()` for an
+ * expiry-freeze decision compared the bare session date directly against
+ * an expiry date, which rolled the freeze decision at the very FIRST
+ * Saturday 08:00 IST session-boundary tick after a Friday expiry — two
+ * full days before the real next-trading-day boundary (Monday 08:00
+ * IST). Mirrors `isMcxFutureStillCurrent`'s own `_firstWeekdayIsoAfter`
+ * pattern below, generalized to EVERY exchange — the weekday-skip here
+ * is a calendar fact, not an MCX-specific business rule (contrast with
+ * `isMcxFutureStillCurrent`, which layers MCX-only virtual-root
+ * selection semantics on top of this same date math). Matches the
+ * backend's `expiry_freeze.py:next_market_open_ist`-driven weekday skip
+ * for the common (non-holiday) case — see
+ * `expiry_freeze.py:is_live_row_past_freeze_window`, which applies that
+ * same boundary to F&O rows of any exchange, not just MCX.
+ *
+ * `sessionToday` is an explicit parameter (not re-derived internally via
+ * `tradingSessionDateIST()`) so an already-resolved/mocked session date
+ * is reused verbatim by a caller — important across a `vi.mock` boundary,
+ * where a default-parameter expression inside THIS module would bind to
+ * the real (unmocked) `tradingSessionDateIST`, not a consumer's override.
+ *
+ * KNOWN GAP: no client-side holiday calendar (same accepted residual as
+ * `isMcxFutureStillCurrent` below) — a holiday landing immediately after
+ * expiry still rolls at that holiday's own 08:00 instead of the next
+ * REAL trading day. Weekends are the overwhelming common case and ARE
+ * handled exactly.
+ *
+ * @param {string|null|undefined} expiryIso YYYY-MM-DD
+ * @param {string} [sessionToday] defaults to `tradingSessionDateIST()` (now)
+ * @returns {boolean} true once the freeze/grace window has ended
+ */
+export function isPastExpiryFreezeWindow(expiryIso, sessionToday = tradingSessionDateIST()) {
+  if (!expiryIso) return false;
+  if (expiryIso >= sessionToday) return false;
+  const boundaryIso = _firstWeekdayIsoAfter(expiryIso);
+  return sessionToday >= boundaryIso;
+}
+
+/**
  * MCX-only: true when a future whose REAL listed expiry is `expiryIso`
  * (YYYY-MM-DD, straight from the instruments cache's own `x` field) should
  * still be treated as the live/front-month contract right now.
@@ -130,10 +204,11 @@ function _firstWeekdayIsoAfter(dateIso) {
  */
 export function isMcxFutureStillCurrent(expiryIso, nowMs = Date.now()) {
   if (!expiryIso) return false;
-  const sessionToday = tradingSessionDateIST(nowMs);
-  if (expiryIso >= sessionToday) return true;
-  const boundaryIso = _firstWeekdayIsoAfter(expiryIso);
-  return sessionToday < boundaryIso;
+  // Thin wrapper over the exchange-agnostic `isPastExpiryFreezeWindow`
+  // above (same date math, byte-for-byte) — this function's own value-add
+  // is purely the MCX-only virtual-root-selection framing in its
+  // docstring, not a separate boundary calculation.
+  return !isPastExpiryFreezeWindow(expiryIso, tradingSessionDateIST(nowMs));
 }
 
 /** @param {Date|string|number} d @returns {string} e.g. "21 Jul" */

@@ -21,11 +21,24 @@ import { isExpiredHeldContract, expiredPositionExpPnl } from '$lib/data/expiryPn
 // uses tradingSessionDateIST() (08:00 IST rollover), not todayIST() (midnight
 // rollover) — see expiryPnl_sessionBoundary.test.js for tests of that boundary
 // itself; this file's fixed pin just needs both mocked so nothing here depends
-// on wall-clock time.
-vi.mock('$lib/dateFormat.js', () => ({
-  todayIST: () => '2026-07-27',
-  tradingSessionDateIST: () => '2026-07-27',
-}));
+// on wall-clock time. 2026-07-27 is a Monday (a weekday) — load-bearing for the
+// root-authoritative/weekend-aware fix (2026-11-27): this file's
+// "store-vs-page Exp P&L parity" GOLDM26SEPFUT fixtures need a WEEKDAY "today"
+// to resolve the same way under the new weekend-aware boundary math as they
+// did before it.
+//
+// Spreads the REAL module via `importOriginal` (rather than replacing it
+// outright) so pageLoad.js's/expiryPnl.js's calls to the real
+// isPastExpiryFreezeWindow / lastWeekdayIsoBefore exports stay wired up —
+// only todayIST/tradingSessionDateIST are overridden.
+vi.mock('$lib/dateFormat.js', async (importOriginal) => {
+  const actual = /** @type {object} */ (await importOriginal());
+  return {
+    ...actual,
+    todayIST: () => '2026-07-27',
+    tradingSessionDateIST: () => '2026-07-27',
+  };
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared test fixtures
