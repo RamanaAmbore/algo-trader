@@ -93,7 +93,7 @@ test.describe('Source audit — header-chip Greek InfoHint text + hideButton wir
   const chipsBlockEnd   = src.indexOf('{/snippet}', chipsBlockStart);
   const chipsBlock      = src.slice(chipsBlockStart, chipsBlockEnd);
 
-  const cardBlockStart = src.indexOf('<div class="opt-kv opt-kv-greeks">');
+  const cardBlockStart = src.indexOf('<div class="opt-kv opt-kv-greeks algo-grid-chrome">');
   // Bounded by the next card's heading rather than a brittle whitespace-
   // sensitive closing-tag match — "Risk &amp; expected value" is the
   // next sibling card's title, guaranteed to appear immediately after

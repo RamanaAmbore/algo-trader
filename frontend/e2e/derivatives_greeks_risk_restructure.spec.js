@@ -74,11 +74,11 @@ const PAGE_PATH = path.resolve(__dirname, '..', 'src/routes/(algo)/admin/derivat
 test.describe('Static source checks — Greeks/Risk restructure shape', () => {
   const src = readFileSync(PAGE_PATH, 'utf8');
 
-  const greeksStart = src.indexOf('<div class="opt-kv opt-kv-greeks">');
+  const greeksStart = src.indexOf('<div class="opt-kv opt-kv-greeks algo-grid-chrome">');
   const greeksEnd = src.indexOf('Risk &amp; expected value', greeksStart);
   const greeksBlock = src.slice(greeksStart, greeksEnd);
 
-  const riskStart = src.indexOf('<div class="opt-kv opt-kv-risk">');
+  const riskStart = src.indexOf('<div class="opt-kv opt-kv-risk algo-grid-chrome">');
   // Bounded by the closing of the aside (next sibling after the Risk
   // card's own closing </div></div>) — "</aside>" is the reliable anchor.
   const riskEnd = src.indexOf('</aside>', riskStart);
@@ -88,8 +88,8 @@ test.describe('Static source checks — Greeks/Risk restructure shape', () => {
     expect(greeksStart, 'opt-kv-greeks block must exist').toBeGreaterThan(-1);
     expect(riskStart, 'opt-kv-risk block must exist').toBeGreaterThan(-1);
     // indexOf from AFTER this block's start must find no second occurrence.
-    expect(src.indexOf('<div class="opt-kv opt-kv-greeks">', greeksStart + 1)).toBe(-1);
-    expect(src.indexOf('<div class="opt-kv opt-kv-risk">', riskStart + 1)).toBe(-1);
+    expect(src.indexOf('<div class="opt-kv opt-kv-greeks algo-grid-chrome">', greeksStart + 1)).toBe(-1);
+    expect(src.indexOf('<div class="opt-kv opt-kv-risk algo-grid-chrome">', riskStart + 1)).toBe(-1);
   });
 
   test('Greeks block has no .kv-pair wrapper left (flat header-row + value-row children)', () => {

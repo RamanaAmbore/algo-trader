@@ -31,8 +31,14 @@
  */
 
 import { test, expect } from '@playwright/test';
+import { readFileSync } from 'fs';
+import path from 'path';
+import { loginAsAdmin } from './fixtures/auth.js';
 
 test.setTimeout(60000);
+
+const DIR = import.meta.dirname ?? new URL('.', import.meta.url).pathname;
+const DERIV_PAGE_PATH = path.resolve(DIR, '../src/routes/(algo)/admin/derivatives/+page.svelte');
 
 const USER = process.env.PLAYWRIGHT_USER || 'rambo';
 const PASS = process.env.PLAYWRIGHT_PASS || 'admin1234';
@@ -227,5 +233,47 @@ test.describe('/pulse — MarketPulse mp-total-row no cell border-right', () => 
     // Dimension 1+5 — SSOT+UX: border-right must be removed.
     const borderRightWidth = await mpTotalCell.evaluate((el) => getComputedStyle(el).borderRightWidth);
     expect(borderRightWidth, 'mp-total-row .ag-cell should have no border-right').toBe('0px');
+  });
+});
+
+// ── Test suite: Snapshot grid — TOTAL row's own label cell (2026-11-26) ────
+//
+// `.byund-und` (the underlying/label cell, first column) carries its own
+// UNCONDITIONAL `box-shadow: inset -1px 0 0 0 rgba(126,151,184,0.40)`
+// right-edge decoration — the per-cell whisper-hairline rule already
+// excludes the whole TOTAL row, but that exclusion never touched this
+// cell's own always-on box-shadow. The TOTAL row's label cell is a row
+// LABEL, not a data column, so it should not carry the same divider
+// treatment as the numeric columns beside it.
+
+test.describe("/admin/derivatives — Snapshot TOTAL row's label cell has no right divider", () => {
+  test('SSOT+Stale (source): .byund-und-total sets box-shadow: none, winning over .byund-und by source order', () => {
+    const src = readFileSync(DERIV_PAGE_PATH, 'utf8');
+    const ruleIdx = src.indexOf('.byund-und-total {');
+    expect(ruleIdx, '.byund-und-total rule not found').toBeGreaterThan(-1);
+    const rule = src.slice(ruleIdx, src.indexOf('}', ruleIdx));
+    expect(rule).toMatch(/box-shadow:\s*none/);
+
+    // Same specificity as `.byund-und` (one class each) — this rule must
+    // come AFTER `.byund-und`'s own box-shadow declaration in source
+    // order to actually win the cascade.
+    const byundUndIdx = src.indexOf('.byund-und {');
+    expect(byundUndIdx).toBeGreaterThan(-1);
+    expect(byundUndIdx).toBeLessThan(ruleIdx);
+  });
+
+  test('UX (live): the TOTAL row label cell renders with no right-edge box-shadow, when the grid has data', async ({ page }) => {
+    await loginAsAdmin(page);
+    await page.goto('/admin/derivatives', { waitUntil: 'domcontentloaded' });
+    await page.locator('.cand-grid').first().waitFor({ timeout: 15000 });
+
+    const totalLabel = page.locator('.byund-und-total').first();
+    const count = await totalLabel.count();
+    if (count === 0) {
+      console.log('[total_row_muted] no byund-row-total in DOM (no F&O positions) — skipping live box-shadow check');
+      return;
+    }
+    const boxShadow = await totalLabel.evaluate((el) => getComputedStyle(el).boxShadow);
+    expect(boxShadow, 'TOTAL row label cell should have no box-shadow divider').toBe('none');
   });
 });

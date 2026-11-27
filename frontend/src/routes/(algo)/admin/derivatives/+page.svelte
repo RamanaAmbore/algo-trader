@@ -6556,7 +6556,7 @@
                rows: the 5 `.kv-k` labels fill row 1, the 5 `.kv-v` values
                fill row 2, each value landing in the same column track as
                its own header. -->
-          <div class="opt-kv opt-kv-greeks">
+          <div class="opt-kv opt-kv-greeks algo-grid-chrome">
             <span class="kv-k kv-k-greek" bind:this={_sumHintAnchor.delta} role="button" tabindex="0"
                   aria-expanded={_sumHintOpen.delta}
                   onclick={() => { _sumHintOpen.delta = !_sumHintOpen.delta; }}
@@ -6620,7 +6620,7 @@
                1fr)` overflow-safety invariant (a long value, e.g. 3
                breakevens, must force the grid to scroll, never silently
                clip — see the overflow-x:auto comment below). -->
-          <div class="opt-kv opt-kv-risk">
+          <div class="opt-kv opt-kv-risk algo-grid-chrome">
             <span class="kv-risk-colhdr" role="columnheader">Metric</span>
             <span class="kv-risk-colhdr" role="columnheader">Value</span>
             <span class="kv-risk-colhdr" role="columnheader">Metric</span>
@@ -7341,6 +7341,24 @@
        correct. */
     flex: 1;
     align-content: center;
+    /* Outer grid-chrome border (2026-11-26 addendum) — `.algo-grid-chrome`
+       (app.css) is the SAME class `.byund-scroll`/`.cand-scroll` carry for
+       Snapshot/Legs' own grid-wrapper border; applied directly here per
+       that class's own doc comment ("OR directly on the scroll/overflow
+       wrapper when it IS the outermost frame"), since this grid has no
+       separate scroll-wrapper div of its own. `border-top: none` +
+       `margin-top: 0` mirror `.byund-scroll`'s own override so the
+       CardHeader's existing bottom border (`--ch-border-bottom`, set
+       globally for every CardHeader) and this grid's own top edge read as
+       ONE continuous line instead of a doubled seam — same "single-line
+       header/grid boundary" technique as Snapshot. The border spans this
+       element's full stretched height (it's the `flex: 1` box absorbing
+       `.opt-side-row`'s shared sibling height), with the two content rows
+       centered inside via `align-content: center` above — a deliberate
+       consequence of these two cards sitting in a stretched side-by-side
+       row, unlike Snapshot/Legs' own naturally-content-sized wrappers. */
+    border-top: none;
+    margin-top: 0;
   }
   /* Real grid-header decoration for the 5 Greek header cells, matching
      `.cand-headrow`/`.byund-headrow`'s own treatment elsewhere in this
@@ -7437,12 +7455,19 @@
        right stays the pre-existing 0.35rem. */
     padding: 0.15rem 0.35rem 0.15rem var(--grid-pad-left);
     border-bottom: 1px solid rgba(126,151,184,0.10);
-    /* Vertical divider (2026-11-25) — this cell has no bleed margin
-       (it's `width: 100%` with no negative margin, unlike the header
-       cells above), so a plain `-1px` offset paints exactly at the
-       grid track's own right edge — the same x-position the header's
-       own compensated offset lands at. */
-    box-shadow: inset -1px 0 0 0 rgba(126,151,184,0.40);
+    /* Vertical divider (2026-11-25; alpha corrected 2026-11-26) — this
+       cell has no bleed margin (it's `width: 100%` with no negative
+       margin, unlike the header cells above), so a plain `-1px` offset
+       paints exactly at the grid track's own right edge — the same
+       x-position the header's own compensated offset lands at.
+       `var(--sep-color)` (rgba(126,151,184,0.10)) is the SAME subtle
+       whisper-hairline token `.byund-row > span`/`.cand-row > span` use
+       for their own ordinary per-cell dividers (see those rules'
+       comments) — the stronger 0.40 literal this used before is
+       reserved in both of those grids for ONE special edge only (the
+       label/account column boundary — `.byund-und`/`.cand-sym-acct`),
+       not for an ordinary value-to-value divider like this one. */
+    box-shadow: inset -1px 0 0 0 var(--sep-color);
   }
   /* Last column (rho's value) — no divider after it. `:nth-child(5n)`
      matches child 5 (the rho HEADER, not a `.kv-v`, so the compound
@@ -7496,6 +7521,12 @@
        (or 5) stacked rows. */
     flex: 1;
     align-content: center;
+    /* Outer grid-chrome border + single-line seam (2026-11-26 addendum) —
+       same `.algo-grid-chrome` reuse + `border-top:none`/`margin-top:0`
+       override as `.opt-kv-greeks` above. See that rule's comment for
+       the full rationale. */
+    border-top: none;
+    margin-top: 0;
   }
   /* Widen to 6 tracks (3 metric|value pairs in one row) at the same
      ≥1180px breakpoint the Payoff+Legs row uses. */
@@ -7522,8 +7553,12 @@
     /* Vertical divider — this cell carries no bleed margin (unlike
        `.kv-risk-colhdr` below), so a plain `-1px` offset paints
        exactly at the grid track's own right edge. Excluded from the
-       true "last column" cell only, per breakpoint, below. */
-    box-shadow: inset -1px 0 0 0 rgba(126,151,184,0.40);
+       true "last column" cell only, per breakpoint, below.
+       `var(--sep-color)` (alpha corrected 2026-11-26) — see the
+       matching comment on `.opt-kv-greeks .kv-v` above; this is an
+       ordinary value-to-value divider, not the special label-column
+       edge `.byund-und`/`.cand-sym-acct` reserve the stronger 0.40 for. */
+    box-shadow: inset -1px 0 0 0 var(--sep-color);
   }
   /* `.kv-k` (the Metric label cell) gets the identical left-inset +
      divider treatment as `.kv-v` above. Unlike `.kv-v`, `.kv-k` never
@@ -7533,7 +7568,7 @@
      — so `.kv-k` needs no "last column" exclusion. */
   .opt-kv-risk .kv-k {
     padding-left: var(--grid-pad-left);
-    box-shadow: inset -1px 0 0 0 rgba(126,151,184,0.40);
+    box-shadow: inset -1px 0 0 0 var(--sep-color);
   }
   /* Last-column exclusion, below 1180px (2 pairs/row, 4 tracks) — the
      grid's DOM order is fixed regardless of breakpoint (6 header
@@ -7562,7 +7597,7 @@
        wide layout), then re-exclude only the NEW true-last column
        (column 6, children 12, 18 via `:nth-child(6n)`). */
     .opt-kv-risk .kv-v:nth-child(4n+2) {
-      box-shadow: inset -1px 0 0 0 rgba(126,151,184,0.40);
+      box-shadow: inset -1px 0 0 0 var(--sep-color);
     }
     .opt-kv-risk .kv-v:nth-child(6n) {
       box-shadow: none;
@@ -8163,7 +8198,17 @@
      label already uses. Removing the inline override let `.byund-und`'s
      own `color: var(--c-action)` apply again; this rule only bumps
      font-weight to 800 to match `.cand-total-label` exactly. */
-  .byund-und-total { font-weight: 800; }
+  /* TOTAL row's own label cell carries no right-edge divider (2026-11-26
+     fix). `.byund-und`'s own box-shadow (`inset -1px 0 0 0
+     rgba(126,151,184,0.40)`) is unconditional — it draws on every row
+     including TOTAL, unlike the regular per-cell whisper hairline above
+     (which already excludes `.byund-row-total` via its own `:not()`).
+     This is the row-LABEL cell, not a data column, so it shouldn't carry
+     the same divider treatment as the numeric columns beside it — the
+     amber TOTAL stratum's own top/bottom borders already mark this row
+     as a distinct band. Same specificity as `.byund-und` (one class),
+     later in source order, so this wins. */
+  .byund-und-total { font-weight: 800; box-shadow: none; }
   .byund-empty {
     grid-column: 1 / -1;
     padding: 0.85rem 0.7rem;

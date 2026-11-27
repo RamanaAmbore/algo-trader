@@ -1679,7 +1679,12 @@ test.describe('Static source checks — Greeks (.opt-kv-greeks) left-padding + d
     const body = ruleBody(content, '.opt-kv-greeks .kv-v');
     expect(body, '.opt-kv-greeks .kv-v rule must exist').not.toBeNull();
     expect(body).toMatch(/padding:\s*0\.15rem\s+0\.35rem\s+0\.15rem\s+var\(--grid-pad-left\)/);
-    expect(body).toMatch(/box-shadow:\s*inset\s+-1px\s+0\s+0\s+0\s+rgba\(126,151,184,0\.40\)/);
+    // 2026-11-26: swapped from the stronger 0.40 literal to the shared
+    // `--sep-color` token (the SAME subtle whisper-hairline every other
+    // grid's ordinary per-cell divider uses) — 0.40 is reserved for the
+    // special label-column edge (`.byund-und`/`.cand-sym-acct`), which
+    // this ordinary value-to-value divider is not.
+    expect(body).toMatch(/box-shadow:\s*inset\s+-1px\s+0\s+0\s+0\s+var\(--sep-color\)/);
     // width:100%/no-margin must survive untouched — the compensated
     // offset lives on the HEADER side, not by adding a matching bleed
     // margin to the value row (see the rule's own code comment).
@@ -1732,15 +1737,18 @@ test.describe('Static source checks — Risk & EV (.opt-kv-risk) left-padding + 
   });
 
   test('.kv-v and .kv-k both get the shared left-inset var and the plain (uncompensated) divider', () => {
+    // 2026-11-26: swapped from the stronger 0.40 literal to the shared
+    // `--sep-color` token — see the matching comment in the Greeks test
+    // above; same reasoning applies to both .kv-v and .kv-k here.
     const vBody = ruleBody(content, '.opt-kv-risk .kv-v');
     expect(vBody, '.opt-kv-risk .kv-v rule must exist').not.toBeNull();
     expect(vBody).toMatch(/padding-left:\s*var\(--grid-pad-left\)/);
-    expect(vBody).toMatch(/box-shadow:\s*inset\s+-1px\s+0\s+0\s+0\s+rgba\(126,151,184,0\.40\)/);
+    expect(vBody).toMatch(/box-shadow:\s*inset\s+-1px\s+0\s+0\s+0\s+var\(--sep-color\)/);
 
     const kBody = ruleBody(content, '.opt-kv-risk .kv-k');
     expect(kBody, '.opt-kv-risk .kv-k rule must exist').not.toBeNull();
     expect(kBody).toMatch(/padding-left:\s*var\(--grid-pad-left\)/);
-    expect(kBody).toMatch(/box-shadow:\s*inset\s+-1px\s+0\s+0\s+0\s+rgba\(126,151,184,0\.40\)/);
+    expect(kBody).toMatch(/box-shadow:\s*inset\s+-1px\s+0\s+0\s+0\s+var\(--sep-color\)/);
   });
 
   test('.kv-v:nth-child(4n+2) is OFF (last column) below 1180px, ON again (internal column) and :nth-child(6n) OFF (new last column) inside the >=1180px override', () => {
