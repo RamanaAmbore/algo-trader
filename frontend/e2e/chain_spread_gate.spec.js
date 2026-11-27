@@ -127,14 +127,30 @@ test.describe('A wide-spread result blocks submission and shows a warning', () =
 });
 
 test.describe('Changing Spread% or the basket triggers an immediate re-check', () => {
-  test('the gate re-check $effect watches spreadMaxPctOverride, chainBasket, and (2026-11-26) draftMode', () => {
+  test('the gate re-check $effect watches spreadMaxPctOverride and chainBasket', () => {
     const effIdx = chainSrc.indexOf('// Immediate re-check triggers');
     expect(effIdx).toBeGreaterThan(-1);
-    const body = chainSrc.slice(effIdx, effIdx + 600);
+    const body = chainSrc.slice(effIdx, effIdx + 1700);
     expect(body).toContain('void spreadMaxPctOverride');
     expect(body).toContain('void chainBasket');
-    expect(body).toContain('void draftMode');
     expect(body).toContain('_gate.recheck()');
+  });
+
+  test('Draft turning ON mid-gate calls cancel(), not recheck() — never silently auto-submits a queued basket (2026-11-26 fix)', () => {
+    // A plain recheck() while draftMode is true would resolve the gate
+    // straight to 'passed' (`_buildGatePlan()` returns no targets), which
+    // auto-resolves the PENDING runPreSubmitGate() promise to `true` with
+    // no further operator action — silently auto-submitting a basket the
+    // operator queued before Draft turned on. cancel() instead resolves
+    // that promise to `false`, forcing an explicit re-click of Submit.
+    const effIdx = chainSrc.indexOf('// Immediate re-check triggers');
+    expect(effIdx).toBeGreaterThan(-1);
+    const body = chainSrc.slice(effIdx, effIdx + 1700);
+    expect(body).toMatch(/draftJustTurnedOn\s*=\s*draftMode\s*&&\s*!_prevDraftModeForGate/);
+    expect(body).toMatch(/if\s*\(draftJustTurnedOn\)\s*_gate\.cancel\(\);/);
+    // The effect itself must not list draftMode as a bare `void` — it's
+    // read directly inside the draftJustTurnedOn expression instead.
+    expect(body).not.toContain('void draftMode');
   });
 
   test("createSpreadGate's recheck() discards a still-in-flight response from before the edit (generation guard)", () => {

@@ -1193,15 +1193,34 @@
   function _gateCancel()      { _gate?.cancel(); }
   function _gateRetry()       { _gate?.retry(); }
 
-  // Immediate re-check triggers: a Spread% edit, a basket-leg
-  // add/remove, or toggling Draft on mid-check (`_buildGatePlan`
-  // above clears to no targets, so this recheck resolves the gate
-  // right away) — only while the gate is actually open (not idle/
+  // Immediate re-check triggers: a Spread% edit or a basket-leg
+  // add/remove — only while the gate is actually open (not idle/
   // resolved).
+  //
+  // Draft turning ON mid-gate is handled separately, below, and must
+  // NOT go through `recheck()`: `_buildGatePlan()` returns no targets
+  // while `draftMode` is true, so a plain recheck would resolve the
+  // gate straight to 'passed' — which auto-resolves the PENDING
+  // `runPreSubmitGate()` promise to `true` with no further operator
+  // action, silently auto-submitting a basket the operator queued
+  // before ever seeing Draft turn on. `cancel()` instead resolves that
+  // promise to `false` (SymbolPanel's shared Submit button checks
+  // `if (!proceed) return;`), so the operator must click Submit again
+  // — which now correctly routes through Draft mode's own submit path.
+  // svelte-ignore state_referenced_locally — deliberate: this is the
+  // one-time initial seed for a "previous value" tracker, not a stale
+  // read. The effect below re-reads `draftMode` reactively on every
+  // run and reassigns this variable each time, so it always reflects
+  // the prior run's value by the time the NEXT run compares against it.
+  let _prevDraftModeForGate = draftMode;
   $effect(() => {
-    void spreadMaxPctOverride; void chainBasket; void draftMode;
+    void spreadMaxPctOverride; void chainBasket;
+    const draftJustTurnedOn = draftMode && !_prevDraftModeForGate;
+    _prevDraftModeForGate = draftMode;
     untrack(() => {
-      if (_gate && !_isGateTerminal(_gateState.phase)) _gate.recheck();
+      if (!_gate || _isGateTerminal(_gateState.phase)) return;
+      if (draftJustTurnedOn) _gate.cancel();
+      else _gate.recheck();
     });
   });
 
