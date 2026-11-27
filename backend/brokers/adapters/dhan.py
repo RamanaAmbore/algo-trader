@@ -43,7 +43,7 @@ from urllib.request import urlopen
 from backend.brokers.base import Broker
 from backend.brokers.errors import (
     BrokerAuthError, BrokerRateLimitError, BrokerNetworkError,
-    BrokerOrderError, BrokerInputError, BrokerError,
+    BrokerOrderError, BrokerInputError, BrokerError, BrokerCapabilityError,
 )
 from backend.brokers.rate_limiter import TokenBucketLimiter
 from backend.shared.helpers.ramboq_logger import get_logger
@@ -1033,6 +1033,108 @@ class DhanBroker(Broker):
         if not entries:
             return []
         return _dhan_ledger_aggregate(entries)
+
+    def ledger_entries_raw(self, from_date: str, to_date: str) -> list[dict]:
+        """Raw (unaggregated) ledger entries for a date range — the
+        individual-voucher rows `funds_ledger()` collapses into daily
+        (date, segment) summaries for `daily_book`. Added 2026-11-27 for
+        `scripts/dhan_pnl_sync.py`'s historical ledger backfill, which
+        ingests at the SAME per-voucher row grain
+        (`kite_console_pnl_sync[report_type='ledger']`) the Kite Console
+        scraper already uses for Kite — see that table's own docstring
+        in `models.py` for why a running `net_balance` can never be
+        safely collapsed into a daily total for THIS table's purposes
+        (a later back-dated voucher shifts every later row's own
+        balance on re-pull).
+
+        Deliberately a separate method, not a `funds_ledger(raw=True)`
+        flag — `funds_ledger()` has a real, already-shipped caller
+        (`backend/api/routes/history.py:backfill_funds`) that depends on
+        its aggregated return shape; branching that function's return
+        TYPE on a flag risks a latent shape mismatch for that caller if
+        the flag is ever passed by mistake.
+
+        Reuses the exact `ledger_report` SDK-existence-check /
+        `_call_dhan_ledger_raw` plumbing `funds_ledger()` uses (confirmed
+        live against the installed dhanhq SDK — see that method's own
+        2026-11-27 fix note), through the dedicated `_sdk_history`
+        rate-limit bucket rather than the unbucketed `_sdk` property
+        `funds_ledger()` uses — a multi-month backfill issues many more
+        calls than a single live `daily_book` seed ever would.
+
+        Unlike `funds_ledger()`, a `status=failure` SDK response RAISES
+        here (via `_unwrap()`'s own `RuntimeError`) rather than
+        degrading to `[]` — `funds_ledger()` treats "nothing came back"
+        as a benign "no ledger activity this pull" for a `daily_book`
+        upsert; a historical backfill must never silently treat a
+        genuine API failure as "nothing to ingest this chunk" (that
+        would leave a real, silent gap in the backfilled history with no
+        signal to the operator)."""
+        ledger_method_name = "ledger_report"
+        if getattr(self.dhan, ledger_method_name, None) is None:
+            raise BrokerCapabilityError(
+                f"Dhan SDK is missing `{ledger_method_name}` — cannot "
+                f"pull historical ledger entries for {self.account!r}"
+            )
+        resp = _call_dhan_ledger_raw(
+            self._sdk_history, ledger_method_name, from_date, to_date,
+        )
+        return _unwrap(resp)
+
+    # Hard pagination cap for trade_history() — exists purely so a
+    # pagination bug (e.g. the SDK echoing the same non-empty page
+    # forever) degrades to a bounded, alertable failure rather than an
+    # unbounded loop. A real backfill chunk is at most one calendar
+    # month (chunk_by_calendar_month()), so this many pages is far more
+    # than any genuine month of trades should ever need.
+    _TRADE_HISTORY_MAX_PAGES = 200
+
+    def trade_history(self, from_date: str, to_date: str) -> list[dict]:
+        """Historical trades for a date range, via Dhan's paginated
+        `/trades/{from}/{to}/{page}` endpoint (SDK method
+        `get_trade_history(from_date, to_date, page_number)`) — distinct
+        from `trades()`, which calls `get_trade_book()` (today's trades
+        only, no date range, no pagination). Added 2026-11-27 for
+        `scripts/dhan_pnl_sync.py`'s tradebook backfill.
+
+        UNVERIFIED against a live account — no Dhan credentials were
+        available while this was built (see the caller script's own
+        report for the full caveat). The per-trade row SHAPE this
+        endpoint returns is ASSUMED identical to `get_trade_book()`'s own
+        shape (Dhan's v2 API documents both as returning the same Trade
+        object, scoped to a date range + page instead of "today only"),
+        so this reuses `_normalise_trades()` unchanged rather than a
+        second, independently-guessed normaliser — including its
+        existing MCX lot→contract conversion via `_DHAN_LOT_BY_SECURITY`
+        and its Dhan→Kite tradingsymbol translation. If the real
+        response carries different field names, `_normalise_trades()`'s
+        own `.get(...)` calls degrade to empty-string/zero defaults
+        rather than raising — this must be confirmed against a real
+        account before being relied on for anything beyond a smoke test.
+
+        Pages until the SDK returns a genuinely empty page (end of
+        history) or `_TRADE_HISTORY_MAX_PAGES` is exhausted, whichever
+        comes first. A `status=failure` response on ANY page propagates
+        as a `RuntimeError` (via `_normalise_trades()` → `_unwrap()`) —
+        it is never treated as "end of history". Swallowing a genuine
+        API failure as if it were simply the last page would silently
+        truncate the backfill with no signal to the operator."""
+        out: list[dict] = []
+        for page in range(self._TRADE_HISTORY_MAX_PAGES):
+            resp = self._sdk_history.get_trade_history(
+                from_date=from_date, to_date=to_date, page_number=page,
+            )
+            page_rows = _normalise_trades(resp)
+            if not page_rows:
+                break
+            out.extend(page_rows)
+        else:
+            raise BrokerNetworkError(
+                f"Dhan trade_history for {self.account!r} did not "
+                f"terminate within {self._TRADE_HISTORY_MAX_PAGES} pages "
+                f"({from_date}..{to_date}) — possible pagination loop"
+            )
+        return out
 
     # ── Market data ───────────────────────────────────────────────────
 

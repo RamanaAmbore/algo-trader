@@ -1045,19 +1045,35 @@ async def _flush_and_dispatch_once(wait_s: float = 5.0) -> None:
 
 async def alert_critical(title: str, masked_account: str, *, detail: str = "",
                           diagnostics: "dict | None" = None,
-                          action_required: bool = True) -> None:
+                          action_required: bool = True,
+                          source_name: str = "Kite Console P&L sync",
+                          alert_event: str = "kite_console_sync_failed") -> None:
     """Logs one CRITICAL, tagged record (the SSOT alert-authoring
     convention this codebase uses everywhere — see CLAUDE.md's "Alert
     identity SSOT" / "Alert-agent audit" entries) and then runs the real
     flush+dispatch pipeline once so it's actually delivered before this
     script exits. No dedicated seeded agent is needed — a CRITICAL record
-    tagged "error" falls through to the existing `ERROR_AGENT` catch-all."""
+    tagged "error" falls through to the existing `ERROR_AGENT` catch-all.
+
+    `source_name`/`alert_event` (added 2026-11-27, both default to the
+    pre-existing literal values so every call in THIS script is
+    byte-identical) — `scripts/dhan_pnl_sync.py` reuses this exact
+    function (never a copy) by passing its own distinct values, so an
+    operator reading the alert can tell at a glance which backfill
+    script failed, and the two scripts' failures don't collapse onto
+    one indistinguishable `alert_event` for routing/dedup purposes.
+    `logger` itself stays bound to this module's own name
+    (`scripts.kite_console_pnl_sync`) even when called from the Dhan
+    script — the alert's own rendered `source_name` is what reaches the
+    operator, not the raw Python logger name, so this is cosmetic only
+    (visible in a raw log/ `log_events` row, not in the delivered
+    alert text)."""
     extra = {
         "source_type": "process",
-        "source_name": "Kite Console P&L sync",
+        "source_name": source_name,
         "action_required": action_required,
         "tags": ["alert"],
-        "alert_event": "kite_console_sync_failed",
+        "alert_event": alert_event,
     }
     if diagnostics:
         extra["diagnostics"] = diagnostics
@@ -1484,9 +1500,17 @@ def _fill_fields_for_row(report_type: str, row: dict, qty: "float | None",
 
 def build_sync_row(masked_account: str, segment: str, report_type: str, row: dict, *,
                     pull_start: "date | None" = None,
-                    pull_end: "date | None" = None) -> dict:
+                    pull_end: "date | None" = None,
+                    broker: str = "kite") -> dict:
     """Builds one `kite_console_pnl_sync` row payload from one parsed
-    report row. Pure — no DB/session access."""
+    report row. Pure — no DB/session access.
+
+    `broker` (added 2026-11-27, default `"kite"` so every pre-existing
+    call site in THIS script is byte-identical) — reused by
+    `scripts/dhan_pnl_sync.py` to write `broker='dhan'` rows into the
+    same table/row-shape, after mapping its own broker-specific response
+    fields into this function's Kite-CSV-shaped `row` dict first (see
+    that script's own field-mapping docstring)."""
     symbol = row.get("symbol")
     trade_date = _parse_date_cell(row.get("trade_date"))
     expiry = _derive_expiry_from_symbol(symbol)
@@ -1499,6 +1523,7 @@ def build_sync_row(masked_account: str, segment: str, report_type: str, row: dic
     trade_type = (row.get("trade_type") or "").strip().upper()
     fill_fields = _fill_fields_for_row(report_type, row, qty, price, trade_type)
     return {
+        "broker": broker,
         "account": masked_account,
         "segment": segment,
         "report_type": report_type,
@@ -1521,12 +1546,21 @@ def build_sync_row(masked_account: str, segment: str, report_type: str, row: dic
 
 async def ingest_rows(session, masked_account: str, segment: str, report_type: str,
                        rows: "list[dict]", *, pull_start: "date | None" = None,
-                       pull_end: "date | None" = None) -> int:
+                       pull_end: "date | None" = None,
+                       broker: str = "kite") -> int:
     """Idempotent upsert of parsed report rows into `kite_console_pnl_sync`
     — `ON CONFLICT (account, report_type, dedup_key) DO UPDATE`, mirroring
     this codebase's existing UPSERT-on-conflict convention (see
     `daily_snapshot.py`). Re-ingesting an overlapping pull never creates a
-    duplicate row for the same real trade/aggregate."""
+    duplicate row for the same real trade/aggregate.
+
+    `broker` (added 2026-11-27, default `"kite"`) — see `build_sync_row()`'s
+    own docstring. Deliberately NOT in `update_cols` below: `broker` can
+    never legitimately change for an already-existing `(account,
+    report_type, dedup_key)` row (the masked `account` form alone already
+    disambiguates Kite from Dhan — different broker-letter mask prefix,
+    see `KiteConsolePnlSync.broker`'s own model-column comment), so there
+    is nothing to update it TO on a conflict."""
     from sqlalchemy.dialects.postgresql import insert as pg_insert
     from backend.api.models import KiteConsolePnlSync
 
@@ -1534,7 +1568,7 @@ async def ingest_rows(session, masked_account: str, segment: str, report_type: s
         return 0
     payloads = [
         build_sync_row(masked_account, segment, report_type, r,
-                        pull_start=pull_start, pull_end=pull_end)
+                        pull_start=pull_start, pull_end=pull_end, broker=broker)
         for r in rows
     ]
     stmt = pg_insert(KiteConsolePnlSync).values(payloads)
@@ -1559,8 +1593,15 @@ _LEDGER_SEGMENT = "all"  # ledger has no segment dimension — see build_ledger_
 
 
 def build_ledger_sync_row(masked_account: str, row: dict, *, seq: int,
-                           pull_start: date, pull_end: date) -> "dict | None":
+                           pull_start: date, pull_end: date,
+                           broker: str = "kite") -> "dict | None":
     """Builds one `kite_console_pnl_sync` row payload for a ledger entry.
+
+    `broker` (added 2026-11-27, default `"kite"`) — see `build_sync_row()`'s
+    own docstring; `scripts/dhan_pnl_sync.py` passes `broker="dhan"` after
+    mapping its own ledger-entry fields into this function's Kite-ledger-
+    CSV-shaped `row` dict (`particulars`/`posting_date`/`debit`/`credit`/
+    `net_balance`).
     A SEPARATE function from `build_sync_row()`, not a third branch
     inside it — a ledger row shares almost none of the other two report
     types' shape (no symbol/exchange/trade_id/order_id/buy-sell-qty-
@@ -1585,6 +1626,7 @@ def build_ledger_sync_row(masked_account: str, row: dict, *, seq: int,
     if posting_date is None:
         return None
     return {
+        "broker": broker,
         "account": masked_account,
         "segment": _LEDGER_SEGMENT,
         "report_type": "ledger",
@@ -1610,12 +1652,22 @@ def build_ledger_sync_row(masked_account: str, row: dict, *, seq: int,
 
 
 async def ingest_ledger_rows(session, masked_account: str, rows: "list[dict]", *,
-                              pull_start: date, pull_end: date) -> int:
+                              pull_start: date, pull_end: date,
+                              broker: str = "kite") -> int:
     """REPLACES (delete-then-insert, one transaction) every existing
     `report_type='ledger'` row for this account whose `trade_date`
     falls in `[pull_start, pull_end]`, then inserts the freshly parsed
     rows — NOT the per-row upsert-by-`dedup_key` convention `ingest_
     rows()` uses for tradebook/pnl.
+
+    `broker` (added 2026-11-27, default `"kite"`) — scopes BOTH the
+    DELETE and the fresh INSERT. The masked `account` form alone would
+    already be sufficient to keep this call from ever touching the other
+    broker's rows (see `KiteConsolePnlSync.broker`'s own model-column
+    comment on why a Kite/Dhan masked account can never collide), so
+    this is defense-in-depth, not the only thing preventing cross-broker
+    data loss — but it costs nothing and makes the DELETE's own
+    boundary explicit for any future caller/reader of this function.
 
     Why replace, not upsert: a ledger entry's own `net_balance` is a
     RUNNING total. Zerodha posts genuinely back-dated vouchers (the
@@ -1640,6 +1692,7 @@ async def ingest_ledger_rows(session, masked_account: str, rows: "list[dict]", *
 
     await session.execute(sa_delete(KiteConsolePnlSync).where(
         KiteConsolePnlSync.account == masked_account,
+        KiteConsolePnlSync.broker == broker,
         KiteConsolePnlSync.report_type == "ledger",
         KiteConsolePnlSync.trade_date >= pull_start,
         KiteConsolePnlSync.trade_date <= pull_end,
@@ -1647,7 +1700,8 @@ async def ingest_ledger_rows(session, masked_account: str, rows: "list[dict]", *
     payloads = [
         p for p in (
             build_ledger_sync_row(masked_account, r, seq=i,
-                                   pull_start=pull_start, pull_end=pull_end)
+                                   pull_start=pull_start, pull_end=pull_end,
+                                   broker=broker)
             for i, r in enumerate(rows)
         )
         if p is not None

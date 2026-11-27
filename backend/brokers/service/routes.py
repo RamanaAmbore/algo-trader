@@ -95,6 +95,14 @@ _ALLOWED_BROKER_METHODS = frozenset({
     # read
     "profile", "holdings", "positions", "margins", "orders",
     "order_status", "trades",
+    # `trade_history`/`ledger_entries_raw` (2026-11-27) — Dhan-only
+    # historical-pull methods (no `DhanBroker` sibling on Kite/Groww's
+    # own adapter classes), added for `scripts/dhan_pnl_sync.py`'s
+    # backfill. Dispatched the same generic way as every other method
+    # here: `getattr(broker, method, None)` returns None for a broker
+    # that doesn't define it, which this endpoint already turns into a
+    # clean 404 rather than a 403 — see `call_broker()` below.
+    "trade_history", "ledger_entries_raw",
     "ltp", "quote",
     "instruments", "historical_data", "holidays", "market_status",
     "basket_order_margins", "get_gtts",

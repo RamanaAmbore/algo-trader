@@ -163,6 +163,21 @@ class RemoteBroker(Broker):
     def trades(self) -> list[dict]:
         return self._call("trades")
 
+    def trade_history(self, from_date: str, to_date: str) -> list[dict]:
+        """Dhan-only historical trade pull (added 2026-11-27 for
+        `scripts/dhan_pnl_sync.py`). Forwards to the real `DhanBroker.
+        trade_history()` inside conn_service — see that method's own
+        docstring for the pagination contract. Raises `NotFoundException`
+        -> mapped `BrokerError` (via `_call`) if the account's real
+        broker_id has no such method (e.g. Kite/Groww)."""
+        return self._call("trade_history", from_date=from_date, to_date=to_date)
+
+    def ledger_entries_raw(self, from_date: str, to_date: str) -> list[dict]:
+        """Dhan-only raw (unaggregated) ledger pull (added 2026-11-27 for
+        `scripts/dhan_pnl_sync.py`). Forwards to the real `DhanBroker.
+        ledger_entries_raw()` inside conn_service."""
+        return self._call("ledger_entries_raw", from_date=from_date, to_date=to_date)
+
     # ── Market data ───────────────────────────────────────────────────
 
     def ltp(self, symbols: list[str]) -> dict:

@@ -2748,6 +2748,34 @@ class KiteConsolePnlSync(Base):
     __tablename__ = "kite_console_pnl_sync"
 
     id:               Mapped[int]            = mapped_column(primary_key=True, autoincrement=True)
+    # `broker` (added 2026-11-27) — 'kite' | 'dhan'. Every pre-existing row
+    # predates this column (the table carried only Kite Console scraper
+    # rows), so the DDL-level `server_default='kite'` both satisfies
+    # existing-row backfill (Postgres applies ADD COLUMN ... DEFAULT
+    # without a table rewrite — see `_migrate_kite_console_pnl_sync_broker`
+    # in database.py) AND is the correct value for every row this table
+    # has ever actually held before Dhan's own ingestion
+    # (`scripts/dhan_pnl_sync.py`) started writing `broker='dhan'` rows.
+    # The table/model/script names are NOT renamed in this change — that
+    # broader rename is still deliberately deferred (see
+    # project_token_unification_scope_expansion-style notes elsewhere);
+    # this column is the narrow, explicitly-scoped generalization the
+    # operator asked for ("naming with kite is not correct... it is not
+    # for just kite").
+    #
+    # Deliberately NOT part of `uq_kite_console_pnl_sync_account_type_key`
+    # (the account+report_type+dedup_key unique constraint, unchanged) —
+    # `account` is always the MASKED form, and the mask shape differs by
+    # broker-letter prefix (Kite 'Z#####', Dhan 'D#####', Groww 'G#####' —
+    # see `mask_account()`'s own docstring), so a Kite and a Dhan row can
+    # never collide on the same masked `account` value in the first place.
+    # Adding `broker` to the constraint would be a no-op at best and would
+    # force every `ingest_rows()`/`ingest_ledger_rows()` caller (including
+    # the already-shipped Kite script) to change their `index_elements`
+    # for no behavioural gain.
+    broker:           Mapped[str]            = mapped_column(
+        String(16), nullable=False, server_default="kite",
+    )
     account:          Mapped[str]            = mapped_column(String(16), nullable=False)
     segment:          Mapped[str]            = mapped_column(String(16), nullable=False)  # 'equity' | 'derivatives' | 'commodities'
     report_type:      Mapped[str]            = mapped_column(String(16), nullable=False)  # 'tradebook' | 'pnl' | 'ledger'
@@ -2785,4 +2813,8 @@ class KiteConsolePnlSync(Base):
             "ix_kite_console_pnl_sync_root",
             "account", "symbol_root", "instrument_type",
         ),
+        # Added alongside `broker` (2026-11-27) — the read-side history
+        # routes/MCP tools (a separate agent's task) will most commonly
+        # filter "every Dhan row" / "every Kite row" across accounts.
+        Index("ix_kite_console_pnl_sync_broker", "broker"),
     )

@@ -888,6 +888,41 @@ async def _migrate_kite_console_pnl_sync_columns(conn) -> None:
     ))
 
 
+async def _migrate_kite_console_pnl_sync_broker(conn) -> None:
+    """Additive migration — `kite_console_pnl_sync.broker` (2026-11-27,
+    Dhan historical trade/ledger backfill). Same `SET LOCAL lock_timeout`
+    pattern as every other migration here.
+
+    `broker VARCHAR(16) DEFAULT 'kite'` — every row this table has ever
+    held before this change came from the Kite Console scraper, so
+    backfilling existing rows to `'kite'` is simply correct, not a
+    best-effort guess. Postgres applies a column's `DEFAULT` to every
+    pre-existing row via catalog metadata (no table rewrite) the instant
+    the column is added, so the explicit `UPDATE ... WHERE broker IS
+    NULL` below is pure belt-and-suspenders for a column that somehow
+    landed nullable with no default applied (e.g. a future manual
+    schema edit) — in the normal case it matches zero rows.
+
+    The ORM model's own column is `nullable=False` with
+    `server_default="kite"`, matching `_migrate_agents_require_release`'s
+    precedent of pairing a NOT-NULL model column with an idempotent
+    `ADD COLUMN IF NOT EXISTS ... DEFAULT ...` migration rather than a
+    bare nullable column + Python-side default."""
+    from sqlalchemy import text
+    await conn.execute(text("SET LOCAL lock_timeout = '5s'"))
+    await conn.execute(text(
+        "ALTER TABLE kite_console_pnl_sync ADD COLUMN IF NOT EXISTS "
+        "broker VARCHAR(16) DEFAULT 'kite'"
+    ))
+    await conn.execute(text(
+        "UPDATE kite_console_pnl_sync SET broker = 'kite' WHERE broker IS NULL"
+    ))
+    await conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_kite_console_pnl_sync_broker "
+        "ON kite_console_pnl_sync (broker)"
+    ))
+
+
 async def _migrate_drop_position_pairs_table(conn) -> None:
     """One-time drop of the retired `position_pairs` table.
 
@@ -1547,6 +1582,7 @@ async def init_db() -> None:
         await _migrate_drop_position_pairs_table(conn)
         await _migrate_market_special_sessions_source(conn)
         await _migrate_kite_console_pnl_sync_columns(conn)
+        await _migrate_kite_console_pnl_sync_broker(conn)
         # MUST run LAST in this transaction — drops order_templates and
         # the 6 AlgoOrder/Agent columns that pointed at it. See the
         # function's own docstring for the full rationale and ordering.
