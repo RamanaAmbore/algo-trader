@@ -751,6 +751,15 @@
       account:  _account,
       lots: 1, lotSize: Number(inst.ls || 1), product: 'NRML',
       limit: Number(limit) || 0, chaseAgg: 'low',
+      // productAuto (2026-11 real-money audit fix) — marks this leg's
+      // `product` as a Chain-tab default, safe for SymbolPanel's
+      // submit/preview builders to re-resolve against the account's
+      // REAL held positions at the moment of submit (see
+      // `resolveLegHeldContext`, spreadGate.js). Never set on an
+      // operator-chosen value — OrderTicket's own `_basketPayload()`
+      // (its own product picker) never sets this, so a Ticket-tab-added
+      // basket leg's explicit product choice is never overridden.
+      productAuto: true,
       // Row-lookup fields only (not read by placeTicketOrder, which
       // builds its own explicit payload) — let the strike grid show a
       // per-leg lot badge without re-resolving/parsing the tradingsymbol.
@@ -835,6 +844,9 @@
       limit: Number(result.price) || 0, chaseAgg: parentLeg.chaseAgg || 'low',
       strike: result.strike, optType,
       quoteArrived: true,
+      // productAuto — see addOptionToBasket's own comment above. A hedge
+      // leg's product is never operator-chosen either.
+      productAuto: true,
       // Snapshot signature at staging time — the removal $effect below
       // removes this leg the moment the parent's own sig no longer
       // matches (lots changed, account changed, parent removed). This
@@ -947,6 +959,8 @@
       account:  _account,
       lots: 1, lotSize: Number(lotSize || inst?.ls || 1), product: 'NRML',
       limit: 0, chaseAgg: 'low',
+      // productAuto — see addOptionToBasket's own comment above.
+      productAuto: true,
     });
     basketError = ''; _flashToast(_quickKeyFut(sym), '✓ added');
   }

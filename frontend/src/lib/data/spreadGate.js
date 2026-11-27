@@ -292,6 +292,96 @@ export function isCloseIntentLeg(leg, account, positionRows) {
 }
 
 /**
+ * Resolve a Chain basket leg's REAL product (MIS/NRML/CNC) and close
+ * intent against the account's held positions (2026-11 real-money audit
+ * fix — mirrors the Ticket-tab fix, see CLAUDE.md's "real-money
+ * close-product mismatch" entry).
+ *
+ * Deliberately a SEPARATE function from `isCloseIntentLeg` above, not a
+ * reuse of it. `isCloseIntentLeg` sums quantity across every product for
+ * a symbol+account (its own docstring: "a symbol+account can legitimately
+ * carry two broker-side rows... that TOGETHER make up the held position")
+ * — correct for its own purpose (a spread-gate/hedge exemption, where the
+ * only question is "is this plausibly a close"), but WRONG here: Kite
+ * only nets a close within the SAME product as the held position, and
+ * the backend's own `_verify_close_intent(product=...)` checks ONE
+ * product's row, never a cross-product sum. Summing here would
+ * misclassify both the product AND the close-intent decision on a
+ * genuinely mixed-product book (e.g. NRML short 2 + MIS long 3 on the
+ * same symbol/account).
+ *
+ * Resolution, in order:
+ *   1. Keep only rows for this symbol+account with a NON-ZERO quantity —
+ *      a closed-out position can leave a stale `qty=0` row for the day
+ *      in `positionRows`; such a row carries no real exposure to match.
+ *   2. Among those, keep only rows whose sign is OPPOSITE the leg's own
+ *      side. A same-direction row is an open/add against that product,
+ *      never a close — resolving a product for that case is a genuine,
+ *      separate improvement (adding to an existing MIS position via a
+ *      defaulted-NRML leg also creates a stray second position), but it
+ *      is NOT this function's job: left as a flagged, out-of-scope
+ *      residual (see the Playwright spec / handback report), matching
+ *      the task's literal ask (close-product mismatch only).
+ *   3. Zero opposite-sign rows — including when the ONLY match is a
+ *      same-direction row — is "no match": `{product: null, intent:
+ *      null, ambiguous: false}`. The caller keeps its existing default
+ *      (hardcoded NRML, no intent) unchanged.
+ *   4. Exactly one product among the opposite-sign rows (summed, same
+ *      "two rows of one product together make the held position" rule
+ *      `isCloseIntentLeg` uses, just scoped to ONE product instead of
+ *      every product) — `product` is that product. `intent` is
+ *      `'close'` only when `lots * lotSize <= |summed held qty|`, the
+ *      identical sign+magnitude rule the backend's `_verify_close_intent`
+ *      enforces and `isCloseIntentLeg` already uses — a leg that would
+ *      flip PAST flat (contracts exceed the held quantity) gets the
+ *      row's product (so a partial-close-then-open still targets the
+ *      right product) but NO close intent, so the G2 5-lot-cap bypass
+ *      never applies to the "new position" portion of a flip.
+ *   5. Two or more DIFFERING products among the opposite-sign rows —
+ *      genuinely ambiguous which product this leg belongs to. Never
+ *      guess: `{product: null, intent: null, ambiguous: true}`, same
+ *      "don't guess, flag it" rule as the Ticket-tab fix's
+ *      `mergePositionRows` cross-product-merge-ambiguity case.
+ *
+ * `positionRows` is `portfolioStore.positions.rows` — passed in rather
+ * than imported, same framework-agnostic reasoning as `isCloseIntentLeg`
+ * above.
+ *
+ * @param {{sym?: string, side?: string, lots?: number, lotSize?: number}} leg
+ * @param {string} account
+ * @param {any[]} positionRows - {account, tradingsymbol|symbol, product, quantity|qty} rows
+ * @returns {{product: string|null, intent: 'close'|null, ambiguous: boolean}}
+ */
+export function resolveLegHeldContext(leg, account, positionRows) {
+  const sym = String(leg?.sym || '').toUpperCase();
+  const acct = String(account || '');
+  const NONE = { product: null, intent: null, ambiguous: false };
+  if (!sym || !acct || !Array.isArray(positionRows) || positionRows.length === 0) return NONE;
+
+  const legSign = leg?.side === 'SELL' ? -1 : 1;
+  /** @type {Map<string, number>} */
+  const byProduct = new Map();
+  for (const p of positionRows) {
+    if (String(p?.account || '') !== acct) continue;
+    const psym = String(p?.tradingsymbol || p?.symbol || '').toUpperCase();
+    if (psym !== sym) continue;
+    const qty = Number(p?.quantity ?? p?.qty ?? 0) || 0;
+    if (qty === 0) continue; // stale/closed-out row for the day — no real exposure
+    const rowSign = qty > 0 ? 1 : -1;
+    if (rowSign === legSign) continue; // same direction — open/add, out of scope here
+    const prod = String(p?.product || '').toUpperCase() || 'NRML';
+    byProduct.set(prod, (byProduct.get(prod) || 0) + qty);
+  }
+  if (byProduct.size === 0) return NONE;
+  if (byProduct.size > 1) return { product: null, intent: null, ambiguous: true };
+
+  const [[product, heldQty]] = byProduct.entries();
+  const contracts = (Number(leg?.lots) || 0) * (Number(leg?.lotSize) || 0);
+  const closing = contracts > 0 && contracts <= Math.abs(heldQty);
+  return { product, intent: closing ? 'close' : null, ambiguous: false };
+}
+
+/**
  * Build the Chain tab's pre-submit spread-check plan — one check item per
  * CE/PE leg staged in the basket, EXCLUDING any leg that `isCloseIntentLeg`
  * identifies as genuinely closing/reducing an existing position. Futures

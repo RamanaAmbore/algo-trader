@@ -26,7 +26,7 @@
   import ShortcutCheatsheet from '$lib/ShortcutCheatsheet.svelte';
   import { bootstrapRBAC } from '$lib/rbac';
   import { startBookChangedBus } from '$lib/data/bookChanged';
-  import { startBookPollers, setBookPollerLiveMs, setBookPollerClosedMs, getFillWatchIntervalMs, setFillWatchIntervalMs } from '$lib/data/marketDataStores.svelte.js';
+  import { startBookPollers, setBookPollerLiveMs, setBookPollerClosedMs, getFillWatchIntervalMs, setFillWatchIntervalMs, positionsStore } from '$lib/data/marketDataStores.svelte.js';
   import { loadAccountOrder } from '$lib/data/accountSort.js';
   import { startMarketGatedQuoteStream, stopMarketGatedQuoteStream, lastLiveTickAt, stopQuoteStream } from '$lib/data/quoteStream';
   import { tickBus, mergeSymbolUpdate, getSnapshot } from '$lib/data/symbolStore.svelte.js';
@@ -985,6 +985,15 @@
       // already calls (MarketPulse/PerformancePage/derivatives), just
       // reachable from a spec without needing live position data.
       /** @type {any} */ (window).__stores.openOrderTicketModal = openOrderTicketModal;
+      // Also exposes `positionsStore` (2026-11 real-money audit fix —
+      // Chain basket close-product spec) so a Playwright spec can
+      // route-mock GET /api/positions/ with a synthetic held row and
+      // force-reload it (`positionsStore.load({force:true})`) without
+      // needing a real broker position in whichever environment the
+      // spec runs against. No new behaviour: this is the same
+      // `positionsStore` every page already consumes via
+      // `portfolioStore.positions.rows`.
+      /** @type {any} */ (window).__stores.positionsStore = positionsStore;
     }
     // Market-gated quote stream gate. Starts the SSE if any segment is
     // open right now; runs a 30 s visibility-aware watcher that pauses /

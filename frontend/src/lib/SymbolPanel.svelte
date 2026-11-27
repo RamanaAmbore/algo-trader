@@ -31,6 +31,8 @@
   import { formatSubmitLabel } from '$lib/order/orderTicketSubmit.js';
   import { SYM_TYPE_OPTS } from '$lib/data/symbolTypes';
   import { placeBasket, fetchBasketMargin, fetchLiveStatus } from '$lib/api';
+  import { portfolioStore } from '$lib/data/portfolioStore.svelte.js';
+  import { resolveLegHeldContext } from '$lib/data/spreadGate.js';
   import ChartModal from '$lib/ChartModal.svelte';
   import ChartWorkspace from '$lib/ChartWorkspace.svelte';
   import { executionMode, visibleInterval } from '$lib/stores';
@@ -716,12 +718,18 @@
           const _bmQty = _bmIsFO
             ? Math.max(1, Number(leg.lots) || 1)
             : Math.max(1, (Number(leg.lots) || 1) * (Number(leg.lotSize) || 1));
+          // 2026-11 real-money audit fix — preview must match
+          // enforcement (see CLAUDE.md's "Preview matches enforcement"
+          // invariant): resolve the same real held-position product
+          // `submitBasket()` will actually send, so this margin preview
+          // never shows a NRML-basis figure for a leg that will really
+          // be placed under MIS/CNC.
           byAcct.get(a)?.push({
             tradingsymbol: leg.sym,
             exchange: leg.exchange || 'NFO',
             transaction_type: leg.side,
             quantity: _bmQty,
-            product: leg.product || 'NRML',
+            product: _resolveLegSubmitFields(leg).product,
             order_type: 'LIMIT',
             price: Number(leg.limit) || 0,
           });
@@ -1407,6 +1415,44 @@
     leg.account || _sharedAccount || account || '';
 
   /**
+   * Resolve a Chain basket leg's real product (MIS/NRML/CNC) + close
+   * intent against the account's REAL held positions, at the moment of
+   * submit/preview — never at staging time, since a leg's own `lots` can
+   * change after staging (merge/net on the Chain tab) and the account's
+   * positions can change between staging and submit (2026-11 real-money
+   * audit fix, mirrors the Ticket-tab close-product fix — see CLAUDE.md).
+   *
+   * Only resolves legs OptionChainTab marked `productAuto: true` — a
+   * Chain-tab default, never an operator choice. A leg added via
+   * OrderTicket's own `_basketPayload()` (its own product picker) never
+   * carries this tag, so its explicit product choice is passed through
+   * unchanged, exactly as before this fix.
+   *
+   * Returns `{product, intent}` ready to splice into an outgoing
+   * payload — `product` always a real string (falls back to the leg's
+   * own `product` field, or 'NRML'), `intent` either `'close'` or
+   * `null`. Logs (never toasts) when the match is genuinely ambiguous
+   * across more than one product — "don't guess, flag it", same
+   * residual class as the Ticket-tab fix's cross-product merge case.
+   */
+  function _resolveLegSubmitFields(/** @type {any} */ leg) {
+    const fallback = { product: leg.product || 'NRML', intent: leg.intent || null };
+    if (!leg.productAuto) return fallback;
+    const positionRows = untrack(() => portfolioStore.positions.rows);
+    const resolved = resolveLegHeldContext(leg, legAccountOf(leg), positionRows);
+    if (resolved.ambiguous) {
+      console.warn(
+        `SymbolPanel: ${leg.side} ${leg.sym} matches more than one product ` +
+        `among held positions — product left unresolved, submitting as ${fallback.product}.`
+      );
+    }
+    return {
+      product: resolved.product || fallback.product,
+      intent:  resolved.intent,
+    };
+  }
+
+  /**
    * Audit fix — a basket leg's `limit > 0` was the ONLY submit gate,
    * which a stale or operator-typed positive number satisfies just as
    * easily as a real one. Mirrors OrderTicket's `_depthPending`
@@ -1583,7 +1629,19 @@
     // own comment for the full story).
     const groups = [...byAcct.entries()].map(([acct, entries]) => ({
       account: acct,
-      legs: entries.map(({ leg }) => ({
+      legs: entries.map(({ leg }) => {
+        // 2026-11 real-money audit fix — Chain basket legs used to send
+        // a hardcoded product='NRML' with zero position context, and
+        // never set `intent='close'` even when the leg was genuinely
+        // closing a held position. Kite only nets a close within the
+        // SAME product, so a close claimed against the WRONG product
+        // silently opened a stray opposite-direction position next to
+        // the still-open one instead of closing it. See
+        // `_resolveLegSubmitFields` + spreadGate.js's
+        // `resolveLegHeldContext` — resolved fresh here, at submit
+        // time, against the account's live positions.
+        const _pi = _resolveLegSubmitFields(leg);
+        return {
         tradingsymbol:    leg.sym,
         exchange:         leg.exchange || 'NFO',
         transaction_type: leg.side,
@@ -1593,7 +1651,8 @@
         quantity:         Number(leg.lotSize || 1) > 1
                             ? Math.max(1, Number(leg.lots) || 1)
                             : Math.max(1, (Number(leg.lots) || 1) * (Number(leg.lotSize) || 1)),
-        product:          leg.product || 'NRML',
+        product:          _pi.product,
+        intent:           _pi.intent,
         order_type:       'LIMIT',
         variety:          'regular',
         price:            Number(leg.limit),
@@ -1612,7 +1671,8 @@
         // silently drops it before persist; nothing should send it
         // any more. See CLAUDE.md's "Order Ticket / Bracket-template
         // re-wire" history.
-      })),
+        };
+      }),
     }));
 
     const total = basketLegs.length;

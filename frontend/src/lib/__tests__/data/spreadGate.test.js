@@ -7,6 +7,7 @@ import {
   isCloseIntentLeg,
   buildSpreadGatePlan,
   resolveHedgeStrike,
+  resolveLegHeldContext,
 } from '../../data/spreadGate.js';
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -428,6 +429,93 @@ describe('isCloseIntentLeg', () => {
   it('a zero-contracts leg (missing lots/lotSize) is never close-intent', () => {
     const leg = { sym: 'NIFTY26JUN24000CE', side: 'SELL' };
     expect(isCloseIntentLeg(leg, 'ACC1', positionRows)).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// resolveLegHeldContext — 2026-11 real-money audit fix. Chain basket legs
+// must carry the held position's REAL product (never a hardcoded NRML)
+// and claim intent='close' only when genuinely closing — scoped to ONE
+// product, never a cross-product sum (that's isCloseIntentLeg's job,
+// for a different, lower-stakes purpose).
+// ─────────────────────────────────────────────────────────────────────────
+describe('resolveLegHeldContext', () => {
+  it('no held position for the symbol+account → no match (caller keeps its NRML default)', () => {
+    const leg = { sym: 'NIFTY26JUN24000CE', side: 'SELL', lots: 1, lotSize: 50 };
+    expect(resolveLegHeldContext(leg, 'ACC1', [])).toEqual({ product: null, intent: null, ambiguous: false });
+    expect(resolveLegHeldContext(leg, 'ACC1', undefined)).toEqual({ product: null, intent: null, ambiguous: false });
+  });
+
+  it('a stale zero-quantity row for the day is not a real held position', () => {
+    const rows = [{ account: 'ACC1', tradingsymbol: 'NIFTY26JUN24000CE', product: 'MIS', quantity: 0 }];
+    const leg = { sym: 'NIFTY26JUN24000CE', side: 'SELL', lots: 1, lotSize: 50 };
+    expect(resolveLegHeldContext(leg, 'ACC1', rows)).toEqual({ product: null, intent: null, ambiguous: false });
+  });
+
+  it('a single opposite-sign MIS row within quantity resolves product=MIS, intent=close', () => {
+    const rows = [{ account: 'ACC1', tradingsymbol: 'NIFTY26JUN24000CE', product: 'MIS', quantity: 100 }]; // held LONG 2 lots (100 contracts)
+    const leg = { sym: 'NIFTY26JUN24000CE', side: 'SELL', lots: 1, lotSize: 50 }; // SELL 1 lot (50 contracts) — reduces
+    expect(resolveLegHeldContext(leg, 'ACC1', rows)).toEqual({ product: 'MIS', intent: 'close', ambiguous: false });
+  });
+
+  it('exactly flattening an opposite-sign row also resolves intent=close', () => {
+    const rows = [{ account: 'ACC1', tradingsymbol: 'NIFTY26JUN24000CE', product: 'MIS', quantity: -50 }]; // held SHORT 1 lot (50 contracts)
+    const leg = { sym: 'NIFTY26JUN24000CE', side: 'BUY', lots: 1, lotSize: 50 }; // BUY 1 lot (50 contracts)
+    expect(resolveLegHeldContext(leg, 'ACC1', rows)).toEqual({ product: 'MIS', intent: 'close', ambiguous: false });
+  });
+
+  it('a flip past flat resolves the matched product but no close intent', () => {
+    const rows = [{ account: 'ACC1', tradingsymbol: 'NIFTY26JUN24000CE', product: 'MIS', quantity: 50 }]; // held LONG 1 lot (50 contracts)
+    const leg = { sym: 'NIFTY26JUN24000CE', side: 'SELL', lots: 3, lotSize: 50 }; // SELL 3 lots (150 contracts) — overshoots
+    expect(resolveLegHeldContext(leg, 'ACC1', rows)).toEqual({ product: 'MIS', intent: null, ambiguous: false });
+  });
+
+  it('a same-direction (add) match is out of scope — no match, caller keeps default', () => {
+    const rows = [{ account: 'ACC1', tradingsymbol: 'NIFTY26JUN24000CE', product: 'MIS', quantity: 100 }]; // held LONG 2 lots
+    const leg = { sym: 'NIFTY26JUN24000CE', side: 'BUY', lots: 1, lotSize: 50 }; // BUY more — same direction
+    expect(resolveLegHeldContext(leg, 'ACC1', rows)).toEqual({ product: null, intent: null, ambiguous: false });
+  });
+
+  it('two differing products on the opposite side are genuinely ambiguous — never guess', () => {
+    const rows = [
+      { account: 'ACC1', tradingsymbol: 'NIFTY26JUN24000CE', product: 'NRML', quantity: 50 },
+      { account: 'ACC1', tradingsymbol: 'NIFTY26JUN24000CE', product: 'MIS', quantity: 100 },
+    ]; // both held LONG, different products
+    const leg = { sym: 'NIFTY26JUN24000CE', side: 'SELL', lots: 1, lotSize: 50 };
+    expect(resolveLegHeldContext(leg, 'ACC1', rows)).toEqual({ product: null, intent: null, ambiguous: true });
+  });
+
+  it('two rows of the SAME product sum together (mirrors isCloseIntentLeg\'s own rule)', () => {
+    const rows = [
+      { account: 'ACC1', tradingsymbol: 'NIFTY26JUN24000CE', product: 'MIS', quantity: 50 },
+      { account: 'ACC1', tradingsymbol: 'NIFTY26JUN24000CE', product: 'MIS', quantity: 50 },
+    ];
+    const leg = { sym: 'NIFTY26JUN24000CE', side: 'SELL', lots: 2, lotSize: 50 }; // 100 contracts == 50+50 held
+    expect(resolveLegHeldContext(leg, 'ACC1', rows)).toEqual({ product: 'MIS', intent: 'close', ambiguous: false });
+  });
+
+  it('a different account holding the same symbol never matches (account-scoped)', () => {
+    const rows = [{ account: 'ACC1', tradingsymbol: 'NIFTY26JUN24000CE', product: 'MIS', quantity: 2 }];
+    const leg = { sym: 'NIFTY26JUN24000CE', side: 'SELL', lots: 1, lotSize: 50 };
+    expect(resolveLegHeldContext(leg, 'ACC2', rows)).toEqual({ product: null, intent: null, ambiguous: false });
+  });
+
+  it('a product-less row defaults to NRML before matching', () => {
+    const rows = [{ account: 'ACC1', tradingsymbol: 'NIFTY26JUN24000CE', quantity: 50 }]; // no product field
+    const leg = { sym: 'NIFTY26JUN24000CE', side: 'SELL', lots: 1, lotSize: 50 };
+    expect(resolveLegHeldContext(leg, 'ACC1', rows)).toEqual({ product: 'NRML', intent: 'close', ambiguous: false });
+  });
+
+  it('a `symbol`/`qty` shaped row also matches (not only `tradingsymbol`/`quantity`)', () => {
+    const rows = [{ account: 'ACC1', symbol: 'NIFTY26JUN24000CE', product: 'CNC', qty: 1 }];
+    const leg = { sym: 'NIFTY26JUN24000CE', side: 'SELL', lots: 1, lotSize: 1 };
+    expect(resolveLegHeldContext(leg, 'ACC1', rows)).toEqual({ product: 'CNC', intent: 'close', ambiguous: false });
+  });
+
+  it('a zero-contracts leg (missing lots/lotSize) resolves the matched product but no intent', () => {
+    const rows = [{ account: 'ACC1', tradingsymbol: 'NIFTY26JUN24000CE', product: 'MIS', quantity: 1 }];
+    const leg = { sym: 'NIFTY26JUN24000CE', side: 'SELL' };
+    expect(resolveLegHeldContext(leg, 'ACC1', rows)).toEqual({ product: 'MIS', intent: null, ambiguous: false });
   });
 });
 
