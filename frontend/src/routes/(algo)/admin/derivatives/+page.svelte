@@ -3042,8 +3042,23 @@
         continue;
       }
       if (c._expired) continue;
+      // Closed leg (qty=0): route through the shared SSOT instead of a
+      // hand-rolled `c.realised || c.pnl` duplicate — `expiryPnlWithRealised`'s
+      // qty===0 branch never reads its `spot` argument, so `null` is safe
+      // here and this now also benefits from the 2026-11-27 sign-flip fix
+      // in `_closedLifetimePnl` (see expiryPnl.js) for free.
+      //
+      // Open leg (qty!==0): deliberately NOT routed through the shared
+      // function — `expiryPnlWithRealised` would return `ev + realised`
+      // (the theoretical BS-curve value plus realised), and `ev` needs a
+      // real spot to compute. Passing `null` here would make `ev` (and
+      // therefore the whole result) null for every open leg, silently
+      // DROPPING its already-realised partial-close P&L from the offset
+      // — a regression, not cleanup. `c.realised` alone is intentional:
+      // the curve itself already represents this leg's future theoretical
+      // value, so only the locked-in realised component belongs here.
       s += Number(c.qty || 0) === 0
-        ? Number(c.realised || c.pnl || 0)
+        ? Number(expiryPnlWithRealised(c, null) ?? 0)
         : Number(c.realised || 0);
     }
     return s;

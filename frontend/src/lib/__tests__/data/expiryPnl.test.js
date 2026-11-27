@@ -554,6 +554,104 @@ describe('positionExpPnlPieces', () => {
 });
 
 // ============================================================================
+// splitClosedReopened / _closedLifetimePnl — sign-flip fix (2026-11-27
+// live incident, account ZJ6294, GOLD26NOV125000PE). Fixture values are
+// the REAL Kite payload captured in daily_book for this exact position
+// (scaled to contracts, matching what `_annotate_lot_size` produces):
+// overnight long 300 @ avg_cost 3431.8333, 400 contracts sold today
+// (exceeding the 300 overnight — a genuine oversell that flips the
+// position net short 100), Kite's own `average_price`/`pnl`/`realised`
+// as reported at that exact snapshot.
+//
+// Before the fix: `_closedLifetimePnl`'s general-branch formula
+// `(exitPrice − avgCost) × closedQty` collapsed to exactly 0, because
+// Kite overwrites `average_price` to the SAME blended price
+// (day_sell_value / day_sell_quantity) used to compute `exitPrice` once
+// a position flips sign intraday — silently erasing the whole realised
+// loss on the closed overnight portion ("closed position loss shown as
+// 0" + the Exp P&L total reading as a false profit, operator-observed).
+// ============================================================================
+
+describe('splitClosedReopened — sign-flip (oversold through zero) regression', () => {
+  const flippedRow = {
+    tradingsymbol: 'GOLD26NOV125000PE',
+    account: 'ZJ6294',
+    quantity: -100,            // net short 100 contracts (oversold past flat)
+    average_price: 936.125,    // Kite's post-flip blended average — NOT the true 3431.8333 entry
+    last_price: 706.5,
+    prev_close: 2920,
+    overnight_quantity: 300,   // carried long from prior sessions @ true avg_cost 3431.8333
+    day_buy_quantity: 0,
+    day_sell_quantity: 400,    // EXCEEDS overnight_quantity → sign flip
+    day_buy_value: 0,
+    day_sell_value: 374450,    // 400 contracts @ 936.125 blended
+    pnl: -725749.9999,         // Kite's own lifetime pnl — confirmed reliable through the flip
+    realised: 0,               // Kite's documented-unreliable field, stuck at 0
+  };
+
+  it('recovers the real realised loss on the closed overnight portion instead of 0', () => {
+    const p = buildPositionRowFromBroker(flippedRow, 'live');
+    const pieces = splitClosedReopened(p);
+    expect(pieces).toHaveLength(2);
+    const closed = pieces.find((x) => x._splitTag === 'closed');
+    const open = pieces.find((x) => x._splitTag === 'open');
+    expect(closed).toBeDefined();
+    expect(open).toBeDefined();
+    // pnl - (lastPrice - avgCost) * remainingQty = -725749.9999 - (706.5-936.125)*(-100)
+    //  = -725749.9999 - 22962.5 = -748712.4999
+    expect(closed.pnl).toBeCloseTo(-748712.4999, 2);
+    expect(closed.realised).toBeCloseTo(-748712.4999, 2);
+    // The old (buggy) formula would have given exactly 0 here — pin the
+    // regression explicitly, not just the correct value.
+    expect(closed.pnl).not.toBe(0);
+  });
+
+  it('the pre-fix formula would have collapsed to exactly 0 (regression guard — not a behaviour assertion)', () => {
+    // exitPrice = day_sell_value / day_sell_quantity = 374450/400 = 936.125,
+    // numerically identical to Kite's post-flip average_price — this is
+    // the exact mechanism that erased the loss before the fix.
+    const exitPrice = flippedRow.day_sell_value / flippedRow.day_sell_quantity;
+    expect(exitPrice).toBe(flippedRow.average_price);
+  });
+
+  it('Exp P&L total (closed + open) reflects the real loss, not a false profit', () => {
+    const total = positionExpPnl(flippedRow, 'opt', 2500);
+    // Dominated by the closed leg's large realised loss regardless of the
+    // open 100-lot residual's own (legitimately separate) theoretical value.
+    expect(total).toBeLessThan(-600000);
+  });
+
+  it('closed-row Day P&L is unaffected by this fix (still uses the independent _closedDayPnl formula)', () => {
+    const p = buildPositionRowFromBroker(flippedRow, 'live');
+    const pieces = splitClosedReopened(p);
+    const closed = pieces.find((x) => x._splitTag === 'closed');
+    // (exitPrice - close) * closedQty = (936.125-2920)*300 = -595,162.5 —
+    // unchanged by the _closedLifetimePnl fix, which only touches pnl/realised.
+    expect(closed.day_change_val).toBeCloseTo(-595162.5, 1);
+  });
+
+  it('non-flip overnight-carry partial close is byte-identical to the old formula (no regression)', () => {
+    // Overnight short 150, bought back 75 (NOT exceeding the overnight
+    // 150) — no sign flip. Mirrors the existing positionExpPnl fixture
+    // above; re-asserted here directly against splitClosedReopened's
+    // output to pin that the new flip-detection branch is never taken.
+    const p = buildPositionRowFromBroker({
+      tradingsymbol: 'NIFTY24000CE', account: 'ACC1',
+      quantity: -75, average_price: 200, last_price: 10, prev_close: 200,
+      overnight_quantity: -150, day_buy_quantity: 75, day_sell_quantity: 0,
+      day_buy_value: 11250, day_sell_value: 0,
+      pnl: 3750, realised: 0,
+    }, 'live');
+    const pieces = splitClosedReopened(p);
+    const closed = pieces.find((x) => x._splitTag === 'closed');
+    // (avgCost - exitPrice) * closedQty = (200-150)*75 = 3750 — same value
+    // the pre-fix arithmetic formula always gave for this non-flip case.
+    expect(closed.pnl).toBe(3750);
+    expect(closed.realised).toBe(3750);
+  });
+});
+
+// ============================================================================
 // legExtrinsicDisplay — item-2/item-7 fix (round 4): per-row, poll-time-
 // consistent Extrinsic, options-only.
 // ============================================================================

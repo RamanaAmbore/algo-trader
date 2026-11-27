@@ -363,19 +363,72 @@ function _closedDayPnl(oq, exitPrice, close, closedQty) {
 }
 
 /**
- * Lifetime P&L attributable to the closed portion.
- * When broker already closed the whole position (brokerQty=0) use p.pnl;
- * otherwise compute from cost basis. Arithmetic is identical to original.
- * @param {number} brokerQty   Math.abs(p.qty)
- * @param {number} pnl         p.pnl
- * @param {number} oq          overnight_quantity
+ * Lifetime P&L attributable to the closed (overnight) portion.
+ *
+ * When broker already closed the whole position (brokerQty=0) use p.pnl
+ * directly — Kite's `pnl` is confirmed reliable (realised+unrealised,
+ * lifetime) even though `realised` itself is routinely 0 (documented
+ * Kite quirk, see expiryPnlWithRealised above).
+ *
+ * Sign-flip fix (2026-11-27 live incident, account/symbol masked —
+ * GOLD put, overnight long carried 3 days, closed via day sells that
+ * EXCEEDED the overnight quantity, flipping the position net short):
+ * once today's closing-direction quantity (`dsq` for a long, `dbq` for
+ * a short) EXCEEDS the overnight quantity, Kite overwrites
+ * `average_price` to the blended price of ALL of today's
+ * closing-direction fills — not the true original entry price of the
+ * now-closed overnight batch. `exitPrice` is computed the exact same
+ * way (day_sell_value / day_sell_quantity for a long), so in this
+ * scenario `exitPrice` and `avgCost` become numerically IDENTICAL,
+ * collapsing the plain `(exitPrice − avgCost) × closedQty` formula to
+ * exactly 0 — silently erasing the entire realised loss/gain on the
+ * overnight-closed portion while the position still shows as "open"
+ * (brokerQty !== 0) with a small residual in the opposite direction.
+ *
+ * Robust path (used whenever a flip is detected, i.e. `brokerQty > 0`
+ * AND the closing-direction day quantity exceeds the overnight
+ * quantity): back-solve the closed portion from Kite's own lifetime
+ * `pnl` (reliable through a flip — confirmed via live daily_book
+ * snapshots) minus the current mark on whatever remains open, using
+ * `avgCost` as THAT remainder's own entry (self-consistent with
+ * Kite's own post-flip accounting — the same blended price it already
+ * uses for both `average_price` and `exitPrice`).
+ *
+ * Confirmed mathematically equivalent to the plain arithmetic formula
+ * whenever NO flip has occurred (avgCost is still the true original
+ * entry): `pnl = realised_on_closed_portion + (lastPrice − avgCost) ×
+ * remainingQty`, so `pnl − (lastPrice − avgCost) × remainingQty` always
+ * recovers the same realised-on-closed-portion value the arithmetic
+ * formula computes directly — verified against real (non-flipped)
+ * daily_book snapshots (Nov24/25/26 GOLD26NOV125000PE rows) before
+ * shipping. Reduces to the brokerQty===0 branch exactly when
+ * remainingQty is 0.
+ *
+ * @param {number} brokerQty     Math.abs(p.qty)
+ * @param {number} pnl           p.pnl
+ * @param {number} oq             overnight_quantity
  * @param {number} exitPrice
- * @param {number} avgCost     p.avg_cost
+ * @param {number} avgCost       p.avg_cost
  * @param {number} closedQty
+ * @param {number} dayCloseQty   day_sell_quantity (oq>0) or day_buy_quantity (oq<0) —
+ *   the full day quantity transacted in the closing direction, used only to
+ *   detect a sign flip (may exceed closedQty = min(|oq|, dayCloseQty)).
+ * @param {number} remainingQty  signed p.qty — the currently open residual
+ *   (0 when perfectly flat, opposite sign from `oq` when flipped).
+ * @param {number} lastPrice     p.ltp — current mark for the remainder.
  * @returns {number}
  */
-function _closedLifetimePnl(brokerQty, pnl, oq, exitPrice, avgCost, closedQty) {
+function _closedLifetimePnl(
+  brokerQty, pnl, oq, exitPrice, avgCost, closedQty,
+  dayCloseQty = closedQty, remainingQty = 0, lastPrice = null,
+) {
   if (brokerQty === 0) return pnl;
+  const overnightAbs = Math.abs(oq);
+  const flipped = dayCloseQty > overnightAbs;
+  if (flipped && avgCost && lastPrice != null && isFinite(Number(lastPrice))) {
+    const unrealisedOnRemainder = (Number(lastPrice) - avgCost) * remainingQty;
+    return pnl - unrealisedOnRemainder;
+  }
   return oq > 0
     ? (exitPrice - avgCost) * closedQty
     : (avgCost - exitPrice) * closedQty;
@@ -520,8 +573,14 @@ export function splitClosedReopened(p) {
 
   const brokerQty        = Math.abs(Number(p.qty || 0));
   const avg_cost         = Number(p.avg_cost || 0);
+  // Full day quantity transacted in the closing direction — may exceed
+  // closed_qty (= min(|oq|, this)) whenever the position flips sign
+  // intraday. Passed through so _closedLifetimePnl can detect the flip
+  // and fall back to the pnl-based reconstruction (see its docstring).
+  const day_close_qty    = oq > 0 ? dsq : dbq;
   const closed_lifetime_pnl = _closedLifetimePnl(
-    brokerQty, Number(p.pnl || 0), oq, exit_price, avg_cost, closed_qty
+    brokerQty, Number(p.pnl || 0), oq, exit_price, avg_cost, closed_qty,
+    day_close_qty, Number(p.qty || 0), p.ltp != null ? Number(p.ltp) : null,
   );
 
   if (brokerQty === 0) {

@@ -697,23 +697,36 @@ test.describe('EXP P&L edge cases — closed legs, partial closes, realised comp
     console.log('[TC9.1-pass] lastRefreshAt imported in derivatives page');
   });
 
-  test('9.0-Stale: _expiryPnlOffset uses c.realised || c.pnl for closed legs', async () => {
+  test('9.0-Stale: _expiryPnlOffset routes closed legs through the shared SSOT (pnl fallback intact)', async () => {
     // Bug: fnoClosed uses c.realised || c.pnl but _expiryPnlOffset only used c.realised.
     // For options settled at expiry Kite returns realised=0 and puts P&L in c.pnl.
     // Chart curve was missing the offset → payoff curve diverged from overlay stat.
-    // Fix: closed legs (qty=0) use c.realised || c.pnl; open legs keep c.realised only.
+    // Fix (original): closed legs (qty=0) use c.realised || c.pnl; open legs keep
+    // c.realised only.
+    //
+    // Superseded (2026-11-27 sign-flip fix, same guard intent): the closed-leg
+    // branch was moved off its own hand-rolled `c.realised || c.pnl` duplicate
+    // onto the shared `expiryPnlWithRealised(c, null)` (expiryPnl.js) — the
+    // SAME realised-then-pnl-fallback precedence this test originally pinned,
+    // now also carrying the `_closedLifetimePnl` sign-flip fix for free. Open
+    // legs still deliberately use `c.realised` alone (unchanged) — see the
+    // comment directly above `_expiryPnlOffset` in +page.svelte.
     const derivPath = '/Users/ramanambore/projects/ramboq/frontend/src/routes/(algo)/admin/derivatives/+page.svelte';
     const content = readFileSync(derivPath, 'utf-8');
 
     const offStart = content.indexOf('const _expiryPnlOffset');
-    const offEnd   = content.indexOf(');', offStart) + 2;
+    const offEnd   = content.indexOf('return s;', offStart) + 'return s;'.length;
     const offBlock = content.substring(offStart, offEnd);
 
-    // Must handle closed legs with pnl fallback
-    expect(offBlock).toContain('c.realised || c.pnl');
+    // Must route closed legs through the shared realised||pnl SSOT, not a
+    // local duplicate of the fallback logic.
+    expect(offBlock).toContain('expiryPnlWithRealised(c, null)');
+    // Open legs must still exclude c.pnl (no double-counting unrealised MTM
+    // against the curve's own theoretical value).
+    expect(offBlock).toContain('Number(c.realised || 0)');
     // Must guard by qty=0 so open legs don't pick up MTM c.pnl
     expect(offBlock).toContain('Number(c.qty || 0) === 0');
-    console.log('[TC9.0-pass] _expiryPnlOffset uses c.realised || c.pnl for closed legs');
+    console.log('[TC9.0-pass] _expiryPnlOffset routes closed legs through expiryPnlWithRealised');
   });
 
   test('9.2-Stale: loadPositions calls lastRefreshAt.set on success', async () => {
