@@ -4413,6 +4413,104 @@ def _ds_tick_mcx_stop(now: datetime, today: date) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Expiry-devolvement delayed backfill (2026-11-28 live incident) — see
+# `daily_snapshot.py:run_expiry_devolve_backfill()`'s own module comment
+# for the full incident this exists to catch (an ITM MCX option
+# devolving into a future at the broker a few minutes AFTER the main
+# EOD close-snapshot already ran, leaving that future's first
+# daily_book row missing for the whole next session).
+# ---------------------------------------------------------------------------
+
+async def _edb_marker_date() -> "date | None":
+    """DB-backed 'did today's expiry-devolve backfill already run'
+    marker — same restart-safety pattern as `_pcf_marker_date()` /
+    `_msr_marker_date()` above. `done_ref` alone is an in-memory
+    `[None]` box reset to `None` on every process restart; without this
+    marker, a deploy landing inside the ~30-min-after-MCX-close firing
+    window would re-run the backfill scan (and, if the on-disk gap
+    somehow reappeared, re-send the alert) every time."""
+    from backend.shared.helpers.settings import get_string
+    raw = get_string("task_markers.expiry_devolve_backfill_date", "")
+    if not raw:
+        return None
+    try:
+        return date.fromisoformat(raw)
+    except Exception:
+        return None
+
+
+async def _edb_mark_done(fire_date: date) -> None:
+    from backend.shared.helpers.settings import set_string
+    await set_string(
+        "task_markers.expiry_devolve_backfill_date", fire_date.isoformat(),
+        category="task_markers",
+        description=(
+            "Last IST trading-session date the ~30-min-after-MCX-close "
+            "expiry-devolvement daily_book backfill ran. Restart-safety "
+            "marker so a process restart inside the firing window never "
+            "re-runs the scan for a session that already completed."
+        ),
+    )
+
+
+async def _ds_tick_expiry_devolve_backfill(now: datetime, today: date, done_ref: list) -> None:
+    """Fires once per day, ~30 minutes after MCX close: delayed re-check
+    for an MCX option-devolvement daily_book gap the main EOD snapshot
+    missed because the broker hadn't finished processing the
+    devolvement yet. See `daily_snapshot.py:run_expiry_devolve_backfill`
+    for the real work; this is scheduling only.
+
+    Threshold math is deliberately NOT a bare `.time()` compare like
+    `_ds_tick_mcx_stop`'s own +1-minute offset immediately above — MCX
+    closes between 23:00 and 23:59 IST, so close_time + 30 minutes
+    RELIABLY crosses the IST midnight boundary (unlike a +1-minute
+    offset, which never does). Comparing bare times across that
+    boundary is the exact "winter wrap" bug class documented in
+    CLAUDE.md's "MCX DST-aware non-agri close time" entry — a 23:55
+    `now` would read as ">= thresh" against a wrapped `00:00` bare time,
+    firing 5 hours early. Anchoring the threshold to a full datetime on
+    the SESSION's own calendar day and comparing full datetimes avoids
+    this entirely.
+
+    `done_ref` is a mutable `[Optional[date]]` box so the fast in-memory
+    path never re-reads the DB marker once it's already fired today;
+    `_edb_marker_date()` / `_edb_mark_done()` give the same guarantee
+    across a process restart.
+    """
+    rows = exchange_clock._effective_gate_rows("MCX")
+    close_t = rows[0].close_time if rows else None
+    if close_t is None:
+        return
+    # [00:00, 02:00) IST: `now` has already rolled past midnight, so the
+    # close we're checking belongs to YESTERDAY's session (same
+    # post-midnight catch-up window `_ds_tick_mcx_stop` uses, just
+    # applied before building the threshold rather than after).
+    is_post_midnight = now.time() < dtime(2, 0)
+    session_day = today - timedelta(days=1) if is_post_midnight else today
+    fire_date = session_day
+    if done_ref[0] == fire_date:
+        return
+    thresh_dt = datetime.combine(session_day, close_t, tzinfo=now.tzinfo) + timedelta(minutes=30)
+    if now < thresh_dt:
+        return
+    if await _edb_marker_date() == fire_date:
+        # Already ran via an earlier tick before a mid-window restart —
+        # just seed the local sentinel so this tick stops re-checking the DB.
+        done_ref[0] = fire_date
+        return
+    # Mark BEFORE running — mirrors `_ds_tick_draft_sweep`'s own rule: a
+    # mid-run exception must not retry on every subsequent 30s tick for
+    # the rest of the day.
+    done_ref[0] = fire_date
+    try:
+        from backend.api.algo.daily_snapshot import run_expiry_devolve_backfill
+        await run_expiry_devolve_backfill()
+    except Exception as e:
+        logger.error(f"[EXPIRY-DEVOLVE-BACKFILL] tick failed: {e}")
+    await _edb_mark_done(fire_date)
+
+
+# ---------------------------------------------------------------------------
 # Calendar-gated ticker connect (2026-10-24) — stop connecting to the
 # broker WebSocket at all on a day nothing will trade, while never
 # missing a genuinely open day (including a same-day special session
@@ -5148,6 +5246,7 @@ async def _task_daily_snapshot() -> None:
     _prev_close_fix_done: list = [None]   # mutable box: Optional[date]
     _draft_sweep_done: list    = [None]   # mutable box: Optional[date] — Item 2, 2026-10-22
     _market_status_done: list = [None]   # mutable box: Optional[date] — Item 3, 2026-10-22
+    _expiry_devolve_backfill_done: list = [None]   # mutable box: Optional[date] — 2026-11-28
 
     _POLL_INTERVAL_S = 30
 
@@ -5174,6 +5273,7 @@ async def _task_daily_snapshot() -> None:
         await _ds_tick_ticker_restart(now, today)
         await _ds_tick_draft_sweep(now, today, _draft_sweep_done)
         await _ds_tick_market_status_report(now, today, _market_status_done)
+        await _ds_tick_expiry_devolve_backfill(now, today, _expiry_devolve_backfill_done)
 
 
 async def _task_instruments() -> None:

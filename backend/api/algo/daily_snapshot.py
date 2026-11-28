@@ -1682,6 +1682,228 @@ def _snap_broadcast_book_changed(accounts: list[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Expiry-devolvement delayed backfill (2026-11-28 live incident)
+#
+# Confirmed live gap: the main EOD close-snapshot (`_positions_rows` via
+# `snapshot_daily_book`) does ONE point-in-time broker fetch when it fires
+# (~MCX close + 15 min). On 2026-11-27, two accounts (ZG0790, ZJ6294) each
+# held an ITM MCX GOLD/GOLDM option through its own expiry — the option
+# physically devolved into a short future at the broker, but Kite's own
+# backend had not finished processing the devolvement by the time the EOD
+# snapshot ran. The resulting daily_book batch for both accounts therefore
+# contains ZERO rows for the new future symbol, even though a live fetch
+# minutes later confirmed the position genuinely exists. No later snapshot
+# runs before the next trading session, so that future's Day P&L baseline
+# would otherwise stay missing for the ENTIRE next session (a
+# `baseline_stale` case — see `pnl_math.py`'s baseline-gap substitution,
+# which makes this safe-but-imprecise rather than silently wrong, but a
+# real baseline is strictly better).
+#
+# `run_expiry_devolve_backfill()` is a delayed (~30 min after MCX close,
+# scheduled from `background.py:_ds_tick_expiry_devolve_backfill`)
+# re-check: for every account that held an MCX option expiring TODAY per
+# the already-persisted EOD batch (zero broker calls when nothing
+# expired), it re-fetches LIVE positions and backfills any daily_book row
+# genuinely missing for a symbol the broker now reports holding — using
+# the SAME row-building/upsert machinery (`_fetch_account_data` /
+# `_positions_rows` / `_upsert_rows`) the main snapshot itself uses, so a
+# backfilled row is computed identically to one written on time.
+#
+# Candidate-account detection deliberately does NOT restrict to the
+# ITM/NTM moneyness ExpiryEngine's own netting would flag `needs_close` —
+# netting is OUR decision about whether to proactively close a position,
+# it has no bearing on what the exchange does with a leg at physical
+# settlement. Every MCX option expiring today is a candidate; an OTM one
+# simply never has a devolved future to find, so its account's re-check
+# is a correct, cheap no-op.
+# ---------------------------------------------------------------------------
+
+async def _edb_query_mcx_positions_rows(target_date: date) -> "list[tuple[str, str, int]]":
+    """Return (account, symbol, qty) for every daily_book kind='positions'
+    MCX row already captured for `target_date` by the main EOD snapshot.
+
+    Pure DB read — zero broker calls. This is what lets the backfill
+    pass skip entirely (no `all_brokers()` fetch at all) on the vast
+    majority of days where nothing expired on MCX.
+    """
+    from sqlalchemy import select
+    from backend.api.models import DailyBook
+
+    async with async_session() as session:
+        result = await session.execute(
+            select(DailyBook.account, DailyBook.symbol, DailyBook.qty).where(
+                DailyBook.date == target_date,
+                DailyBook.kind == "positions",
+                DailyBook.exchange == "MCX",
+            )
+        )
+        return [(r[0], r[1], int(r[2] or 0)) for r in result.all()]
+
+
+async def _edb_existing_symbols_for_account(target_date: date, account: str) -> set:
+    """Every symbol already present in today's daily_book positions batch
+    for one account. The backfill gap-check compares a fresh live fetch
+    against this set — only a symbol absent here is genuinely missing."""
+    from sqlalchemy import select
+    from backend.api.models import DailyBook
+
+    async with async_session() as session:
+        result = await session.execute(
+            select(DailyBook.symbol).where(
+                DailyBook.date == target_date,
+                DailyBook.account == account,
+                DailyBook.kind == "positions",
+            )
+        )
+        return {r[0] for r in result.all()}
+
+
+def _edb_mcx_expiring_accounts(
+    rows: "list[tuple[str, str, int]]", target_date: date,
+) -> "dict[str, list[str]]":
+    """Pure function — given (account, symbol, qty) rows already captured
+    for MCX positions today, return {account: [symbol, ...]} for every
+    row whose OWN tradingsymbol parses as an MCX option (CE/PE) expiring
+    exactly `target_date`.
+
+    Reuses `ExpiryEngine`'s own row parser (`expiry._opt_from_row`,
+    itself built on `derivatives.parse_tradingsymbol` via
+    `grammar._parsed_or_none`) rather than re-deriving option/expiry
+    parsing — the identical SSOT `expiry.classify_from_context()` uses
+    for the `expiry-mcx-risk-alert` condition resolver. A flat (qty==0)
+    row, or one that doesn't parse as a CE/PE option, is excluded —
+    matching `_opt_from_row`'s own contract.
+    """
+    from backend.api.algo.expiry import _opt_from_row
+
+    out: "dict[str, list[str]]" = {}
+    for account, symbol, qty in rows:
+        if not account or not symbol or qty == 0:
+            continue
+        opt = _opt_from_row({
+            "tradingsymbol": symbol,
+            "exchange": "MCX",
+            "quantity": qty,
+            "account": account,
+            "product": "NRML",
+        })
+        if opt is None or opt.expiry != target_date:
+            continue
+        out.setdefault(account, []).append(symbol)
+    return out
+
+
+async def run_expiry_devolve_backfill(target_date: "date | None" = None) -> dict:
+    """Delayed (~30 min after MCX close) re-check for a daily_book gap
+    caused by post-expiry MCX option devolvement landing at the broker
+    AFTER the main EOD snapshot already ran. See the module comment
+    above this function for the live incident this exists to catch.
+
+    Idempotent and safe to call even when devolvement was already
+    captured correctly by the main snapshot — finds nothing to backfill
+    and is a no-op (confirmed by the `existing` symbol-set diff per
+    account, independent of — and in addition to — the restart-safety
+    one-shot-per-day marker the caller in `background.py` applies before
+    invoking this function at all).
+
+    Makes ZERO broker calls when no account has an MCX option expiring
+    `target_date` in its already-persisted daily_book batch (the common
+    case on any ordinary trading day) — the candidate-account query is a
+    plain DB read, and the broker loop below never runs when there are
+    no candidates.
+
+    Returns a summary dict:
+        {
+            "target_date":         <date>,
+            "accounts_checked":    [<account>, ...],
+            "accounts_backfilled": [<account>, ...],
+            "symbols_backfilled":  {<account>: [<symbol>, ...]},
+        }
+    """
+    now_ist = timestamp_indian()
+    if target_date is None:
+        # Same session-boundary convention `snapshot_daily_book()` itself
+        # uses — this task fires well after MCX close, which can cross
+        # IST midnight, so the resolved date must still land on the
+        # SAME trading session the main EOD snapshot wrote, never a
+        # brand-new "tomorrow" date.
+        from backend.api.algo.expiry_freeze import session_date_of
+        target_date = session_date_of(now_ist)
+
+    result: dict = {
+        "target_date": target_date,
+        "accounts_checked": [],
+        "accounts_backfilled": [],
+        "symbols_backfilled": {},
+    }
+
+    mcx_rows = await _edb_query_mcx_positions_rows(target_date)
+    candidate_accounts = _edb_mcx_expiring_accounts(mcx_rows, target_date)
+    if not candidate_accounts:
+        logger.debug(
+            f"[EXPIRY-DEVOLVE-BACKFILL] no MCX option expiring {target_date} found "
+            f"in today's daily_book — skipping, no broker call made"
+        )
+        return result
+
+    from backend.brokers.registry import all_brokers
+
+    loop = asyncio.get_running_loop()
+    for broker in all_brokers():
+        account = broker.account
+        if account not in candidate_accounts:
+            continue
+        result["accounts_checked"].append(account)
+        try:
+            existing = await _edb_existing_symbols_for_account(target_date, account)
+            raw = await loop.run_in_executor(
+                _local_executor, _fetch_account_data, broker, account, target_date,
+            )
+            p_rows = _positions_rows(
+                account, target_date, raw["positions"] or [], now_ist,
+                settled=False, market_open=False,
+            )
+            missing_rows = [r for r in p_rows if r["symbol"] not in existing]
+        except Exception as e:
+            logger.warning(f"[EXPIRY-DEVOLVE-BACKFILL] [{account}] check failed: {e}")
+            continue
+        if not missing_rows:
+            continue
+        try:
+            n = await _upsert_rows(missing_rows)
+        except Exception as e:
+            logger.warning(f"[EXPIRY-DEVOLVE-BACKFILL] [{account}] backfill write failed: {e}")
+            continue
+        if n:
+            result["accounts_backfilled"].append(account)
+            result["symbols_backfilled"][account] = [r["symbol"] for r in missing_rows]
+
+    if result["accounts_backfilled"]:
+        _snap_broadcast_book_changed(result["accounts_backfilled"])
+        # ERROR level (not WARNING) so this reaches ERROR_AGENT's existing
+        # catch-all (`tags_for()` tags every ERROR-level record "error",
+        # matching `conditions: {"log": {"tag": "error", "min_level":
+        # "ERROR"}}` — see CLAUDE.md "Alert evaluation" / event_agents.py)
+        # with no new seeded agent or SEED_VERSION bump required. This is
+        # action-required: the operator should verify the backfilled
+        # Day P&L baseline for these symbols looks right.
+        logger.error(
+            f"[EXPIRY-DEVOLVE-BACKFILL] backfilled a daily_book gap found AFTER the "
+            f"main EOD snapshot for {target_date} — likely post-expiry MCX "
+            f"devolvement landing late at the broker. "
+            f"accounts={result['accounts_backfilled']} "
+            f"symbols={result['symbols_backfilled']} — verify the backfilled Day "
+            f"P&L baseline for these symbols looks right."
+        )
+    else:
+        logger.info(
+            f"[EXPIRY-DEVOLVE-BACKFILL] checked {len(result['accounts_checked'])} "
+            f"account(s) with an MCX option expiring {target_date} — no gap found"
+        )
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Sparkline snapshot — per-symbol closing-bar series for closed-hours reads
 # ---------------------------------------------------------------------------
 
