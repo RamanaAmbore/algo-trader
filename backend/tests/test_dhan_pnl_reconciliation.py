@@ -127,19 +127,46 @@ async def dhan_recon_session_factory(dhan_recon_engine, monkeypatch):
 from backend.shared.helpers.utils import mask_account as _recon_mask_account
 from backend.shared.helpers.utils import register_accounts as _recon_register_accounts
 
-# Registered ONCE, with the FULL roster every test in this file needs —
-# `register_accounts()` mutates a process-global registry (per its own
-# docstring caveat: the ordinal form is not stable across the roster's
-# lifetime), so re-registering with a DIFFERENT account set partway
-# through this file would silently shift an already-computed mask (e.g.
-# introducing a DH6847/DH3747 prefix collision mid-suite would flip
-# DH6847 from "DH####" to an ordinal "D1####"/"D2####" form) and break
-# every test that assumed the earlier value. Register the full set up
-# front instead, exactly once.
+# `register_accounts()` mutates a PROCESS-GLOBAL registry (see its own
+# docstring). Register once at IMPORT time, as before — these module-level
+# constants are computed eagerly from THIS roster and must stay literal,
+# frozen values for the rest of the file to compare against.
+#
+# That alone is immune to this file's own test order but NOT to
+# collection/import order across files: another test module's own
+# module-level `register_accounts(...)` call (e.g.
+# test_kite_console_pnl_sync.py registers only ["ZG0790"], no Dhan
+# accounts) can run its import — and so its registration — AFTER this
+# module's, silently wiping the Dhan masks these constants (and the
+# real registry) depend on by the time any test here actually RUNS.
+# Confirmed live: `pytest test_kite_console_pnl_sync.py
+# test_dhan_pnl_reconciliation.py` fails 5 tests in this file with the
+# real DH6847 account masking to "DH####" instead of "D2####" at
+# test-execution time, even though the same file alone passes clean.
+# Fix: the autouse fixture below re-asserts this exact roster
+# immediately before every test, so the LIVE registry always matches
+# what these constants were computed against, regardless of what any
+# other module's import-time code did in between.
 _recon_register_accounts(["DH6847", "DH3747", "ZG0790"])
 _DHAN_MASKED_ACCOUNT = _recon_mask_account("DH6847")
 _DHAN_OTHER_MASKED_ACCOUNT = _recon_mask_account("DH3747")
 _KITE_MASKED_ACCOUNT = _recon_mask_account("ZG0790")
+
+
+@pytest.fixture(autouse=True)
+def _recon_fresh_account_registry():
+    """Re-assert this file's own account roster before every test.
+
+    Guards against any other test module's module-level
+    `register_accounts()` call (executed at IMPORT time, whose order
+    pytest's own collection determines, not this file's control) having
+    last written a different roster to the shared process-global
+    registry by the time a test in THIS file actually runs. See the
+    comment above the module-level registration call for the confirmed
+    live failure this fixture closes.
+    """
+    _recon_register_accounts(["DH6847", "DH3747", "ZG0790"])
+    yield
 
 
 _DHAN_TRADE_INSERT_SQL = _sqltext("""

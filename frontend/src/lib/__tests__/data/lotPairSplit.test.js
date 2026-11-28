@@ -17,6 +17,7 @@ function row(overrides) {
     pair_group_key: null,
     paired_qty: 0,
     orphan_qty: 0,
+    baseline_stale: false,
     ...overrides,
   };
 }
