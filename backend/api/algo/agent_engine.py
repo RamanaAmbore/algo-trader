@@ -2996,17 +2996,38 @@ _LOSS_AGENTS = [
          topic="funds_warning",
          name="Margin shortfall warning",
          description=(
-             "Disabled — cross-account false positives: Dhan/Groww accounts "
-             "always report avail_margin=0 (their funds API maps differently), "
-             "satisfying the <25000 branch while Kite accounts satisfy >0. "
-             "The loss-funds-negative agent covers the real case (margin < 0)."
+             "Fires when any ONE account's avail_margin falls strictly "
+             "between ₹0 and ₹25,000 — an early-warning buffer alert, below "
+             "the critical loss-funds-negative threshold (margin < 0). "
+             "Shipped inactive from 2026-09 due to two now-fixed defects: "
+             "(1) `all[]` used to flatten cross-account matches, so one "
+             "account's leaf-1 match could combine with a DIFFERENT "
+             "account's leaf-2 match and fire with no single account "
+             "satisfying both leaves — fixed by `_eval_all`'s per-account "
+             "join (agent_evaluator.py, 'Fix #2'). (2) Dhan/Groww funds "
+             "adapters defaulted a genuinely-unmapped field to a coerced "
+             "0.0, indistinguishable from a real zero balance, which "
+             "combined with (1) to produce 61 false fires in 60 days — "
+             "fixed via `_dhan_num_or_none`/`_gf_or_none` (None, not 0.0, "
+             "on a missing field) and `_metric_avail_margin`'s `_num_or_none` "
+             "(missing-vs-zero convention, 'Fix #3'). Both fixes are "
+             "tested (test_agent_evaluator.py::TestAllJoinsSameAccount, "
+             "test_funds_missing_vs_zero.py) and confirmed live on prod's "
+             "conn_service. Reactivated 2026-11-28 after confirming no "
+             "account currently falls in the false band. Known residual, "
+             "not yet observed live, flagged for monitoring: Groww's "
+             "avail_margin reads `clear_cash` only (excludes "
+             "`collateral_available`), so a collateral-funded Groww "
+             "account with low free cash but ample collateral-backed "
+             "margin could still read misleadingly low here — a semantic "
+             "gap, not a missing-vs-zero bug, and a separate follow-up if "
+             "it ever materializes."
          ),
          conditions={"all": [
              {"op": "<", "scope": "funds.any_acct", "metric": "avail_margin", "value": 25000},
              {"op": ">", "scope": "funds.any_acct", "metric": "avail_margin", "value": 0},
          ]},
          scope="total",
-         status="inactive",
          ),
 
     # ── Funds: operational negatives (one agent — both are critical) ────

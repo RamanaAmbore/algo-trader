@@ -20,9 +20,13 @@ STILL force-reverts to inactive on every restart after this fix — this
 is intentional, confirmed via `advisor()`, and tested explicitly below
 (`test_ships_inactive_real_builtin_still_force_corrected`). The fix
 instead applies to ordinary disabled-by-default builtins whose
-descriptions do NOT invoke that safety phrase: `loss-positions-acct`,
-`loss-rate-acct`, and `loss-margin-low` (confirmed via grep — none of
-their descriptions contain "Ships INACTIVE").
+descriptions do NOT invoke that safety phrase: `loss-positions-acct`
+and `loss-rate-acct` (confirmed via grep — neither description contains
+"Ships INACTIVE"). `loss-margin-low` was part of this ordinary-disabled
+group too until 2026-11-28, when it was reactivated (its default-off
+status removed from the seed spec) after its two root causes were
+fixed — see `test_loss_agents.py::TestLossMarginLow::test_status_is_active`
+and `agent_engine.py`'s own updated description for that agent.
 
 Five quality dimensions:
   SSOT        — direct invocation of `_ae_sync_existing_builtin` against
@@ -79,7 +83,7 @@ class TestCategorySplitIsCorrect:
     behavioral tests built on top of it."""
 
     @pytest.mark.parametrize("slug", [
-        "loss-positions-acct", "loss-rate-acct", "loss-margin-low",
+        "loss-positions-acct", "loss-rate-acct",
     ])
     def test_ordinary_disabled_by_default_agents_are_not_ships_inactive(self, slug):
         agent_def = _by_slug(slug)
@@ -104,7 +108,7 @@ class TestOperatorChoiceSurvivesRestartForOrdinaryBuiltins:
     re-sync, in BOTH directions."""
 
     @pytest.mark.parametrize("slug", [
-        "loss-positions-acct", "loss-rate-acct", "loss-margin-low",
+        "loss-positions-acct", "loss-rate-acct",
     ])
     def test_operator_activation_of_default_off_agent_survives_resync(self, slug):
         agent_def = _by_slug(slug)

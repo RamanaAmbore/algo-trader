@@ -350,13 +350,18 @@ class TestLossMarginLow:
         a = _agent("loss-margin-low")
         assert a is not None, "loss-margin-low not found in BUILTIN_AGENTS"
 
-    def test_status_is_inactive(self):
-        """loss-margin-low ships inactive — cross-account false-positive
-        source, superseded by loss-funds-negative (unchanged by the
-        2026-09 alert-count reduction; already inactive before it)."""
+    def test_status_is_active(self):
+        """loss-margin-low shipped inactive from 2026-09 (cross-account
+        false-positive source) — reactivated 2026-11-28 once its two root
+        causes were fixed and verified: (1) `all[]` cross-account
+        flattening (agent_evaluator.py `_eval_all`, 'Fix #2'), and (2) the
+        Dhan/Groww funds adapters' missing-vs-zero coercion
+        (`_dhan_num_or_none`/`_gf_or_none`, 'Fix #3'). Default status is
+        'active' via `_LOSS_AGENT_DEFAULTS` — no explicit `status` key on
+        this agent's own spec dict any more."""
         a = _agent("loss-margin-low")
-        assert a.get("status") == "inactive", (
-            f"Expected status='inactive', got {a.get('status')}"
+        assert a.get("status") == "active", (
+            f"Expected status='active', got {a.get('status')}"
         )
 
     def test_tier_is_high(self):
@@ -534,8 +539,14 @@ class TestLossAgentsConsistency:
         loss-positions-acct are now redundant with the aggregate
         loss-positions-total agent and ship inactive by default, alongside
         the pre-existing inactive-by-default loss-pos-total-auto-close
-        (destructive gate) and loss-margin-low (cross-account false-positive
-        source, superseded by loss-funds-negative).
+        (destructive gate).
+
+        loss-margin-low shipped inactive from 2026-09 (cross-account
+        false-positive source) and was reactivated 2026-11-28 once its two
+        root causes — `_eval_all`'s cross-account flattening ('Fix #2')
+        and the Dhan/Groww funds adapters' missing-vs-zero coercion
+        ('Fix #3') — were fixed, tested, and confirmed live on prod. It is
+        now in the active group below.
 
         loss-positions-underlying-divergence shipped inactive on
         2026-10-22 pending a fix to a reference-point mismatch between its
@@ -546,7 +557,6 @@ class TestLossAgentsConsistency:
         negative."""
         inactive_slugs = (
             "loss-pos-total-auto-close",
-            "loss-margin-low",
             "loss-rate-acct",
             "loss-positions-acct",
         )
