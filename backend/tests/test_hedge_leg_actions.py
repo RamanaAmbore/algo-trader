@@ -8,21 +8,34 @@ Tests for Part A's DSL hedge leg wiring —
 2026-11-28 correctness fix (audit finding on the 2026-11-27 P2 #3
 reorder): hedge resolution is now split into two halves so the
 close-intent guard is never raced by the parent's own fill —
-`_al_hedge_precheck_and_guard()` (cheap precheck + ONE close-guard
-position read) MUST finish BEFORE the parent's `chase_order()` task is
-created; `_al_resolve_hedge_plan()` (now takes the already-resolved
-`parsed` symbol dict as a parameter instead of deriving it internally)
-plus `_al_prepare_hedge_leg()` make up the slow, broker-quote-bound
-half and still run concurrently with the already-dispatched parent, so
-the 2026-11-27 fix's own perf goal (parent dispatches immediately,
-never idles behind a 12s quote-fetch timeout) is preserved for that
-half. `_al_resolve_and_prepare_hedge()` wraps that whole post-dispatch
-half in one broad try/except at the call site, so a hedge-side
-exception can never prevent the parent's own `chase_order` task from
-being awaited (see `TestHedgeCloseGuardRaceCondition` below for the
+`_al_hedge_precheck_and_guard()` (cheap precheck + one call to
+`_al_hedge_close_guard()`, itself two logical `fetch_positions()`
+reads, not one — bounded by `_AL_HEDGE_GUARD_TIMEOUT_S`) MUST finish
+BEFORE the parent's `chase_order()` task is created; `_al_resolve_
+hedge_plan()` (now takes the already-resolved `parsed` symbol dict as
+a parameter instead of deriving it internally) plus `_al_prepare_
+hedge_leg()` make up the slow, broker-quote-bound half and still run
+concurrently with the already-dispatched parent, so the 2026-11-27
+fix's own perf goal (parent dispatches immediately, never idles
+behind a 12s quote-fetch timeout) is preserved for that half.
+`_al_resolve_and_prepare_hedge()` wraps that whole post-dispatch half
+in one broad try/except at the call site, so a hedge-side exception
+can never prevent the parent's own `chase_order` task from being
+awaited (see `TestHedgeCloseGuardRaceCondition` below for the
 regression this specifically guards against, and
 `TestNoHedgePctRegression`/`TestHedgePlanSkipConditions` for the
 migrated unit coverage of the split).
+
+2026-11-28 Round 3 audit fix (this file's own additions): the
+pre-dispatch close-guard check above had NO timeout anywhere in its
+chain — `TestHedgeGuardTimeout` covers the fix (`asyncio.wait_for`
+around just the `_al_hedge_close_guard()` await, degrading to
+"no hedge" on a timeout without ever blocking the parent's own
+dispatch). `_al_resolve_and_prepare_hedge`'s own broad except used to
+log a misleadingly-tagged `self_alerted=True` WARNING with no actual
+alert behind it — `TestResolveAndPrepareHedgeUnexpectedException`
+covers the fix (it now calls the same `_al_hedge_prepare_failure_alert`
+every other hedge-skip path already uses).
 
 Covers:
   - A no-`hedge_pct` regression guard — the single most important test
@@ -349,8 +362,9 @@ class TestHedgePlanSkipConditions:
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  _al_hedge_close_guard — ONE fetch_positions() pass, scoped to the
-#  TARGET account specifically, never inferred from a different
+#  _al_hedge_close_guard — two logical fetch_positions() reads (the
+#  health/signal read, then a separate net-qty read), both scoped to
+#  the TARGET account specifically, never inferred from a different
 #  account's health in the same batch
 # ═══════════════════════════════════════════════════════════════════
 
@@ -1494,3 +1508,178 @@ class TestHedgeCloseGuardRaceCondition:
 
             # Parent + hedge leg, both chased.
             assert mock_chase.await_count == 2
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  2026-11-28 Round 3 audit fix #1 — the pre-dispatch close-guard
+#  check had no timeout anywhere in its chain, so a hung
+#  fetch_positions() call there parked the PARENT order's own
+#  dispatch indefinitely (worse than the 2026-11-27 fix's own
+#  "parent idles behind a slow call" risk, since this runs on every
+#  hedge-enabled order, not only one that resolves a match).
+# ═══════════════════════════════════════════════════════════════════
+
+class TestHedgeGuardTimeout:
+    @pytest.mark.asyncio
+    async def test_close_guard_timeout_degrades_to_no_hedge(self):
+        """Direct unit coverage of `_al_hedge_precheck_and_guard` itself:
+        a close-guard call that never completes must time out (per the
+        module-level `_AL_HEDGE_GUARD_TIMEOUT_S` ceiling, patched down
+        here) and degrade to None ('no hedge'), exactly like any other
+        exception — never raise, never hang. The outer `asyncio.wait_for`
+        is a CI safety net only: against a regression that removed the
+        internal timeout, this test would hang rather than fail cleanly,
+        so it is itself bounded."""
+        from backend.api.algo.actions_live import _al_hedge_precheck_and_guard
+
+        hang = asyncio.Event()
+
+        async def _never_returns(*a, **kw):
+            await hang.wait()
+            return True  # unreachable — the timeout must fire first
+
+        with patch("backend.api.algo.actions_live._AL_HEDGE_GUARD_TIMEOUT_S", 0.05), \
+             patch("backend.api.algo.actions_live._al_hedge_close_guard",
+                   new=_never_returns):
+            result = await asyncio.wait_for(
+                _al_hedge_precheck_and_guard(
+                    "NFO", "NIFTY26APR22500CE", "BUY", "ZG0790", 50, 50,
+                ),
+                timeout=5.0,
+            )
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_guard_timeout_lets_parent_dispatch_and_resolve_normally(self):
+        """End-to-end orchestration check: with the close-guard call
+        hung and the ceiling patched to a near-zero value, the parent's
+        own `chase_order()` call must still fire exactly once, and the
+        SLOW half of hedge resolution (`_al_resolve_hedge_plan`) must
+        never even be attempted — the precheck/guard returning None on
+        timeout is indistinguishable, to the rest of `_action_place_
+        order`, from any other 'no hedge possible' outcome. Patches the
+        hang AFTER `_apply(_place_order_patches(...))`, since that
+        helper already patches `_al_hedge_close_guard` to return True —
+        this test overrides it with the hang for this one case only."""
+        from backend.api.algo.actions_live import _action_place_order
+
+        broker = _make_broker_stub()
+        conns = _make_conns_stub("ZG0790")
+        agent = MagicMock()
+        agent.slug = "test-agent"
+        agent.id = 7
+        context: dict = {}
+        params = dict(_BASE_PARAMS)
+        params["hedge_pct"] = 50
+
+        mock_chase = AsyncMock(return_value=MagicMock(status=MagicMock(value="FILLED"), detail=""))
+        mock_resolve = AsyncMock()
+
+        hang = asyncio.Event()
+
+        async def _never_returns(*a, **kw):
+            await hang.wait()
+            return True
+
+        with _apply(_place_order_patches(broker, conns, mock_chase)), \
+             patch("backend.api.algo.actions_live._AL_HEDGE_GUARD_TIMEOUT_S", 0.05), \
+             patch("backend.api.algo.actions_live._al_hedge_close_guard",
+                   new=_never_returns), \
+             patch("backend.api.algo.actions_live._al_resolve_hedge_plan",
+                   new=mock_resolve):
+            await asyncio.wait_for(
+                _action_place_order(agent, context, params),
+                timeout=5.0,
+            )
+
+        mock_chase.assert_called_once()
+        mock_resolve.assert_not_called()
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  2026-11-28 Round 3 audit fix #2 — an unexpected exception during
+#  the post-dispatch hedge resolution/preparation stage must fire the
+#  same real operator alert every other hedge-skip path already does,
+#  not only a misleadingly-tagged `self_alerted=True` log line.
+# ═══════════════════════════════════════════════════════════════════
+
+class TestResolveAndPrepareHedgeUnexpectedException:
+    @pytest.mark.asyncio
+    async def test_unexpected_exception_during_prepare_fires_real_alert(self):
+        """The realistic case: `_al_resolve_hedge_plan` resolves a real
+        hedge leg (so `hedge_ctx` is known), then `_al_prepare_hedge_leg`
+        itself raises instead of returning None. The alert must report
+        the HEDGE leg's own symbol/side, matching every other
+        hedge-skip alert `_al_prepare_hedge_leg` fires directly."""
+        from backend.api.algo.actions_live import _al_resolve_and_prepare_hedge
+        from backend.api.algo.derivatives import parse_tradingsymbol
+
+        agent = MagicMock()
+        agent_shim = MagicMock()
+        agent_shim.id = 7
+        agent_shim.slug = "test-agent"
+        parsed = parse_tradingsymbol("NIFTY26APR22500CE")
+        hedge_ctx = {"symbol": "NIFTY26APR22600CE", "exchange": "NFO",
+                     "side": "SELL", "qty": 50, "price": 48.0}
+        mock_alert = MagicMock()
+
+        with patch("backend.api.algo.actions_live._al_resolve_hedge_plan",
+                   new=AsyncMock(return_value=hedge_ctx)), \
+             patch("backend.api.algo.actions_live._al_prepare_hedge_leg",
+                   new=AsyncMock(side_effect=RuntimeError("boom"))), \
+             patch("backend.shared.helpers.alert_utils.send_order_failure_alert",
+                   new=mock_alert):
+            hedge_ctx_out, hedge_prepared = await _al_resolve_and_prepare_hedge(
+                agent, {}, "ZG0790", "NIFTY26APR22500CE", "NFO",
+                "BUY", 50, 100.0, 50, parsed, agent_shim, "NRML", "med",
+            )
+
+        assert hedge_ctx_out is None
+        assert hedge_prepared is None
+        mock_alert.assert_called_once()
+        assert "never placed" in mock_alert.call_args.kwargs.get("error", "")
+        # The alert must attribute itself to the same agent the hedge
+        # leg's own AlgoOrder row would have carried — never manual.
+        assert mock_alert.call_args.kwargs.get("agent_id") == 7
+        # Reports the HEDGE leg's own identity, not the parent's.
+        assert mock_alert.call_args.kwargs.get("symbol") == "NIFTY26APR22600CE"
+        assert mock_alert.call_args.kwargs.get("side") == "SELL"
+        assert mock_alert.call_args.kwargs.get("qty") == 50
+
+    @pytest.mark.asyncio
+    async def test_unexpected_exception_during_resolve_falls_back_to_parent_symbol(self):
+        """Theoretical case — `_al_resolve_hedge_plan` itself raises,
+        contradicting its own fully-self-wrapped docstring, so
+        `hedge_ctx` is never set. The alert must fall back to the
+        PARENT's own symbol with the hedge's own (opposite) side —
+        never the parent's own side, which would misleadingly read as
+        the parent itself having been rejected. `_al_prepare_hedge_leg`
+        must never even be attempted."""
+        from backend.api.algo.actions_live import _al_resolve_and_prepare_hedge
+        from backend.api.algo.derivatives import parse_tradingsymbol
+
+        agent = MagicMock()
+        agent_shim = MagicMock()
+        agent_shim.id = 7
+        parsed = parse_tradingsymbol("NIFTY26APR22500CE")
+        mock_alert = MagicMock()
+        mock_prepare = AsyncMock()
+
+        with patch("backend.api.algo.actions_live._al_resolve_hedge_plan",
+                   new=AsyncMock(side_effect=RuntimeError("boom"))), \
+             patch("backend.api.algo.actions_live._al_prepare_hedge_leg",
+                   new=mock_prepare), \
+             patch("backend.shared.helpers.alert_utils.send_order_failure_alert",
+                   new=mock_alert):
+            hedge_ctx_out, hedge_prepared = await _al_resolve_and_prepare_hedge(
+                agent, {}, "ZG0790", "NIFTY26APR22500CE", "NFO",
+                "BUY", 50, 100.0, 50, parsed, agent_shim, "NRML", "med",
+            )
+
+        assert hedge_ctx_out is None
+        assert hedge_prepared is None
+        mock_prepare.assert_not_called()
+        mock_alert.assert_called_once()
+        assert mock_alert.call_args.kwargs.get("symbol") == "NIFTY26APR22500CE"
+        assert mock_alert.call_args.kwargs.get("side") == "SELL"  # opposite of parent's BUY
+        assert mock_alert.call_args.kwargs.get("qty") == 50

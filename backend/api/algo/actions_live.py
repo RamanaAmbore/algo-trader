@@ -464,6 +464,26 @@ async def _al_hedge_close_guard(
     return True
 
 
+#  2026-11-28 Round 3 audit fix — ceiling for the pre-dispatch close-
+#  intent guard. This read runs BEFORE the parent's own `chase_order()`
+#  task is created, so unlike `chase.py`'s `_CH_BROKER_CALL_TIMEOUT_S`
+#  (30s — a ceiling on a call made by a chase loop that is ALREADY
+#  running, so it never delays dispatch) a hang here directly parks the
+#  parent order's own dispatch. The value must stay well under the 12s
+#  option-chain quote timeout that `_al_resolve_hedge_plan`'s own slow
+#  half tolerates — that 12s figure is exactly what commit `2da899e68`
+#  judged unacceptable to make the parent idle behind, so a timeout
+#  here at or above it would reintroduce the same problem in a WORSE
+#  form (this read happens on every hedge-enabled order, not only one
+#  that resolves a match). Reuses the value `orders_helpers.py`'s own
+#  `_BROKER_ORDERS_TIMEOUT` already uses for a single, latency-
+#  sensitive per-account broker list-style call — the closer precedent
+#  for "one broker read, bounded well under 12s", not the chase-loop
+#  ceiling. Read as a module global at call time (never passed as a
+#  default argument), so a test can patch it down directly.
+_AL_HEDGE_GUARD_TIMEOUT_S = 8
+
+
 async def _al_hedge_precheck_and_guard(
     exchange: str, symbol: str, side: str, account: str, qty: int, hedge_pct,
 ) -> "dict | None":
@@ -483,24 +503,51 @@ async def _al_hedge_precheck_and_guard(
 
     Returns the parsed symbol dict (`parse_tradingsymbol()`'s own
     shape) on success, or None — degrading to "no hedge" on ANY
-    exception, same fail-safe convention the combined
+    exception OR on a timeout, same fail-safe convention the combined
     `_al_resolve_hedge_plan` body used before this split.
     `_al_hedge_precheck_symbol()`'s own cheap, synchronous checks
     (hedge_pct unset / non-NFO / non-option symbol) still short-circuit
     before any broker/DB call, so the no-hedge path (the overwhelming
     majority of `place_order` calls) pays none of this function's
     cost — only a hedge-enabled order on an NFO option pays for the
-    one position fetch below, and only that one, before its parent
-    dispatches.
+    `_al_hedge_close_guard()` call below, bounded by
+    `_AL_HEDGE_GUARD_TIMEOUT_S` (2026-11-28 Round 3 audit fix: this
+    await previously had NO timeout anywhere in its chain, so a hung
+    broker/conn-service call here blocked the parent order's own
+    dispatch indefinitely — a worse-form reintroduction of the exact
+    "parent idles behind a slow call" risk `2da899e68` fixed).
+
+    That one `_al_hedge_close_guard()` call is itself TWO logical
+    `fetch_positions()` reads, not one: its own health/signal read via
+    `_al_hedge_account_signal()`, then a second, separate read inside
+    `_fetch_net_position_qty()` (`orders_place.py`) — both sit behind
+    the same cached 30s-TTL broker frame in the common case (the
+    second is normally a `_RAW_CACHE` hit, costing no extra broker
+    round-trip), but they are two distinct logical calls, both now
+    covered by the one `asyncio.wait_for` ceiling below. (Corrects an
+    earlier version of this docstring, which claimed "one position
+    fetch".)
     """
     try:
         parsed = _al_hedge_precheck_symbol(exchange, symbol, hedge_pct)
         if parsed is None:
             return None
-        safe = await _al_hedge_close_guard(symbol, exchange, side, account, qty)
+        safe = await asyncio.wait_for(
+            _al_hedge_close_guard(symbol, exchange, side, account, qty),
+            timeout=_AL_HEDGE_GUARD_TIMEOUT_S,
+        )
         if not safe:
             return None
         return parsed
+    except asyncio.TimeoutError:
+        from backend.shared.helpers.utils import mask_account
+        logger.warning(
+            f"[LIVE] place_order hedge close-guard timed out after "
+            f"{_AL_HEDGE_GUARD_TIMEOUT_S}s for {mask_account(account)} "
+            f"{exchange}/{symbol} — proceeding unhedged (parent order "
+            f"dispatches normally)"
+        )
+        return None
     except Exception as e:
         from backend.shared.helpers.utils import mask_account
         logger.warning(
@@ -638,12 +685,15 @@ async def _al_hedge_prepare_failure_alert(
 ) -> None:
     """Fire the operator-facing failure alert for a hedge leg that
     never reached the broker at all (preflight exception/block, or a
-    DB-write failure before `chase_order()` is even called). The
-    `self_alerted=True` WARNING these three callers also log would
-    otherwise be silent to the operator — the position they asked to
-    be hedged is naked, which is exactly the gap this alert, and the
-    separate unhedged-short-option alert (Part B), both exist to
-    surface. Never raises."""
+    DB-write failure before `chase_order()` is even called — the
+    original three callers inside `_al_prepare_hedge_leg`; also called
+    from `_al_resolve_and_prepare_hedge`'s own broad except, 2026-11-28
+    Round 3 audit fix, for an unexpected exception during hedge
+    resolution/preparation). The `self_alerted=True` WARNING these
+    callers also log would otherwise be silent to the operator — the
+    position they asked to be hedged is naked, which is exactly the
+    gap this alert, and the separate unhedged-short-option alert
+    (Part B), both exist to surface. Never raises."""
     try:
         from backend.shared.helpers.alert_utils import send_order_failure_alert
         await asyncio.to_thread(
@@ -749,6 +799,14 @@ async def _al_resolve_and_prepare_hedge(
     own `chase_order` task — see `_PLACE_ORDER_PARENT_CHASE_TASKS`'s
     own comment for the GC-risk half of this same concern.
 
+    2026-11-28 Round 3 audit fix: this branch used to log a
+    `self_alerted=True` WARNING with no actual alert behind it — the
+    flag was misleading, since nothing fired. It now calls the same
+    `_al_hedge_prepare_failure_alert()` every OTHER hedge-skip path in
+    `_al_prepare_hedge_leg()` already uses, so the operator learns a
+    position they asked to be hedged is naked here too, not only on a
+    preflight block/exception or a DB-write failure.
+
     Returns `(hedge_ctx, hedge_prepared)` — both None when
     `hedge_parsed` is None (no hedge was ever possible, so neither
     slow call is even attempted), or when anything below fails to
@@ -756,6 +814,7 @@ async def _al_resolve_and_prepare_hedge(
     """
     if hedge_parsed is None:
         return None, None
+    hedge_ctx: "dict | None" = None
     try:
         hedge_ctx = await _al_resolve_hedge_plan(
             agent, context, account, symbol, exchange, side, qty, price,
@@ -774,6 +833,28 @@ async def _al_resolve_and_prepare_hedge(
             f"{mask_account(account)} {exchange}/{symbol}: {e} — "
             f"proceeding with parent order unhedged",
             extra={"self_alerted": True},
+        )
+        # `_al_resolve_hedge_plan` is fully self-wrapped (never raises —
+        # degrades to None on any failure per its own docstring), so the
+        # realistic raiser reaching this except is `_al_prepare_hedge_leg`,
+        # which only runs AFTER `hedge_ctx` has already resolved — the
+        # common case below reuses that real leg's own symbol/side/qty,
+        # the same identity every other hedge-skip alert in
+        # `_al_prepare_hedge_leg` itself already reports. In the
+        # theoretical case where `_al_resolve_hedge_plan` somehow raised
+        # anyway (contradicting its own docstring), `hedge_ctx` is still
+        # None here — fall back to the PARENT's own symbol with the
+        # hedge's own (opposite) side, never the parent's own side,
+        # which would misleadingly read as the parent itself having
+        # been rejected.
+        alert_ctx = hedge_ctx or {
+            "symbol": symbol,
+            "side": "SELL" if str(side).upper() == "BUY" else "BUY",
+            "qty": qty,
+        }
+        await _al_hedge_prepare_failure_alert(
+            agent_shim, account, exchange, alert_ctx,
+            f"hedge leg resolution/preparation raised: {e}",
         )
         return None, None
 
@@ -972,10 +1053,14 @@ async def _action_place_order(agent, context: dict, params: dict):
     the parent's own dispatch:
 
       1. BEFORE `parent_task` is created — `_al_hedge_precheck_and_
-         guard()` (the cheap symbol precheck plus ONE
-         `_al_hedge_close_guard()` position read). This MUST finish
-         before the parent's chase starts: the close-intent guard
-         reads the account's CURRENT position to decide whether this
+         guard()` (the cheap symbol precheck plus one call to
+         `_al_hedge_close_guard()`, itself two logical
+         `fetch_positions()` reads — see that function's own docstring
+         for why "one position fetch" undersold it — bounded by
+         `_AL_HEDGE_GUARD_TIMEOUT_S`, 2026-11-28 Round 3 audit fix).
+         This MUST finish before the parent's chase starts: the
+         close-intent guard reads the account's CURRENT position to
+         decide whether this
          order is itself a close, and once the parent's own chase is
          running it can fill (fully or partially) and flatten that
          same position — a close_guard read taken AFTER that fill
@@ -1079,12 +1164,15 @@ async def _action_place_order(agent, context: dict, params: dict):
     # reorder): the close-intent guard half of hedge resolution MUST
     # finish BEFORE the parent's own chase_order() task is created —
     # see `_al_hedge_precheck_and_guard`'s own docstring and this
-    # function's docstring above. It is a cheap precheck plus ONE
-    # position fetch, not the slow option-chain quote/strike search,
-    # so the no-hedge path (hedge_pct unset) pays none of this cost
-    # and the hedge-enabled path pays only a position-fetch's worth of
-    # delay before the parent dispatches — not the full quote-
-    # resolution delay the 2026-11-27 fix was built to avoid.
+    # function's docstring above. It is a cheap precheck plus a
+    # close-guard check (two logical `fetch_positions()` reads, not
+    # one — see `_al_hedge_precheck_and_guard`'s own docstring), not
+    # the slow option-chain quote/strike search, so the no-hedge path
+    # (hedge_pct unset) pays none of this cost and the hedge-enabled
+    # path pays only that close-guard check's worth of delay — capped
+    # by `_AL_HEDGE_GUARD_TIMEOUT_S` (2026-11-28 Round 3 audit fix) —
+    # before the parent dispatches. Still not the full quote-resolution
+    # delay the 2026-11-27 fix was built to avoid.
     hedge_parsed = await _al_hedge_precheck_and_guard(
         exchange, symbol, side, account, qty, params.get("hedge_pct"),
     )
