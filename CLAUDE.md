@@ -3574,35 +3574,77 @@ underlying, expiry and option type as the parent. It is sized to cost roughly `h
 parent's premium. It is neither the deleted Bracket wing nor Part C's MCX netting. Do not unify the
 three ([hedge_strike.py:12-20](backend/api/algo/hedge_strike.py#L12)).
 - **DSL.** `hedge_pct` is an optional number on the `place_order` token
-  ([agent_grammar.yaml:1193](backend/config/grammars/agent_grammar.yaml#L1193)) and on the `order`
-  token ([:1293](backend/config/grammars/agent_grammar.yaml#L1293)). It applies only to NFO options
+  ([agent_grammar.yaml:1207](backend/config/grammars/agent_grammar.yaml#L1207)) and on the `order`
+  token ([:1307](backend/config/grammars/agent_grammar.yaml#L1307)). It applies only to NFO options
   and is ignored otherwise.
-- **Server.** `_action_place_order()` ([actions_live.py:801](backend/api/algo/actions_live.py#L801))
-  reads `params.hedge_pct` at [:903](backend/api/algo/actions_live.py#L903). The helpers are
+- **Server.** `_action_place_order()` ([actions_live.py:1015](backend/api/algo/actions_live.py#L1015))
+  reads `params.hedge_pct` at [:1177](backend/api/algo/actions_live.py#L1177) and
+  [:1209](backend/api/algo/actions_live.py#L1209). The helpers are
   `_al_hedge_precheck_symbol()` ([:359](backend/api/algo/actions_live.py#L359)),
-  `_al_resolve_hedge_plan()` ([:546](backend/api/algo/actions_live.py#L546)),
-  `_al_prepare_hedge_leg()` ([:608](backend/api/algo/actions_live.py#L608)),
-  `_al_handle_hedge_chase_outcome()` ([:700](backend/api/algo/actions_live.py#L700)) and
-  `_al_detect_hedge_pairing_issue()` ([:739](backend/api/algo/actions_live.py#L739)).
+  `_al_hedge_close_guard()` ([:427](backend/api/algo/actions_live.py#L427)),
+  `_al_hedge_precheck_and_guard()` ([:487](backend/api/algo/actions_live.py#L487)),
+  `_al_resolve_hedge_plan()` ([:639](backend/api/algo/actions_live.py#L639)),
+  `_al_prepare_hedge_leg()` ([:711](backend/api/algo/actions_live.py#L711)),
+  `_al_resolve_and_prepare_hedge()` ([:777](backend/api/algo/actions_live.py#L777)),
+  `_al_handle_hedge_chase_outcome()` ([:888](backend/api/algo/actions_live.py#L888)) and
+  `_al_detect_hedge_pairing_issue()` ([:927](backend/api/algo/actions_live.py#L927)). The
+  2026-11-28 ordering and timeout changes are in the amendment below.
 - **Strike search.** `resolve_hedge_strike()` in [hedge_strike.py](backend/api/algo/hedge_strike.py)
   accepts a candidate inside a ±50% band around the target. `_TOLERANCE_FRACTION` is at
   [:44](backend/api/algo/hedge_strike.py#L44). A target of 50 accepts a real cost ratio in 25–75.
 - **Never blocks the parent.** A close, a non-option symbol or no candidate inside tolerance each
-  skip the hedge silently ([agent_grammar.yaml:1190-1192](backend/config/grammars/agent_grammar.yaml#L1190)).
-- **Chain tab.** The Hedge checkbox ([OptionChainTab.svelte:117-130](frontend/src/lib/order/OptionChainTab.svelte#L117))
-  defaults to 50% for a BUY parent and 25% for a SELL parent. Staging happens in the block at
-  [:809-857](frontend/src/lib/order/OptionChainTab.svelte#L809). The staged leg carries
-  `_hedgeParentKey` and `_hedgeParentSig`. It is never a merge or netting target
-  ([:639](frontend/src/lib/order/OptionChainTab.svelte#L639), [:668](frontend/src/lib/order/OptionChainTab.svelte#L668)).
-  It is removed when its parent changes or disappears ([:893-895](frontend/src/lib/order/OptionChainTab.svelte#L893)).
-- **Duplicated on purpose.** The Python `hedge_strike.py` and the JS `resolveHedgeStrike()` implement
-  the same rules without sharing code. Each docstring says it mirrors the other
+  skip the hedge silently ([agent_grammar.yaml:1204-1206](backend/config/grammars/agent_grammar.yaml#L1204)).
+  The one exception is a post-dispatch exception, which now alerts (see the amendment below).
+- **Chain tab.** The Hedge checkbox ([OptionChainTab.svelte:1563](frontend/src/lib/order/OptionChainTab.svelte#L1563))
+  defaults to 50% for a BUY parent and 25% for a SELL parent ([:135-136](frontend/src/lib/order/OptionChainTab.svelte#L135)).
+  Staging happens in `_maybeStageHedgeLeg()` ([:873](frontend/src/lib/order/OptionChainTab.svelte#L873)).
+  The staged leg carries `_hedgeParentKey` and `_hedgeParentSig` ([:921-922](frontend/src/lib/order/OptionChainTab.svelte#L921)).
+  It is never a merge or netting target ([:708](frontend/src/lib/order/OptionChainTab.svelte#L708),
+  [:735](frontend/src/lib/order/OptionChainTab.svelte#L735)). It is re-synced or removed when its
+  parent changes ([:977-1006](frontend/src/lib/order/OptionChainTab.svelte#L977)).
+- **Duplicated on purpose.** The Python `hedge_strike.py` and the JS `resolveHedgeStrike()`
+  ([spreadGate.js:165](frontend/src/lib/data/spreadGate.js#L165)) implement the same rules without
+  sharing code. Each docstring says it mirrors the other
   ([hedge_strike.py:4-10](backend/api/algo/hedge_strike.py#L4)).
 - **Console DSL gap.** The Console parser under `frontend/src` does not reference `hedge_pct`. A
   saved agent can carry it through the backend catalog only. The EBNF spec now records this
   ([AGENTS_GRAMMAR_EBNF.md](docs/specs/AGENTS_GRAMMAR_EBNF.md), "Actions").
 - Invariant: a hedge is never staged for a close, never blocks its parent, and never merges into a
   manually staged leg.
+- **Amended 2026-11-28 — close-guard ordering, its timeout, and its alert (commits `f9708b2f9`,
+  `ecd2ac906`). Extends the "a hedge is never staged for a close" invariant above.**
+  - **The original bug.** The 2026-11-27 reorder created `parent_task` before the whole hedge
+    resolution, including the position read in `_al_hedge_close_guard()`
+    ([actions_live.py:427](backend/api/algo/actions_live.py#L427)). A fast close fill could then
+    flatten the account before that read. The guard misread "flat" as "nothing to close" and staged a
+    hedge on a closing order.
+  - **The split.** `_al_hedge_precheck_and_guard()` ([:487](backend/api/algo/actions_live.py#L487))
+    runs the cheap symbol precheck and the close guard. It finishes before `parent_task` is created
+    ([:1190](backend/api/algo/actions_live.py#L1190)), and is called at
+    [:1176-1178](backend/api/algo/actions_live.py#L1176). `_al_resolve_and_prepare_hedge()`
+    ([:777](backend/api/algo/actions_live.py#L777)) runs the slow quote fetch, strike search and hedge
+    preflight/persist after dispatch, concurrently with the parent. The perf goal of the 2026-11-27
+    change is kept.
+  - **Timeout.** The guard await is wrapped in `asyncio.wait_for` with `_AL_HEDGE_GUARD_TIMEOUT_S = 8`
+    ([:484](backend/api/algo/actions_live.py#L484), [:535-538](backend/api/algo/actions_live.py#L535)).
+    On timeout it fails safe to "no hedge" ([:542-550](backend/api/algo/actions_live.py#L542)).
+    It is 8s, not the 30s of `_CH_BROKER_CALL_TIMEOUT_S`
+    ([chase.py:1186](backend/api/algo/chase.py#L1186)). That 30s bounds a chase loop already running.
+    Here a hang would park the parent's own dispatch, so the value must stay well under the 12s
+    option-chain quote timeout the slow half tolerates. The precedent is `_BROKER_ORDERS_TIMEOUT = 8`
+    ([orders_helpers.py:604](backend/api/routes/orders_helpers.py#L604)). The module constant is read
+    at call time so tests can patch it.
+  - **Post-dispatch exception now alerts (`ecd2ac906`).** `_al_resolve_and_prepare_hedge()`'s broad
+    except used to log a WARNING with `self_alerted=True` and fire nothing. It now calls
+    `_al_hedge_prepare_failure_alert()` ([:683](backend/api/algo/actions_live.py#L683), call at
+    [:855-858](backend/api/algo/actions_live.py#L855)), as the other hedge-skip paths already do.
+  - **Known residual, not fixed.** Two paths still skip the hedge with only a WARNING and no alert:
+    the guard timeout branch ([:542-550](backend/api/algo/actions_live.py#L542)) and the guard's
+    generic `except Exception` ([:551-557](backend/api/algo/actions_live.py#L551)). The parent proceeds
+    unhedged. Left for an operator decision, as it is low-stakes.
+  - Tests: `backend/tests/test_hedge_leg_actions.py`. The timeout case is around
+    [:1525-1545](backend/tests/test_hedge_leg_actions.py#L1525). The call-order case is documented at
+    [:1230-1260](backend/tests/test_hedge_leg_actions.py#L1230).
 
 ## Things to Avoid
 
@@ -3630,6 +3672,58 @@ three ([hedge_strike.py:12-20](backend/api/algo/hedge_strike.py#L12)).
 ---
 
 ## Critical math guards
+
+**Expiry-devolvement daily_book backfill — one mechanism, five fixes in one session (2026-11-28;
+commits `a14ea8037`, `b83be7dee`, `7f47e4349`; the original build commit is not verified)** — An MCX
+option that devolves into a future at settlement can have that future's first `daily_book` row land
+at the broker after the main EOD snapshot has already run. A delayed pass backfills the gap.
+- **Schedule.** `_ds_tick_expiry_devolve_backfill()` ([background.py:4456](backend/api/background.py#L4456))
+  fires once per session, about 30 min after the MCX close. Its one-per-session marker is DB-backed
+  (`task_markers.expiry_devolve_backfill_date`, [background.py:4424](backend/api/background.py#L4424)),
+  so a restart inside the window does not re-run it.
+- **Candidates and gap diff.** `_edb_query_mcx_positions_rows()`
+  ([daily_snapshot.py:1744](backend/api/algo/daily_snapshot.py#L1744)) and `_edb_mcx_expiring_accounts()`
+  ([:1942](backend/api/algo/daily_snapshot.py#L1942)) are pure DB reads. No broker call is made unless an
+  account holds an MCX option expiring that session. Candidacy does not filter on ltp, because a
+  null-ltp row still proves the holding. The gap is `missing_rows = [... not in existing]` at
+  [:2047](backend/api/algo/daily_snapshot.py#L2047), after the broker fetch at [:2040](backend/api/algo/daily_snapshot.py#L2040).
+- **Fix 1 — reuse the EOD batch stamp (`a14ea8037`).** Backfilled rows reuse the account's own EOD
+  `captured_at` from `_edb_existing_captured_at_for_account()`
+  ([:1881](backend/api/algo/daily_snapshot.py#L1881)), passed to `_upsert_rows(..., captured_at=...)` at
+  [:2071](backend/api/algo/daily_snapshot.py#L2071). A fresh `now()` would make the backfilled row the
+  exclusive "latest batch". The closed-hours reader in `positions.py` would then show only that row and
+  drop the account's other positions. With no existing batch the write is skipped, with a WARNING
+  ([:2063-2070](backend/api/algo/daily_snapshot.py#L2063)).
+- **Fix 2 — session-anchored tick (`a14ea8037`).** The session date is resolved first
+  ([background.py:4507-4508](backend/api/background.py#L4507)). Gate rows come from
+  `_effective_gate_rows_for_date("MCX", session_day)` ([:4512](backend/api/background.py#L4512)), not
+  today-anchored `_effective_gate_rows("MCX")`. A Friday session's +30 min crosses into Saturday, and the
+  Mon–Fri filter returned no rows, so the backfill silently never fired after a Friday MCX session. Same
+  midnight-wrap class as the `exchange_clock.py` entry above.
+- **Fix 3 — the stamp helper reads valid batches only (`b83be7dee`).**
+  `_edb_existing_captured_at_for_account()` adds `ltp IS NOT NULL AND ltp > 0`
+  ([:1935-1936](backend/api/algo/daily_snapshot.py#L1935)). Without it, a mid-session null-out batch (see
+  the 2026-11-26 `market_lifecycle.py` entry) could supply the stamp. That is the same masking corruption
+  as fix 1, by another path. The filter matches the readers' own `latest_batch` filter.
+- **Fix 4 — gap detection matches what readers deliver (`7f47e4349`).**
+  `_edb_existing_symbols_for_account()` ([:1766](backend/api/algo/daily_snapshot.py#L1766)) treats a
+  symbol as "existing" only when BOTH hold:
+  1. Batch membership: the row's `captured_at` equals the account's max valid-batch stamp (subquery at
+     [:1858-1868](backend/api/algo/daily_snapshot.py#L1858)).
+  2. Per-row delivery: `ltp IS NULL OR ltp > 0` ([:1875](backend/api/algo/daily_snapshot.py#L1875)). A
+     null-ltp row is shown. A zero-ltp row is dropped by the reader.
+  Two simpler shapes were rejected in review ([:1799-1829](backend/api/algo/daily_snapshot.py#L1799)). A
+  per-row-only filter would flag a mixed-exchange sibling's legitimate null-out as missing, causing a
+  spurious backfill. A batch-only filter counts a zero-ltp row as existing, so a bad row is never
+  backfilled.
+- **Alert.** Any backfilled write logs at ERROR ([:2088-2095](backend/api/algo/daily_snapshot.py#L2088)).
+  That reaches `ERROR_AGENT` as action-required.
+- **Known residual, not fixed.** A flat (qty=0) row with `ltp=0` fails criterion 2, so it reads as
+  missing. It is then rewritten through the inherited `_upsert_rows` writer design, which this change
+  does not alter. That can still trigger the ERROR at [:2088](backend/api/algo/daily_snapshot.py#L2088).
+  Narrow in practice; flagged by audit.
+- Invariant: a backfilled row carries the account's own EOD stamp. A symbol counts as captured only when
+  the readers would deliver it.
 
 **Expiry auto-close never reached the broker — an exchange-gate context mismatch (fixed) and a
 string-vs-date expiry comparison (open) — 2026-11-27** — Live incident:
