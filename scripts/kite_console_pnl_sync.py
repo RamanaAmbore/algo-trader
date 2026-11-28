@@ -206,6 +206,7 @@ import sys
 import time as _time_mod
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -332,6 +333,26 @@ class ReportValidationError(RuntimeError):
     """A downloaded report failed content validation — schema drift
     (missing/extra columns), empty when it shouldn't be, corrupt, or a
     row falls outside the requested date range. Never silently ingested."""
+
+
+class StaleReportContentError(ConsoleStructuralError):
+    """A downloaded report's own content is byte-identical (per
+    `_pnl_content_signature()`) to a DIFFERENT, already-accepted
+    report for a different requested date range — Kite Console's
+    date-range-picker race (see `_CHUNK_SCRAPE_MAX_ATTEMPTS`'s own
+    comment and `_make_pnl_dup_check()` below): the on-screen "fetched"
+    label updates correctly to the newly requested range, but the
+    server occasionally still serves the PREVIOUS query's export.
+    `validate_pnl_rows()` cannot catch this on its own — a P&L
+    statement row carries no per-row date to range-check against,
+    unlike Tradebook/Ledger's `#date_fetched_label`-backed defense (see
+    `KiteConsoleReportsPage._verify_fetched_date_range()`'s own
+    docstring for why that landmark is absent from the P&L page's DOM).
+    Deliberately a `ConsoleStructuralError` subclass, not a
+    `ReportValidationError` — this is caught by `_scrape_one_chunk()`'s
+    existing bounded retry loop (a fresh retry resolves the race in
+    practice, same as the date-range-mismatch case), never by the
+    ingestion-time validation path."""
 
 
 # ---------------------------------------------------------------------------
@@ -2063,27 +2084,152 @@ def _console_login_and_scrape_sync(
 _CHUNK_SCRAPE_MAX_ATTEMPTS = 3
 
 
+# ---------------------------------------------------------------------------
+# Stale pnl-export detection — Kite's date-range picker race (see
+# `_CHUNK_SCRAPE_MAX_ATTEMPTS`'s own comment above) is UNDETECTABLE by
+# `validate_pnl_rows()` alone: a P&L-statement row carries no per-row date
+# to range-check against (it is a symbol-level aggregate over the WHOLE
+# requested range), unlike Tradebook/Ledger, which are defended by
+# `#date_fetched_label` + `_verify_fetched_date_range()` (confirmed absent
+# from the P&L report's own DOM — see `KiteConsoleReportsPage._DATE_
+# FETCHED_LABEL_SELECTOR`'s own docstring). Measured impact on prod:
+# 176 distinct (account, segment, symbol, realized_pnl) groups recurring
+# identically across 2-5 different `pull_range_start` months, net
+# overcounting realized P&L by ~₹784,975 across both accounts and all
+# three segments. `reconcile_against_daily_book()` never caught it
+# because it only runs after a full, cleanly-completed `mode=backfill`
+# invocation, and none occurred during the affected window.
+#
+# Two layers, both keyed on the SAME content signature:
+#   Layer 1 (`_make_pnl_dup_check`, consumed by `_scrape_one_chunk()`) —
+#       within ONE scrape run, a pnl chunk whose full (symbol,
+#       realized_pnl) content is byte-identical to an EARLIER, DIFFERENT-
+#       dated chunk already accepted this run is treated as a stale
+#       download and fed into the existing bounded retry loop, exactly
+#       like a date-range-mismatch failure.
+#   Layer 2 (`_assert_pnl_not_cross_run_duplicate`, consumed by
+#       `_ingest_one_report()`) — a cross-run backstop for whatever
+#       layer 1 cannot see (e.g. a `sync`-mode single-chunk pull on a
+#       LATER, independent run that happens to duplicate an already-
+#       ingested backfill chunk): before upserting, refuse ingestion
+#       outright via the existing `ReportValidationError` path if this
+#       chunk's content signature already exists in the table under a
+#       DIFFERENT `pull_range_start` for this (account, segment).
+# ---------------------------------------------------------------------------
+
+# Sentinel token for a missing/unparseable realized_pnl value in the
+# content signature below — distinct from any real numeric token, so a
+# genuinely-null pnl value is never confused with a real zero.
+_PNL_SIG_NONE_TOKEN = "\x00NONE\x00"
+
+
+def _pnl_value_token(value: object) -> str:
+    """Normalizes one `realized_pnl` value (a native float, fresh out of
+    `parse_pnl_statement_xlsx()`, OR a `Decimal` read back from this
+    table's own `Numeric(18, 4)` column — the two layers below compare
+    across BOTH of these representations) into a stable string token.
+
+    Comparing raw floats/Decimals directly would make the two layers'
+    signatures for the exact same real value silently never match — a
+    freshly-parsed `45000.0` and a stored `Decimal('45000.0000')` are
+    not `==` to a naive string/repr comparison, and float reprs of the
+    identical decimal value can differ across the two code paths.
+    Routing both through `Decimal(str(value)).quantize(...)` first
+    normalizes away both gaps."""
+    if value is None:
+        return _PNL_SIG_NONE_TOKEN
+    try:
+        return str(Decimal(str(value)).quantize(Decimal("0.0001")))
+    except (InvalidOperation, ValueError, TypeError):
+        return str(value)
+
+
+_ZERO_PNL_TOKEN = _pnl_value_token(0)
+
+
+def _pnl_content_signature(rows: "list[dict]") -> "frozenset | None":
+    """Order-independent content signature over a pnl chunk's full set of
+    (symbol, realized_pnl) pairs — the WHOLE chunk's content, not any
+    one row — shared by both layer 1 (within-run) and layer 2
+    (cross-run) stale-export detectors below.
+
+    Returns `None` — meaning "no signal, never compare" — for a
+    genuinely empty chunk, AND for a chunk where every row's own
+    realized_pnl is null/zero. Both are legitimate, routinely-recurring
+    results (a quiet month for every symbol in a segment is ordinary),
+    and a duplicated empty-or-all-zero result can never overcount real
+    P&L in the first place — flagging it would just be a steady stream
+    of false positives on every genuinely flat month."""
+    pairs: "set[tuple[str, str]]" = set()
+    for r in rows:
+        symbol = (r.get("symbol") or "").strip()
+        pairs.add((symbol, _pnl_value_token(r.get("realized_pnl"))))
+    if not pairs:
+        return None
+    if all(tok in (_PNL_SIG_NONE_TOKEN, _ZERO_PNL_TOKEN) for _sym, tok in pairs):
+        return None
+    return frozenset(pairs)
+
+
+def _make_pnl_dup_check(seen: "dict[frozenset, tuple[date, date]]"):
+    """Layer 1 — returns a closure bound to `seen` (one dict per
+    (account, segment), built fresh per segment by
+    `_scrape_segment_chunks()`), to be passed as `_scrape_one_chunk()`'s
+    `dup_check` hook for `report_type='pnl'` chunks only.
+
+    Raises `StaleReportContentError` when THIS chunk's content
+    signature already exists in `seen` under a DIFFERENT (start, end)
+    — every real pull within one `_scrape_segment_chunks()` call
+    targets a unique, non-overlapping calendar-month range, so a
+    second chunk's content can only legitimately match an earlier
+    chunk's if it is the SAME chunk being retried (same start/end,
+    which this function never flags). Records the signature on a
+    non-flagged, non-`None` result so the NEXT chunk can be checked
+    against it in turn."""
+    def _check(rows: "list[dict]", start: date, end: date) -> None:
+        sig = _pnl_content_signature(rows)
+        if sig is None:
+            return
+        prior = seen.get(sig)
+        if prior is not None and prior != (start, end):
+            raise StaleReportContentError(
+                f"pnl export for {start}..{end} is byte-identical to the "
+                f"export already accepted for {prior[0]}..{prior[1]} this "
+                "run -- Kite Console served a stale report (date-range "
+                "picker race)"
+            )
+        seen[sig] = (start, end)
+    return _check
+
+
 def _validate_raw_report(report_type: str, segment: str, start: date, end: date,
-                          raw_bytes: bytes) -> None:
+                          raw_bytes: bytes) -> "list[dict]":
     """Re-used by the retry loop (to decide whether to retry) AND, via
     `_ingest_one_report()`, by the real ingestion pass. Deliberately the
     IDENTICAL parse+validate calls in both places -- running the same
     pure, Playwright-independent functions twice on a successful chunk is
     cheap, and keeping one implementation (not two copies that could
     drift) is worth that. Raises `ReportValidationError` on a bad report;
-    returns normally (discarding the parsed rows) on a good one."""
+    returns the parsed rows on a good one -- `_scrape_one_chunk()` uses
+    this to feed the layer-1 stale-pnl-content check (`dup_check` below)
+    without a second, duplicate parse of the same bytes."""
     if report_type == "tradebook":
-        validate_tradebook_rows(parse_tradebook_csv(raw_bytes), segment=segment, start=start, end=end)
+        rows = parse_tradebook_csv(raw_bytes)
+        validate_tradebook_rows(rows, segment=segment, start=start, end=end)
     elif report_type == "pnl":
-        validate_pnl_rows(parse_pnl_statement_xlsx(raw_bytes), segment=segment)
+        rows = parse_pnl_statement_xlsx(raw_bytes)
+        validate_pnl_rows(rows, segment=segment)
     else:
-        validate_ledger_rows(parse_ledger_csv(raw_bytes), start=start, end=end)
+        rows = parse_ledger_csv(raw_bytes)
+        validate_ledger_rows(rows, start=start, end=end)
+    return rows
 
 
 def _scrape_one_chunk(
     reports: "KiteConsoleReportsPage", page, masked: str, *,
     segment: str, report_type: str, start: date, end: date,
     setup_query: "Callable[[], None]", diag_label: str,
+    dup_check: "Callable[[list[dict], date, date], None] | None" = None,
 ) -> dict:
     """Scrape ONE (segment, report_type, date-range) chunk, retrying the
     whole navigate->setup->submit->download->validate cycle up to
@@ -2096,7 +2242,15 @@ def _scrape_one_chunk(
     directory. `setup_query` performs whatever this report type needs
     between `navigate_to_reports()` and `trigger_download()` (segment
     select + date range for tradebook/pnl; just the ledger date range for
-    ledger, which has no segment selector at all)."""
+    ledger, which has no segment selector at all).
+
+    `dup_check` (layer 1 of the stale-pnl-export fix -- see the module
+    section above `_CHUNK_SCRAPE_MAX_ATTEMPTS`) is called with the freshly
+    parsed rows + this chunk's own (start, end) right after a successful
+    `_validate_raw_report()`, and may raise to reject an otherwise-valid-
+    looking download as stale -- caught by the SAME except/retry below as
+    any other scrape failure. `None` for every caller except the pnl
+    report-type loop in `_scrape_segment_chunks()`."""
     entry: dict = {
         "segment": segment, "report_type": report_type,
         "start": start, "end": end,
@@ -2111,7 +2265,9 @@ def _scrape_one_chunk(
                 report_type=report_type, start=start, end=end, masked_account=masked,
             )
             raw_bytes = download_path.read_bytes()
-            _validate_raw_report(report_type, segment, start, end, raw_bytes)
+            parsed_rows = _validate_raw_report(report_type, segment, start, end, raw_bytes)
+            if dup_check is not None:
+                dup_check(parsed_rows, start, end)
             entry["raw_bytes"] = raw_bytes
             return entry
         except Exception as e:
@@ -2131,6 +2287,13 @@ def _scrape_one_chunk(
 def _scrape_segment_chunks(reports, page, masked: str, plan) -> "list[dict]":
     chunks: "list[dict]" = []
     for segment, (start, end) in plan.items():
+        # Layer 1 of the stale-pnl-export fix (see the module section
+        # above `_CHUNK_SCRAPE_MAX_ATTEMPTS`) -- one fresh registry per
+        # segment per account-sync, so a genuine content coincidence
+        # across two DIFFERENT segments (never expected in practice, but
+        # not ruled out) can never cross-contaminate. Never shared with
+        # tradebook — only ever read/written for report_type='pnl' below.
+        pnl_signatures: "dict[frozenset, tuple[date, date]]" = {}
         for report_type in ("tradebook", "pnl"):
             for c_start, c_end in chunk_by_calendar_month(start, end):
                 # pnl ONLY: floor the request's own start to the 1st
@@ -2167,6 +2330,10 @@ def _scrape_segment_chunks(reports, page, masked: str, plan) -> "list[dict]":
                         reports.select_segment(s), reports.set_date_range(rs, ce),
                     ),
                     diag_label=f"scrape_{segment}_{label}",
+                    dup_check=(
+                        _make_pnl_dup_check(pnl_signatures)
+                        if report_type == "pnl" else None
+                    ),
                 )
                 chunks.append(entry)
     return chunks
@@ -2209,6 +2376,76 @@ def _scrape_ledger_chunks(
     return chunks
 
 
+async def _assert_pnl_not_cross_run_duplicate(
+    masked: str, segment: str, pull_start: date, parsed_rows: "list[dict]",
+) -> None:
+    """Layer 2 of the stale-pnl-export fix (see the module section above
+    `_CHUNK_SCRAPE_MAX_ATTEMPTS`) — a cross-run backstop for whatever
+    layer 1 (`_make_pnl_dup_check`, scoped to ONE scrape run) cannot see
+    — e.g. a `sync`-mode single-chunk pull on a LATER, independent run
+    that happens to duplicate content an earlier backfill run already
+    ingested. Raises `ReportValidationError` — caught by
+    `_ingest_one_report()`'s existing except block, which alerts and
+    refuses the ingest, exactly as for any other validation failure —
+    when this chunk's own (symbol, realized_pnl) content signature
+    already exists in `kite_console_pnl_sync` for this (account,
+    segment, report_type='pnl') under a DIFFERENT `pull_range_start`.
+
+    A legitimate same-month re-run (same `pull_range_start`, a later or
+    wider `pull_range_end`) is excluded at the query level, never
+    flagged — that is the existing, already-correct "latest wins"
+    design `get_accumulated_pnl()` relies on, not a stale-content
+    signal. A genuinely empty (or all-zero) chunk is never checked at
+    all — see `_pnl_content_signature()`'s own docstring for why a
+    duplicated empty/all-zero result can never overcount P&L and must
+    never be flagged.
+
+    Deliberately reads `KiteConsolePnlSync` directly here, NOT inside
+    `ingest_rows()` — that function is shared with
+    `scripts/dhan_pnl_sync.py`, which is explicitly out of scope for
+    this fix (the stale-export race is a Kite Console UI defect, not a
+    Dhan one). Also deliberately does not filter on `broker` — the
+    masked `account` form alone already disambiguates Kite from Dhan
+    rows (different broker-letter mask prefix), per this model's own
+    `broker` column docstring."""
+    new_sig = _pnl_content_signature(parsed_rows)
+    if new_sig is None:
+        return
+
+    from sqlalchemy import select
+    from backend.api.database import async_session
+    from backend.api.models import KiteConsolePnlSync
+
+    T = KiteConsolePnlSync
+    async with async_session() as session:
+        result = await session.execute(
+            select(T.pull_range_start, T.pull_range_end, T.symbol, T.realized_pnl)
+            .where(
+                T.account == masked,
+                T.segment == segment,
+                T.report_type == "pnl",
+                T.pull_range_start.isnot(None),
+                T.pull_range_start != pull_start,
+            )
+        )
+        existing_rows = result.all()
+
+    by_batch: "dict[tuple, set]" = {}
+    for p_start, p_end, symbol, pnl in existing_rows:
+        by_batch.setdefault((p_start, p_end), set()).add(
+            ((symbol or "").strip(), _pnl_value_token(pnl))
+        )
+
+    for (other_start, other_end), pairs in by_batch.items():
+        if frozenset(pairs) == new_sig:
+            raise ReportValidationError(
+                f"pnl content for {segment}/pnl pull_range_start={pull_start} "
+                "is byte-identical to the already-ingested pull for "
+                f"{other_start}..{other_end} -- refusing to ingest a stale/"
+                "duplicated Kite Console export"
+            )
+
+
 async def _ingest_one_report(
     masked: str, segment: str, report_type: str,
     start: date, end: date, raw_bytes: bytes,
@@ -2229,6 +2466,9 @@ async def _ingest_one_report(
         elif report_type == "pnl":
             parsed_rows = parse_pnl_statement_xlsx(raw_bytes)
             validate_pnl_rows(parsed_rows, segment=segment)
+            # Layer 2 of the stale-pnl-export fix — see this function's
+            # own docstring above.
+            await _assert_pnl_not_cross_run_duplicate(masked, segment, start, parsed_rows)
         else:
             parsed_rows = parse_ledger_csv(raw_bytes)
             validate_ledger_rows(parsed_rows, start=start, end=end)

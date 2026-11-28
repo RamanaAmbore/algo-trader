@@ -1244,12 +1244,29 @@ class TestScrapingRobustness:
 
 class _FakeSessionCtx:
     """A minimal stand-in for `async_session()`'s async-context-manager
-    shape, used only by the one multi-segment test above that needs
-    `sync_account`'s `async with async_session() as session:` block to
-    resolve to *something* without a real DB."""
+    shape, used by several tests that need `sync_account`'s own
+    `async with async_session() as session:` block to resolve to
+    *something* without a real DB.
+
+    `session.execute()` is an `AsyncMock` returning a result whose
+    `.all()`/`.scalar_one()` are empty/`None` -- needed since the
+    layer-2 stale-pnl-content check (`_assert_pnl_not_cross_run_
+    duplicate()`, consumed by `_ingest_one_report()`) now runs a real
+    `await session.execute(select(...))` on the pnl path, even in these
+    tests that otherwise only care about `ingest_rows`/
+    `ingest_ledger_rows`'s own mocked behaviour -- a bare `MagicMock()`
+    session (the pre-fix shape) made that `await` raise `TypeError`.
+    An empty `.all()` means "no prior pull exists to compare against",
+    which is the correct, inert answer for every one of these tests."""
 
     async def __aenter__(self):
-        return MagicMock()
+        session = MagicMock()
+        fake_result = MagicMock()
+        fake_result.all.return_value = []
+        fake_result.scalar_one.return_value = None
+        session.execute = AsyncMock(return_value=fake_result)
+        session.commit = AsyncMock()
+        return session
 
     async def __aexit__(self, *a):
         return False
@@ -2825,6 +2842,497 @@ class TestPnlStatementPull:
         pnl_ingest_call = next(c for c in ingest_mock.call_args_list if c[0][3] == "pnl")
         assert pnl_ingest_call[1]["pull_start"] == date(2026, 11, 1)
         assert pnl_ingest_call[1]["pull_end"] == date(2026, 11, 20)
+
+
+# ===========================================================================
+# 18b. Stale pnl-export detection — Kite Console's date-range-picker race
+# served the SAME content for multiple DIFFERENT requested date ranges,
+# confirmed on prod: 176 distinct (account, segment, symbol, realized_pnl)
+# groups recurring identically across 2-5 months, ~₹784,975 overcounted.
+# `validate_pnl_rows()` cannot catch it alone (no per-row date to
+# range-check against). Two layers:
+#   layer 1 — `_make_pnl_dup_check()` / `_pnl_content_signature()`,
+#             within ONE scrape run, consumed by `_scrape_one_chunk()`.
+#   layer 2 — `_assert_pnl_not_cross_run_duplicate()`, a cross-run
+#             backstop, consumed by `_ingest_one_report()`.
+# ===========================================================================
+
+def _pnl_rows(*pairs: "tuple[str, float | None]") -> "list[dict]":
+    """Shorthand for a list of `{"symbol", "realized_pnl"}` dicts, the
+    exact shape `parse_pnl_statement_xlsx()` returns."""
+    return [{"symbol": sym, "realized_pnl": pnl} for sym, pnl in pairs]
+
+
+class TestPnlContentSignature:
+    """Pure unit tests for `_pnl_content_signature()` / `_pnl_value_token()`
+    — the shared primitive both layers below are built on."""
+
+    def test_order_independent(self):
+        a = mod._pnl_content_signature(_pnl_rows(("INDIGO26APR4150CE", 34297.5), ("GOLDM26DECFUT", 100.0)))
+        b = mod._pnl_content_signature(_pnl_rows(("GOLDM26DECFUT", 100.0), ("INDIGO26APR4150CE", 34297.5)))
+        assert a == b
+        assert a is not None
+
+    def test_different_pnl_value_differs(self):
+        a = mod._pnl_content_signature(_pnl_rows(("INDIGO26APR4150CE", 34297.5)))
+        b = mod._pnl_content_signature(_pnl_rows(("INDIGO26APR4150CE", 34297.6)))
+        assert a != b
+
+    def test_different_symbol_differs(self):
+        a = mod._pnl_content_signature(_pnl_rows(("INDIGO26APR4150CE", 34297.5)))
+        b = mod._pnl_content_signature(_pnl_rows(("NIFTY25DEC25000CE", 34297.5)))
+        assert a != b
+
+    def test_empty_rows_is_none(self):
+        assert mod._pnl_content_signature([]) is None
+
+    def test_all_zero_rows_is_none(self):
+        """A duplicated all-zero result can never overcount real P&L —
+        flagging it would be a steady stream of false positives on
+        every genuinely flat segment/month."""
+        assert mod._pnl_content_signature(_pnl_rows(("A", 0), ("B", 0.0))) is None
+
+    def test_all_none_rows_is_none(self):
+        assert mod._pnl_content_signature(_pnl_rows(("A", None), ("B", None))) is None
+
+    def test_mixed_zero_and_nonzero_is_not_none(self):
+        """Only an ALL-zero/None set is exempted — one genuinely nonzero
+        row among others must still produce a real, comparable signature."""
+        sig = mod._pnl_content_signature(_pnl_rows(("A", 0), ("B", 500.0)))
+        assert sig is not None
+
+    def test_float_and_decimal_representations_of_the_same_value_match(self):
+        """THE critical normalization this fix depends on: layer 1
+        compares native floats fresh out of `parse_pnl_statement_xlsx()`
+        against each other, but layer 2 additionally compares against
+        `Decimal` values read back from this table's own
+        `Numeric(18, 4)` column. Skipping the Decimal-quantize
+        normalization in `_pnl_value_token()` would make the two
+        layers' signatures for the IDENTICAL real value silently never
+        match, defeating layer 2 entirely."""
+        from decimal import Decimal
+
+        float_sig = mod._pnl_content_signature(_pnl_rows(("INDIGO26APR4150CE", 34297.5)))
+        decimal_sig = mod._pnl_content_signature([
+            {"symbol": "INDIGO26APR4150CE", "realized_pnl": Decimal("34297.5000")},
+        ])
+        assert float_sig == decimal_sig
+
+    def test_symbol_whitespace_is_stripped(self):
+        a = mod._pnl_content_signature(_pnl_rows(("INDIGO26APR4150CE", 34297.5)))
+        b = mod._pnl_content_signature(_pnl_rows((" INDIGO26APR4150CE ", 34297.5)))
+        assert a == b
+
+
+class TestMakePnlDupCheck:
+    """Pure unit tests for layer 1's `_make_pnl_dup_check()` closure —
+    no Playwright/page mocking needed at all."""
+
+    def test_first_chunk_never_raises_and_is_recorded(self):
+        seen: dict = {}
+        check = mod._make_pnl_dup_check(seen)
+        check(_pnl_rows(("INDIGO26APR4150CE", 34297.5)), date(2026, 11, 1), date(2026, 11, 30))
+        assert len(seen) == 1
+
+    def test_distinct_content_for_a_later_month_never_raises(self):
+        seen: dict = {}
+        check = mod._make_pnl_dup_check(seen)
+        check(_pnl_rows(("INDIGO26APR4150CE", 34297.5)), date(2026, 11, 1), date(2026, 11, 30))
+        check(_pnl_rows(("INDIGO26APR4150CE", 9999.0)), date(2026, 12, 1), date(2026, 12, 31))  # no raise
+
+    def test_identical_content_for_a_different_month_raises(self):
+        """The exact live-reported INDIGO shape: the SAME realized_pnl
+        for the SAME symbol recurring across a DIFFERENT requested
+        month — Kite Console serving a stale export."""
+        seen: dict = {}
+        check = mod._make_pnl_dup_check(seen)
+        check(_pnl_rows(("INDIGO26APR4150CE", 34297.5)), date(2026, 11, 1), date(2026, 11, 30))
+        with pytest.raises(mod.StaleReportContentError):
+            check(_pnl_rows(("INDIGO26APR4150CE", 34297.5)), date(2026, 12, 1), date(2026, 12, 31))
+
+    def test_rechecking_the_identical_chunk_itself_never_raises(self):
+        """Re-calling the check for the EXACT same (start, end) with the
+        exact same content must never self-flag — the `prior == (start,
+        end)` guard exists specifically for this (not expected to occur
+        in production, since each chunk is only ever checked once, but
+        pinned directly as a safety invariant on the pure function)."""
+        seen: dict = {}
+        check = mod._make_pnl_dup_check(seen)
+        check(_pnl_rows(("INDIGO26APR4150CE", 34297.5)), date(2026, 11, 1), date(2026, 11, 30))
+        check(_pnl_rows(("INDIGO26APR4150CE", 34297.5)), date(2026, 11, 1), date(2026, 11, 30))  # no raise
+
+    def test_empty_chunks_never_raise_regardless_of_repetition(self):
+        seen: dict = {}
+        check = mod._make_pnl_dup_check(seen)
+        check([], date(2026, 11, 1), date(2026, 11, 30))
+        check([], date(2026, 12, 1), date(2026, 12, 31))
+        check([], date(2027, 1, 1), date(2027, 1, 31))  # no raise, three genuinely quiet months
+        assert seen == {}
+
+
+class TestScrapeSegmentChunksStaleContentWiring:
+    """Integration-level tests driving the REAL `_scrape_segment_chunks()`
+    -> `_scrape_one_chunk()` -> `dup_check` wiring, with a mocked
+    `KiteConsoleReportsPage` — proves layer 1 is actually wired in, not
+    only correct in isolation."""
+
+    def _fake_reports(self, *, trigger_download, select_segment=None):
+        reports = MagicMock()
+        reports.navigate_to_reports = MagicMock()
+        reports.select_segment = select_segment or MagicMock()
+        reports.set_date_range = MagicMock()
+        reports.trigger_download = MagicMock(side_effect=trigger_download)
+        return reports
+
+    def test_stale_content_recovers_on_retry_and_ingests_the_fresh_month(self, monkeypatch, tmp_path):
+        tradebook_file = tmp_path / "tradebook.csv"
+        tradebook_file.write_bytes(_csv_bytes([]))
+        month1_file = tmp_path / "month1.xlsx"
+        month1_file.write_bytes(_pnl_xlsx_bytes([{"symbol": "INDIGO26APR4150CE", "realized_pnl": "34297.50"}]))
+        month2_stale_file = tmp_path / "month2_stale.xlsx"
+        month2_stale_file.write_bytes(
+            _pnl_xlsx_bytes([{"symbol": "INDIGO26APR4150CE", "realized_pnl": "34297.50"}])
+        )
+        month2_fresh_file = tmp_path / "month2_fresh.xlsx"
+        month2_fresh_file.write_bytes(
+            _pnl_xlsx_bytes([{"symbol": "INDIGO26APR4150CE", "realized_pnl": "9999.00"}])
+        )
+
+        last_report_type: "list[str]" = []
+        attempts_per_range: "dict[tuple, int]" = {}
+
+        def _navigate(rt):
+            last_report_type.append(rt)
+
+        def _trigger_download(report_type=None, start=None, end=None, masked_account=None):
+            if report_type == "tradebook":
+                return tradebook_file
+            if start == date(2026, 11, 1):
+                return month1_file
+            key = (start, end)
+            attempts_per_range[key] = attempts_per_range.get(key, 0) + 1
+            if attempts_per_range[key] == 1:
+                return month2_stale_file  # byte-identical to month1's own content
+            return month2_fresh_file
+
+        reports = self._fake_reports(trigger_download=_trigger_download)
+        reports.navigate_to_reports = MagicMock(side_effect=_navigate)
+        page = MagicMock()
+        monkeypatch.setattr(mod, "capture_diagnostics", MagicMock(return_value={}))
+
+        plan = {"derivatives": (date(2026, 11, 1), date(2026, 12, 31))}
+        chunks = mod._scrape_segment_chunks(reports, page, "ZSTALE1", plan)
+
+        pnl_chunks = [c for c in chunks if c["report_type"] == "pnl"]
+        assert len(pnl_chunks) == 2
+        month1_chunk = next(c for c in pnl_chunks if c["start"] == date(2026, 11, 1))
+        month2_chunk = next(c for c in pnl_chunks if c["start"] == date(2026, 12, 1))
+        assert month1_chunk["scrape_error"] is None
+        assert month2_chunk["scrape_error"] is None, (
+            f"the retry must recover with genuinely fresh content, got {month2_chunk['scrape_error']}"
+        )
+        assert month2_chunk["raw_bytes"] == month2_fresh_file.read_bytes(), (
+            "the STALE first-attempt bytes must never be the ones accepted/ingested"
+        )
+
+    def test_stale_content_that_never_clears_exhausts_retries_and_is_never_ingested(self, monkeypatch, tmp_path):
+        tradebook_file = tmp_path / "tradebook.csv"
+        tradebook_file.write_bytes(_csv_bytes([]))
+        month1_file = tmp_path / "month1.xlsx"
+        month1_file.write_bytes(_pnl_xlsx_bytes([{"symbol": "INDIGO26APR4150CE", "realized_pnl": "34297.50"}]))
+        # month2's download ALWAYS returns month1's own byte-identical
+        # content, on every single attempt -- the worst case, where the
+        # Kite-side race never resolves within the bounded retry budget.
+        month2_stale_file = tmp_path / "month2_stale.xlsx"
+        month2_stale_file.write_bytes(
+            _pnl_xlsx_bytes([{"symbol": "INDIGO26APR4150CE", "realized_pnl": "34297.50"}])
+        )
+
+        last_report_type: "list[str]" = []
+
+        def _navigate(rt):
+            last_report_type.append(rt)
+
+        def _trigger_download(report_type=None, start=None, end=None, masked_account=None):
+            if report_type == "tradebook":
+                return tradebook_file
+            if start == date(2026, 11, 1):
+                return month1_file
+            return month2_stale_file
+
+        reports = self._fake_reports(trigger_download=_trigger_download)
+        reports.navigate_to_reports = MagicMock(side_effect=_navigate)
+        page = MagicMock()
+        monkeypatch.setattr(mod, "capture_diagnostics", MagicMock(return_value={}))
+
+        plan = {"derivatives": (date(2026, 11, 1), date(2026, 12, 31))}
+        chunks = mod._scrape_segment_chunks(reports, page, "ZSTALE2", plan)
+
+        pnl_chunks = [c for c in chunks if c["report_type"] == "pnl"]
+        month2_chunk = next(c for c in pnl_chunks if c["start"] == date(2026, 12, 1))
+        assert month2_chunk["raw_bytes"] is None, "a permanently-stale chunk must never be accepted/ingested"
+        assert month2_chunk["scrape_error"] is not None
+        assert "byte-identical" in month2_chunk["scrape_error"]
+
+    def test_two_genuinely_quiet_months_are_never_flagged_as_stale(self, monkeypatch, tmp_path):
+        """The false-positive risk this fix must NOT introduce — two
+        consecutive months with zero realized P&L for this segment
+        (an entirely ordinary, recurring shape) must both succeed on
+        the FIRST attempt, with no retry at all."""
+        tradebook_file = tmp_path / "tradebook.csv"
+        tradebook_file.write_bytes(_csv_bytes([]))
+        empty_pnl_file = tmp_path / "empty.xlsx"
+        empty_pnl_file.write_bytes(_pnl_xlsx_bytes([]))
+
+        def _trigger_download(report_type=None, start=None, end=None, masked_account=None):
+            return tradebook_file if report_type == "tradebook" else empty_pnl_file
+
+        reports = self._fake_reports(trigger_download=_trigger_download)
+        page = MagicMock()
+        monkeypatch.setattr(mod, "capture_diagnostics", MagicMock(return_value={}))
+
+        plan = {"commodities": (date(2026, 11, 1), date(2026, 12, 31))}
+        chunks = mod._scrape_segment_chunks(reports, page, "ZQUIET1", plan)
+
+        pnl_chunks = [c for c in chunks if c["report_type"] == "pnl"]
+        assert len(pnl_chunks) == 2
+        assert all(c["scrape_error"] is None for c in pnl_chunks)
+        # navigate_to_reports is called exactly once per (report_type,
+        # chunk) when nothing fails -- 2 report types x 2 months = 4.
+        assert reports.navigate_to_reports.call_count == 4
+
+
+class TestPnlCrossRunDuplicateDetection:
+    """Layer 2 — `_assert_pnl_not_cross_run_duplicate()` / its wiring
+    into `_ingest_one_report()`. Uses the REAL in-memory SQLite DB
+    (`recon_session_factory`, defined earlier in this file) — the
+    historical row this fix must compare against is read through the
+    real ORM column type (`Numeric(18, 4)` -> `Decimal`), the exact
+    cross-type comparison `TestPnlContentSignature`'s dedicated test
+    above pins at the lower level."""
+
+    @pytest.mark.asyncio
+    async def test_cross_month_duplicate_is_refused_and_alerted(self, recon_session_factory, monkeypatch):
+        async with recon_session_factory() as session:
+            await _insert_pnl_row(
+                session, account="ZXRUN1###", segment="derivatives",
+                symbol="INDIGO26APR4150CE", symbol_root="INDIGO", instrument_type="option",
+                expiry=date(2026, 4, 30),
+                pull_range_start=date(2026, 11, 1), pull_range_end=date(2026, 11, 30),
+                realized_pnl=34297.5,
+            )
+            await session.commit()
+
+        ingest_mock = AsyncMock(return_value=1)
+        monkeypatch.setattr(mod, "ingest_rows", ingest_mock)
+        alert_mock = AsyncMock()
+        monkeypatch.setattr(mod, "alert_critical", alert_mock)
+
+        pnl_xlsx = _pnl_xlsx_bytes([{"symbol": "INDIGO26APR4150CE", "realized_pnl": "34297.50"}])
+        n, errs = await mod._ingest_one_report(
+            "ZXRUN1###", "derivatives", "pnl",
+            date(2026, 12, 1), date(2026, 12, 31), pnl_xlsx,
+        )
+
+        assert n == 0
+        assert errs and "validation failed" in errs[0]
+        ingest_mock.assert_not_called()
+        alert_mock.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_same_month_rerun_with_identical_content_is_allowed(self, recon_session_factory, monkeypatch):
+        """A same-`pull_range_start` re-run (the existing, already-
+        correct 'latest wins' design `get_accumulated_pnl()` relies on)
+        must NEVER be flagged, even when its content happens to be
+        identical to the prior pull for that SAME month."""
+        async with recon_session_factory() as session:
+            await _insert_pnl_row(
+                session, account="ZXRUN2###", segment="derivatives",
+                symbol="INDIGO26APR4150CE", symbol_root="INDIGO", instrument_type="option",
+                expiry=date(2026, 4, 30),
+                pull_range_start=date(2026, 11, 1), pull_range_end=date(2026, 11, 20),
+                realized_pnl=34297.5,
+            )
+            await session.commit()
+
+        ingest_mock = AsyncMock(return_value=1)
+        monkeypatch.setattr(mod, "ingest_rows", ingest_mock)
+        alert_mock = AsyncMock()
+        monkeypatch.setattr(mod, "alert_critical", alert_mock)
+
+        pnl_xlsx = _pnl_xlsx_bytes([{"symbol": "INDIGO26APR4150CE", "realized_pnl": "34297.50"}])
+        n, errs = await mod._ingest_one_report(
+            "ZXRUN2###", "derivatives", "pnl",
+            date(2026, 11, 1), date(2026, 11, 30), pnl_xlsx,  # SAME pull_range_start=Nov 1
+        )
+
+        assert errs == []
+        ingest_mock.assert_awaited_once()
+        alert_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_genuinely_different_content_for_a_different_month_is_allowed(
+        self, recon_session_factory, monkeypatch,
+    ):
+        async with recon_session_factory() as session:
+            await _insert_pnl_row(
+                session, account="ZXRUN3###", segment="derivatives",
+                symbol="INDIGO26APR4150CE", symbol_root="INDIGO", instrument_type="option",
+                expiry=date(2026, 4, 30),
+                pull_range_start=date(2026, 11, 1), pull_range_end=date(2026, 11, 30),
+                realized_pnl=34297.5,
+            )
+            await session.commit()
+
+        ingest_mock = AsyncMock(return_value=1)
+        monkeypatch.setattr(mod, "ingest_rows", ingest_mock)
+        alert_mock = AsyncMock()
+        monkeypatch.setattr(mod, "alert_critical", alert_mock)
+
+        pnl_xlsx = _pnl_xlsx_bytes([{"symbol": "INDIGO26APR4150CE", "realized_pnl": "1234.00"}])
+        n, errs = await mod._ingest_one_report(
+            "ZXRUN3###", "derivatives", "pnl",
+            date(2026, 12, 1), date(2026, 12, 31), pnl_xlsx,
+        )
+
+        assert errs == []
+        ingest_mock.assert_awaited_once()
+        alert_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_empty_new_chunk_is_never_flagged(self, recon_session_factory, monkeypatch):
+        async with recon_session_factory() as session:
+            await _insert_pnl_row(
+                session, account="ZXRUN4###", segment="derivatives",
+                symbol="INDIGO26APR4150CE", symbol_root="INDIGO", instrument_type="option",
+                expiry=date(2026, 4, 30),
+                pull_range_start=date(2026, 11, 1), pull_range_end=date(2026, 11, 30),
+                realized_pnl=34297.5,
+            )
+            await session.commit()
+
+        ingest_mock = AsyncMock(return_value=0)
+        monkeypatch.setattr(mod, "ingest_rows", ingest_mock)
+        alert_mock = AsyncMock()
+        monkeypatch.setattr(mod, "alert_critical", alert_mock)
+
+        n, errs = await mod._ingest_one_report(
+            "ZXRUN4###", "derivatives", "pnl",
+            date(2026, 12, 1), date(2026, 12, 31), _pnl_xlsx_bytes([]),
+        )
+
+        assert errs == []
+        alert_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_duplicate_in_a_different_segment_is_not_flagged(self, recon_session_factory, monkeypatch):
+        """The check is scoped to (account, segment) — the SAME content
+        legitimately recurring under a DIFFERENT segment for the same
+        account must not be refused."""
+        async with recon_session_factory() as session:
+            await _insert_pnl_row(
+                session, account="ZXRUN5###", segment="commodities",
+                symbol="GOLDM26DECFUT", symbol_root="GOLDM", instrument_type="future",
+                expiry=date(2026, 12, 25),
+                pull_range_start=date(2026, 11, 1), pull_range_end=date(2026, 11, 30),
+                realized_pnl=5000.0,
+            )
+            await session.commit()
+
+        ingest_mock = AsyncMock(return_value=1)
+        monkeypatch.setattr(mod, "ingest_rows", ingest_mock)
+        alert_mock = AsyncMock()
+        monkeypatch.setattr(mod, "alert_critical", alert_mock)
+
+        pnl_xlsx = _pnl_xlsx_bytes([{"symbol": "GOLDM26DECFUT", "realized_pnl": "5000.00"}])
+        n, errs = await mod._ingest_one_report(
+            "ZXRUN5###", "derivatives", "pnl",  # DIFFERENT segment, same account+content
+            date(2026, 12, 1), date(2026, 12, 31), pnl_xlsx,
+        )
+
+        assert errs == []
+        ingest_mock.assert_awaited_once()
+        alert_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_duplicate_under_a_different_account_is_not_flagged(self, recon_session_factory, monkeypatch):
+        async with recon_session_factory() as session:
+            await _insert_pnl_row(
+                session, account="ZXRUN6AAA", segment="derivatives",
+                symbol="INDIGO26APR4150CE", symbol_root="INDIGO", instrument_type="option",
+                expiry=date(2026, 4, 30),
+                pull_range_start=date(2026, 11, 1), pull_range_end=date(2026, 11, 30),
+                realized_pnl=34297.5,
+            )
+            await session.commit()
+
+        ingest_mock = AsyncMock(return_value=1)
+        monkeypatch.setattr(mod, "ingest_rows", ingest_mock)
+        alert_mock = AsyncMock()
+        monkeypatch.setattr(mod, "alert_critical", alert_mock)
+
+        pnl_xlsx = _pnl_xlsx_bytes([{"symbol": "INDIGO26APR4150CE", "realized_pnl": "34297.50"}])
+        n, errs = await mod._ingest_one_report(
+            "ZXRUN6BBB", "derivatives", "pnl",  # a DIFFERENT masked account
+            date(2026, 12, 1), date(2026, 12, 31), pnl_xlsx,
+        )
+
+        assert errs == []
+        ingest_mock.assert_awaited_once()
+        alert_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_stored_decimal_value_matches_freshly_parsed_float_from_xlsx(
+        self, recon_session_factory, monkeypatch,
+    ):
+        """The exact regression this fix is built to catch, end-to-end
+        through the real DB column type: the historical row's
+        `realized_pnl` comes back from SQLite as a `decimal.Decimal`
+        (via the model's `Numeric(18, 4)` column), while the NEW
+        chunk's own value is a native Python `float` fresh out of
+        `parse_pnl_statement_xlsx()`. Both must normalize to the same
+        signature, or layer 2 silently never fires."""
+        async with recon_session_factory() as session:
+            await _insert_pnl_row(
+                session, account="ZXRUN7###", segment="derivatives",
+                symbol="INDIGO26APR4150CE", symbol_root="INDIGO", instrument_type="option",
+                expiry=date(2026, 4, 30),
+                pull_range_start=date(2026, 11, 1), pull_range_end=date(2026, 11, 30),
+                realized_pnl=34297.5,
+            )
+            await session.commit()
+
+            # Confirm the stored value really does come back as Decimal,
+            # not float -- otherwise this test would not actually be
+            # exercising the cross-type comparison it claims to.
+            from sqlalchemy import select
+            from backend.api.models import KiteConsolePnlSync as _T
+            result = await session.execute(
+                select(_T.realized_pnl).where(_T.account == "ZXRUN7###")
+            )
+            stored_value = result.scalar_one()
+            from decimal import Decimal as _Decimal
+            assert isinstance(stored_value, _Decimal), (
+                f"expected the ORM to read this Numeric column back as Decimal, "
+                f"got {type(stored_value)} -- if this assumption is wrong, the "
+                f"cross-type normalization this fix depends on needs revisiting"
+            )
+
+        ingest_mock = AsyncMock(return_value=1)
+        monkeypatch.setattr(mod, "ingest_rows", ingest_mock)
+        alert_mock = AsyncMock()
+        monkeypatch.setattr(mod, "alert_critical", alert_mock)
+
+        pnl_xlsx = _pnl_xlsx_bytes([{"symbol": "INDIGO26APR4150CE", "realized_pnl": "34297.50"}])
+        n, errs = await mod._ingest_one_report(
+            "ZXRUN7###", "derivatives", "pnl",
+            date(2026, 12, 1), date(2026, 12, 31), pnl_xlsx,
+        )
+
+        assert n == 0
+        assert errs and "validation failed" in errs[0]
+        ingest_mock.assert_not_called()
+        alert_mock.assert_awaited_once()
 
 
 # ===========================================================================
