@@ -618,7 +618,8 @@ _BROKER_ORDERS_TIMEOUT = 8
 # `_fetch_orders()`/`_fetch_gtts()` are both SYNC (run via
 # `asyncio.to_thread` inside `cache.get_or_fetch`), so DB I/O from here
 # must cross back onto the main event loop via `run_on_main_loop()`
-# (the same bridge `apply_plan_live` uses from its own worker thread) —
+# (the same bridge the removed `apply_plan_live` used from its own worker thread,
+# T3.1, 2026-11 — historical reference only) —
 # never a bare `asyncio.run()`, which would spin up a second, disconnected
 # event loop for the DB engine.
 _ORDER_BOOK_SNAPSHOT_TIMEOUT_S = 3.0

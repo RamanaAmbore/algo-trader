@@ -59,7 +59,7 @@ from typing import Optional
 import msgspec
 from litestar import Controller, get, post
 from litestar.exceptions import HTTPException
-from sqlalchemy import select, and_, desc, false as _sa_false, func as _func
+from sqlalchemy import select, and_, or_ as _sa_or, desc, false as _sa_false, func as _func
 
 from backend.api.database import async_session
 from backend.api.models import AlgoOrder, DailyBook, KiteConsolePnlSync
@@ -787,11 +787,61 @@ def _ledger_segment_from_cost_center(cost_center: Optional[str]) -> Optional[str
     always the literal 'all' for ledger rows, so a `segment` filter on
     the `/ledger` endpoint is resolved against THIS derived value, not
     the stored column. An unrecognised or missing cost_center returns
-    `None` — never a guessed segment."""
+    `None` — never a guessed segment.
+
+    `_hist_ledger_segment_condition()` below is the SQL-pushdown
+    equivalent of this exact mapping (same prefixes, same case-folding)
+    — the two must never silently disagree on which cost_center labels
+    belong to which segment; see that function's own docstring."""
     if not cost_center:
         return None
     prefix = cost_center.split(" - ")[0].strip().upper()
     return _LEDGER_COST_CENTER_SEGMENT_MAP.get(prefix)
+
+
+def _hist_ledger_segment_prefixes(segment: str) -> "list[str]":
+    """Every cost_center prefix mapping to `segment` — built by
+    INVERTING `_LEDGER_COST_CENTER_SEGMENT_MAP`, never a second,
+    independently hand-typed list, so this can never silently drift
+    from `_ledger_segment_from_cost_center()`'s own mapping."""
+    seg = (segment or "").strip().lower()
+    return [prefix for prefix, s in _LEDGER_COST_CENTER_SEGMENT_MAP.items() if s == seg]
+
+
+def _hist_ledger_segment_condition(segment: Optional[str]):
+    """SQL-pushdown WHERE condition for `/ledger`'s derived `segment`
+    filter, so the DB does the filtering instead of a Python fetch-
+    everything-then-filter pass (P2 fix — the derived value lives in
+    `raw_row->>'cost_center'`, not an indexed column, so this can't be
+    a plain `column == value` equality the way `/tradebook`'s own
+    `segment` filter is).
+
+    `KiteConsolePnlSync.raw_row['cost_center'].astext` compiles to the
+    dialect's native JSON path-extraction operator (`->>'` on both
+    Postgres/JSONB and SQLite 3.38+'s JSON1 extension — confirmed
+    working against both dialects, including the hand-built sqlite
+    fixture `console_session_factory` already uses for this file's own
+    tests), so this is portable with no dialect branch needed.
+
+    Matches on `'{prefix} - %'` (case-insensitively, via `.ilike()`,
+    which SQLAlchemy compiles portably — `ILIKE` on Postgres,
+    `lower(...) LIKE lower(...)` elsewhere) — the exact Zerodha label
+    shape `_ledger_segment_from_cost_center()` parses (`cost_center.
+    split(' - ')[0]`), never a bare substring/contains match that could
+    false-positive on an unrelated cost_center sharing the same prefix
+    text with no ' - ' separator.
+
+    Returns `None` for "no filter" (same convention as every other
+    `_hist_*_condition()` helper in this module). An unrecognised
+    segment value (no matching prefixes) returns `sqlalchemy.false()`
+    — matches nothing, never silently treated as "no filter"."""
+    if not segment:
+        return None
+    prefixes = _hist_ledger_segment_prefixes(segment)
+    if not prefixes:
+        return _sa_false()
+    extracted = KiteConsolePnlSync.raw_row["cost_center"].astext
+    return _sa_or(*[extracted.ilike(f"{p} - %") for p in prefixes])
 
 
 def _hist_tradebook_row(r: "KiteConsolePnlSync") -> "_TradebookRow":
@@ -1199,12 +1249,17 @@ class HistoryController(Controller):
         `segment` filters on a DERIVED value (`raw_row.cost_center`
         mapped via `_ledger_segment_from_cost_center()`) — the typed
         `KiteConsolePnlSync.segment` column is always 'all' for ledger
-        rows, so it is never used for this filter. Because the
-        derivation lives in JSONB, not an indexed column, this
-        endpoint fetches every date/account/broker-matching row first,
-        then applies the segment filter and pagination in Python —
-        acceptable at this table's current size (~1.3k ledger rows for
-        one account's full history); revisit if it grows materially.
+        rows, so it is never used for this filter. The derivation lives
+        in JSONB, not an indexed column, so this is pushed into the SQL
+        WHERE clause via `_hist_ledger_segment_condition()` (a dialect-
+        portable `raw_row->>'cost_center' ILIKE '{prefix} - %'`, built
+        by inverting `_LEDGER_COST_CENTER_SEGMENT_MAP` — never a second,
+        independently-filtered Python pass over the full table) — the
+        DB does the filtering AND the paging, same as every other
+        endpoint in this module (P2 fix, 2026-11-27: this used to fetch
+        every date/account/broker-matching row, filter by segment in
+        Python, THEN slice `[offset:offset+limit]` — full table load
+        + full in-process JSON parse on every page of every request).
 
         Sorted by `trade_date` descending, `id` descending — `id`
         preserves the per-pull insertion order, so same-day vouchers
@@ -1216,20 +1271,24 @@ class HistoryController(Controller):
             from_date=_parse_date(from_date), to_date=_parse_date(to_date),
             account=account, broker=broker,
         )
+        seg_cond = _hist_ledger_segment_condition(segment)
+        if seg_cond is not None:
+            conditions.append(seg_cond)
 
         async with async_session() as s:
+            total = (await s.execute(
+                select(_func.count(KiteConsolePnlSync.id)).where(and_(*conditions))
+            )).scalar_one()
             rows = (await s.execute(
                 select(KiteConsolePnlSync).where(and_(*conditions))
                   .order_by(desc(KiteConsolePnlSync.trade_date), desc(KiteConsolePnlSync.id))
+                  .limit(limit).offset(offset)
             )).scalars().all()
 
-        built = [_hist_ledger_row(r) for r in rows]
-        if segment:
-            built = [r for r in built if r.segment == segment.strip().lower()]
-        total = len(built)
-        page = built[offset:offset + limit]
-
-        return LedgerListResponse(rows=page, total=total, limit=limit, offset=offset)
+        return LedgerListResponse(
+            rows=[_hist_ledger_row(r) for r in rows],
+            total=int(total or 0), limit=limit, offset=offset,
+        )
 
     @get("/pnl-summary", guards=[cap_guard("view_audit")])
     async def pnl_summary(
@@ -1343,7 +1402,17 @@ class HistoryController(Controller):
         async with async_session() as s:
             for e in entries:
                 try:
-                    await _hist_upsert_entry(s, account, e, now_utc)
+                    # Each row gets its own SAVEPOINT (session.begin_nested()).
+                    # In Postgres, once ANY statement in a transaction fails,
+                    # the whole transaction is aborted and every later
+                    # statement silently fails too (InFailedSqlTransaction) —
+                    # the per-row try/except alone does NOT protect later
+                    # rows the way it looks like it should (P2 fix,
+                    # 2026-11-27). A nested transaction rolls back to its
+                    # own savepoint on the row's own exception, leaving the
+                    # OUTER transaction (and every row after it) unaffected.
+                    async with s.begin_nested():
+                        await _hist_upsert_entry(s, account, e, now_utc)
                     added += 1
                 except Exception as _row_err:
                     skipped += 1

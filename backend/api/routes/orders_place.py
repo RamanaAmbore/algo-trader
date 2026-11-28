@@ -455,7 +455,8 @@ async def _verify_close_intent(
     return False
 
 
-# The fill-triggered template-attach pipeline
+# [HISTORICAL — removed with the Bracket/Template/GTT subsystem, T3.1, 2026-11; not live.]
+# The former fill-triggered template-attach pipeline
 # (_maybe_fire_template_attach_for_reconcile, _opp_load_row_for_attach,
 # _opl_build_sibling_map, _opl_build_group_sibling_map,
 # _opp_build_attach_entries, _opp_persist_attached_gtts,
@@ -699,7 +700,7 @@ async def _arm_take_profit(
     order on fill via the v1 fractional target_pct path.
 
     The rich template-attach pipeline (apply_template_to_order →
-    _fire_template_attach_on_fill) that used to also fire alongside this
+    _fire_template_attach_on_fill, both removed) that used to also fire alongside this
     shim was removed (Bracket/Template-GTT removal, T3.1, 2026-11) along
     with `backend/api/algo/template_attach.py`. This v1 single-target-TP
     shim is now the ONLY TP-arming path; it survives for Lab MCP scripts +

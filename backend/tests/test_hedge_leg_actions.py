@@ -1074,6 +1074,67 @@ class TestActionPlaceOrderHedgeOrchestration:
         mock_chase.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_parent_chase_starts_before_hedge_resolution_completes(self):
+        """P2 #3 fix (2026-11-27): the parent's own `chase_order()` call
+        must START RUNNING as soon as the parent's own preflight+persist
+        succeed — never blocked behind hedge resolution, which can take
+        real, multi-second wall-clock time (option-chain batch quote,
+        instruments scan, close-intent position fetch).
+
+        Proven by making the hedge-resolution mock BLOCK on an
+        `asyncio.Event` that this test only sets once it has confirmed
+        the parent's own `chase_order()` call has already started —
+        this can only resolve if the parent task is scheduled and
+        running INDEPENDENTLY of (before) hedge resolution finishing.
+        Against the pre-fix code (which sequentially `await`s hedge
+        resolution before even constructing the parent's chase
+        coroutine) this test deadlocks — guarded by `asyncio.wait_for`
+        so it fails cleanly with a TimeoutError instead of hanging CI."""
+        from backend.api.algo.actions_live import _action_place_order
+
+        broker = _make_broker_stub()
+        conns = _make_conns_stub("ZG0790")
+        agent = MagicMock()
+        agent.slug = "test-agent"
+        agent.id = 7
+        context: dict = {}
+        params = dict(_BASE_PARAMS)
+        params["hedge_pct"] = 50
+
+        parent_chase_started = asyncio.Event()
+        hedge_resolution_release = asyncio.Event()
+        observed: dict = {"parent_started_before_hedge_resolved": None}
+
+        async def _parent_marking_chase(**kwargs):
+            if kwargs["symbol"] == "NIFTY26APR22500CE":
+                parent_chase_started.set()
+            return MagicMock(status=MagicMock(value="FILLED"), detail="")
+
+        mock_chase = AsyncMock(side_effect=_parent_marking_chase)
+
+        async def _blocked_hedge_resolution(*a, **kw):
+            await hedge_resolution_release.wait()
+            observed["parent_started_before_hedge_resolved"] = parent_chase_started.is_set()
+            return None  # degrades to no-hedge once released — irrelevant here
+
+        async def _release_once_parent_has_started():
+            await parent_chase_started.wait()
+            hedge_resolution_release.set()
+
+        with _apply(_place_order_patches(broker, conns, mock_chase)), \
+             patch("backend.api.algo.actions_live._al_resolve_hedge_plan",
+                   new=_blocked_hedge_resolution):
+            await asyncio.wait_for(
+                asyncio.gather(
+                    _action_place_order(agent, context, params),
+                    _release_once_parent_has_started(),
+                ),
+                timeout=5.0,
+            )
+
+        assert observed["parent_started_before_hedge_resolved"] is True
+
+    @pytest.mark.asyncio
     async def test_hedge_prepare_failure_calls_chase_once_only(self):
         """A resolved hedge plan whose preflight/persist step
         (`_al_prepare_hedge_leg`) itself fails must also degrade to a

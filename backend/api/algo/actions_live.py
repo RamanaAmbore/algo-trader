@@ -798,6 +798,25 @@ async def _al_alert_hedge_pairing_issue(
         pass
 
 
+# P2 #3 fix (2026-11-27) — strong reference for the parent order's own
+# chase task. `asyncio.create_task()`'s own return value is the ONLY
+# strong reference by default (same documented GC-risk class as
+# `routes/brokers.py`'s `_books_refresh_tasks`); `_action_place_order`
+# below DOES always `await` this task (directly, or via `asyncio.gather`)
+# before returning in the ordinary case, so the local variable itself
+# is normally enough — EXCEPT when `_al_resolve_hedge_plan`/
+# `_al_prepare_hedge_leg` raise an exception that is NOT caught before
+# reaching that await (neither function's own docstring guarantees it
+# can never raise all the way through — `_al_resolve_hedge_plan` wraps
+# its own body in a broad try/except, but `_al_prepare_hedge_leg`'s DB-
+# write call is not similarly wrapped). Without this set, that exact
+# window would leave the parent's live chase task referenced by nothing
+# but the event loop's own internals, eligible for GC mid-run. Each
+# task adds itself here on creation and removes itself via
+# `add_done_callback` on completion — same pattern, same rationale.
+_PLACE_ORDER_PARENT_CHASE_TASKS: set = set()
+
+
 async def _action_place_order(agent, context: dict, params: dict):
     """
     Place an order using the chase engine (live mode).
@@ -826,16 +845,37 @@ async def _action_place_order(agent, context: dict, params: dict):
     tier, interval=30/step=0.05/attempts=30 — so it is intentionally not
     used as the silent default.)
 
-    `params.hedge_pct` (Part A, 2026-11): when set and `symbol` parses
-    as an NFO option, `_al_resolve_hedge_plan`/`_al_prepare_hedge_leg`
-    stage a second order (further-OTM, opposite side, same option
-    type) and both legs' `chase_order()` calls run CONCURRENTLY via
-    `asyncio.gather` — a sequential await would leave the position
-    naked for the parent's entire chase window, defeating the hedge's
-    purpose. A hedge-resolution failure (no match, closing order,
-    non-option symbol, preflight block, DB-write failure) never blocks
-    or delays the parent order; omitting `hedge_pct` entirely is
-    byte-identical to this function's pre-hedge behavior.
+    `params.hedge_pct` (Part A, 2026-11; reordered P2 #3, 2026-11-27):
+    when set and `symbol` parses as an NFO option, `_al_resolve_hedge_
+    plan`/`_al_prepare_hedge_leg` stage a second order (further-OTM,
+    opposite side, same option type) and both legs' `chase_order()`
+    calls run CONCURRENTLY — a sequential await would leave the
+    position naked for the parent's entire chase window, defeating the
+    hedge's purpose.
+
+    The parent's own `chase_order()` call is scheduled via
+    `asyncio.create_task()` IMMEDIATELY after the parent's own
+    preflight + AlgoOrder persist succeed — BEFORE hedge resolution
+    even starts, not merely "concurrently from the point `asyncio.
+    gather` happens to be called". `_al_resolve_hedge_plan`/
+    `_al_prepare_hedge_leg` make real, possibly slow broker/DB calls
+    (a full option-chain batch quote with up to a 12s timeout, an
+    instruments-cache scan, a positions fetch for the close-intent
+    guard) — the previous shape awaited those SEQUENTIALLY before the
+    parent's chase coroutine was even constructed, so the parent's
+    limit price could go stale (market moves) for that whole window
+    with no chase actively re-quoting it. The parent's chase now runs
+    the entire time hedge resolution is in flight, exactly like the
+    no-hedge path. When a hedge DOES resolve, its own `chase_order()`
+    call is awaited together with the (already-running) parent task
+    via `asyncio.gather(..., return_exceptions=True)`, same as before.
+
+    A hedge-resolution failure (no match, closing order, non-option
+    symbol, preflight block, DB-write failure) never blocks or delays
+    the parent order — it never did, and still doesn't now that the
+    parent is scheduled even earlier. Omitting `hedge_pct` entirely is
+    byte-identical to this function's pre-hedge behavior (single
+    `await` on the parent task, no gather).
     """
     import asyncio
     from backend.api.algo.chase import chase_order
@@ -898,6 +938,24 @@ async def _action_place_order(agent, context: dict, params: dict):
     cfg = _live_chase_config(aggressiveness, product=product)
     cfg.exchange = exchange or "NFO"
 
+    # Schedule the parent's own chase NOW — it starts running on the
+    # event loop immediately, the same instant it would with no
+    # `hedge_pct` at all. Hedge resolution (below) can take real,
+    # possibly multi-second wall-clock time; the parent must never sit
+    # idle (limit price going stale with nothing re-quoting it) while
+    # that resolves. See this function's own docstring for the full
+    # P2 #3 rationale, and `_PLACE_ORDER_PARENT_CHASE_TASKS`'s own
+    # comment for why a strong reference is held here.
+    parent_task = asyncio.create_task(chase_order(
+        account=account, symbol=symbol,
+        transaction_type=side, quantity=qty,
+        cfg=cfg,
+        algo_order_id=_oid,
+        agent_id=_shim.id,
+    ))
+    _PLACE_ORDER_PARENT_CHASE_TASKS.add(parent_task)
+    parent_task.add_done_callback(_PLACE_ORDER_PARENT_CHASE_TASKS.discard)
+
     hedge_ctx = await _al_resolve_hedge_plan(
         agent, context, account, symbol, exchange, side, qty, price,
         params.get("hedge_pct"),
@@ -908,17 +966,9 @@ async def _action_place_order(agent, context: dict, params: dict):
             _shim, account, exchange, hedge_ctx, product, aggressiveness,
         )
 
-    parent_coro = chase_order(
-        account=account, symbol=symbol,
-        transaction_type=side, quantity=qty,
-        cfg=cfg,
-        algo_order_id=_oid,
-        agent_id=_shim.id,
-    )
-
     if hedge_prepared is None:
         try:
-            result = await parent_coro
+            result = await parent_task
         except Exception as e:
             await _place_order_on_failure(e, context, account, symbol, exchange, side, qty, price, product)
             raise
@@ -934,8 +984,10 @@ async def _action_place_order(agent, context: dict, params: dict):
         # return_exceptions=True — a hedge-leg failure must never
         # propagate through this gather and abort the parent's own
         # chase; each outcome is examined independently below.
+        # `parent_task` is ALREADY running (scheduled above) by the
+        # time this gather joins it with the hedge leg's own call.
         parent_outcome, hedge_outcome = await asyncio.gather(
-            parent_coro, hedge_coro, return_exceptions=True,
+            parent_task, hedge_coro, return_exceptions=True,
         )
         await _al_handle_hedge_chase_outcome(_shim, account, hedge_ctx, hedge_outcome)
         pairing_issue = _al_detect_hedge_pairing_issue(parent_outcome, hedge_outcome)

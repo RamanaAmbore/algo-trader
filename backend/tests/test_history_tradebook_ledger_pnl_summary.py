@@ -55,6 +55,8 @@ from backend.api.routes.history import (
     _hist_console_broker_condition,
     _hist_console_broker_value,
     _hist_ledger_row,
+    _hist_ledger_segment_condition,
+    _hist_ledger_segment_prefixes,
     _hist_pnl_group_matches_filters,
     _hist_pnl_summary_rows,
     _hist_tradebook_row,
@@ -111,6 +113,44 @@ class TestLedgerSegmentFromCostCenter:
 
     def test_case_insensitive(self):
         assert _ledger_segment_from_cost_center("mcx-f&o - z") == "commodities"
+
+
+class TestLedgerSegmentCondition:
+    """P2 fix (2026-11-27): `_hist_ledger_segment_condition()` is the
+    SQL-pushdown equivalent of `_ledger_segment_from_cost_center()` —
+    the two must agree on every real cost_center value, since the
+    prefix list is built by INVERTING the same
+    `_LEDGER_COST_CENTER_SEGMENT_MAP`, never a second hand-typed list."""
+
+    @pytest.mark.parametrize("cost_center", [
+        "NSE-EQ - Z", "BSE-EQ - Z", "NSE-F&O - Z", "BSE-F&O - Z", "MCX-F&O - Z",
+    ])
+    def test_prefixes_agree_with_python_mapper(self, cost_center):
+        python_segment = _ledger_segment_from_cost_center(cost_center)
+        assert python_segment is not None
+        prefixes = _hist_ledger_segment_prefixes(python_segment)
+        prefix = cost_center.split(" - ")[0].strip().upper()
+        assert prefix in prefixes
+
+    def test_no_segment_returns_none(self):
+        assert _hist_ledger_segment_condition(None) is None
+        assert _hist_ledger_segment_condition("") is None
+
+    def test_unrecognised_segment_matches_nothing(self):
+        cond = _hist_ledger_segment_condition("not-a-real-segment")
+        # sqlalchemy.false() — a real BooleanClauseList/False literal, not None
+        assert cond is not None
+
+    def test_recognised_segment_returns_a_real_condition(self):
+        cond = _hist_ledger_segment_condition("equity")
+        assert cond is not None
+
+    def test_prefixes_inverted_from_the_single_map(self):
+        """Confirms the prefix list is derived, not re-typed — every
+        prefix in the shared map round-trips through both directions."""
+        from backend.api.routes.history import _LEDGER_COST_CENTER_SEGMENT_MAP
+        for prefix, seg in _LEDGER_COST_CENTER_SEGMENT_MAP.items():
+            assert prefix in _hist_ledger_segment_prefixes(seg)
 
 
 class TestBrokerParamMatchesAll:
@@ -939,3 +979,149 @@ class TestListLedgerEndpoint:
             await s.commit()
         result = await HistoryController.list_ledger.fn(None)
         assert result.total == 1
+
+
+# ===========================================================================
+# P2 #2 (2026-11-27) — backfill_funds per-row SAVEPOINT isolation.
+#
+# In Postgres, once ANY statement inside a transaction fails, the WHOLE
+# transaction is aborted — every later statement in that same transaction
+# silently fails too (`InFailedSqlTransaction`). A bare per-row try/except
+# around `s.execute(...)` with NO savepoint does NOT protect rows after
+# the first failure the way it looks like it should. The fix wraps each
+# row's upsert in its own `session.begin_nested()` SAVEPOINT, so a failed
+# row rolls back to its own savepoint without poisoning the outer
+# transaction.
+#
+# `_FakeSession` below reproduces Postgres's real abort-propagation
+# behaviour directly (SQLite does NOT reproduce it, so a sqlite-backed
+# test would pass on the OLD buggy code too — this is a deliberate,
+# documented test-design choice, not an oversight).
+# ===========================================================================
+
+class _FakeNestedTxn:
+    """Minimal stand-in for `AsyncSessionTransaction` (the object
+    `session.begin_nested()` returns) — on a clean exit it's a no-op;
+    on an exception it simulates a SAVEPOINT ROLLBACK by clearing the
+    session's `poisoned` flag, then re-raises (never suppresses)."""
+
+    def __init__(self, session: "_FakeSession"):
+        self._session = session
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        if exc_type is not None:
+            self._session.poisoned = False
+        return False  # never suppress — caller's try/except handles it
+
+
+class _FakeSession:
+    """Simulates Postgres's real "one failed statement aborts the whole
+    transaction" behaviour: once `poisoned` is set, EVERY later
+    `execute()` call raises too, regardless of its own parameters —
+    exactly like `InFailedSqlTransaction` — until a savepoint rollback
+    (`_FakeNestedTxn.__aexit__` on an exception) clears it."""
+
+    def __init__(self, fail_predicate):
+        self.poisoned = False
+        self.fail_predicate = fail_predicate
+        self.executed: list = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    def begin_nested(self):
+        return _FakeNestedTxn(self)
+
+    async def execute(self, stmt, params=None):
+        if self.poisoned:
+            raise RuntimeError(
+                "current transaction is aborted, commands ignored until "
+                "end of transaction block (InFailedSqlTransaction)"
+            )
+        self.executed.append(params)
+        if self.fail_predicate(params):
+            self.poisoned = True
+            raise ValueError("simulated bad row (e.g. a malformed date)")
+        return None
+
+    async def commit(self):
+        pass
+
+
+def _backfill_entries():
+    """3 ledger entries — #0 and #2 are well-formed, #1 is the row that
+    fails. Without per-row savepoints, Postgres's real abort-propagation
+    means #2 ALSO fails even though it's perfectly good data."""
+    return [
+        {"date": "2026-04-01", "segment": "equity", "debits": 0,
+         "cash_available": 100.0, "opening_balance": 100.0,
+         "realised_m2m": 0.0, "net": 100.0, "payload": {}},
+        {"date": "2026-04-02", "segment": "equity", "debits": 0,
+         "cash_available": None,  # the "bad row" — triggers the fake failure
+         "opening_balance": 100.0, "realised_m2m": 0.0, "net": 100.0, "payload": {}},
+        {"date": "2026-04-03", "segment": "equity", "debits": 0,
+         "cash_available": 150.0, "opening_balance": 150.0,
+         "realised_m2m": 0.0, "net": 150.0, "payload": {}},
+    ]
+
+
+def _fail_on_null_cash_available(params) -> bool:
+    return params is not None and params.get("avg_cost") is None
+
+
+class TestBackfillFundsSavepointIsolation:
+    """Red/green pair: the OLD code (bare `await s.execute(...)` with no
+    savepoint) gives added=1, skipped=2 for the fixture above — row #2
+    is silently skipped too, even though it's good data, because the
+    poisoned flag from row #1 never clears. The FIXED code (each row in
+    its own `begin_nested()`) gives added=2, skipped=1."""
+
+    @pytest.mark.asyncio
+    async def test_fixed_code_isolates_the_failed_row_via_savepoint(self, monkeypatch):
+        from backend.api.routes import history
+
+        fake_session = _FakeSession(_fail_on_null_cash_available)
+        monkeypatch.setattr(history, "async_session", lambda: fake_session)
+        monkeypatch.setattr(history, "_hist_resolve_loaded_accounts",
+                             lambda: {"DH9999"})
+        monkeypatch.setattr(history, "_hist_fetch_ledger_entries",
+                             AsyncMock(return_value=_backfill_entries()))
+        with patch("backend.brokers.registry.get_broker",
+                   return_value=SimpleNamespace(broker_id="dhan")):
+            result = await history.HistoryController.backfill_funds.fn(
+                None, history.FundsBackfillRequest(
+                    account="DH9999", from_date="2026-04-01", to_date="2026-04-03",
+                ),
+            )
+        assert result.rows_added == 2
+        assert result.rows_skipped == 1
+
+    @pytest.mark.asyncio
+    async def test_old_code_without_savepoint_poisons_later_good_rows(self):
+        """Pins the OLD (buggy) behaviour directly against `_FakeSession`,
+        without going through the route handler — demonstrates the bug
+        this fix closes: a bare per-row try/except with NO savepoint
+        lets one bad row's poisoned transaction state silently skip
+        every row after it, even perfectly good ones."""
+        from backend.api.routes.history import _hist_upsert_entry
+        from datetime import datetime, timezone
+
+        fake_session = _FakeSession(_fail_on_null_cash_available)
+        added = 0
+        skipped = 0
+        now_utc = datetime.now(timezone.utc)
+        for e in _backfill_entries():
+            try:
+                # OLD shape: no begin_nested() savepoint around this call.
+                await _hist_upsert_entry(fake_session, "DH9999", e, now_utc)
+                added += 1
+            except Exception:
+                skipped += 1
+        assert added == 1
+        assert skipped == 2

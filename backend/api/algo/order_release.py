@@ -37,9 +37,10 @@ beyond) is a registration, not a change to the dispatcher in
   `engine="live"` / `mode="live"` on the row it writes. A category whose agent can run in
   paper/sim/replay/shadow mode must NOT use `record_held_order` as-is for
   its hold — doing so creates a live-mode row, and releasing it later
-  places a REAL broker order (see the mode-gate invariant on
-  `_fire_template_attach_on_fill` in `orders_place.py` / CLAUDE.md, which
-  exists to stop exactly this class of bug). Such a category needs its
+  places a REAL broker order. The mode-gate invariant that guarded this
+  (originally in `_fire_template_attach_on_fill`, now removed with the
+  Bracket/Template/GTT subsystem, 2026-11, see CLAUDE.md) still applies to
+  any future live-placing hook. Such a category needs its
   own hold-recording path that threads the agent's real mode through.
 """
 import asyncio

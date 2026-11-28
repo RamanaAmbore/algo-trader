@@ -1,4 +1,4 @@
-from datetime import datetime, time as dtime
+from datetime import date as _date_cls, datetime, time as dtime
 from zoneinfo import ZoneInfo
 
 
@@ -262,6 +262,72 @@ _CLOSE_TIME_EXCHANGE_TO_SEGMENT = {
 }
 
 
+# P3-4 (2026-11-27) — module-level memoization for `close_time_for_
+# exchange()`, called on every agent-engine cycle for every expiring
+# F&O position. A plain `@lru_cache` would be WRONG here: on a resolver
+# failure (bad config, a transient DST-resolution error) the function
+# returns `None`, and `lru_cache` would cache that `None` forever for
+# the rest of the day — a transient failure must stay retryable on the
+# very next call. This dict stores ONLY a successfully-resolved
+# `(hour, minute)` tuple, keyed on the normalized `(EXCHANGE, date)`
+# pair (never just the exchange — a stale cross-day value must never
+# leak past midnight/a DST transition). Bounded: a full clear once the
+# bound is hit is simpler and just as correct as an LRU eviction for a
+# cache this small (at most a handful of exchange/date pairs matter on
+# any given day) and avoids pulling in a second caching primitive.
+_CLOSE_TIME_CACHE: "dict[tuple[str, _date_cls], tuple[int, int]]" = {}
+_CLOSE_TIME_CACHE_MAX = 64
+
+
+def clear_close_time_cache() -> None:
+    """Test-only reset hook — mirrors this codebase's existing
+    convention for a process-global cache with no natural TTL (see
+    `broker_apis._NSE_HOLIDAY_JSON_MEMO`, `quote.py`'s batch-quote
+    cache): without a per-test reset, one test's resolved close time
+    for a given (exchange, date) pair can silently leak into a later
+    test that patches config/DST resolution differently for the exact
+    same pair."""
+    _CLOSE_TIME_CACHE.clear()
+
+
+def _coerce_close_time_today(exchange: str, today) -> _date_cls:
+    """Validate/coerce `today` into a real `date` — P3-3 fix (2026-11-27).
+
+    `resolve_dst_aware_sessions()` already fails safe (logs a WARNING,
+    falls back to the raw static YAML `sessions` list) when `today` is
+    the wrong type and `mcx_non_agri_close_time()` raises an
+    `AttributeError` trying to read `.year` off it — that existing
+    fallback is deliberate and must stay in place; it protects the
+    order-placement gate from ever raising on a bad `today`. The gap
+    this closes is narrower: a caller here that passes a `str` (e.g. a
+    conn_service JSON payload that never got parsed back into a `date`)
+    gets a WARNING naming the real problem, and a best-effort ISO-string
+    coercion, INSTEAD OF silently proceeding into the YAML-fallback path
+    with no indication the type was ever wrong in the first place. An
+    unparseable string, or any other non-date type, raises `TypeError`
+    immediately — loud, not a plausible-looking wrong answer."""
+    if isinstance(today, _date_cls):
+        return today
+    if isinstance(today, str):
+        try:
+            coerced = _date_cls.fromisoformat(today[:10])
+        except ValueError:
+            raise TypeError(
+                f"close_time_for_exchange({exchange!r}, ...): `today` must be a "
+                f"date, got an unparseable string {today!r}"
+            )
+        logger.warning(
+            "close_time_for_exchange(%r, ...): `today` was a str (%r), not a "
+            "date — coerced via date.fromisoformat(); the caller should pass "
+            "a real date.", exchange, today,
+        )
+        return coerced
+    raise TypeError(
+        f"close_time_for_exchange({exchange!r}, ...): `today` must be a date, "
+        f"got {type(today).__name__}"
+    )
+
+
 def close_time_for_exchange(exchange: str, today: "date") -> "tuple[int, int] | None":
     """The real IST market-close time (hour, minute) for `exchange` on
     `today` (a `date`, not a `datetime`) — the one SSOT any caller
@@ -273,17 +339,44 @@ def close_time_for_exchange(exchange: str, today: "date") -> "tuple[int, int] | 
     `resolve_dst_aware_sessions()` every order-placement gate already
     uses (see that function's own docstring) — so a caller here can
     never silently disagree with the real DST-aware MCX close, or with
-    a holiday-shortened / special-session override baked into a
-    segment's own configured `sessions` list.
+    a holiday-shortened session window baked into a segment's own
+    STATIC YAML `sessions` list.
+
+    Docstring correction (P3-3, 2026-11-27): this function does NOT
+    consult the DB-backed `market_special_sessions` / `exchange_schedule`
+    tables at all — an operator-editable override in either of those
+    tables is resolved elsewhere (`exchange_clock.py` / `snapshot_gate.
+    py`), never here. A same-day operator edit to either table has zero
+    effect on this function's result; only a YAML config change (and a
+    process restart/reload) does. An earlier revision of this docstring
+    said "special-session override", which reads as if it meant the
+    DB-backed mechanism — it did not; it meant the YAML's own static
+    `sessions` entries, which this rewording makes explicit.
+
+    Raises `TypeError` when `today` is not a `date` (or a parseable ISO
+    date string, coerced with a WARNING) — see `_coerce_close_time_
+    today()`'s own docstring for why this validates here rather than
+    relying solely on `resolve_dst_aware_sessions()`'s own, deliberately
+    silent-to-the-caller fallback.
 
     Returns ``None`` when the exchange is unrecognised, or when the
     resolved segment config carries no `sessions` list at all (an
     unconfigured segment) — callers must decide their own fallback
-    rather than this function silently guessing one.
+    rather than this function silently guessing one. A `None` result is
+    NEVER cached (see `_CLOSE_TIME_CACHE`'s own comment) — only a real
+    resolved `(hour, minute)` is memoized, keyed on `(EXCHANGE, today)`.
     """
-    seg_name = _CLOSE_TIME_EXCHANGE_TO_SEGMENT.get((exchange or "").upper().strip())
+    exch_upper = (exchange or "").upper().strip()
+    seg_name = _CLOSE_TIME_EXCHANGE_TO_SEGMENT.get(exch_upper)
     if not seg_name:
         return None
+    today = _coerce_close_time_today(exchange, today)
+
+    cache_key = (exch_upper, today)
+    cached = _CLOSE_TIME_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
     try:
         from backend.shared.helpers.utils import config as app_config
         seg_cfg = (app_config.get("market_segments", {}) or {}).get(seg_name, {}) or {}
@@ -298,13 +391,18 @@ def close_time_for_exchange(exchange: str, today: "date") -> "tuple[int, int] | 
         return None
     try:
         h, m = (int(x) for x in str(sessions[-1].get("end", "")).split(":", 1))
-        return (h, m)
+        result = (h, m)
     except Exception as e:
         logger.warning(
             "close_time_for_exchange: failed to parse resolved close time "
             "for %r: %s", exchange, e,
         )
         return None
+
+    if len(_CLOSE_TIME_CACHE) >= _CLOSE_TIME_CACHE_MAX:
+        _CLOSE_TIME_CACHE.clear()
+    _CLOSE_TIME_CACHE[cache_key] = result
+    return result
 
 
 def _parse_session_windows(

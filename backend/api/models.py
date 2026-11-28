@@ -805,8 +805,9 @@ class AlgoOrder(Base):
     )
     # `template_id` removed (Bracket/Template-GTT removal, T3.6,
     # 2026-11) along with the `order_templates` table it pointed at —
-    # it used to be captured at submit time so the postback handler
-    # could fire `apply_plan_live(template, actual_fill_price)` when
+    # HISTORICAL (template pipeline removed, T3.1, 2026-11): it used to be
+    # captured at submit time so the postback handler could fire the
+    # now-removed `apply_plan_live(template, actual_fill_price)` when
     # the parent flips to FILLED; that pipeline was deleted in T3.1.
     # Parent product code — needed at template-attach time so exit
     # GTTs inherit the right product. NRML for F&O / commodity carry,
@@ -820,7 +821,7 @@ class AlgoOrder(Base):
     )
     # `attached_gtts_json` removed (Bracket/Template-GTT removal, T3.6,
     # 2026-11) — it used to carry the JSON list of {broker, gtt_id,
-    # label} dicts returned by `apply_plan_live` after the parent
+    # label} dicts returned by the removed `apply_plan_live` after the parent
     # filled; that pipeline was deleted in T3.1.
     # 2026-10-23 chase robustness — JSON list[str] of every broker_order_id
     # this row has ever superseded via cancel-and-replace, oldest-first.

@@ -528,20 +528,6 @@ system_tokens:
   resolver: backend.api.algo.grammar_tokens.metric_is_nse_expiry_today._metric_is_nse_expiry_today
 - grammar_kind: condition
   token_kind: metric
-  token: is_expiry_preclose_alert_window
-  value_type: number
-  units: binary
-  description: 1.0 when MCX or NSE is expiring today and within 65 minutes of its own close, else 0.0. Never None.
-  resolver: backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window._metric_is_expiry_preclose_alert_window
-- grammar_kind: condition
-  token_kind: metric
-  token: is_expiry_preclose_close_window
-  value_type: number
-  units: binary
-  description: 1.0 when MCX or NSE is expiring today and within 60 minutes of its own close, else 0.0. Never None.
-  resolver: backend.api.algo.grammar_tokens.metric_is_expiry_preclose_close_window._metric_is_expiry_preclose_close_window
-- grammar_kind: condition
-  token_kind: metric
   token: is_mcx_expiry_morning_preview_window
   value_type: number
   units: binary
@@ -1441,17 +1427,23 @@ system_tokens:
 # Expiry-day surgical close. Unlike chase_close_positions (which
 # closes everything in scope), this wraps the legacy ExpiryEngine
 # so it APPLIES THE SAME RULES THE BG TASK USES — NFO closes all
-# ITM + NTM; MCX closes only UNHEDGED ITM/NTM. The exchange param
-# narrows the scan to ONE segment so the equity (15:00 IST) and
-# commodity (23:00 IST) agents don't step on each other.
+# ITM + NTM; MCX closes only UNHEDGED ITM/NTM. `scan_positions()`
+# itself always covers every exchange; the exchange param only
+# narrows WHICH of the scanned results get closed, applied AFTER
+# the scan — the built-in expiry-day-{mcx,nse}-itm-auto-close
+# agents (split 2026-11-26, exchange-pure) each pass their own
+# exchange so the MCX and NSE agents never act on each other's
+# positions.
 - grammar_kind: action
   token_kind: action_type
   token: expiry_auto_close
   value_type: void
-  description: Run ExpiryEngine scan + close. NFO closes all ITM/NTM; MCX closes only unhedged ITM/NTM
-    (CE/PE pairs that net to zero are skipped). 2026-10-29 - exchange is no longer required; omitting
-    it (the built-in expiry-day-itm-auto-close agent's own params) processes both NFO and MCX from one
-    scan. An explicit exchange still restricts the scan + close to just that one.
+  description: Run ExpiryEngine scan (always covers every exchange) + close, filtered to the exchange(s)
+    actually in-window right now. NFO closes all ITM/NTM; MCX closes only unhedged ITM/NTM (CE/PE pairs
+    that net to zero are skipped). 2026-11-26 - the built-in expiry-day-mcx-itm-auto-close /
+    expiry-day-nse-itm-auto-close agents are exchange-pure and each pass their own exchange param, which
+    narrows the RESULT after the scan runs - it does not restrict what gets scanned. Omit exchange
+    entirely to close everything currently in-window across both exchanges.
   resolver: backend.api.algo.actions_live._action_live_expiry_auto_close
   params_schema:
     exchange:
@@ -1460,7 +1452,8 @@ system_tokens:
       - NFO
       - MCX
       required: false
-      description: Optional - restrict scan + close to this one exchange. Omit to process both.
+      description: Optional - after the scan (which always covers both exchanges), keep only this one
+        exchange's closes. Omit to keep both.
 
 # Simpler one-shot close of a specific position — LIMIT order at the
 # instrument's current LTP. Side is derived from position direction
