@@ -5,6 +5,25 @@ Tests for Part A's DSL hedge leg wiring —
 `_action_place_order`'s own hedge orchestration (concurrent chase via
 `asyncio.gather`, hedge-failure isolation from the parent's result).
 
+2026-11-28 correctness fix (audit finding on the 2026-11-27 P2 #3
+reorder): hedge resolution is now split into two halves so the
+close-intent guard is never raced by the parent's own fill —
+`_al_hedge_precheck_and_guard()` (cheap precheck + ONE close-guard
+position read) MUST finish BEFORE the parent's `chase_order()` task is
+created; `_al_resolve_hedge_plan()` (now takes the already-resolved
+`parsed` symbol dict as a parameter instead of deriving it internally)
+plus `_al_prepare_hedge_leg()` make up the slow, broker-quote-bound
+half and still run concurrently with the already-dispatched parent, so
+the 2026-11-27 fix's own perf goal (parent dispatches immediately,
+never idles behind a 12s quote-fetch timeout) is preserved for that
+half. `_al_resolve_and_prepare_hedge()` wraps that whole post-dispatch
+half in one broad try/except at the call site, so a hedge-side
+exception can never prevent the parent's own `chase_order` task from
+being awaited (see `TestHedgeCloseGuardRaceCondition` below for the
+regression this specifically guards against, and
+`TestNoHedgePctRegression`/`TestHedgePlanSkipConditions` for the
+migrated unit coverage of the split).
+
 Covers:
   - A no-`hedge_pct` regression guard — the single most important test
     here, since it protects every existing agent that has never set
@@ -81,7 +100,17 @@ def _place_order_patches(broker, conns, mock_chase, *, write_live_order_return=4
     """The exact patch set `test_actions.py`'s own `_action_place_order`
     tests already establish as sufficient to clear preflight without a
     real broker — reused verbatim here so adding the hedge branch
-    cannot regress the pre-existing, already-covered call path."""
+    cannot regress the pre-existing, already-covered call path.
+
+    2026-11-28: also mocks `_al_hedge_close_guard` to return True.
+    Since the 2026-11-28 reorder, `_al_hedge_precheck_and_guard` (the
+    pre-dispatch gate) calls the REAL close guard, which would
+    otherwise hit a real `fetch_positions()` call — not mocked here —
+    for every orchestration test that sets `hedge_pct` and expects the
+    (separately mocked) `_al_resolve_hedge_plan`/`_al_prepare_hedge_leg`
+    to actually be reached. Harmless for every test that omits
+    `hedge_pct` or targets a non-option symbol: the precheck short-
+    circuits before the close guard is ever consulted."""
     return [
         patch("backend.brokers.connections.Connections", return_value=conns),
         patch("backend.brokers.registry.get_broker", return_value=broker),
@@ -92,6 +121,8 @@ def _place_order_patches(broker, conns, mock_chase, *, write_live_order_return=4
         patch("backend.api.algo.actions_live._place_order_set_product_template", new=AsyncMock()),
         patch("backend.brokers.get_broker", return_value=broker),
         patch("backend.brokers.client.is_cutover_on", return_value=False),
+        patch("backend.api.algo.actions_live._al_hedge_close_guard",
+              new=AsyncMock(return_value=True)),
     ]
 
 
@@ -112,7 +143,14 @@ class TestNoHedgePctRegression:
     async def test_omitting_hedge_pct_calls_chase_exactly_once(self):
         """The most important test in this file: every agent that has
         never set hedge_pct must see exactly one chase_order() call,
-        with no hedge resolution attempted at all."""
+        with no hedge resolution attempted at all.
+
+        2026-11-28 re-sequencing: the pre-dispatch gate
+        (`_al_hedge_precheck_and_guard`) is now the function consulted
+        for "is there even a hedge to try" — `_al_resolve_hedge_plan`
+        (the post-dispatch, slow quote/strike half) is never called at
+        all when the gate itself returns None, so it is no longer the
+        right seam to assert against here."""
         from backend.api.algo.actions_live import _action_place_order
 
         broker = _make_broker_stub()
@@ -124,47 +162,42 @@ class TestNoHedgePctRegression:
         params = dict(_BASE_PARAMS)  # no hedge_pct key at all
 
         mock_chase = AsyncMock(return_value=MagicMock(status=MagicMock(value="FILLED"), detail=""))
-        mock_resolve = AsyncMock(wraps=None)
 
         with _apply(_place_order_patches(broker, conns, mock_chase)), \
-             patch("backend.api.algo.actions_live._al_resolve_hedge_plan",
-                   new=AsyncMock(return_value=None)) as mock_resolve:
+             patch("backend.api.algo.actions_live._al_hedge_precheck_and_guard",
+                   new=AsyncMock(return_value=None)) as mock_gate:
             await _action_place_order(agent, context, params)
 
         mock_chase.assert_called_once()
-        # Hedge resolution was consulted (hedge_pct=None → it decides
-        # None internally) but never produced a hedge context, so no
-        # second chase call. Asserting the call happened at all guards
-        # against the hedge codepath being skipped entirely by accident.
-        mock_resolve.assert_called_once()
-        assert mock_resolve.call_args.args[-1] is None  # hedge_pct arg
+        # The pre-dispatch gate was consulted (hedge_pct=None → it
+        # decides None internally) but never produced a usable `parsed`
+        # symbol, so no hedge resolution and no second chase call.
+        # Asserting the call happened at all guards against the hedge
+        # codepath being skipped entirely by accident.
+        mock_gate.assert_called_once()
+        assert mock_gate.call_args.args[-1] is None  # hedge_pct arg
 
     @pytest.mark.asyncio
     async def test_hedge_pct_none_resolves_to_no_hedge_via_real_function(self):
-        """Exercises the REAL `_al_resolve_hedge_plan` (not mocked) with
-        hedge_pct absent — confirms the falsy-check short-circuit fires
-        before any close-intent check, quote fetch, or strike search."""
-        from backend.api.algo.actions_live import _al_resolve_hedge_plan
+        """Exercises the REAL `_al_hedge_precheck_and_guard` (not
+        mocked) with hedge_pct absent — confirms the falsy-check
+        short-circuit fires before any close-intent check, quote
+        fetch, or strike search."""
+        from backend.api.algo.actions_live import _al_hedge_precheck_and_guard
 
-        agent = MagicMock()
-        context: dict = {}
         with patch("backend.api.algo.actions_live._al_hedge_close_guard") as mock_guard:
-            result = await _al_resolve_hedge_plan(
-                agent, context, "ZG0790", "NIFTY26APR22500CE", "NFO",
-                "BUY", 50, 100.0, None,
+            result = await _al_hedge_precheck_and_guard(
+                "NFO", "NIFTY26APR22500CE", "BUY", "ZG0790", 50, None,
             )
         assert result is None
         mock_guard.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_hedge_pct_zero_resolves_to_no_hedge(self):
-        from backend.api.algo.actions_live import _al_resolve_hedge_plan
+        from backend.api.algo.actions_live import _al_hedge_precheck_and_guard
 
-        agent = MagicMock()
-        context: dict = {}
-        result = await _al_resolve_hedge_plan(
-            agent, context, "ZG0790", "NIFTY26APR22500CE", "NFO",
-            "BUY", 50, 100.0, 0,
+        result = await _al_hedge_precheck_and_guard(
+            "NFO", "NIFTY26APR22500CE", "BUY", "ZG0790", 50, 0,
         )
         assert result is None
 
@@ -174,54 +207,54 @@ class TestNoHedgePctRegression:
 # ═══════════════════════════════════════════════════════════════════
 
 class TestHedgePlanSkipConditions:
+    """2026-11-28: the precheck (exchange/symbol-shape) and close-guard
+    skip conditions now live in `_al_hedge_precheck_and_guard` — the
+    fast, pre-dispatch gate. The strike-resolution skip conditions
+    (no strike in tolerance, no tradingsymbol, parent absent from the
+    resolved chain) stay on `_al_resolve_hedge_plan`, now called with
+    an explicit, already-resolved `parsed` dict instead of deriving it
+    internally."""
+
     @pytest.mark.asyncio
     async def test_non_nfo_exchange_skips_hedge(self):
-        from backend.api.algo.actions_live import _al_resolve_hedge_plan
+        from backend.api.algo.actions_live import _al_hedge_precheck_and_guard
 
-        agent = MagicMock()
-        result = await _al_resolve_hedge_plan(
-            agent, {}, "ZG0790", "CRUDEOIL26OCTFUT", "MCX",
-            "BUY", 1, 5000.0, 50,
+        result = await _al_hedge_precheck_and_guard(
+            "MCX", "CRUDEOIL26OCTFUT", "BUY", "ZG0790", 1, 50,
         )
         assert result is None
 
     @pytest.mark.asyncio
     async def test_non_option_symbol_skips_hedge(self):
-        from backend.api.algo.actions_live import _al_resolve_hedge_plan
+        from backend.api.algo.actions_live import _al_hedge_precheck_and_guard
 
-        agent = MagicMock()
-        result = await _al_resolve_hedge_plan(
-            agent, {}, "ZG0790", "RELIANCE", "NFO",
-            "BUY", 50, 2800.0, 50,
+        result = await _al_hedge_precheck_and_guard(
+            "NFO", "RELIANCE", "BUY", "ZG0790", 50, 50,
         )
         assert result is None
 
     @pytest.mark.asyncio
     async def test_future_symbol_on_nfo_skips_hedge(self):
-        from backend.api.algo.actions_live import _al_resolve_hedge_plan
+        from backend.api.algo.actions_live import _al_hedge_precheck_and_guard
 
-        agent = MagicMock()
-        result = await _al_resolve_hedge_plan(
-            agent, {}, "ZG0790", "NIFTY26APRFUT", "NFO",
-            "BUY", 50, 22500.0, 50,
+        result = await _al_hedge_precheck_and_guard(
+            "NFO", "NIFTY26APRFUT", "BUY", "ZG0790", 50, 50,
         )
         assert result is None
 
     @pytest.mark.asyncio
     async def test_close_guard_false_skips_hedge(self):
         """`_al_hedge_close_guard` positively returns False (genuinely
-        closing, or an untrustworthy fetch) → hedge must never be
-        resolved, even if a perfect match would otherwise be found."""
-        from backend.api.algo.actions_live import _al_resolve_hedge_plan
+        closing, or an untrustworthy fetch) → the pre-dispatch gate
+        must return None — never even reaching strike resolution."""
+        from backend.api.algo.actions_live import _al_hedge_precheck_and_guard
 
-        agent = MagicMock()
         with patch("backend.api.algo.actions_live._al_hedge_close_guard",
                    new=AsyncMock(return_value=False)) as mock_guard, \
              patch("backend.api.algo.hedge_strike.fetch_hedge_quotes") as mock_fetch, \
              patch("backend.api.algo.hedge_strike.resolve_hedge_strike") as mock_resolve:
-            result = await _al_resolve_hedge_plan(
-                agent, {}, "ZG0790", "NIFTY26APR22500CE", "NFO",
-                "SELL", 50, 100.0, 50,
+            result = await _al_hedge_precheck_and_guard(
+                "NFO", "NIFTY26APR22500CE", "SELL", "ZG0790", 50, 50,
             )
         assert result is None
         mock_guard.assert_awaited_once()
@@ -232,20 +265,18 @@ class TestHedgePlanSkipConditions:
     async def test_close_guard_exception_fails_safe_to_no_hedge(self):
         """Fail-safe path (operator decision, Part A design): an
         exception from the close guard itself — the outer broad
-        try/except in `_al_resolve_hedge_plan` — must be treated as
-        'potential close, skip hedge', never as 'proceed, resolve a
+        try/except in `_al_hedge_precheck_and_guard` — must be treated
+        as 'potential close, skip hedge', never as 'proceed, resolve a
         hedge'. `_al_hedge_close_guard` is designed not to raise, but
         this proves the outer safety net holds even if it somehow did."""
-        from backend.api.algo.actions_live import _al_resolve_hedge_plan
+        from backend.api.algo.actions_live import _al_hedge_precheck_and_guard
 
-        agent = MagicMock()
         with patch("backend.api.algo.actions_live._al_hedge_close_guard",
                    new=AsyncMock(side_effect=RuntimeError("broker down"))), \
              patch("backend.api.algo.hedge_strike.fetch_hedge_quotes") as mock_fetch, \
              patch("backend.api.algo.hedge_strike.resolve_hedge_strike") as mock_resolve:
-            result = await _al_resolve_hedge_plan(
-                agent, {}, "ZG0790", "NIFTY26APR22500CE", "NFO",
-                "BUY", 50, 100.0, 50,
+            result = await _al_hedge_precheck_and_guard(
+                "NFO", "NIFTY26APR22500CE", "BUY", "ZG0790", 50, 50,
             )
         assert result is None
         mock_fetch.assert_not_called()
@@ -253,12 +284,12 @@ class TestHedgePlanSkipConditions:
 
     @pytest.mark.asyncio
     async def test_no_strike_found_within_tolerance_skips_hedge(self):
+        from backend.api.algo.derivatives import parse_tradingsymbol
         from backend.api.algo.actions_live import _al_resolve_hedge_plan
 
         agent = MagicMock()
-        with patch("backend.api.algo.actions_live._al_hedge_close_guard",
-                   new=AsyncMock(return_value=True)), \
-             patch("backend.api.algo.hedge_strike.resolve_parent_real_expiry",
+        parsed = parse_tradingsymbol("NIFTY26APR22500CE")
+        with patch("backend.api.algo.hedge_strike.resolve_parent_real_expiry",
                    new=AsyncMock(return_value="2026-04-28")), \
              patch("backend.api.algo.hedge_strike.candidates_match_parent_symbol",
                    return_value=True), \
@@ -266,7 +297,7 @@ class TestHedgePlanSkipConditions:
                    new=AsyncMock(return_value={22600.0: {"ce": {"bid": 1.0, "ask": 1.0, "sym": "X"}}})):
             result = await _al_resolve_hedge_plan(
                 agent, {}, "ZG0790", "NIFTY26APR22500CE", "NFO",
-                "BUY", 50, 100.0, 50,
+                "BUY", 50, 100.0, 50, parsed,
             )
         # ratio 1% vs target 50% is way outside tolerance — real
         # resolve_hedge_strike() runs unmocked here and must reject it.
@@ -277,12 +308,12 @@ class TestHedgePlanSkipConditions:
         """A pathological candidates dict where the winning strike's
         own quote entry carries no `sym` — must degrade to no-hedge
         rather than place an order with an empty symbol."""
+        from backend.api.algo.derivatives import parse_tradingsymbol
         from backend.api.algo.actions_live import _al_resolve_hedge_plan
 
         agent = MagicMock()
-        with patch("backend.api.algo.actions_live._al_hedge_close_guard",
-                   new=AsyncMock(return_value=True)), \
-             patch("backend.api.algo.hedge_strike.resolve_parent_real_expiry",
+        parsed = parse_tradingsymbol("NIFTY26APR22500CE")
+        with patch("backend.api.algo.hedge_strike.resolve_parent_real_expiry",
                    new=AsyncMock(return_value="2026-04-28")), \
              patch("backend.api.algo.hedge_strike.candidates_match_parent_symbol",
                    return_value=True), \
@@ -290,7 +321,7 @@ class TestHedgePlanSkipConditions:
                    new=AsyncMock(return_value={22600.0: {"ce": {"bid": 50.0, "ask": 50.0, "sym": ""}}})):
             result = await _al_resolve_hedge_plan(
                 agent, {}, "ZG0790", "NIFTY26APR22500CE", "NFO",
-                "BUY", 50, 100.0, 50,
+                "BUY", 50, 100.0, 50, parsed,
             )
         assert result is None
 
@@ -300,19 +331,19 @@ class TestHedgePlanSkipConditions:
         resolved chain contains ONLY the hedge candidate, not the
         parent's own strike/symbol, the exact shape a wrong-expiry
         fetch would produce — must skip the hedge."""
+        from backend.api.algo.derivatives import parse_tradingsymbol
         from backend.api.algo.actions_live import _al_resolve_hedge_plan
 
         agent = MagicMock()
+        parsed = parse_tradingsymbol("NIFTY26APR22500CE")
         candidates = {22600.0: {"ce": {"bid": 48.0, "ask": 50.0, "sym": "NIFTY26APR22600CE"}}}
-        with patch("backend.api.algo.actions_live._al_hedge_close_guard",
-                   new=AsyncMock(return_value=True)), \
-             patch("backend.api.algo.hedge_strike.resolve_parent_real_expiry",
+        with patch("backend.api.algo.hedge_strike.resolve_parent_real_expiry",
                    new=AsyncMock(return_value="2026-04-28")), \
              patch("backend.api.algo.hedge_strike.fetch_hedge_quotes",
                    new=AsyncMock(return_value=candidates)):
             result = await _al_resolve_hedge_plan(
                 agent, {}, "ZG0790", "NIFTY26APR22500CE", "NFO",
-                "BUY", 50, 100.0, 50,
+                "BUY", 50, 100.0, 50, parsed,
             )
         assert result is None
 
@@ -480,15 +511,20 @@ class TestHedgeCloseGuard:
 # ═══════════════════════════════════════════════════════════════════
 
 class TestHedgePlanHappyPath:
+    """2026-11-28: `_al_resolve_hedge_plan` no longer calls
+    `_al_hedge_close_guard` itself (that responsibility moved to the
+    pre-dispatch `_al_hedge_precheck_and_guard`) — it now takes the
+    already-resolved `parsed` symbol dict as an explicit argument."""
+
     @pytest.mark.asyncio
     async def test_resolves_hedge_leg_opposite_side_same_qty(self):
+        from backend.api.algo.derivatives import parse_tradingsymbol
         from backend.api.algo.actions_live import _al_resolve_hedge_plan
 
         agent = MagicMock()
+        parsed = parse_tradingsymbol("NIFTY26APR22500CE")
         candidates = {22600.0: {"ce": {"bid": 48.0, "ask": 50.0, "sym": "NIFTY26APR22600CE"}}}
-        with patch("backend.api.algo.actions_live._al_hedge_close_guard",
-                   new=AsyncMock(return_value=True)), \
-             patch("backend.api.algo.hedge_strike.resolve_parent_real_expiry",
+        with patch("backend.api.algo.hedge_strike.resolve_parent_real_expiry",
                    new=AsyncMock(return_value="2026-04-28")), \
              patch("backend.api.algo.hedge_strike.candidates_match_parent_symbol",
                    return_value=True), \
@@ -496,7 +532,7 @@ class TestHedgePlanHappyPath:
                    new=AsyncMock(return_value=candidates)) as mock_fetch:
             result = await _al_resolve_hedge_plan(
                 agent, {}, "ZG0790", "NIFTY26APR22500CE", "NFO",
-                "BUY", 50, 100.0, 50,
+                "BUY", 50, 100.0, 50, parsed,
             )
         assert result == {
             "symbol": "NIFTY26APR22600CE",
@@ -512,13 +548,13 @@ class TestHedgePlanHappyPath:
 
     @pytest.mark.asyncio
     async def test_sell_parent_resolves_buy_hedge(self):
+        from backend.api.algo.derivatives import parse_tradingsymbol
         from backend.api.algo.actions_live import _al_resolve_hedge_plan
 
         agent = MagicMock()
+        parsed = parse_tradingsymbol("NIFTY26APR22500PE")
         candidates = {22400.0: {"pe": {"bid": 23.0, "ask": 25.0, "sym": "NIFTY26APR22400PE"}}}
-        with patch("backend.api.algo.actions_live._al_hedge_close_guard",
-                   new=AsyncMock(return_value=True)), \
-             patch("backend.api.algo.hedge_strike.resolve_parent_real_expiry",
+        with patch("backend.api.algo.hedge_strike.resolve_parent_real_expiry",
                    new=AsyncMock(return_value="2026-04-28")), \
              patch("backend.api.algo.hedge_strike.candidates_match_parent_symbol",
                    return_value=True), \
@@ -526,7 +562,7 @@ class TestHedgePlanHappyPath:
                    new=AsyncMock(return_value=candidates)):
             result = await _al_resolve_hedge_plan(
                 agent, {}, "ZG0790", "NIFTY26APR22500PE", "NFO",
-                "SELL", 50, 100.0, 25,
+                "SELL", 50, 100.0, 25, parsed,
             )
         assert result["side"] == "BUY"
         assert result["symbol"] == "NIFTY26APR22400PE"
@@ -538,21 +574,21 @@ class TestHedgePlanHappyPath:
         `resolve_parent_real_expiry` — a candidates dict that includes
         BOTH the parent's own strike/symbol and the hedge candidate
         resolves correctly end to end."""
+        from backend.api.algo.derivatives import parse_tradingsymbol
         from backend.api.algo.actions_live import _al_resolve_hedge_plan
 
         agent = MagicMock()
+        parsed = parse_tradingsymbol("NIFTY26APR22500CE")
         candidates = {
             22500.0: {"ce": {"bid": 95.0, "ask": 100.0, "sym": "NIFTY26APR22500CE"}},
             22600.0: {"ce": {"bid": 48.0, "ask": 50.0, "sym": "NIFTY26APR22600CE"}},
         }
-        with patch("backend.api.algo.actions_live._al_hedge_close_guard",
-                   new=AsyncMock(return_value=True)), \
-             patch("backend.api.cache.peek", return_value=None), \
+        with patch("backend.api.cache.peek", return_value=None), \
              patch("backend.api.algo.hedge_strike.fetch_hedge_quotes",
                    new=AsyncMock(return_value=candidates)):
             result = await _al_resolve_hedge_plan(
                 agent, {}, "ZG0790", "NIFTY26APR22500CE", "NFO",
-                "BUY", 50, 100.0, 50,
+                "BUY", 50, 100.0, 50, parsed,
             )
         assert result == {
             "symbol": "NIFTY26APR22600CE",
@@ -1162,3 +1198,299 @@ class TestActionPlaceOrderHedgeOrchestration:
             await _action_place_order(agent, context, params)
 
         mock_chase.assert_called_once()
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  2026-11-28 audit finding — close-guard-vs-parent-fill race
+# ═══════════════════════════════════════════════════════════════════
+
+class TestHedgeCloseGuardRaceCondition:
+    """A close order (BUY against a held short, or an oversized BUY
+    that flips past flat) whose own chase_order() fills fast must NEVER
+    have a hedge staged for it — even though, by the time a close-
+    intent check runs, the account's position can read back flat
+    *because the close itself just filled*, not because there was
+    never anything to close.
+
+    The two tests in `TestRaceMechanismDirect` isolate WHY ordering is
+    load-bearing, using the real, unmodified `_al_hedge_close_guard` —
+    no production orchestration under test, just the race mechanism
+    itself, run both ways. The three tests in
+    `TestActionPlaceOrderNeverRacesTheGuard` drive the real, current
+    `_action_place_order` end to end and assert the fixed production
+    call order (`_al_hedge_precheck_and_guard` BEFORE
+    `asyncio.create_task(chase_order(...))` for the parent) actually
+    prevents it.
+    """
+
+    class TestRaceMechanismDirect:
+        """Proves the race mechanism itself: calling the REAL
+        `_al_hedge_close_guard` AFTER a task that flips the position to
+        flat has already been scheduled reads the WRONG (unsafe) "True"
+        — the exact defect reported by the audit. Calling it BEFORE
+        scheduling that task reads the correct "False". Both use the
+        same shared mutable position state and the same real
+        `asyncio.to_thread`-driven yield point `_al_hedge_close_guard`
+        itself already uses (`_al_hedge_account_signal`), so the
+        interleaving is genuine event-loop behaviour, not a mocked
+        shortcut."""
+
+        @staticmethod
+        def _position_fixture(initial_qty: float):
+            """Shared mutable position state + the two patch targets
+            `_al_hedge_close_guard` actually reads: `_al_hedge_account_
+            signal`'s own `broker_apis.fetch_positions` call (mocked
+            here to a confirmed-healthy, non-stale frame so the
+            degraded-account check never fires) and `orders_place.
+            _fetch_net_position_qty` (mocked to read the shared state,
+            simulating a real broker position read)."""
+            import pandas as pd
+
+            state = {"qty": initial_qty}
+
+            def _fake_fetch_positions():
+                df = pd.DataFrame({"account": ["ZG0790"],
+                                    "tradingsymbol": ["NIFTY26APR22500CE"],
+                                    "quantity": [state["qty"]]})
+                return [df]
+
+            async def _fake_fetch_net_qty(sym, exchange, account):
+                return state["qty"]
+
+            return state, _fake_fetch_positions, _fake_fetch_net_qty
+
+        @pytest.mark.asyncio
+        async def test_guard_called_after_scheduling_the_filling_task_reads_wrong_safe(self):
+            """The buggy ordering, reproduced directly: schedule a task
+            that flips the position to flat (simulating the parent's
+            own close fill), THEN await the close guard — it must read
+            the now-flat state and (wrongly, for a close order) report
+            "safe to hedge". This is the exact race the audit flagged
+            in the 2026-11-27 commit, which scheduled the parent's
+            `chase_order()` task BEFORE awaiting hedge resolution
+            (which includes this guard)."""
+            from backend.api.algo.actions_live import _al_hedge_close_guard
+
+            state, fake_fetch_positions, fake_fetch_net_qty = self._position_fixture(-50.0)
+
+            async def _closing_fill():
+                # A real yield point, same shape as a chase_order()
+                # call actually placing + confirming a fill.
+                await asyncio.sleep(0)
+                state["qty"] = 0.0  # the close just filled — now flat
+
+            with patch("backend.brokers.broker_apis.fetch_positions",
+                       side_effect=fake_fetch_positions), \
+                 patch("backend.api.routes.orders_place._fetch_net_position_qty",
+                       new=fake_fetch_net_qty):
+                # Schedule the "parent fill" and run it to full
+                # completion BEFORE the guard is even called — this is
+                # the exact, worst-case shape of the real bug: a fast
+                # fill that completes before hedge resolution gets
+                # around to the close-intent check at all (not merely
+                # a partial interleave).
+                task = asyncio.create_task(_closing_fill())
+                await task
+                result = await _al_hedge_close_guard(
+                    "NIFTY26APR22500CE", "NFO", "BUY", "ZG0790", 50,
+                )
+
+            # The bug, reproduced: the guard reads flat (because the
+            # close already filled) and wrongly reports "safe".
+            assert result is True
+
+        @pytest.mark.asyncio
+        async def test_guard_called_before_scheduling_the_filling_task_reads_correctly_unsafe(self):
+            """The fixed ordering: await the close guard to completion
+            FIRST, against the genuine pre-fill (short) position, THEN
+            schedule the filling task. The guard must read the real
+            pre-fill state and correctly refuse (False) — regardless of
+            what happens to the position afterward."""
+            from backend.api.algo.actions_live import _al_hedge_close_guard
+
+            state, fake_fetch_positions, fake_fetch_net_qty = self._position_fixture(-50.0)
+
+            async def _closing_fill():
+                await asyncio.sleep(0)
+                state["qty"] = 0.0
+
+            with patch("backend.brokers.broker_apis.fetch_positions",
+                       side_effect=fake_fetch_positions), \
+                 patch("backend.api.routes.orders_place._fetch_net_position_qty",
+                       new=fake_fetch_net_qty):
+                result = await _al_hedge_close_guard(
+                    "NIFTY26APR22500CE", "NFO", "BUY", "ZG0790", 50,
+                )
+                task = asyncio.create_task(_closing_fill())
+                await task
+
+            # Correctly refused — read the real short position, not
+            # the post-fill flat one.
+            assert result is False
+
+    class TestActionPlaceOrderNeverRacesTheGuard:
+        """End-to-end through the real, current `_action_place_order` —
+        confirms the production call order
+        (`_al_hedge_precheck_and_guard` before `asyncio.create_task` for
+        the parent) actually prevents the race, for both an exact close
+        and an oversized flip, and that a genuine new entry on a flat
+        account still gets a hedge staged (the feature's main path is
+        not broken by this fix)."""
+
+        @staticmethod
+        def _race_fixture(initial_qty: float, *, flips_to: float = 0.0):
+            """Mirrors `TestRaceMechanismDirect._position_fixture`, but
+            the state flip is driven by `mock_chase`'s own side effect
+            firing for the PARENT's real symbol — i.e. the position
+            only changes once the parent's own `chase_order()` call
+            (scheduled by the real `_action_place_order`) actually
+            runs, exactly mirroring a fast real-world fill."""
+            import pandas as pd
+
+            state = {"qty": initial_qty}
+
+            def _fake_fetch_positions():
+                df = pd.DataFrame({"account": ["ZG0790"],
+                                    "tradingsymbol": ["NIFTY26APR22500CE"],
+                                    "quantity": [state["qty"]]})
+                return [df]
+
+            async def _fake_fetch_net_qty(sym, exchange, account):
+                return state["qty"]
+
+            async def _chase_side_effect(**kwargs):
+                if kwargs["symbol"] == "NIFTY26APR22500CE":
+                    # The parent's own chase call "fills" — flip the
+                    # shared position state, same as a real fast fill
+                    # would at the broker.
+                    state["qty"] = flips_to
+                return MagicMock(status=MagicMock(value="FILLED"), detail="")
+
+            return state, _fake_fetch_positions, _fake_fetch_net_qty, _chase_side_effect
+
+        @pytest.mark.asyncio
+        async def test_exact_close_that_fills_fast_never_stages_a_hedge(self):
+            """Short 50, BUY 50 (an exact close) — hedge_pct set. The
+            parent's own chase_order() flips the position flat the
+            instant it runs. No hedge may be staged, and the parent's
+            own chase must be the ONLY chase_order() call."""
+            from backend.api.algo.actions_live import _action_place_order
+
+            broker = _make_broker_stub()
+            conns = _make_conns_stub("ZG0790")
+            agent = MagicMock()
+            agent.slug = "test-agent"
+            agent.id = 7
+            context: dict = {}
+            params = dict(_BASE_PARAMS)
+            params["hedge_pct"] = 50  # BUY 50
+
+            state, fake_fetch_positions, fake_fetch_net_qty, chase_side_effect = (
+                self._race_fixture(-50.0, flips_to=0.0)
+            )
+            mock_chase = AsyncMock(side_effect=chase_side_effect)
+            mock_resolve = AsyncMock()  # the slow half — must never be reached
+
+            with patch("backend.brokers.connections.Connections", return_value=conns), \
+                 patch("backend.brokers.registry.get_broker", return_value=broker), \
+                 patch("backend.brokers.adapters.kite.get_lot_size", new=AsyncMock(return_value=50)), \
+                 patch("backend.api.algo.chase.chase_order", new=mock_chase), \
+                 patch("backend.api.algo.actions._write_live_order", new=AsyncMock(return_value=42)), \
+                 patch("backend.api.algo.actions_live._place_order_set_product_template", new=AsyncMock()), \
+                 patch("backend.brokers.get_broker", return_value=broker), \
+                 patch("backend.brokers.client.is_cutover_on", return_value=False), \
+                 patch("backend.brokers.broker_apis.fetch_positions", side_effect=fake_fetch_positions), \
+                 patch("backend.api.routes.orders_place._fetch_net_position_qty", new=fake_fetch_net_qty), \
+                 patch("backend.api.algo.actions_live._al_resolve_hedge_plan", new=mock_resolve):
+                await _action_place_order(agent, context, params)
+
+            mock_chase.assert_called_once()  # parent only — no hedge leg chase
+            mock_resolve.assert_not_called()  # the slow half was never even reached
+            assert context["_action_result_detail"]["status"] == "FILLED"
+
+        @pytest.mark.asyncio
+        async def test_oversized_flip_that_fills_fast_never_stages_a_hedge(self):
+            """Short 50, BUY 100 (a flip past flat to +50) — the exact
+            case `_al_hedge_close_guard`'s own docstring calls out as
+            the reason it is NOT `_verify_close_intent` (which would
+            wrongly read an oversized order as "not closing"). Must
+            still refuse the hedge regardless of fill timing."""
+            from backend.api.algo.actions_live import _action_place_order
+
+            broker = _make_broker_stub()
+            conns = _make_conns_stub("ZG0790")
+            agent = MagicMock()
+            agent.slug = "test-agent"
+            agent.id = 7
+            context: dict = {}
+            params = dict(_BASE_PARAMS)
+            params["quantity"] = 100
+            params["hedge_pct"] = 50
+
+            state, fake_fetch_positions, fake_fetch_net_qty, chase_side_effect = (
+                self._race_fixture(-50.0, flips_to=50.0)
+            )
+            mock_chase = AsyncMock(side_effect=chase_side_effect)
+            mock_resolve = AsyncMock()
+
+            with patch("backend.brokers.connections.Connections", return_value=conns), \
+                 patch("backend.brokers.registry.get_broker", return_value=broker), \
+                 patch("backend.brokers.adapters.kite.get_lot_size", new=AsyncMock(return_value=50)), \
+                 patch("backend.api.algo.chase.chase_order", new=mock_chase), \
+                 patch("backend.api.algo.actions._write_live_order", new=AsyncMock(return_value=42)), \
+                 patch("backend.api.algo.actions_live._place_order_set_product_template", new=AsyncMock()), \
+                 patch("backend.brokers.get_broker", return_value=broker), \
+                 patch("backend.brokers.client.is_cutover_on", return_value=False), \
+                 patch("backend.brokers.broker_apis.fetch_positions", side_effect=fake_fetch_positions), \
+                 patch("backend.api.routes.orders_place._fetch_net_position_qty", new=fake_fetch_net_qty), \
+                 patch("backend.api.algo.actions_live._al_resolve_hedge_plan", new=mock_resolve):
+                await _action_place_order(agent, context, params)
+
+            mock_chase.assert_called_once()
+            mock_resolve.assert_not_called()
+
+        @pytest.mark.asyncio
+        async def test_genuine_new_entry_on_flat_account_still_gets_a_hedge_staged(self):
+            """The feature's main path, unbroken by this fix: a flat
+            account genuinely entering a new option position, with
+            hedge_pct set, must still get a real hedge leg staged and
+            chased concurrently — the close-intent guard must correctly
+            read "flat because genuinely flat" (not a close) and let
+            resolution proceed."""
+            from backend.api.algo.actions_live import _action_place_order
+
+            broker = _make_broker_stub()
+            conns = _make_conns_stub("ZG0790")
+            agent = MagicMock()
+            agent.slug = "test-agent"
+            agent.id = 7
+            context: dict = {}
+            params = dict(_BASE_PARAMS)
+            params["hedge_pct"] = 50
+
+            import pandas as pd
+            flat_df = pd.DataFrame()  # confirmed-healthy, genuinely empty
+
+            mock_chase = AsyncMock(return_value=MagicMock(status=MagicMock(value="FILLED"), detail=""))
+            hedge_ctx = {"symbol": "NIFTY26APR22600CE", "exchange": "NFO",
+                         "side": "SELL", "qty": 50, "price": 48.0}
+
+            with patch("backend.brokers.connections.Connections", return_value=conns), \
+                 patch("backend.brokers.registry.get_broker", return_value=broker), \
+                 patch("backend.brokers.adapters.kite.get_lot_size", new=AsyncMock(return_value=50)), \
+                 patch("backend.api.algo.chase.chase_order", new=mock_chase), \
+                 patch("backend.api.algo.actions._write_live_order", new=AsyncMock(return_value=42)), \
+                 patch("backend.api.algo.actions_live._place_order_set_product_template", new=AsyncMock()), \
+                 patch("backend.brokers.get_broker", return_value=broker), \
+                 patch("backend.brokers.client.is_cutover_on", return_value=False), \
+                 patch("backend.brokers.broker_apis.fetch_positions", return_value=[flat_df]), \
+                 patch("backend.api.routes.orders_place._fetch_net_position_qty",
+                       new=AsyncMock(return_value=None)), \
+                 patch("backend.api.algo.actions_live._al_resolve_hedge_plan",
+                       new=AsyncMock(return_value=hedge_ctx)), \
+                 patch("backend.api.algo.actions_live._al_prepare_hedge_leg",
+                       new=AsyncMock(return_value=(99, MagicMock(exchange="NFO")))):
+                await _action_place_order(agent, context, params)
+
+            # Parent + hedge leg, both chased.
+            assert mock_chase.await_count == 2

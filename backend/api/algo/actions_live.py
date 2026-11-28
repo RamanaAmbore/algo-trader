@@ -464,6 +464,52 @@ async def _al_hedge_close_guard(
     return True
 
 
+async def _al_hedge_precheck_and_guard(
+    exchange: str, symbol: str, side: str, account: str, qty: int, hedge_pct,
+) -> "dict | None":
+    """Cheap precheck + close-intent guard — the ONLY part of hedge
+    resolution that MUST complete BEFORE the parent order's own
+    `chase_order()` task is created (2026-11-28 fix; see
+    `_action_place_order`'s own docstring).
+
+    `_al_hedge_close_guard()` reads the account's CURRENT position. If
+    the parent's own chase is allowed to start first, a fast close fill
+    can flatten the position before this read happens — the guard
+    would then misread "flat because the close just filled" as "flat
+    because there was never anything to close" and stage a hedge for
+    what is actually a closing order. CLAUDE.md's `hedge_pct` invariant
+    is explicit: "a hedge is never staged for a close". This function
+    exists so that read always happens against the PRE-fill position.
+
+    Returns the parsed symbol dict (`parse_tradingsymbol()`'s own
+    shape) on success, or None — degrading to "no hedge" on ANY
+    exception, same fail-safe convention the combined
+    `_al_resolve_hedge_plan` body used before this split.
+    `_al_hedge_precheck_symbol()`'s own cheap, synchronous checks
+    (hedge_pct unset / non-NFO / non-option symbol) still short-circuit
+    before any broker/DB call, so the no-hedge path (the overwhelming
+    majority of `place_order` calls) pays none of this function's
+    cost — only a hedge-enabled order on an NFO option pays for the
+    one position fetch below, and only that one, before its parent
+    dispatches.
+    """
+    try:
+        parsed = _al_hedge_precheck_symbol(exchange, symbol, hedge_pct)
+        if parsed is None:
+            return None
+        safe = await _al_hedge_close_guard(symbol, exchange, side, account, qty)
+        if not safe:
+            return None
+        return parsed
+    except Exception as e:
+        from backend.shared.helpers.utils import mask_account
+        logger.warning(
+            f"[LIVE] place_order hedge precheck/close-guard raised for "
+            f"{mask_account(account)} {exchange}/{symbol}: {e} — proceeding unhedged"
+        )
+        return None
+
+
 def _al_hedge_build_leg_dict(
     candidates: dict, result: dict, opt_type: str, side: str,
     exchange: str, qty: int, account: str, symbol: str,
@@ -545,31 +591,38 @@ async def _al_hedge_resolve_leg(
 
 async def _al_resolve_hedge_plan(
     agent, context: dict, account: str, symbol: str, exchange: str,
-    side: str, qty: int, price, hedge_pct,
+    side: str, qty: int, price, hedge_pct, parsed: dict,
 ) -> "dict | None":
-    """Resolve a hedge leg for a just-pre-persisted parent order, or None.
+    """Resolve a hedge leg's quote/strike search for a parent order
+    whose precheck AND close-intent guard
+    (`_al_hedge_precheck_and_guard`) have ALREADY run and returned
+    `parsed` non-None — this function performs only the slow,
+    broker-quote-bound half of hedge resolution (a full option-chain
+    batch quote with up to a 12s timeout, an instruments-cache scan),
+    which is safe to run AFTER the parent's own `chase_order()` task
+    has already been dispatched (2026-11-28 fix). Unlike the
+    close-intent guard, this half does not need a pre-fill position
+    snapshot, so delaying it behind the parent's own dispatch costs
+    nothing in correctness.
+
+    `agent`/`context` are accepted only for call-site signature
+    stability with the pre-split function; neither is read here.
 
     None means "no hedge" — the parent proceeds exactly as it would
     with `hedge_pct` unset. This function must NEVER cause the parent
     order to be blocked or delayed beyond its own resolution cost, so
     its entire body runs inside one broad try/except: any exception
-    anywhere in here (including inside the close-intent guard's own
-    position fetch) degrades to "no hedge", same as a genuine
-    not-found or a non-option symbol.
+    anywhere in here degrades to "no hedge", same as a genuine
+    not-found. (Callers should ALSO wrap the subsequent
+    `_al_prepare_hedge_leg()` call in the same broad except — see
+    `_al_resolve_and_prepare_hedge` — so a hedge-side failure can never
+    prevent the parent's own `chase_order` task from being awaited.)
 
     Returns {"symbol", "exchange", "side", "qty", "price"} for the
     hedge leg's own order on a match — always a 1:1 qty ratio with the
     parent (no ratio knob in v1, same as the Chain-tab feature).
     """
     try:
-        parsed = _al_hedge_precheck_symbol(exchange, symbol, hedge_pct)
-        if parsed is None:
-            return None
-
-        safe = await _al_hedge_close_guard(symbol, exchange, side, account, qty)
-        if not safe:
-            return None
-
         return await _al_hedge_resolve_leg(account, symbol, exchange, side, qty, price, hedge_pct, parsed)
     except Exception as e:
         from backend.shared.helpers.utils import mask_account
@@ -669,6 +722,60 @@ async def _al_prepare_hedge_leg(
     hedge_cfg = _live_chase_config(aggressiveness, product=product)
     hedge_cfg.exchange = exchange or "NFO"
     return oid, hedge_cfg
+
+
+async def _al_resolve_and_prepare_hedge(
+    agent, context: dict, account: str, symbol: str, exchange: str,
+    side: str, qty: int, price, hedge_pct, hedge_parsed: "dict | None",
+    agent_shim, product: str, aggressiveness: str,
+) -> "tuple[dict | None, tuple | None]":
+    """Runs the SLOW half of hedge resolution (quote/strike search, via
+    `_al_resolve_hedge_plan`) plus the hedge leg's own preflight+persist
+    (`_al_prepare_hedge_leg`) — both safe to run AFTER the parent's own
+    `chase_order()` task has already been dispatched. `hedge_parsed`
+    must be the ALREADY-COMPLETED result of
+    `_al_hedge_precheck_and_guard()` (the fast, pre-dispatch half —
+    see `_action_place_order`'s own docstring for why that ordering is
+    load-bearing for correctness, not just a style choice).
+
+    Wrapped in one broad try/except HERE, not just inside the two
+    called functions individually: `_al_resolve_hedge_plan` is fully
+    self-wrapped, but `_al_prepare_hedge_leg` is not (its own DB-write
+    call, `_place_order_write_intent`, is internally wrapped and can't
+    raise, but neither function's own docstring GUARANTEES it can
+    never raise all the way through some future change). ANY exception
+    escaping either call degrades to "no hedge" here, so a hedge-side
+    failure can never prevent the caller from awaiting the parent's
+    own `chase_order` task — see `_PLACE_ORDER_PARENT_CHASE_TASKS`'s
+    own comment for the GC-risk half of this same concern.
+
+    Returns `(hedge_ctx, hedge_prepared)` — both None when
+    `hedge_parsed` is None (no hedge was ever possible, so neither
+    slow call is even attempted), or when anything below fails to
+    resolve/prepare a usable hedge leg.
+    """
+    if hedge_parsed is None:
+        return None, None
+    try:
+        hedge_ctx = await _al_resolve_hedge_plan(
+            agent, context, account, symbol, exchange, side, qty, price,
+            hedge_pct, hedge_parsed,
+        )
+        if hedge_ctx is None:
+            return None, None
+        hedge_prepared = await _al_prepare_hedge_leg(
+            agent_shim, account, exchange, hedge_ctx, product, aggressiveness,
+        )
+        return hedge_ctx, hedge_prepared
+    except Exception as e:
+        from backend.shared.helpers.utils import mask_account
+        logger.warning(
+            f"[LIVE] place_order hedge leg resolution/preparation raised for "
+            f"{mask_account(account)} {exchange}/{symbol}: {e} — "
+            f"proceeding with parent order unhedged",
+            extra={"self_alerted": True},
+        )
+        return None, None
 
 
 def _al_chase_status_str(outcome) -> str:
@@ -804,16 +911,23 @@ async def _al_alert_hedge_pairing_issue(
 # `routes/brokers.py`'s `_books_refresh_tasks`); `_action_place_order`
 # below DOES always `await` this task (directly, or via `asyncio.gather`)
 # before returning in the ordinary case, so the local variable itself
-# is normally enough — EXCEPT when `_al_resolve_hedge_plan`/
-# `_al_prepare_hedge_leg` raise an exception that is NOT caught before
-# reaching that await (neither function's own docstring guarantees it
-# can never raise all the way through — `_al_resolve_hedge_plan` wraps
-# its own body in a broad try/except, but `_al_prepare_hedge_leg`'s DB-
-# write call is not similarly wrapped). Without this set, that exact
-# window would leave the parent's live chase task referenced by nothing
-# but the event loop's own internals, eligible for GC mid-run. Each
-# task adds itself here on creation and removes itself via
-# `add_done_callback` on completion — same pattern, same rationale.
+# is normally enough. The 2026-11-28 reorder-for-correctness fix below
+# (see that function's own docstring and `_al_resolve_and_prepare_hedge`)
+# ALSO wraps the entire post-dispatch hedge resolution/preparation call
+# in one broad try/except at the call site, so an exception from
+# `_al_resolve_hedge_plan`/`_al_prepare_hedge_leg` can no longer skip
+# the `await parent_task` that follows either — that was a real, narrow
+# latent risk before this fix (an unwrapped `_al_prepare_hedge_leg`
+# raise would have left `parent_task` referenced by nothing but this
+# set, running to completion with NO ONE ever reading its outcome:
+# `_place_order_on_failure` never called on a parent failure, and
+# `context["_action_result_detail"]` never set). This set is kept as
+# belt-and-suspenders regardless — it is what stops that orphaned task
+# from being garbage-collected mid-run, and it also protects against
+# anything that still escapes the broad except above (a bare
+# `asyncio.CancelledError`, which `except Exception` does not catch).
+# Each task adds itself here on creation and removes itself via
+# `add_done_callback` on completion.
 _PLACE_ORDER_PARENT_CHASE_TASKS: set = set()
 
 
@@ -845,37 +959,60 @@ async def _action_place_order(agent, context: dict, params: dict):
     tier, interval=30/step=0.05/attempts=30 — so it is intentionally not
     used as the silent default.)
 
-    `params.hedge_pct` (Part A, 2026-11; reordered P2 #3, 2026-11-27):
-    when set and `symbol` parses as an NFO option, `_al_resolve_hedge_
-    plan`/`_al_prepare_hedge_leg` stage a second order (further-OTM,
-    opposite side, same option type) and both legs' `chase_order()`
-    calls run CONCURRENTLY — a sequential await would leave the
-    position naked for the parent's entire chase window, defeating the
-    hedge's purpose.
+    `params.hedge_pct` (Part A, 2026-11; reordered P2 #3, 2026-11-27;
+    re-sequenced for correctness, 2026-11-28): when set and `symbol`
+    parses as an NFO option, `_al_resolve_hedge_plan`/
+    `_al_prepare_hedge_leg` stage a second order (further-OTM, opposite
+    side, same option type) and both legs' `chase_order()` calls run
+    CONCURRENTLY — a sequential await would leave the position naked
+    for the parent's entire chase window, defeating the hedge's
+    purpose.
 
-    The parent's own `chase_order()` call is scheduled via
-    `asyncio.create_task()` IMMEDIATELY after the parent's own
-    preflight + AlgoOrder persist succeed — BEFORE hedge resolution
-    even starts, not merely "concurrently from the point `asyncio.
-    gather` happens to be called". `_al_resolve_hedge_plan`/
-    `_al_prepare_hedge_leg` make real, possibly slow broker/DB calls
-    (a full option-chain batch quote with up to a 12s timeout, an
-    instruments-cache scan, a positions fetch for the close-intent
-    guard) — the previous shape awaited those SEQUENTIALLY before the
-    parent's chase coroutine was even constructed, so the parent's
-    limit price could go stale (market moves) for that whole window
-    with no chase actively re-quoting it. The parent's chase now runs
-    the entire time hedge resolution is in flight, exactly like the
-    no-hedge path. When a hedge DOES resolve, its own `chase_order()`
-    call is awaited together with the (already-running) parent task
-    via `asyncio.gather(..., return_exceptions=True)`, same as before.
+    Hedge resolution is split into two halves, run on either side of
+    the parent's own dispatch:
 
-    A hedge-resolution failure (no match, closing order, non-option
-    symbol, preflight block, DB-write failure) never blocks or delays
-    the parent order — it never did, and still doesn't now that the
-    parent is scheduled even earlier. Omitting `hedge_pct` entirely is
-    byte-identical to this function's pre-hedge behavior (single
-    `await` on the parent task, no gather).
+      1. BEFORE `parent_task` is created — `_al_hedge_precheck_and_
+         guard()` (the cheap symbol precheck plus ONE
+         `_al_hedge_close_guard()` position read). This MUST finish
+         before the parent's chase starts: the close-intent guard
+         reads the account's CURRENT position to decide whether this
+         order is itself a close, and once the parent's own chase is
+         running it can fill (fully or partially) and flatten that
+         same position — a close_guard read taken AFTER that fill
+         would misread "flat because the close just filled" as "flat
+         because there was never anything to close" and stage a hedge
+         for what is actually a closing order. This is a real race
+         found by audit in the P2 #3 (2026-11-27) commit, which had
+         moved `parent_task` creation ahead of the ENTIRE hedge
+         resolution body including this guard — violating the
+         CLAUDE.md `hedge_pct` invariant "a hedge is never staged for
+         a close". The no-hedge path (hedge_pct unset, or a non-NFO/
+         non-option symbol) pays none of this cost — the precheck
+         short-circuits before any broker call.
+
+      2. AFTER `parent_task` is created — `_al_resolve_and_prepare_
+         hedge()` (the slow option-chain batch quote, up to a 12s
+         timeout, instruments-cache scan, and the hedge leg's own
+         preflight+persist). None of this needs a pre-fill position
+         snapshot, so it is safe — and still the whole point of the
+         2026-11-27 fix — to run concurrently with the parent's
+         already-dispatched chase, exactly like the no-hedge path. A
+         sequential await here (the pre-2026-11-27 shape) would leave
+         the parent's limit price stale (market moves) with no chase
+         actively re-quoting it for that whole window.
+
+    When a hedge DOES resolve, its own `chase_order()` call is awaited
+    together with the (already-running) parent task via
+    `asyncio.gather(..., return_exceptions=True)`.
+
+    A hedge-resolution failure at EITHER stage (no match, closing
+    order, non-option symbol, preflight block, DB-write failure, or any
+    other exception — `_al_resolve_and_prepare_hedge` wraps the whole
+    post-dispatch stage in one broad except) never blocks or delays the
+    parent order, and can never prevent `parent_task` from being
+    awaited below. Omitting `hedge_pct` entirely is byte-identical to
+    this function's pre-hedge behavior (single `await` on the parent
+    task, no gather).
     """
     import asyncio
     from backend.api.algo.chase import chase_order
@@ -938,14 +1075,30 @@ async def _action_place_order(agent, context: dict, params: dict):
     cfg = _live_chase_config(aggressiveness, product=product)
     cfg.exchange = exchange or "NFO"
 
+    # 2026-11-28 correctness fix (audit finding on the 2026-11-27 P2 #3
+    # reorder): the close-intent guard half of hedge resolution MUST
+    # finish BEFORE the parent's own chase_order() task is created —
+    # see `_al_hedge_precheck_and_guard`'s own docstring and this
+    # function's docstring above. It is a cheap precheck plus ONE
+    # position fetch, not the slow option-chain quote/strike search,
+    # so the no-hedge path (hedge_pct unset) pays none of this cost
+    # and the hedge-enabled path pays only a position-fetch's worth of
+    # delay before the parent dispatches — not the full quote-
+    # resolution delay the 2026-11-27 fix was built to avoid.
+    hedge_parsed = await _al_hedge_precheck_and_guard(
+        exchange, symbol, side, account, qty, params.get("hedge_pct"),
+    )
+
     # Schedule the parent's own chase NOW — it starts running on the
     # event loop immediately, the same instant it would with no
-    # `hedge_pct` at all. Hedge resolution (below) can take real,
-    # possibly multi-second wall-clock time; the parent must never sit
-    # idle (limit price going stale with nothing re-quoting it) while
-    # that resolves. See this function's own docstring for the full
-    # P2 #3 rationale, and `_PLACE_ORDER_PARENT_CHASE_TASKS`'s own
-    # comment for why a strong reference is held here.
+    # `hedge_pct` at all. The REMAINING hedge work (quote fetch, strike
+    # search, hedge preflight+persist — see `_al_resolve_and_prepare_
+    # hedge`) can take real, possibly multi-second wall-clock time;
+    # the parent must never sit idle (limit price going stale with
+    # nothing re-quoting it) while that resolves. See this function's
+    # own docstring for the full re-ordering rationale, and
+    # `_PLACE_ORDER_PARENT_CHASE_TASKS`'s own comment for why a strong
+    # reference is held here.
     parent_task = asyncio.create_task(chase_order(
         account=account, symbol=symbol,
         transaction_type=side, quantity=qty,
@@ -956,15 +1109,17 @@ async def _action_place_order(agent, context: dict, params: dict):
     _PLACE_ORDER_PARENT_CHASE_TASKS.add(parent_task)
     parent_task.add_done_callback(_PLACE_ORDER_PARENT_CHASE_TASKS.discard)
 
-    hedge_ctx = await _al_resolve_hedge_plan(
+    # The slow half of hedge resolution, plus the hedge leg's own
+    # preflight+persist, both run concurrently with the already-
+    # dispatched parent above. `_al_resolve_and_prepare_hedge` wraps
+    # the whole thing in one broad try/except, so ANY exception here
+    # degrades to "no hedge" and can never prevent `await parent_task`
+    # below from running — closing the latent risk flagged in
+    # `_PLACE_ORDER_PARENT_CHASE_TASKS`'s own comment.
+    hedge_ctx, hedge_prepared = await _al_resolve_and_prepare_hedge(
         agent, context, account, symbol, exchange, side, qty, price,
-        params.get("hedge_pct"),
+        params.get("hedge_pct"), hedge_parsed, _shim, product, aggressiveness,
     )
-    hedge_prepared = None
-    if hedge_ctx is not None:
-        hedge_prepared = await _al_prepare_hedge_leg(
-            _shim, account, exchange, hedge_ctx, product, aggressiveness,
-        )
 
     if hedge_prepared is None:
         try:
