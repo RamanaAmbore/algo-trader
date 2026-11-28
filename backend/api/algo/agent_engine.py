@@ -882,11 +882,19 @@ def _portfolio_theo_total_composition(position_rows) -> frozenset:
     non-flat F&O leg — equity rows carry no truthy `underlying` and are
     excluded automatically. Shared by the writer below (to detect a
     composition change) and tests (to assert the guard's own trigger
-    condition without re-deriving it)."""
+    condition without re-deriving it).
+
+    Uses `grammar._theo_safe_qty`/`_theo_leg_is_non_flat` — NEVER a bare
+    `int(...)` — a NaN or otherwise malformed `quantity` must read as 0
+    (flat/excluded), not raise. This function runs once per tick inside
+    `run_cycle`, unguarded by any per-agent try/except; an uncaught
+    exception here would abort evaluation for EVERY agent that tick, not
+    just this one."""
+    from backend.api.algo.grammar import _theo_safe_qty, _theo_leg_is_non_flat
     return frozenset(
-        (r.get('tradingsymbol') or '', int(r.get('quantity') or 0))
+        (r.get('tradingsymbol') or '', _theo_safe_qty(r))
         for r in (position_rows or [])
-        if r.get('underlying') and int(r.get('quantity') or 0) != 0
+        if r.get('underlying') and _theo_leg_is_non_flat(r)
     )
 
 
@@ -910,6 +918,11 @@ def _update_portfolio_theo_total_history(alert_state: dict, now, position_rows,
     fetched tick), or a partial-outage-flagged `sum_positions`. A tick
     where `value` itself is None (no F&O book at all) also records
     nothing — never a fake 0.
+
+    Composition guard: see the inline comment at the composition-guard
+    block below — it tracks BOTH the exact leg set and which underlyings
+    successfully contributed this tick, clearing the bucket on either
+    changing.
     """
     if market_state is not None:
         any_open = bool(market_state.get('nse_open') or market_state.get('mcx_open'))
@@ -923,22 +936,34 @@ def _update_portfolio_theo_total_history(alert_state: dict, now, position_rows,
     # elsewhere in this file, e.g. `_capture_leg_theo_baseline`).
     from backend.api.algo.grammar import (
         PORTFOLIO_THEO_TOTAL_RATE_KEY, _portfolio_theoretical_loss_since_entry,
+        _portfolio_theoretical_contributing_underlyings,
     )
+    from types import SimpleNamespace
 
     hist_map = alert_state.setdefault('pnl_history', {})
     key = PORTFOLIO_THEO_TOTAL_RATE_KEY
 
-    composition = _portfolio_theo_total_composition(position_rows)
+    ctx_like = SimpleNamespace(
+        position_rows=position_rows, spot_prices=spot_prices or {},
+        alert_state=alert_state, now=now,
+    )
+
+    # Composition guard — two independent signals, both must stay
+    # unchanged for the rate window to survive this tick: (1) the exact
+    # leg set (symbol, qty) — catches a trade (open/close/partial); (2)
+    # which underlyings successfully CONTRIBUTED to leaf 1 this tick —
+    # catches an underlying flipping between available/unavailable with
+    # the SAME leg set (a baseline-capture race, a transient spot-feed
+    # gap, an expiry-day IV-calibration failure). Either changing clears
+    # the bucket, never just one.
+    leg_composition = _portfolio_theo_total_composition(position_rows)
+    contributing = _portfolio_theoretical_contributing_underlyings(ctx_like)
+    composition = (leg_composition, contributing)
     prior = alert_state.get(_PORTFOLIO_THEO_TOTAL_COMPOSITION_KEY)
     if prior is not None and prior != composition:
         hist_map.pop(key, None)  # composition changed — restart the rate window clean
     alert_state[_PORTFOLIO_THEO_TOTAL_COMPOSITION_KEY] = composition
 
-    from types import SimpleNamespace
-    ctx_like = SimpleNamespace(
-        position_rows=position_rows, spot_prices=spot_prices or {},
-        alert_state=alert_state, now=now,
-    )
     value = _portfolio_theoretical_loss_since_entry(ctx_like)
     if value is None:
         return  # nothing to record this tick — not a 0, not a failure
@@ -1775,13 +1800,25 @@ def _v2_derive_kind(metric: str, op: str = '') -> str:
 def _v2_enrich_position_alert(
     section: str, kind: str, scope_label: str,
     df_positions, alert_state, rate_window_min: int, rate_val,
+    metric: str = '',
 ) -> tuple[list[dict], object]:
     """Compute optional position-alert enrichment fields.
 
     Returns (underlyings_breakdown, rate_val) after applying per-underlying
     breakdown and static-rate enrichment where applicable.
+
+    Both enrichments read MARKET data (`df_positions`'s own `pnl` column
+    for the breakdown; the `('positions', scope_label)` pnl_history
+    bucket — market day P&L — for the static-rate readout). Suppressed
+    entirely for `_THEORETICAL_LOSS_METRICS` (2026-11-28
+    `loss-positions-total` redesign) — showing a market "by und:"
+    breakdown or a market "rate:" readout next to a theoretical
+    threshold would be misleading in exactly the way that redesign
+    exists to avoid (see CLAUDE.md's dated entry).
     """
     underlyings_breakdown: list[dict] = []
+    if metric in _THEORETICAL_LOSS_METRICS:
+        return underlyings_breakdown, rate_val
     if section == 'Positions' and df_positions is not None:
         try:
             underlyings_breakdown = _v2_underlying_breakdown(df_positions, scope_label)
@@ -1844,6 +1881,7 @@ def _v2_match_to_alertrow(match: dict, *,
     # actually reaches the returned `scope` field below.
     underlyings_breakdown, rate_val = _v2_enrich_position_alert(
         section, kind, scope_label, df_positions, alert_state, rate_window_min, rate_val,
+        metric=metric,
     )
 
     # Confirmed leak fix (2026-10): this was the single upstream point
@@ -4284,10 +4322,45 @@ def _ae_apply_content_matched_cond_migration(existing, agent_def: dict) -> None:
     this slug. No-ops for any slug not in the table, or any row whose
     stored conditions don't exactly match (including an operator-
     customized row) — same exact-equality safety contract as
-    `_ae_is_stale_loss_positions_total_cond`."""
+    `_ae_is_stale_loss_positions_total_cond`.
+
+    `_ae_sync_loss_positions_total_description` is called INSIDE the
+    same `old_cond` match branch (not re-derived) — this is the ONE
+    moment a genuine migration is firing. Checking afterwards against
+    `existing.conditions == agent_def["conditions"]` instead would ALSO
+    match every later restart once the row is already migrated, and
+    would then stomp an operator's own custom description on an
+    otherwise-stock row forever — scoping it to this branch avoids that."""
     old_cond = _AE_CONTENT_MATCHED_COND_MIGRATIONS.get(agent_def.get("slug", ""))
     if old_cond is not None and existing.conditions == old_cond:
         existing.conditions = agent_def["conditions"]
+        _ae_sync_loss_positions_total_description(existing, agent_def)
+
+
+def _ae_sync_loss_positions_total_description(existing, agent_def: dict) -> None:
+    """Slug-scoped description sync for the 2026-11-28 pure-theoretical
+    redesign — an inactive row migrated to the new condition shape but
+    left with its OLD description would show stale prose (the retired
+    "-2% of total margin" market-P&L wording) on /agents, right before
+    the operator decides whether to re-enable it. Called ONLY from
+    inside `_ae_apply_content_matched_cond_migration`'s own one-time
+    old-shape-match branch, so this never fires on an already-migrated
+    or operator-customized row. Scoped to `loss-positions-total` only
+    (not generalized to every entry in `_AE_CONTENT_MATCHED_COND_
+    MIGRATIONS`) — some OTHER callers in this table's own test suite
+    exercise the generic function against a minimal test double with no
+    `description` attribute at all; a bare attribute-set there would
+    raise `AttributeError` for those. `getattr(existing, 'description',
+    None)` degrades gracefully if `existing` itself has no such
+    attribute (defensive; the real `Agent` model always does)."""
+    if agent_def.get("slug") != "loss-positions-total":
+        return
+    new_desc = agent_def.get("description")
+    if new_desc and getattr(existing, "description", None) != new_desc:
+        try:
+            existing.description = new_desc
+        except AttributeError:
+            pass
 
 
 def _ae_sync_existing_builtin(existing, agent_def: dict) -> None:
@@ -6022,11 +6095,43 @@ def _cycle_evaluate_agent(agent, context: dict, cfg: dict, now, alert_state: dic
     # never a crash.
     v2_ctx.given_bindings = (context.get("given") or {}).get(agent.id) or {}
     try:
-        matches = v2_evaluate(agent.conditions, v2_ctx)
+        matches = _v2_dedup_exact_matches(v2_evaluate(agent.conditions, v2_ctx))
         return matches, v2_ctx.observations
     except Exception as e:
         logger.error(f"Agent [{agent.slug}] v2 evaluate failed: {e}")
         return [], []
+
+
+def _v2_dedup_exact_matches(matches: list) -> list:
+    """Collapse byte-for-byte duplicate matches — the same leaf can
+    appear more than once in one agent's `evaluate()` output when it is
+    referenced both as a bare top-level `any[]` item AND as the gate
+    leaf inside a nested `all[]` branch (e.g. `loss-positions-total`'s
+    leaf 1, which both fires on its own at top level AND gates leaf 2's
+    rate pair). `_eval_all`'s own AND-join logic (Fix #2/Fix B,
+    agent_evaluator.py) legitimately re-includes a gate leaf's match in
+    its own output when the AND is satisfied — correct for the join
+    logic itself, but it means the SAME breach would otherwise render
+    twice, double-count in `_ae_group_alert_rows`'s grouping, and
+    duplicate the per-leaf latch-key list `_v2_apply_escalation_gate`
+    sees. Keeps the first occurrence, preserves order. Never drops a
+    genuinely distinct match — the dedup key includes account/underlying,
+    so two different rows that happen to share the same metric/op/
+    threshold/value are NOT collapsed; only an EXACT duplicate (same
+    metric, scope, op, threshold, value, AND row identity) is."""
+    seen = set()
+    out = []
+    for m in matches:
+        key = (
+            m.get('metric'), m.get('scope'), m.get('op'),
+            m.get('threshold'), m.get('value'),
+            m.get('account'), m.get('underlying'),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(m)
+    return out
 
 
 def _cycle_maybe_buffer_fire(
@@ -6545,12 +6650,22 @@ async def run_cycle(context: dict, broadcast_fn=None,
         )
         # Portfolio-wide theoretical-total-loss history (2026-11-28
         # `loss-positions-total` redesign) — same call site, same tick,
-        # feeds leaf 2's (theo_total_rate_abs/pct) rate window.
-        _update_portfolio_theo_total_history(
-            _alert_state, now, _position_rows, context.get("spot_prices") or {},
-            context.get("df_margins"), sum_positions=_sum_positions,
-            market_state=None if bypass_schedule else base_ctx,
-        )
+        # feeds leaf 2's (theo_total_rate_abs/pct) rate window. Wrapped
+        # defensively (belt-and-suspenders on top of this writer's own
+        # internal safe-qty guards) — this call sits upstream of EVERY
+        # agent's evaluation this tick; an uncaught exception here must
+        # never abort the whole cycle for every other agent too.
+        try:
+            _update_portfolio_theo_total_history(
+                _alert_state, now, _position_rows, context.get("spot_prices") or {},
+                context.get("df_margins"), sum_positions=_sum_positions,
+                market_state=None if bypass_schedule else base_ctx,
+            )
+        except Exception as _theo_hist_exc:
+            logger.warning(
+                f"[AGENT-ENGINE] portfolio theo-total history writer failed "
+                f"(non-fatal, skipping this tick's sample): {_theo_hist_exc}"
+            )
 
     # Hoist _v2_cfg() outside the per-agent loop — it reads global Settings
     # rows and has no per-agent dependency. Avoids 15 redundant dict lookups

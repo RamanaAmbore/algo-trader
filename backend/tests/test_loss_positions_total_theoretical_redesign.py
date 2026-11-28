@@ -300,6 +300,314 @@ class TestLeaf1DiffersFromLeaf3:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+#  Missing-vs-zero: a leg with NO `average_price` must never fake a loss.
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestMissingAverageCostTreatedAsUnavailable:
+    def test_short_leg_with_no_average_price_does_not_fake_a_full_premium_loss(self):
+        """A missing `average_price` on a SHORT leg (qty < 0) must never
+        read as `avg_cost=0` — that would fabricate a full-notional
+        'loss' out of thin air and fire a critical alert on missing
+        data, which is exactly the risk for a short-premium book. The
+        leg (and therefore its whole underlying) must be unavailable."""
+        qty = -1000
+        baseline = {'CRUDEOIL26OCTFUT': _fut_baseline(6000.0, qty)}
+        rows = [{'tradingsymbol': 'CRUDEOIL26OCTFUT', 'quantity': qty,
+                 'underlying': 'CRUDEOIL'}]  # no 'average_price' key at all
+        ctx = _ctx(rows, {'CRUDEOIL': 6005.0}, baseline)
+        total = g._portfolio_theoretical_loss_since_entry(ctx)
+        assert total is None, (
+            f"a missing average_price must make the WHOLE underlying "
+            f"unavailable for leaf 1, never a fabricated value, got {total}"
+        )
+        # Leaf 1 and leaf 3 share ONE per-leg walk
+        # (`_underlying_theo_legs_since_baseline_and_entry` ->
+        # `_theo_leg_since_baseline_and_entry`), which returns both
+        # outputs together or neither. A missing avg_cost therefore also
+        # makes leaf 3 unavailable for THIS leg's underlying — even
+        # though leaf 3 itself has no conceptual need for avg_cost. This
+        # is a deliberate, accepted tradeoff: failing BOTH leaves toward
+        # "unavailable" together is simpler and safer than risking a
+        # partially-inconsistent state across the two leaves for one leg.
+        daily = g._portfolio_theoretical_loss_daily(ctx)
+        assert daily is None, (
+            f"leaf 3 shares the all-or-nothing walk with leaf 1 for this "
+            f"leg, so a missing avg_cost makes BOTH unavailable, got {daily}"
+        )
+
+    def test_nan_average_price_is_also_unavailable(self):
+        qty = 300
+        baseline = {'CRUDEOIL26OCTFUT': _fut_baseline(6000.0, qty)}
+        rows = [{'tradingsymbol': 'CRUDEOIL26OCTFUT', 'quantity': qty,
+                 'underlying': 'CRUDEOIL', 'average_price': float('nan')}]
+        ctx = _ctx(rows, {'CRUDEOIL': 6005.0}, baseline)
+        assert g._portfolio_theoretical_loss_since_entry(ctx) is None
+
+    def test_zero_average_price_is_also_unavailable(self):
+        """A broker-reported 0.0 avg_cost is itself a data-quality
+        signal here (no real entry price can be exactly zero for a
+        held F&O leg) — treated the same as missing, not as a real
+        entry price of zero."""
+        qty = 300
+        baseline = {'CRUDEOIL26OCTFUT': _fut_baseline(6000.0, qty)}
+        rows = [{'tradingsymbol': 'CRUDEOIL26OCTFUT', 'quantity': qty,
+                 'underlying': 'CRUDEOIL', 'average_price': 0.0}]
+        ctx = _ctx(rows, {'CRUDEOIL': 6005.0}, baseline)
+        assert g._portfolio_theoretical_loss_since_entry(ctx) is None
+
+    def test_valid_positive_average_price_still_works(self):
+        """Regression guard: a genuinely valid avg_cost is unaffected."""
+        qty = 300
+        baseline = {'CRUDEOIL26OCTFUT': _fut_baseline(6000.0, qty)}
+        rows = [{'tradingsymbol': 'CRUDEOIL26OCTFUT', 'quantity': qty,
+                 'underlying': 'CRUDEOIL', 'average_price': 6500.0}]
+        ctx = _ctx(rows, {'CRUDEOIL': 6005.0}, baseline)
+        total = g._portfolio_theoretical_loss_since_entry(ctx)
+        assert total == pytest.approx(300 * (6005.0 - 6500.0))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Per-unit qty scaling — an intraday partial close must not phantom-
+#  multiply leaf 1 by the STALE baseline-captured quantity.
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestPerUnitQtyScalingAfterPartialClose:
+    def test_partial_close_uses_live_qty_not_stale_baseline_qty(self):
+        """Baseline captured this morning at 300 lots; the position was
+        partially closed intraday down to 100 lots. Leaf 1 must scale by
+        the LIVE 100, never the stale baseline 300 — a 3x phantom loss
+        otherwise."""
+        b_qty = 300
+        live_qty = 100
+        avg_cost = 6500.0
+        S_base = 6000.0
+        S_now = 6005.0
+        baseline = {'CRUDEOIL26OCTFUT': _fut_baseline(S_base, b_qty)}
+        rows = [{'tradingsymbol': 'CRUDEOIL26OCTFUT', 'quantity': live_qty,
+                 'underlying': 'CRUDEOIL', 'average_price': avg_cost}]
+        ctx = _ctx(rows, {'CRUDEOIL': S_now}, baseline)
+        total = g._portfolio_theoretical_loss_since_entry(ctx)
+        # For a futures leg with ltp_base == S_base, the per-unit model
+        # price now IS simply S_now (the basis term cancels), so the
+        # expected value is live_qty * (S_now - avg_cost), NOT
+        # b_qty * (S_now - avg_cost).
+        expected = live_qty * (S_now - avg_cost)
+        wrong_with_stale_qty = b_qty * (S_now - avg_cost)
+        assert total == pytest.approx(expected), (
+            f"expected the LIVE-qty-scaled value {expected}, got {total} "
+            f"(the stale-qty bug would give {wrong_with_stale_qty})"
+        )
+        assert total != pytest.approx(wrong_with_stale_qty)
+
+    def test_blended_add_also_uses_live_qty(self):
+        """Baseline captured at 300 lots; the position was ADDED to
+        intraday, now 500 lots at a blended avg_cost. Still uses the
+        live 500, not the baseline's 300."""
+        b_qty = 300
+        live_qty = 500
+        avg_cost = 6100.0  # blended lower cost after adding at a better price
+        S_base = 6000.0
+        S_now = 6005.0
+        baseline = {'CRUDEOIL26OCTFUT': _fut_baseline(S_base, b_qty)}
+        rows = [{'tradingsymbol': 'CRUDEOIL26OCTFUT', 'quantity': live_qty,
+                 'underlying': 'CRUDEOIL', 'average_price': avg_cost}]
+        ctx = _ctx(rows, {'CRUDEOIL': S_now}, baseline)
+        total = g._portfolio_theoretical_loss_since_entry(ctx)
+        expected = live_qty * (S_now - avg_cost)
+        assert total == pytest.approx(expected), f"expected {expected}, got {total}"
+
+    def test_zero_baseline_qty_is_unavailable(self):
+        """A degenerate baseline with qty=0 cannot be used to derive a
+        per-unit price — the leg (and its underlying) is unavailable,
+        never a division-by-zero crash."""
+        baseline = {'CRUDEOIL26OCTFUT': _fut_baseline(6000.0, 0)}
+        rows = [{'tradingsymbol': 'CRUDEOIL26OCTFUT', 'quantity': 100,
+                 'underlying': 'CRUDEOIL', 'average_price': 6500.0}]
+        ctx = _ctx(rows, {'CRUDEOIL': 6005.0}, baseline)
+        assert g._portfolio_theoretical_loss_since_entry(ctx) is None
+
+    def test_leaf3_still_uses_the_pre_existing_baseline_qty_quirk(self):
+        """Leaf 3 (`_underlying_theo_legs_since_baseline_and_entry`'s
+        `since_baseline` return value) is explicitly NOT changed by this
+        fix — it keeps `_theo_reprice_leg`'s own existing baseline-qty
+        behaviour, same as the pre-existing `underlying_theoretical_loss`
+        metric. The stale-qty quirk is documented, not fixed, for leaf 3."""
+        b_qty = 300
+        live_qty = 100
+        S_base = 6000.0
+        S_now = 6005.0
+        baseline = {'CRUDEOIL26OCTFUT': _fut_baseline(S_base, b_qty)}
+        rows = [{'tradingsymbol': 'CRUDEOIL26OCTFUT', 'quantity': live_qty,
+                 'underlying': 'CRUDEOIL', 'average_price': 6500.0}]
+        ctx = _ctx(rows, {'CRUDEOIL': S_now}, baseline)
+        daily = g._portfolio_theoretical_loss_daily(ctx)
+        # Leaf 3 still uses the BASELINE's own qty (300), per
+        # `_theo_reprice_leg`'s unchanged, pre-existing behaviour.
+        assert daily == pytest.approx(b_qty * (S_now - S_base))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Composition guard must never raise on malformed data (NaN quantity).
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestCompositionGuardSurvivesMalformedQuantity:
+    def test_nan_quantity_does_not_raise(self):
+        """`int(float('nan'))` raises `ValueError` — this must never
+        propagate out of the composition helper, since it runs once per
+        tick inside `run_cycle`, unguarded, ahead of EVERY agent's
+        evaluation."""
+        rows = [{'tradingsymbol': 'BAD', 'quantity': float('nan'), 'underlying': 'CRUDEOIL'}]
+        composition = ae._portfolio_theo_total_composition(rows)
+        assert composition == frozenset(), (
+            "a NaN quantity must be treated as flat/excluded, never raise"
+        )
+
+    def test_writer_does_not_raise_on_nan_quantity_row(self):
+        alert_state = {'underlying_theo_baseline': {}}
+        rows = [{'tradingsymbol': 'BAD', 'quantity': float('nan'), 'underlying': 'CRUDEOIL'}]
+        # Must not raise — the whole point of the fix.
+        ae._update_portfolio_theo_total_history(alert_state, IST_NOW, rows, {}, None)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Availability-flip residual — an underlying's theoretical value
+#  becoming available/unavailable with the SAME leg composition must
+#  ALSO reset the rate window, not only a genuine trade.
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestAvailabilityFlipClosesCompositionResidual:
+    def test_underlying_becoming_available_with_same_legs_clears_the_bucket(self):
+        """Same symbol/qty both ticks, but the underlying has NO
+        baseline entry on tick 1 (e.g. a calibration-failure retry) and
+        DOES on tick 2. The leg-only composition signature would be
+        IDENTICAL across both ticks — this is exactly the narrower
+        residual the leg-only guard left open. The combined signature
+        (legs + contributing-underlyings) must catch it and clear the
+        bucket."""
+        qty = 300
+        rows = self._rows(qty)
+        alert_state = {'underlying_theo_baseline': {}}  # tick 1: no baseline yet
+        ae._update_portfolio_theo_total_history(
+            alert_state, IST_NOW, rows, {'CRUDEOIL': 6005.0}, None)
+        assert alert_state.get('pnl_history', {}).get(g.PORTFOLIO_THEO_TOTAL_RATE_KEY) in (None, []), (
+            "tick 1: no baseline yet, so leaf 1 is unavailable — nothing recorded"
+        )
+
+        # Tick 2: baseline now exists (calibration succeeded), SAME legs.
+        alert_state['underlying_theo_baseline'] = {'CRUDEOILFUT_A': _fut_baseline(6000.0, qty)}
+        ae._update_portfolio_theo_total_history(
+            alert_state, IST_NOW + timedelta(minutes=1), rows, {'CRUDEOIL': 6006.0}, None)
+        hist = alert_state['pnl_history'][g.PORTFOLIO_THEO_TOTAL_RATE_KEY]
+        assert len(hist) == 1, (
+            f"the availability flip must restart the bucket, not accumulate "
+            f"a phantom first sample, got {len(hist)}: {hist}"
+        )
+
+    def _rows(self, qty, sym='CRUDEOILFUT_A'):
+        return [{'tradingsymbol': sym, 'quantity': qty,
+                 'underlying': 'CRUDEOIL', 'average_price': 6500.0}]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Render: suppress market enrichment for theoretical metrics; dedup an
+#  exact-duplicate match (leaf 1 appearing both top-level and as leaf 2's
+#  own gate).
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestRenderSuppressesMarketEnrichmentForTheoreticalMetrics:
+    def test_no_underlying_breakdown_or_static_rate_for_theoretical_metrics(self):
+        underlyings_breakdown, rate_val = ae._v2_enrich_position_alert(
+            'Positions', 'static_abs', 'TOTAL',
+            pd.DataFrame([{'account': 'ZG0790', 'tradingsymbol': 'CRUDEOIL26OCTFUT', 'pnl': -9999.0}]),
+            {'pnl_history': {('positions', 'TOTAL'): [(IST_NOW, -1.0, None)] * 5}},
+            10, None, metric='theoretical_total_loss',
+        )
+        assert underlyings_breakdown == [], (
+            "a market-pnl underlying breakdown must never attach to a "
+            "theoretical-metric alert row"
+        )
+        assert rate_val is None, (
+            "a market static-rate enrichment must never attach to a "
+            "theoretical-metric alert row"
+        )
+
+    def test_full_render_does_not_show_market_pnl_fields(self):
+        """End-to-end: a real match for `theoretical_total_loss`, rendered
+        through `_v2_match_to_alertrow` with real `df_positions`/
+        `alert_state` supplied, must not pick up the market enrichment
+        fields."""
+        match = {
+            'metric': 'theoretical_total_loss', 'scope': 'positions.total',
+            'op': '<=', 'threshold': -100000, 'value': -148500.0,
+            'row': {'account': 'TOTAL', 'pnl': 999999.0},
+        }
+        df_positions = pd.DataFrame([
+            {'account': 'ZG0790', 'tradingsymbol': 'CRUDEOIL26OCTFUT', 'pnl': -30000.0},
+        ])
+        alert_state = {'pnl_history': {('positions', 'TOTAL'): [(IST_NOW, -1.0, None)] * 5}}
+        row = ae._v2_match_to_alertrow(match, df_positions=df_positions, alert_state=alert_state)
+        assert row['pnl'] == pytest.approx(-148500.0), "must render its own resolved value"
+        assert row.get('underlyings_breakdown') in (None, []), (
+            f"must not attach a market breakdown, got {row.get('underlyings_breakdown')}"
+        )
+
+
+class TestDedupExactDuplicateMatches:
+    def test_leaf1_appears_twice_in_raw_evaluate_output_confirming_the_premise(self, wired_registry):
+        """When leaf 2 fires, leaf 1's own leaf appears BOTH as a bare
+        top-level `any[]` item AND as the gate leaf inside the nested
+        `all[]` — `_eval_all`'s own AND-join legitimately re-includes
+        the gate leaf's match in its own output when the AND is
+        satisfied. This confirms the raw (pre-dedup) `evaluate()` output
+        genuinely contains the duplicate, before testing the fix."""
+        hist = _linear_hist(IST_NOW, 0, 30, -50000.0, -250000.0, -1.0, -5.0)
+        ctx = _leaf1_crossing_ctx(hist)
+        raw_matches = evaluate(_agent_cond(), ctx)
+        raw_total_loss = [m for m in raw_matches if m['metric'] == 'theoretical_total_loss']
+        assert len(raw_total_loss) == 2, (
+            f"expected the raw (pre-dedup) evaluate() output to contain the "
+            f"duplicate leaf 1 match (top-level + nested gate), got "
+            f"{len(raw_total_loss)}: {raw_total_loss}"
+        )
+
+    def test_the_real_dispatch_path_dedups_it_to_one(self, wired_registry):
+        """`_cycle_evaluate_agent`'s own call site wraps `v2_evaluate`
+        in `_v2_dedup_exact_matches` — this is the REAL production path,
+        not merely the standalone helper."""
+        hist = _linear_hist(IST_NOW, 0, 30, -50000.0, -250000.0, -1.0, -5.0)
+        ctx = _leaf1_crossing_ctx(hist)
+        deduped = ae._v2_dedup_exact_matches(evaluate(_agent_cond(), ctx))
+        total_loss_matches = [m for m in deduped if m['metric'] == 'theoretical_total_loss']
+        assert len(total_loss_matches) == 1, (
+            f"leaf 1's own match must appear exactly once after dedup, "
+            f"got {len(total_loss_matches)}: {total_loss_matches}"
+        )
+        # The rate leaf and (if present) leaf 3 are untouched by the dedup.
+        assert any(m['metric'] == 'theo_total_rate_abs' for m in deduped)
+
+    def test_dedup_helper_keeps_genuinely_distinct_matches(self):
+        m1 = {'metric': 'theoretical_total_loss', 'scope': 'positions.total',
+              'op': '<=', 'threshold': -100000, 'value': -148500.0, 'account': 'TOTAL'}
+        m2 = dict(m1)  # exact duplicate
+        m3 = {'metric': 'theo_total_rate_abs', 'scope': 'positions.total',
+              'op': '<=', 'threshold': -6000, 'value': -9000.0, 'account': 'TOTAL'}
+        out = ae._v2_dedup_exact_matches([m1, m2, m3])
+        assert len(out) == 2, f"expected the exact duplicate collapsed, got {out}"
+        assert out[0] is m1 and out[1] is m3, "keeps first occurrence, preserves order"
+
+    def test_dedup_helper_distinguishes_by_account(self):
+        """Two different accounts breaching the same metric/op/threshold/
+        value must NOT be collapsed — only an exact duplicate (same row
+        identity too) is."""
+        m1 = {'metric': 'day_val', 'scope': 'positions.any_acct', 'op': '<=',
+              'threshold': -30000, 'value': -40000.0, 'account': 'ACC_A'}
+        m2 = {'metric': 'day_val', 'scope': 'positions.any_acct', 'op': '<=',
+              'threshold': -30000, 'value': -40000.0, 'account': 'ACC_B'}
+        out = ae._v2_dedup_exact_matches([m1, m2])
+        assert len(out) == 2, f"two different accounts must both survive, got {out}"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 #  Leaf 2 (rate of change) — gated on leaf 1 crossing, negative direction only.
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -684,12 +992,17 @@ class TestDrawdownToTheoreticalMigration:
             schedule="market_hours", tier="critical", topic="positions_loss",
             events=agent_def.get("events", []), fire_at_time=None, last_fired=None,
             conditions=dict(_DRAWDOWN_GATED_OLD_COND), cooldown_minutes=45,
-            status="inactive",
+            status="inactive", description="stale market-P&L description",
         )
         ae._ae_sync_existing_builtin(existing, agent_def)
         assert existing.conditions == agent_def["conditions"], (
             "a row still at the exact drawdown-gated shape must be "
             "upgraded to the new pure-theoretical shape"
+        )
+        assert existing.description == agent_def["description"], (
+            "the stale market-P&L description must be upgraded alongside "
+            "the conditions — an inactive row's description is what the "
+            "operator reads on /agents before deciding to re-enable it"
         )
         # Status must NEVER be force-changed by this migration — the
         # operator's existing (inactive) choice survives untouched.
@@ -708,6 +1021,10 @@ class TestDrawdownToTheoreticalMigration:
             schedule="market_hours", tier="critical", topic="positions_loss",
             events=agent_def.get("events", []), fire_at_time=None, last_fired=None,
             conditions=dict(customized), cooldown_minutes=45, status="active",
+            description="operator's own custom description",
         )
         ae._ae_sync_existing_builtin(existing, agent_def)
         assert existing.conditions == customized, "operator customization must survive"
+        assert existing.description == "operator's own custom description", (
+            "an operator-customized row's description must not be overwritten either"
+        )

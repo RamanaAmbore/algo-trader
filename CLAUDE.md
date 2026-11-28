@@ -3971,19 +3971,48 @@ LEVEL — distinct from leaf 3 ("daily"), today's own theoretical P&L move, a DE
 - **Leaf 1 (`theoretical_total_loss`) and leaf 3 (`theoretical_daily_loss`) are two different
   computations with two different reference points, not the same number read twice.** Leaf 3
   reuses the EXISTING per-session frozen baseline (`alert_state['underlying_theo_baseline']`,
-  `agent_engine._update_underlying_theo_baseline`) — a delta since this morning. Leaf 1 is
-  since-ENTRY: `Σ qty_base × (model_price_now − avg_cost)` across every F&O leg, where `avg_cost`
-  comes straight off the position row, not a new baseline-capture mechanism. Both share ONE
-  per-underlying walk, `grammar._underlying_theo_legs_since_baseline_and_entry`, via the algebraic
-  identity `qty × (model_price_now − avg_cost) = _theo_reprice_leg(b, S_now, now) + qty ×
-  (ltp_base − avg_cost)` — exact for an option leg; for a futures leg it holds only because a
-  future's own "model price now" is defined as `ltp_base + (S_now − S_base)` (the future's own
+  `agent_engine._update_underlying_theo_baseline`) — a delta since this morning, UNCHANGED from
+  `_theo_reprice_leg`'s own existing behaviour (including its pre-existing "uses the baseline's
+  own frozen qty" quirk). Leaf 1 is since-ENTRY: `Σ live_qty × (model_price_now − avg_cost)`
+  across every F&O leg, where `avg_cost` comes straight off the position row, not a new
+  baseline-capture mechanism. Both share ONE per-underlying walk,
+  `grammar._underlying_theo_legs_since_baseline_and_entry` /
+  `_theo_leg_since_baseline_and_entry`, via the algebraic identity `model_price_now − avg_cost =
+  (leg_since_baseline / b_qty + ltp_base) − avg_cost`, where `leg_since_baseline = _theo_
+  reprice_leg(b, S_now, now)` — exact for an option leg; for a futures leg it holds only because
+  a future's own "model price now" is defined as `ltp_base + (S_now − S_base)` (the future's own
   BASIS at baseline time, held constant while spot moves) — comparing `avg_cost` (a future's own
   fill-price terms) against the raw underlying spot directly would be wrong, since
   `ctx.spot_prices` holds the index, not the future's own price.
   `TestLeaf1DiffersFromLeaf3::test_deep_in_red_since_entry_but_flat_today_fires_leaf1_only`
   constructs a position opened days ago, deep in the red since entry, but flat/positive today —
   leaf 1 fires, leaf 3 does not.
+- **Leaf 1 uses the LIVE position qty, not the baseline's frozen qty — a fix found by review,
+  not in the original plan.** The first implementation multiplied the since-entry term by the
+  BASELINE's own frozen `b['qty']`, inherited from `_theo_reprice_leg`'s internal usage. After an
+  intraday partial close (300 lots → 100 lots), that would have scaled leaf 1 by the STALE 300 for
+  the rest of the session — a 3× phantom loss, and the same error in the other direction after an
+  add. The fix: `leg_since_baseline / b_qty` recovers the PER-UNIT model-price delta, and the
+  row's own LIVE `quantity` scales the since-entry term — correct regardless of size changes since
+  the baseline was captured. Leaf 3 is deliberately NOT changed by this — it keeps using the
+  baseline's own frozen qty, same as the pre-existing `underlying_theoretical_loss` metric.
+  `TestPerUnitQtyScalingAfterPartialClose` pins both the partial-close and the blended-add case,
+  plus a `b_qty==0` guard (unavailable, never a division-by-zero).
+- **A missing `average_price` must never read as `avg_cost=0` — a fix found by review, not in the
+  original plan.** The first implementation used `float(row.get('average_price') or 0)`, the
+  SAME pattern used elsewhere in this codebase for genuinely optional numeric fields — but here,
+  a missing/zero avg on a SHORT leg (negative qty) fabricates `qty × (price_now − 0)`, the entire
+  notional, as a "loss" out of thin air, firing a critical alert on missing data. This is exactly
+  the risk for the operator's own short-premium book. Fixed: a missing, NaN, or non-positive
+  `average_price` makes the WHOLE leg unavailable (no `or 0` fallback at all), taking out its
+  underlying via the existing all-or-nothing policy — never a fabricated value, per CLAUDE.md's
+  missing-vs-zero convention. Confirmed both Dhan and Groww adapters populate `average_price` on
+  every position row (`broker_apis.py`/`dhan.py`/`groww.py`), so this is a real, reachable guard,
+  not dead code. One accepted consequence: because leaf 1 and leaf 3 share this ONE per-leg walk,
+  a bad `average_price` ALSO makes leaf 3 unavailable for that leg, even though leaf 3 itself has
+  no conceptual need for it — a deliberate simplicity/safety tradeoff over risking a
+  partially-inconsistent per-leg result. `TestMissingAverageCostTreatedAsUnavailable` pins the
+  missing/NaN/zero/valid cases and this leaf-3 side effect.
 - **Leaf 2 (`theo_total_rate_abs`/`theo_total_rate_pct`) is gated on leaf 1 itself having crossed
   its own threshold** — `all[theoretical_total_loss<=-100000, any[theo_total_rate_abs<=-6000,
   theo_total_rate_pct<=-0.25]]`, directly implementing "only... when the total theoretical loss
@@ -3994,16 +4023,26 @@ LEVEL — distinct from leaf 3 ("daily"), today's own theoretical P&L move, a DE
 - **History writer and the composition-reset guard.** `agent_engine._update_portfolio_theo_total_history`
   appends `(now, value, pct)` to a new `alert_state['pnl_history'][grammar.
   PORTFOLIO_THEO_TOTAL_RATE_KEY]` bucket (`('positions_theoretical_total', 'TOTAL')`) once per
-  tick, called from `run_cycle` right after `_update_underlying_pnl_history`. Leaf 1 is a LEVEL
-  carrying a constant per-leg offset `qty × (ltp_base − avg_cost)` for every F&O leg currently in
-  the book — opening, closing, or partially closing ANY leg steps this level with ZERO real P&L
-  movement, and closing a profitable leg is a NEGATIVE step that could falsely read as "the book is
-  bleeding" to the rate window. `_portfolio_theo_total_composition()` tracks the exact
-  `frozenset` of `(tradingsymbol, quantity)` for every non-flat F&O leg; a change from the prior
-  tick clears ONLY this one bucket (never the whole `pnl_history` dict), restarting the rate window
-  clean. Known, accepted residual: this tracks TRADES, not an underlying's theoretical value
-  flipping between available/unavailable with the SAME composition (e.g. a baseline-capture race) —
-  not engineered, out of scope for this redesign.
+  tick, called from `run_cycle` right after `_update_underlying_pnl_history`, wrapped in a
+  try/except at the call site (belt-and-suspenders — this call sits upstream of EVERY agent's
+  evaluation that tick, so an uncaught exception here must never abort the whole cycle). Leaf 1 is
+  a LEVEL carrying a constant per-leg offset for every F&O leg currently in the book — opening,
+  closing, or partially closing ANY leg steps this level with ZERO real P&L movement, and closing
+  a profitable leg is a NEGATIVE step that could falsely read as "the book is bleeding" to the
+  rate window. The composition guard is TWO independent signals, EITHER changing clears the
+  bucket: (1) `_portfolio_theo_total_composition()` — the exact `frozenset` of `(tradingsymbol,
+  quantity)` for every non-flat F&O leg, catching a trade; (2) `grammar._portfolio_theoretical_
+  contributing_underlyings()` — which underlyings successfully contributed to leaf 1 THIS tick,
+  catching an underlying flipping between available/unavailable with the SAME leg set (a
+  baseline-capture race, a transient spot-feed gap, an expiry-day IV-calibration failure). The
+  narrower residual an earlier draft of this entry flagged as unfixed (availability flip with no
+  trade) is CLOSED by signal (2) — found cheap to close once reviewed, since the aggregator
+  already computes which underlyings contributed. `TestAvailabilityFlipClosesCompositionResidual`
+  pins it. `_portfolio_theo_total_composition()` and its sibling `_theo_leg_is_non_flat()` use
+  `grammar._theo_safe_qty()`, never a bare `int(...)` — a NaN `quantity` (`int(float('nan'))`
+  raises `ValueError`) would otherwise abort this ONE unguarded call for every agent that tick, not
+  just this leaf. `TestCompositionGuardSurvivesMalformedQuantity` pins this directly against the
+  real writer.
 - **`pct` is computed, not left permanently None.** `theo_total_rate_pct` reads `value /
   pnl_math.account_margin_base(df_margins, 'TOTAL') * 100` — the SAME margin-base denominator
   `day_pct`/`pnl_pct` already use for Positions-scope percentages — so the token isn't structurally
@@ -4016,6 +4055,36 @@ LEVEL — distinct from leaf 3 ("daily"), today's own theoretical P&L move, a DE
   `_THEORETICAL_LOSS_METRICS` set routes `theoretical_total_loss`/`theoretical_daily_loss`/
   `theo_total_rate_abs`/`theo_total_rate_pct` to trust the match's own already-resolved `value`
   directly — the same precedent `_ae_funds_pnl` already established (Fix #3/#4).
+- **Render fix: no market enrichment, and no duplicate leaf, in the full alert body — both found
+  by review, not in the original plan.** `_v2_enrich_position_alert()` normally attaches a
+  market "by und:" per-underlying breakdown (from `df_positions`'s own `pnl` column) and, for
+  static-kind leaves, a market "rate:" readout from the `('positions', scope_label)` pnl_history
+  bucket — both now return empty/`None` outright for `_THEORETICAL_LOSS_METRICS`, since either
+  would show real market numbers next to a theoretical threshold. Separately: leaf 1
+  (`theoretical_total_loss`) appears BOTH as a bare top-level `any[]` item AND as leaf 2's own
+  gate leaf inside the nested `all[]` — `_eval_all`'s own AND-join logic (Fix #2/Fix B,
+  agent_evaluator.py) legitimately re-includes a satisfied gate leaf's match in its own output, so
+  when leaf 2 fires, `evaluate()`'s raw output genuinely contains leaf 1's match TWICE. A new
+  `_v2_dedup_exact_matches()`, applied at `_cycle_evaluate_agent`'s own single production call
+  site (so every agent benefits, not just this one), collapses byte-for-byte duplicate matches
+  (same metric/scope/op/threshold/value/account/underlying) before anything downstream
+  (buffering, latching, rendering) sees them — keeps the first occurrence, never drops a
+  genuinely distinct match (two different accounts/underlyings with coincidentally equal values
+  survive). `TestRenderSuppressesMarketEnrichmentForTheoreticalMetrics` and
+  `TestDedupExactDuplicateMatches` pin both fixes, including a test that first confirms the raw
+  (pre-dedup) duplicate genuinely exists before testing the fix.
+- **Migration also syncs the stale description, slug-scoped.** `_ae_sync_loss_positions_total_
+  description()` fires INSIDE the SAME one-time old-shape-match branch
+  `_ae_apply_content_matched_cond_migration` already gates on (never re-derived against the
+  already-migrated shape, which would risk stomping an operator's custom description on every
+  later restart) — an inactive row migrated to the new conditions but left with its OLD
+  description would show the retired "-2% of total margin" market-P&L wording on /agents, right
+  before the operator decides whether to re-enable it. Deliberately scoped to `loss-positions-
+  total` only, not generalized to every entry in `_AE_CONTENT_MATCHED_COND_MIGRATIONS` — the
+  existing test suite for two OTHER entries in that table (`expiry-nfo-risk-alert`,
+  `loss-positions-underlying-divergence`) exercises the generic migration function against a
+  minimal test double with no `description` attribute at all; a generic sync there would have
+  raised `AttributeError` (caught live by the full test suite, not merely reasoned about).
 - **Known, flagged limitation — frozen σ cannot see vega moves.** Neither leaf ever reads a live
   option premium again after baseline capture — only live spot and live time-to-expiry. A pure
   IV-spike loss on a short-premium book, with no theta decay and no spot move, fires NOTHING here.
@@ -4050,19 +4119,39 @@ LEVEL — distinct from leaf 3 ("daily"), today's own theoretical P&L move, a DE
 - **Status unchanged — ships inactive, same as before.** `loss-positions-total` was already
   `status='inactive'` on both prod and dev at the time of this redesign (an operator choice this
   change does not touch or override).
-- **Threshold flag for the operator.** Leaf 1 is a LEVEL, not a delta. A carried book that is deep
-  in the red can sit past −100000 permanently: it fires once, latches, and re-fires only once it
-  worsens past −200000 (the escalation step). Within a single session, rate(leaf 1) and rate(leaf 3)
-  are numerically identical — leaf 1's own composition-reset guard means its rate window behaves
-  the same as leaf 3's intraday, they only diverge across a multi-day holding period. The default
-  thresholds (−100000 / −6000 / −0.25) reuse the agent's pre-existing numbers and may need operator
-  tuning once exercised against real theoretical values, which run on a different scale than market
-  P&L.
+- **Threshold and behaviour flags for the operator — corrected after review; an earlier draft of
+  this entry got the daily-refire claim wrong.**
+  - **Leaf 1 RE-FIRES on the first tick of every new session, not just at −200000 escalation.**
+    The per-leaf latch (`_V2_LATCH`) is wiped at trading-day rollover (`_maybe_reset_v2_state()`,
+    documented in the "Alert evaluation and latching" entry above). A carried losing book
+    therefore produces a fresh critical-tier leaf-1 alert on the FIRST tick of every session it
+    stays in the red past −100000 — escalation to −200000 only governs a SECOND fire WITHIN the
+    same session, not across days.
+  - **Leaf 1 starts each session anchored to the market, then diverges.** σ is calibrated from
+    the leg's own LTP the first tick it's seen each session (`ltp_base`). At that SAME tick,
+    `leg_since_baseline` is 0 by construction (no spot/time has moved yet), so leaf 1 reduces to
+    `live_qty × (ltp_base − avg_cost)` — essentially today's morning mark-to-market unrealised
+    P&L, i.e. close to the MARKET figure this redesign exists to move away from. It only
+    genuinely diverges from market as the session progresses and spot/time move while σ stays
+    frozen — the decay scenario `TestThetaDecayFiresLeaf1AndLeaf3` exercises.
+  - **Leaf 2 goes blind for roughly 15 minutes after ANY trade.** The composition guard (above)
+    clears the rate bucket on a trade. `windowed_rate()` (agent_evaluator.py) needs ≥3 samples
+    spanning ≥80% of the rate window before it returns a value — at the 5-minute performance-poll
+    cadence, that is ~3 polls, ~15 minutes, before leaf 2 can fire again. On a heavily-traded day,
+    leaf 2 is mostly inert.
+  - **Within a single session with NO trades, rate(leaf 1) and rate(leaf 3) are numerically
+    identical** — they diverge only across a multi-day holding period, or around a trade (per the
+    composition guard, above).
+  - The default thresholds (−100000 / −6000 / −0.25) reuse the agent's pre-existing numbers and
+    may need operator tuning once exercised against real theoretical values, which run on a
+    different scale than market P&L.
 - Tests: [test_loss_positions_total_theoretical_redesign.py](backend/tests/test_loss_positions_total_theoretical_redesign.py)
-  (31 tests — decay fires both leaves, the structural vega-blindness proof, equity-only never
+  (48 tests — decay fires both leaves, the structural vega-blindness proof, equity-only never
   fires, leaf1-vs-leaf3 divergence, leaf 2 gating in both directions, nested-latch keying under the
-  new tree, skip-gapped-underlying policy for both aggregators, the confirmed qty=0 gap, the
-  writer's pct computation and composition-reset guard, the render fix, and the migration).
+  new tree, skip-gapped-underlying policy for both aggregators, the confirmed qty=0 gap in the
+  existing `underlying_theoretical_loss`, the missing-average_price fix, the per-unit-qty-scaling
+  fix, the composition guard's malformed-quantity safety and its availability-flip closure, the
+  render-suppression and dedup fixes, and the migration including its description sync).
   `test_loss_agents.py::TestLossPositionsTotal` and `TestConditionTreeStructure::
   test_loss_positions_total_condition_tree` rewritten for the new leaf names (the 3-top-level-items/
   1-nested-all[] STRUCTURE is unchanged). `test_agent_action_fanout.py::test_loss_positions_total_multi_leaf_coincident_breach`
@@ -4075,7 +4164,9 @@ LEVEL — distinct from leaf 3 ("daily"), today's own theoretical P&L move, a DE
 - Invariant: this guard never reads market P&L (`day_change_val`/`pnl`/`day_change_percentage`)
   again. Every leaf's value is a frozen-vol theoretical reprice or a rate of one. A gapped
   underlying is skipped, never zero-filled, and a single bad leg takes down only its own
-  underlying, never the whole portfolio sum.
+  underlying, never the whole portfolio sum. A missing/invalid `average_price` is never coerced
+  to a fabricated loss. The composition guard that protects leaf 2's rate window must never raise
+  on malformed input — a bad row is excluded, not a reason to abort every other agent's tick.
 
 **Fan-out actions (`cancel_all_orders`, `chase_close_positions`) can scope by role/user as well as
 account (2026-10-31, operator: "I should be able to select an account in actions... for accounts,

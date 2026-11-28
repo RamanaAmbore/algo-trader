@@ -673,35 +673,83 @@ def _underlying_theo_legs_since_baseline_and_entry(ctx, underlying):
     return since_baseline_total, since_entry_total
 
 
+def _theo_safe_qty(row: dict) -> int:
+    """Safe int quantity read from a position row — NEVER raises. A
+    malformed or NaN `quantity` returns 0 (flat), not an exception —
+    `int(float('nan'))` raises `ValueError`, and this value feeds a
+    `frozenset` built once per tick for EVERY agent's run_cycle
+    (`_portfolio_theo_total_composition`); an uncaught exception there
+    would abort the whole cycle, not just this one leg."""
+    try:
+        v = row.get('quantity')
+        if v is None:
+            return 0
+        return int(v)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
 def _theo_leg_is_non_flat(row: dict) -> bool:
     """True when `row`'s own `quantity` is a genuinely non-zero int.
     Extracted from `_underlying_theo_legs_since_baseline_and_entry` to
     keep it under the radon complexity gate."""
-    try:
-        return int(row.get('quantity') or 0) != 0
-    except (TypeError, ValueError):
-        return False
+    return _theo_safe_qty(row) != 0
 
 
 def _theo_leg_since_baseline_and_entry(row: dict, b: "dict | None", S_now: float, now):
     """One leg's `(since_baseline, since_entry)` contribution, or `None`
     on any failure (no baseline yet, a malformed baseline entry, a
-    numeric reprice failure, or a malformed `average_price`). Extracted
-    from `_underlying_theo_legs_since_baseline_and_entry` to keep it
-    under the radon complexity gate — see that function's own docstring
-    for the algebraic identity this applies."""
+    numeric reprice failure, a missing/NaN/non-positive `average_price`,
+    or a zero baseline qty). Extracted from `_underlying_theo_legs_
+    since_baseline_and_entry` to keep it under the radon complexity
+    gate — see that function's own docstring for the algebraic identity
+    this applies.
+
+    Missing-vs-zero convention (CLAUDE.md): a row with NO `average_price`
+    at all must NOT silently read as `avg_cost=0` — for a SHORT leg
+    (negative qty), that would fabricate a full-premium loss out of
+    thin air (`qty × (price_now − 0)` is the entire notional, not a
+    real loss) and fire a critical-tier alert on missing data. Treated
+    as "leg unavailable", taking out the WHOLE underlying via the
+    caller's all-or-nothing policy — never silently dropped, never
+    coerced to 0.
+
+    Per-unit qty scaling (fix for a confirmed intraday-partial-close
+    bug): `_theo_reprice_leg` prices using the BASELINE's own frozen
+    `b['qty']` internally. Using that SAME frozen qty again here for the
+    since-entry term would multiply the row's CURRENT `avg_cost` by a
+    STALE position size — a 300-lot position partially closed to 100
+    lots mid-session would still be priced as if it were 300, a 3×
+    phantom loss. Instead, `leg_since_baseline / b_qty` recovers the
+    PER-UNIT model-price delta (price_now − ltp_base), and the row's own
+    LIVE `quantity` scales the since-entry term — correct regardless of
+    how qty has changed since the baseline was captured. Leaf 3 (the
+    `leg_since_baseline` return value) is NOT changed by this — it
+    keeps `_theo_reprice_leg`'s own existing baseline-qty quirk
+    unchanged and documented, per CLAUDE.md's "Positions loss guard"
+    precedent for this exact tradeoff class."""
     if b is None:
         return None
     leg_since_baseline = _theo_reprice_leg(b, S_now, now)
     if leg_since_baseline is None:
         return None
     try:
-        avg_cost = float(row.get('average_price') or 0)
-        qty = int(b.get('qty', 0) or 0)
+        avg_cost = float(row.get('average_price'))
+    except (TypeError, ValueError):
+        return None
+    if avg_cost != avg_cost or avg_cost <= 0:  # NaN or non-positive — unusable
+        return None
+    try:
+        b_qty = int(b.get('qty', 0) or 0)
+        live_qty = _theo_safe_qty(row)
         ltp_base = float(b['ltp_base'])
     except (TypeError, ValueError, KeyError):
         return None
-    return leg_since_baseline, leg_since_baseline + qty * (ltp_base - avg_cost)
+    if b_qty == 0:
+        return None
+    price_now_per_unit = leg_since_baseline / b_qty + ltp_base
+    leg_since_entry = live_qty * (price_now_per_unit - avg_cost)
+    return leg_since_baseline, leg_since_entry
 
 
 def _portfolio_theoretical_loss_since_entry(ctx) -> "float | None":
@@ -766,6 +814,27 @@ def _portfolio_theoretical_loss_daily(ctx) -> "float | None":
         found_any = True
         total += since_baseline
     return total if found_any else None
+
+
+def _portfolio_theoretical_contributing_underlyings(ctx) -> frozenset:
+    """The set of F&O underlyings that successfully contributed to leaf
+    1 THIS tick (i.e. `_underlying_theo_legs_since_baseline_and_entry`
+    returned a real value, not `(None, None)`). Read by the writer's
+    composition guard (`agent_engine._update_portfolio_theo_total_
+    history`) ALONGSIDE the leg-level `(symbol, qty)` signature, so an
+    underlying flipping between available/unavailable with the SAME leg
+    composition (a baseline-capture race, a transient spot-feed gap
+    recovering, an expiry-day calibration failure) ALSO resets the rate
+    window — not only a genuine trade. Closes the narrower residual the
+    leg-only composition guard left open."""
+    rows = getattr(ctx, 'position_rows', None) or []
+    underlyings = {r.get('underlying') for r in rows if r.get('underlying')}
+    out = set()
+    for u in underlyings:
+        since_baseline, since_entry = _underlying_theo_legs_since_baseline_and_entry(ctx, u)
+        if since_baseline is not None or since_entry is not None:
+            out.add(u)
+    return frozenset(out)
 
 
 # Shared history-bucket key for leaf 2's rate-of-change window (written
