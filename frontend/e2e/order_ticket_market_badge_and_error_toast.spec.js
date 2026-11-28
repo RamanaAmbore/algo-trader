@@ -53,6 +53,23 @@
  *    resolution. The dead `_MCX_NAMES_RE` regex and its `<script
  *    module>` block were deleted.
  *
+ * Amended 2026-11 — duplicated-polling consolidation audit: four
+ * components (RefreshButton.svelte, PositionStrip.svelte, OrderTicket.svelte,
+ * SymbolPanel.svelte's Chain-tab resolution) each ran their own 30s
+ * `visibleInterval` timer re-invoking isNseOpen()/isMcxOpen() independently.
+ * Consolidated onto one shared `marketOpenStore` singleton (stores.js,
+ * backed by `createMarketOpenPoll()` in marketHours.js) — one poll feeds
+ * every subscriber instead of four. OrderTicket.svelte's own
+ * `_mktOpenForExchange` per-exchange mapping function, its `_isOpen`
+ * `$state`, and `_recomputeMktOpen()` are all UNCHANGED — only what
+ * TRIGGERS `_recomputeMktOpen()` on a timer changed, from a bare
+ * `visibleInterval(_recomputeMktOpen, 30_000)` call to a
+ * `marketOpenStore.subscribe(...)` call. The test below ("re-checks on a
+ * 30s visibleInterval") is updated to assert the new mechanism; every
+ * other test in this file (the `_mktOpenForExchange` mapping, the toast
+ * truncation fix, the live-incident regressions) is untouched by this
+ * amendment.
+ *
  * 2. The submit-error toast (`toast.error(...)`) truncated the error
  *    string to 80 chars via a bare `.slice(0, 80)` on the SHORT, already
  *    ~32-char-capped `submitErr` (api.js's `_trimDetail`, by design, for
@@ -157,10 +174,17 @@ test.describe('OrderTicket market-state badge', () => {
     expect(fn).not.toMatch(/isMarketOpen/);
   });
 
-  test('source: badge re-checks on a 30s visibleInterval (not just on depth-quote ticks), mirroring RefreshButton.svelte', () => {
+  test('source: badge re-checks via the shared marketOpenStore subscription (not just on depth-quote ticks) — 2026-11 consolidation, was its own bare 30s visibleInterval', () => {
     const orderTicket = readFileSync(`${ROOT}/order/OrderTicket.svelte`, 'utf-8');
-    expect(orderTicket).toMatch(/import \{[^}]*visibleInterval[^}]*\} from '\$lib\/stores'/);
-    expect(orderTicket).toMatch(/visibleInterval\(_recomputeMktOpen,\s*30_000\)/);
+    // Subscribes to the shared singleton (stores.js) instead of running
+    // its own duplicate 30s visibleInterval timer — RefreshButton.svelte,
+    // PositionStrip.svelte and SymbolPanel.svelte's Chain-tab resolution
+    // now share this exact same one poll.
+    expect(orderTicket).toMatch(/import \{[^}]*marketOpenStore[^}]*\} from '\$lib\/stores'/);
+    expect(orderTicket).toMatch(/_mktTimer\s*=\s*marketOpenStore\.subscribe\(\(\)\s*=>\s*_recomputeMktOpen\(\)\)/);
+    // The old bare-timer call must be gone — this is the whole point of
+    // the consolidation (one poll feeding every subscriber, not four).
+    expect(orderTicket).not.toMatch(/visibleInterval\(_recomputeMktOpen,\s*30_000\)/);
     // Timer must be torn down on destroy — same convention as every
     // other interval-owning effect in this file.
     const onDestroyIdx = orderTicket.indexOf('onDestroy(() => {');

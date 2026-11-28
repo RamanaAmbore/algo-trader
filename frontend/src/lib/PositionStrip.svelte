@@ -6,7 +6,7 @@
   // Whole strip is a single link to /dashboard.
 
   import { onMount, onDestroy, untrack } from 'svelte';
-  import { visibleInterval, executionMode } from '$lib/stores';
+  import { executionMode, marketOpenStore } from '$lib/stores';
   import { get } from 'svelte/store';
   import { aggCompact } from '$lib/format';
   import { getInstrument, loadInstruments, findNearestFuture } from '$lib/data/instruments';
@@ -353,12 +353,14 @@
     // calls (onMount, mode-change, boundary-trigger, bookChanged) still fire as before.
     // Watch the market-session boundary so the freeze/thaw $effect below
     // can react to a close→open transition promptly (not 30s late).
-    // visibleInterval: pauses when hidden, fires immediately on tab return.
+    // 2026-11 consolidation: subscribes to the shared `marketOpenStore`
+    // singleton (stores.js, one 30s poll for every subscriber) instead
+    // of running its own visibleInterval timer.
     _mktTick = (isNseOpen() ? 1 : 0) + (isMcxOpen() ? 2 : 0);
-    _mktTimer = visibleInterval(() => {
-      const next = (isNseOpen() ? 1 : 0) + (isMcxOpen() ? 2 : 0);
+    _mktTimer = marketOpenStore.subscribe((s) => {
+      const next = (s.nseOpen ? 1 : 0) + (s.mcxOpen ? 2 : 0);
       if (next !== _mktTick) _mktTick = next;
-    }, 30_000);
+    });
     // Closed-hours display now reads from positions / holdings stores
     // directly (snapshot SSOT). No localStorage restore needed — the
     // freeze $effect below pulls _liveX = Σ snapshot.day_pnl, which is
@@ -369,7 +371,7 @@
   });
   onDestroy(() => {
     flash.dispose();
-    _mktTimer?.();   // visibleInterval teardown
+    _mktTimer?.();   // marketOpenStore unsubscribe
     // _heartbeatTimer is the 300ms pulse decay timer scheduled inside
     // the heartbeat $effect. Latent leak today (strip is layout-
     // persistent so it never unmounts) but the timer would fire into
@@ -724,8 +726,9 @@
   // snapshot / cash / margin data) but no live LTP ticks are arriving.
   // Pulsing the strip during closed hours misleads the operator into
   // thinking live prices are updating. _mktTick is a $state that flips
-  // on every session-boundary tick from the visibleInterval above,
-  // so the effect re-evaluates automatically at market open/close.
+  // on every session-boundary tick from the shared marketOpenStore
+  // subscription above, so the effect re-evaluates automatically at
+  // market open/close.
   //
   // ROOT CAUSE FOUND (2026-09-30) — this effect's own wiring was always
   // correct (verify: _pollCycleStamp is genuine $state fed by

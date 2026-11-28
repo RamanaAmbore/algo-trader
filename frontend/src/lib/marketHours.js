@@ -272,6 +272,71 @@ export function segmentOpenForExchange(exch) {
 }
 
 /**
+ * @typedef {object} MarketOpenPollDeps
+ * @property {typeof setInterval} [setIntervalFn]
+ * @property {typeof clearInterval} [clearIntervalFn]
+ * @property {number} [intervalMs]
+ * @property {(cb: () => void) => () => void} [onStatusChange]
+ */
+
+/**
+ * Shared market-open poll — a pure, dependency-injectable factory
+ * consolidating what used to be four independent 30s `visibleInterval`
+ * timers (RefreshButton.svelte, PositionStrip.svelte, OrderTicket.svelte,
+ * SymbolPanel.svelte's Chain-tab resolution), each re-invoking
+ * isNseOpen()/isMcxOpen() on its own schedule and caching the result in
+ * local component `$state`. One instance of this is wired as the
+ * `marketOpenStore` singleton in `stores.js`; kept here (not there) so
+ * it's independently unit-testable without a Svelte-compiler-dependent
+ * harness — `stores.js` transitively imports a runes (`.svelte.js`)
+ * module, which this project's plain-Node Vitest config can't evaluate.
+ *
+ * `isNseOpen()`/`isMcxOpen()` themselves are unchanged — this only
+ * centralizes the "recompute every 30s, plus instantly on a fresh
+ * /api/market/status poll" orchestration into one place instead of N.
+ *
+ * Every field on `deps` is injectable for tests; each defaults to the
+ * real browser/global implementation.
+ *
+ * @param {MarketOpenPollDeps} [deps]
+ * @returns {{
+ *   read: () => { nseOpen: boolean, mcxOpen: boolean },
+ *   start: (onChange: (state: { nseOpen: boolean, mcxOpen: boolean }) => void) => () => void,
+ * }}
+ */
+export function createMarketOpenPoll(deps = {}) {
+  const _setInterval = deps.setIntervalFn ?? setInterval;
+  const _clearInterval = deps.clearIntervalFn ?? clearInterval;
+  const intervalMs = deps.intervalMs ?? 30_000;
+  const _onStatusChange = deps.onStatusChange ?? onMarketStatusChange;
+
+  function read() {
+    return { nseOpen: isNseOpen(), mcxOpen: isMcxOpen() };
+  }
+
+  /**
+   * Starts the shared timer + status-change subscription. `onChange`
+   * fires immediately with the current reading (so a fresh subscriber
+   * never renders a stale seed value), then on every interval tick and
+   * every landed /api/market/status poll. Returns a teardown function.
+   *
+   * @param {(state: { nseOpen: boolean, mcxOpen: boolean }) => void} onChange
+   * @returns {() => void}
+   */
+  function start(onChange) {
+    onChange(read());
+    const id = _setInterval(() => onChange(read()), intervalMs);
+    const unsubStatus = _onStatusChange(() => onChange(read()));
+    return () => {
+      _clearInterval(id);
+      unsubStatus();
+    };
+  }
+
+  return { read, start };
+}
+
+/**
  * One-shot fetch of /api/market/status. Stores.js wires this into a
  * 5-min visibleInterval. Resolves silently on failure so a backend
  * outage just leaves the time-only fallback active.

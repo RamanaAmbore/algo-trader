@@ -35,7 +35,7 @@
   import { resolveLegHeldContext } from '$lib/data/spreadGate.js';
   import ChartModal from '$lib/ChartModal.svelte';
   import ChartWorkspace from '$lib/ChartWorkspace.svelte';
-  import { executionMode, visibleInterval } from '$lib/stores';
+  import { executionMode, marketOpenStore } from '$lib/stores';
   import { priceFmt, aggFmt as aggFmtMargin, qtyFmt } from '$lib/format';
   import OrderTicket      from '$lib/order/OrderTicket.svelte';
   import OptionChainTab   from '$lib/order/OptionChainTab.svelte';
@@ -2108,9 +2108,10 @@
     _chainMktOpen = segmentOpenForExchange(_chainMktExch);
   }
   // Re-check on every exchange resolution change (new leg, symbol
-  // swap) and on a 30s visibleInterval tick (mirrors OrderTicket's own
-  // `_mktTimer` convention exactly — session-boundary flips even when
-  // nothing else triggers a re-render).
+  // swap) and on the shared marketOpenStore singleton's own 30s poll
+  // (2026-11 consolidation — session-boundary flips even when nothing
+  // else triggers a re-render, without running a second duplicate
+  // timer alongside OrderTicket's own `_mktTimer` subscription).
   $effect(() => {
     void _chainMktExch;
     _recomputeChainMktOpen();
@@ -2118,9 +2119,9 @@
   /** @type {(() => void) | null} */
   let _chainMktTimer = null;
   onMount(() => {
-    _chainMktTimer = visibleInterval(() => {
+    _chainMktTimer = marketOpenStore.subscribe(() => {
       _recomputeChainMktOpen();
-    }, 30_000);
+    });
   });
   onDestroy(() => { _chainMktTimer?.(); });
 

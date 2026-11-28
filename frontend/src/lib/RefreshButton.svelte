@@ -31,7 +31,7 @@
 -->
 <script>
   import { onMount, onDestroy, untrack } from 'svelte';
-  import { connStatus, startConnStatusPoller, lastRefreshAt, formatDualTz, visibleInterval, postHibernationRefiring } from '$lib/stores';
+  import { connStatus, startConnStatusPoller, lastRefreshAt, formatDualTz, postHibernationRefiring, marketOpenStore } from '$lib/stores';
   import { isNseOpen, isMcxOpen } from '$lib/marketHours';
   import { symbolTickCount } from '$lib/data/symbolStore.svelte.js';
   import { bookPollerTick } from '$lib/data/marketDataStores.svelte.js';
@@ -56,11 +56,13 @@
   /** @type {Props} */
   let { onClick, loading = false, label = 'data' } = $props();
 
-  // Market-state tick — recomputes isNseOpen / isMcxOpen every 30 s so
-  // the button's palette tracks session boundaries automatically. The
-  // three buckets the operator cares about: both open (full hours),
-  // only MCX open (commodity-only window), market closed.
-  // Uses visibleInterval: pauses when hidden, fires immediately on return.
+  // Market-state tick — recomputes isNseOpen / isMcxOpen so the button's
+  // palette tracks session boundaries automatically. The three buckets
+  // the operator cares about: both open (full hours), only MCX open
+  // (commodity-only window), market closed.
+  // 2026-11 consolidation: reads the shared `marketOpenStore` singleton
+  // (stores.js) — one 30s poll shared across every subscriber — instead
+  // of running its own visibleInterval timer.
   let _nseOpen = $state(isNseOpen());
   let _mcxOpen = $state(isMcxOpen());
   /** @type {(() => void) | null} */
@@ -113,12 +115,13 @@
     //     RefreshButtons are mounted. See tickStaleness.svelte.js.
     startTickStalenessWatch();
 
-    // 2. Market-state tick: recomputes isNseOpen / isMcxOpen every 30 s.
-    const tick = () => {
-      _nseOpen = isNseOpen();
-      _mcxOpen = isMcxOpen();
-    };
-    _mktTimer = visibleInterval(tick, 30_000);
+    // 2. Market-state tick: subscribe to the shared marketOpenStore
+    //    singleton (one 30s poll for every subscriber, see stores.js)
+    //    instead of running a duplicate per-component timer.
+    _mktTimer = marketOpenStore.subscribe((s) => {
+      _nseOpen = s.nseOpen;
+      _mcxOpen = s.mcxOpen;
+    });
 
     // Keyboard shortcut `r` — layout dispatches a `refresh-page` custom
     // event on `window`; every mounted RefreshButton fires its own click
@@ -157,8 +160,9 @@
       // pollers (sparkline, snapshot refresh, performance) still emit on
       // symbolTickCount during closed hours and would falsely signal
       // "live ticks arriving" to the operator. _nseOpen / _mcxOpen are
-      // module-scope $state vars refreshed every 30 s by the visibleInterval
-      // in onMount, so the closure always captures the current session state.
+      // module-scope $state vars refreshed by the shared marketOpenStore
+      // subscription in onMount, so the closure always captures the
+      // current session state.
       if (!_nseOpen && !_mcxOpen) return;
       // Skip class toggle during the post-loading cooldown window (800 ms
       // after spinner stops). The next SSE tick arriving right after a
@@ -281,7 +285,7 @@
     }
   });
   onDestroy(() => {
-    _mktTimer?.();   // visibleInterval teardown (stops the interval + removes listener)
+    _mktTimer?.();   // marketOpenStore unsubscribe
     if (_pulseTimer) clearTimeout(_pulseTimer);
     if (_cooldownTimer) clearTimeout(_cooldownTimer);
     _pulseUnsub?.();

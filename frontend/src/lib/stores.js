@@ -9,9 +9,9 @@
  * immediately when navigating back.
  */
 
-import { writable, derived, get } from 'svelte/store';
+import { writable, derived, readable, get } from 'svelte/store';
 import { browser } from '$app/environment';
-import { isMarketOpen, isNseOpen, isMcxOpen, fetchMarketStatus } from '$lib/marketHours';
+import { isMarketOpen, isNseOpen, isMcxOpen, fetchMarketStatus, createMarketOpenPoll } from '$lib/marketHours';
 import { activityStore as _activityStore } from '$lib/data/activityStore.svelte.js';
 import { toBrokerHealthState } from '$lib/data/brokerHealthState.js';
 
@@ -1407,6 +1407,31 @@ function stopMarketStatusPoller() {
   }
   _mktStatusStarted = false;
 }
+
+// ---------------------------------------------------------------------------
+// Shared market-open state (2026-11 consolidation audit) — one 30s poll
+// (plus an immediate recompute whenever startMarketStatusPoller()'s own
+// /api/market/status fetch lands) feeding every consumer, instead of four
+// independent components each running their own `visibleInterval(fn, 30_000)`
+// timer that re-invoked isNseOpen()/isMcxOpen() on its own schedule
+// (RefreshButton.svelte, PositionStrip.svelte, OrderTicket.svelte,
+// SymbolPanel.svelte's Chain-tab resolution). The orchestration itself
+// (timer + onMarketStatusChange wiring) lives in `createMarketOpenPoll()`
+// (marketHours.js) so it's unit-testable without a Svelte-compiler-
+// dependent harness; this is just the one wired instance.
+//
+// `readable`'s start/stop notifier runs on first subscribe and tears down
+// on last unsubscribe — the shared timer only runs while at least one
+// consumer is mounted and subscribed, same lifecycle every per-component
+// timer it replaces already had.
+const _marketOpenPoll = createMarketOpenPoll();
+export const marketOpenStore = readable(
+  { nseOpen: isNseOpen(), mcxOpen: isMcxOpen() },
+  (set) => {
+    if (!browser) return () => {};
+    return _marketOpenPoll.start(set);
+  }
+);
 
 // ---------------------------------------------------------------------------
 // Broker auth-health store — drives chip color + BrokerHealthBadge popup.

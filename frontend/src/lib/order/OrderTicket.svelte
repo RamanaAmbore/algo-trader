@@ -52,7 +52,7 @@
   import { getDefaultAccount } from '$lib/data/accounts';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
   import { aggFmt, priceFmt } from '$lib/format';
-  import { executionMode, orderModalFocusPing, visibleInterval } from '$lib/stores';
+  import { executionMode, orderModalFocusPing, marketOpenStore } from '$lib/stores';
   import {
     getInstrument, listExpiries, listStrikes,
     findOption, findNearestFuture, listFutures,
@@ -1369,8 +1369,8 @@
   // synchronously here instead of hardcoding a guess.
   // svelte-ignore state_referenced_locally -- intentional one-shot
   // initial read; the $effect below re-evaluates on every depth-quote
-  // tick and the 30s visibleInterval timer, so this seed value is
-  // never stale beyond the very first paint.
+  // tick and the shared marketOpenStore subscription (onMount below),
+  // so this seed value is never stale beyond the very first paint.
   let _isOpen = $state(_mktOpenForExchange(_resolveMktExchange()));
   /** @type {(() => void) | null} */
   let _mktTimer = null;
@@ -1381,8 +1381,8 @@
     // Re-evaluate whenever the depth quote fires (onDepthQuote bumps
     // _lastQuote) or on a fresh render. This alone doesn't catch a
     // session boundary crossing while depth polling is idle/paused —
-    // the visibleInterval timer below (mirrors RefreshButton.svelte's
-    // own `_mktTimer` pattern) covers that.
+    // the shared marketOpenStore subscription below (2026-11
+    // consolidation; was its own 30s visibleInterval timer) covers that.
     _recomputeMktOpen();
     void _lastQuote; // reactive dependency so it re-runs on each tick
   });
@@ -2573,12 +2573,15 @@
     // pass 6 alongside the _targetPct state field. Setting is preserved
     // server-side for back-compat but the modal no longer reads it.
 
-    // D1: market open/closed badge — 30s wall-clock re-check so a
-    // session boundary (e.g. 17:00 MCX evening open) flips the badge
-    // even when depth-quote polling is idle. Mirrors RefreshButton.svelte's
-    // `_mktTimer` convention exactly (visibleInterval: pauses while the
-    // tab is hidden, fires immediately on return).
-    _mktTimer = visibleInterval(_recomputeMktOpen, 30_000);
+    // D1: market open/closed badge — re-check so a session boundary
+    // (e.g. 17:00 MCX evening open) flips the badge even when depth-
+    // quote polling is idle. 2026-11 consolidation: subscribes to the
+    // shared `marketOpenStore` singleton (stores.js) instead of running
+    // its own 30s visibleInterval timer — RefreshButton.svelte,
+    // PositionStrip.svelte and SymbolPanel.svelte's Chain-tab resolution
+    // all share this exact same one poll now. `_mktOpenForExchange`
+    // itself (the per-exchange mapping) is untouched.
+    _mktTimer = marketOpenStore.subscribe(() => _recomputeMktOpen());
 
     return () => _escCleanup?.();
   });
@@ -2685,14 +2688,17 @@
            svelte's "M"/"MCX"/"Eq" pills — market status is page-wide
            ambient information, not something specific to having an
            order ticket open). The underlying computation (`_isOpen`/
-           `_mktOpenForExchange`/`_mktBadgeExch`/`_mktBadgeTitle` above,
-           and its 30s visibleInterval re-check in onMount) is left
-           exactly where it is, unedited — an existing spec
+           `_mktOpenForExchange`/`_mktBadgeExch`/`_mktBadgeTitle` above)
+           is left exactly where it is, unedited — an existing spec
            (order_ticket_market_badge_and_error_toast.spec.js) asserts
            against that exact source text, since it still feeds
            `_modalNotice`'s "market closed — order will queue" warning
            via the `onTicketStateChange` payload's `mktOpen`/`mktExch`
-           fields. `data-testid="ot-market-badge"` no longer exists
+           fields. Its own 30s re-check timer was consolidated onto the
+           shared `marketOpenStore` singleton (2026-11, see the `onMount`
+           block above) — the spec was updated in lockstep to assert the
+           new subscription instead of the old bare visibleInterval call.
+           `data-testid="ot-market-badge"` no longer exists
            anywhere — the header's badge uses its own
            `algo-ts-market-badge*` testids
            (algo_timestamp_market_badge.spec.js). -->
