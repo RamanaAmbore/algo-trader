@@ -116,13 +116,21 @@ test.describe('Chase/Draft click-to-help tooltips', () => {
     expect(stillChecked, 'clicking the Draft InfoHint must not flip the checkbox').toBe(wasChecked);
   });
 
-  test('live: turning DRAFT on hides CHASE entirely (not greyed) on the Ticket tab, and Chain tab keeps its own independent CHASE', async ({ page }) => {
+  test('live: turning DRAFT on keeps CHASE VISIBLE but inert/protected on both the Ticket and Chain tabs', async ({ page }) => {
     // T3.3 (bracket-removal) rewrite — the BRACKET half of this test is
-    // gone (no cluster to grey/hide any more). CHASE's own 2026-10-23
-    // fix hides the cluster entirely while Draft is on (not a grey/
-    // disabled treatment) — this test now asserts that real behavior
-    // instead of the stale `.oes-ctl-cluster-disabled` claim the
-    // original version made.
+    // gone (no cluster to grey/hide any more).
+    //
+    // SUPERSEDED TWICE since the original version of this test:
+    //   - 2026-10-23: CHASE was hidden entirely (`{#if}`-removed from the
+    //     DOM) while Draft was on.
+    //   - 2026-11-24 (Ticket tab) / 2026-11-28 (Chain tab, operator:
+    //     "when draft mode is on, chase still should be displayed but
+    //     disabled ... this is to make sure the front end layout doesn't
+    //     shift") — CHASE is now ALWAYS rendered on BOTH tabs. While
+    //     Draft is on it is "protected": greyed via `.oes-chase-protected`
+    //     and made inert via the native `inert` attribute, never removed
+    //     from the DOM. This test now asserts that current, final
+    //     behavior.
     await loginAsAdmin(page);
     await _seedNiftyOnTicket(page);
 
@@ -130,24 +138,33 @@ test.describe('Chase/Draft click-to-help tooltips', () => {
     await expect(draftCheckbox).toBeVisible({ timeout: 10_000 });
     const chaseCluster = page.locator('.oes-chase-cluster').first();
 
-    // Ticket tab — Draft OFF: CHASE cluster visible.
+    // Ticket tab — Draft OFF: CHASE cluster visible, not protected.
     await expect(chaseCluster).toBeVisible({ timeout: 10_000 });
     if (await draftCheckbox.isChecked()) await draftCheckbox.click();
     await expect(chaseCluster).toBeVisible();
+    await expect(chaseCluster).not.toHaveClass(/oes-chase-protected/);
 
-    // Ticket tab — Draft ON: CHASE cluster is removed from the DOM
-    // entirely, not just greyed.
+    // Ticket tab — Draft ON: CHASE cluster stays in the DOM and visible,
+    // but becomes protected (never removed). SymbolPanel.svelte's own
+    // Ticket-tab copy (unmodified by this change — out of scope) uses
+    // only `pointer-events:none` + guarded handlers, NOT the native
+    // `inert` attribute — that upgrade was made only to the Chain tab's
+    // own copy below, which is in scope for this change.
     await draftCheckbox.click();
     await expect(draftCheckbox).toBeChecked();
-    await expect(chaseCluster).toHaveCount(0);
+    await expect(chaseCluster).toBeVisible();
+    await expect(chaseCluster).toHaveClass(/oes-chase-protected/);
 
     // Chain tab — Draft state carries over (shared `_sharedDraftMode`),
     // and Chain's own CHASE cluster (now inside OptionChainTab's own
-    // Expiry toolbar, independent of the Ticket-tab row) is ALSO hidden
-    // while Draft is on.
+    // Expiry toolbar, independent of the Ticket-tab row) is ALSO still
+    // visible, protected + inert — never hidden — while Draft is on.
     await page.getByRole('tab', { name: /chain/i }).first().click();
     await expect(draftCheckbox).toBeChecked();
-    await expect(chaseCluster).toHaveCount(0);
+    const chainChaseCluster = page.locator('.oct-toolbar-trailing .oes-chase-cluster').first();
+    await expect(chainChaseCluster).toBeVisible({ timeout: 10_000 });
+    await expect(chainChaseCluster).toHaveClass(/oes-chase-protected/);
+    await expect(chainChaseCluster).toHaveJSProperty('inert', true);
   });
 
   test('live: clicking the CHASE label itself (no separate chip) shows the wait-time tooltip', async ({ page }) => {

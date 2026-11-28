@@ -99,12 +99,18 @@
     onDraftToggleChange = /** @type {((checked: boolean) => void)|undefined} */ (undefined),
     // CHASE (T3.3, bracket-removal — merged into this tab's own Expiry
     // toolbar row). Chase is unconditionally relevant for Chain (every
-    // Chain leg is a LIMIT order), so there is no `chaseEnabled` prop —
-    // rendering is gated on `!draftMode` only (same hide-not-grey
-    // treatment the shared CHASE/DRAFT row used before this merge).
-    // Markup/class names are the same `.oes-chase-cluster` shapes
-    // SymbolPanel's row already used, relocated verbatim rather than
-    // rebuilt — existing Playwright selectors keep matching.
+    // Chain leg is a LIMIT order), so there is no `chaseEnabled` prop.
+    // Rendering is now UNCONDITIONAL (2026-11-28, operator: "when draft
+    // mode is on, chase still should be displayed but disabled ... this
+    // is to make sure the front end layout doesn't shift") — the cluster
+    // always renders and is "protected" (greyed, inert) while `draftMode`
+    // is on, matching the Ticket tab's own `.oes-chase-protected`
+    // treatment in SymbolPanel.svelte (2026-11-24). This REVERSES the
+    // prior hide-while-draft rule this comment used to describe — see
+    // the `{#if !draftMode}`-free markup below. Markup/class names are
+    // the same `.oes-chase-cluster` shapes SymbolPanel's row already
+    // used, relocated verbatim rather than rebuilt — existing Playwright
+    // selectors keep matching.
     chaseAgg         = /** @type {'low'|'med'|'high'} */ ('low'),
     onChaseAggChange = /** @type {((v:'low'|'med'|'high') => void)|undefined} */ (undefined),
   } = $props();
@@ -129,20 +135,27 @@
   let hedgeBuyPct   = $state(50);
   let hedgeSellPct  = $state(25);
 
-  // Hedge/Draft mutual exclusivity (2026-11-26, operator ask). Draft
-  // always wins over Hedge, never the reverse: turning Draft ON forces
-  // Hedge off, and the HEDGE toggle is disabled (non-interactive) the
-  // whole time Draft is on (see `disabled={draftMode}` on its checkbox
-  // below). Draft is NEVER disabled by Hedge and stays clickable in
-  // either direction — this is the intentionally asymmetric half of the
-  // rule. Because Hedge is disabled whenever `draftMode` is true, the
-  // only way this effect's condition can be reached by direct user
-  // interaction is impossible (a disabled checkbox fires no change
-  // event); it still needs to run for the case where `draftMode` flips
-  // true from an EXTERNAL source — the Ticket tab's own Draft toggle
-  // shares the same `_sharedDraftMode` prop (see SymbolPanel.svelte) —
-  // so Hedge can't silently stay "on" while Draft becomes active via a
-  // different tab.
+  // Hedge/Draft mutual exclusivity — BOTH directions disable the other
+  // control now (2026-11-28, operator: "when hedge is on, draft should
+  // be disabled but still should be displayed ... when draft is on,
+  // hedge should be disabled but should be displayed"). This REVERSES
+  // the 2026-11-26 asymmetric rule ("Draft is NEVER disabled by Hedge")
+  // this comment used to describe.
+  //
+  // Only ONE direction needs an active forcing effect, though — Draft
+  // still "wins": turning Draft ON forces `hedgeOn` off AND the HEDGE
+  // checkbox is `disabled={draftMode || ...}` below. The reverse needs
+  // no forcing effect, only a passive `disabled={hedgeOn}` on the DRAFT
+  // checkbox (see below) — `hedgeOn` is 100% local `$state` with no
+  // external setter other than that one checkbox's own `bind:checked`,
+  // so the only way it can ever become `true` is a direct click on an
+  // ALREADY-enabled Hedge checkbox, which by construction only happens
+  // while `draftMode` is false. There is no path that can leave both
+  // `hedgeOn` and `draftMode` true at once: if `draftMode` later flips
+  // true from an EXTERNAL source (the Ticket tab's own Draft toggle
+  // shares this prop — see SymbolPanel.svelte), this effect immediately
+  // forces `hedgeOn` back to false in the same tick, restoring the
+  // "Draft wins" invariant.
   $effect(() => {
     if (draftMode) hedgeOn = false;
   });
@@ -157,6 +170,14 @@
   function _chaseInfoKeydown(/** @type {KeyboardEvent} */ e) {
     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _chaseInfoOpen = !_chaseInfoOpen; }
   }
+  // 2026-11-28 — the CHASE InfoHint popup now stays always-mounted (see
+  // the CHASE cluster's own markup comment below for why), so an
+  // already-open popup must be closed explicitly the instant Draft
+  // turns on — `inert` on the parent cluster blocks further pointer/
+  // keyboard reach but does NOT hide an already-visible popup.
+  $effect(() => {
+    if (draftMode) _chaseInfoOpen = false;
+  });
 
   // Whether basket state is lifted to the shell or owned locally.
   const _externalBasket = $derived(basketLegs !== undefined && !!onAddLeg);
@@ -1420,25 +1441,71 @@
       <!-- CHASE — relocated verbatim from SymbolPanel's shared
            CHASE/DRAFT row (T3.3, bracket-removal — "merge CHASE into
            OptionChainTab's .oct-toolbar"). Chase is unconditionally
-           relevant for Chain (every Chain leg is LIMIT), so there is
-           no enable/disable derived here — only hidden (not greyed)
-           while Draft is on, matching the pre-existing CHASE hide-not-
-           grey treatment. -->
-      {#if !draftMode}
-        <span class="oes-chase-cluster">
-          <span class="oes-common-chase-label on" bind:this={_chaseInfoAnchor}
-                role="button" tabindex={0} aria-expanded={_chaseInfoOpen}
-                title="Chase is active — click for details"
-                onclick={() => { _chaseInfoOpen = !_chaseInfoOpen; }}
-                onkeydown={_chaseInfoKeydown}>CHASE</span>
-          <InfoHint popup hideButton id="chase-info-hint-chain" anchor={_chaseInfoAnchor} bind:open={_chaseInfoOpen}
-            panel title="Chase"
-            text="Chase is automatic for every limit order (every Chain leg is a limit order) — re-quotes the price each interval until filled or max attempts is reached. Wait time between re-quotes depends on the aggressiveness picker beside it: <b>Low</b> — 30s, patient, eases into the spread (30 attempts max). <b>Med</b> — 20s, balanced (20 attempts max). <b>High</b> — 10s, crosses the spread fast (10 attempts max)." />
-          <span class="oes-chase-agg-gap">
-            <ChaseAggPicker value={chaseAgg} onChange={onChaseAggChange} variant="panel" />
-          </span>
+           relevant for Chain (every Chain leg is LIMIT), so there is no
+           enable/disable derived here.
+           2026-11-28 (operator: "when draft mode is on, chase still
+           should be displayed but disabled ... this is to make sure the
+           front end layout doesn't shift") — the cluster now ALWAYS
+           renders, never `{#if}`-gated on `draftMode`. While Draft is
+           on it is "protected" instead: deselected, greyed
+           (`.oes-chase-protected`, opacity + pointer-events:none) and
+           made fully inert via the native `inert` attribute — not just
+           CSS `pointer-events:none`, which blocks the mouse only and
+           would still let the ChaseAggPicker's own plain `<button>`s be
+           reached by Tab and activated with Enter/Space. `inert` blocks
+           focus, keyboard and assistive tech in one attribute, with no
+           change needed to `ChaseAggPicker.svelte` itself (it has no
+           `disabled` prop). This is BYTE-IDENTICAL in spirit to
+           SymbolPanel's own `.oes-chase-cluster`/`.oes-chase-protected`
+           treatment for the Ticket tab (2026-11-24) — ONE deliberate
+           difference: the InfoHint popup here stays ALWAYS mounted
+           (never `{#if}`-gated), unlike SymbolPanel's copy. Measured
+           directly: `.info-wrap` (InfoHint's own outer wrapper; empty
+           `inline-flex`, `hideButton` mode renders no button) still
+           occupies ~8px of real width even with no visible children —
+           conditionally mounting/unmounting it was itself shifting
+           DRAFT's x position every time Draft was toggled, the exact
+           bug this whole change exists to eliminate. See the `$effect`
+           below that resets `_chaseInfoOpen` to false when Draft turns
+           on, so an already-open popup can't stay visually open while
+           inert (an `inert` subtree stays rendered — it only blocks
+           pointer/keyboard/a11y reach, it does not hide). CHASE placing
+           a real order while Draft is on remains structurally
+           impossible regardless of this cluster's visual state —
+           `OptionChainTab.placeBasket()`
+           delegates to the shell's `onSubmitBasket` (SymbolPanel's
+           `submitBasket()`) whenever mounted here, and that function
+           `return`s before ever reaching a broker/chase call while
+           `_sharedDraftMode` is on; this cluster never reads `draftMode`
+           for anything beyond its own visual/inert state. -->
+      <span class="oes-chase-cluster" class:oes-chase-protected={draftMode} inert={draftMode}>
+        <span class="oes-common-chase-label" class:on={!draftMode} bind:this={_chaseInfoAnchor}
+              role="button" tabindex={draftMode ? -1 : 0} aria-expanded={_chaseInfoOpen}
+              aria-disabled={draftMode}
+              title={draftMode
+                ? 'Chase is inert while Draft is on — a draft never places a real order'
+                : 'Chase is active — click for details'}
+              onclick={() => { if (!draftMode) _chaseInfoOpen = !_chaseInfoOpen; }}
+              onkeydown={(e) => { if (!draftMode) _chaseInfoKeydown(e); }}>CHASE</span>
+        <!-- InfoHint is ALWAYS mounted (never `{#if}`-gated on draftMode,
+             unlike SymbolPanel's own Ticket-tab copy) — measured directly:
+             InfoHint's own `.info-wrap` (empty `inline-flex`, hideButton
+             mode renders no button of its own) still occupies real width
+             even with no visible children, so mounting/unmounting it was
+             shifting DRAFT's own x position by ~8px every time Draft was
+             toggled — the exact layout shift this whole change exists to
+             eliminate. Opening is prevented structurally, not by
+             unmounting: the parent cluster's `inert` attribute blocks any
+             click/keyboard reach while `draftMode` is true, and the
+             CHASE label's own `onclick`/`onkeydown` above already guard
+             on `!draftMode` before touching `_chaseInfoOpen` at all. -->
+        <InfoHint popup hideButton id="chase-info-hint-chain" anchor={_chaseInfoAnchor} bind:open={_chaseInfoOpen}
+          panel title="Chase"
+          text="Chase is automatic for every limit order (every Chain leg is a limit order) — re-quotes the price each interval until filled or max attempts is reached. Wait time between re-quotes depends on the aggressiveness picker beside it: <b>Low</b> — 30s, patient, eases into the spread (30 attempts max). <b>Med</b> — 20s, balanced (20 attempts max). <b>High</b> — 10s, crosses the spread fast (10 attempts max)." />
+        <span class="oes-chase-agg-gap">
+          <ChaseAggPicker value={chaseAgg} onChange={onChaseAggChange} variant="panel" />
         </span>
-      {/if}
+      </span>
       <!-- DRAFT itself moved back here 2026-11-03 (operator: "move
            draft to days before expiry row") — Chain-only; the Ticket
            tab keeps its own copy in the shared row, and SymbolPanel
@@ -1446,12 +1513,21 @@
            the two never both render at once. Class names
            (`.ot-draft-toggle`/`.ot-draft-label`) are kept identical to
            the shared-row copy so existing Playwright selectors keep
-           matching regardless of which tab is active. -->
-      <label class="ot-draft-toggle"
-             title={draftMode
-               ? 'Draft ON — submit adds this leg to the payoff chart without placing an order'
-               : 'Draft OFF — submit routes to broker normally'}>
-        <input type="checkbox" checked={draftMode}
+           matching regardless of which tab is active.
+           2026-11-28 (operator ask, reversing the 2026-11-26
+           asymmetric rule) — now also `disabled={hedgeOn}` while Hedge
+           is on, same passive-disable-not-hide treatment HEDGE already
+           gets below. No forcing effect is needed in this direction —
+           see the mutual-exclusivity comment above `hedgeOn`'s own
+           declaration for why `hedgeOn` can never be true at the same
+           moment `draftMode` legitimately could be set from here. -->
+      <label class="ot-draft-toggle" class:ot-draft-toggle-disabled={hedgeOn}
+             title={hedgeOn
+               ? 'Draft is disabled while Hedge is on.'
+               : draftMode
+                 ? 'Draft ON — submit adds this leg to the payoff chart without placing an order'
+                 : 'Draft OFF — submit routes to broker normally'}>
+        <input type="checkbox" checked={draftMode} disabled={hedgeOn}
                onchange={(e) => onDraftToggleChange?.(/** @type {HTMLInputElement} */ (e.currentTarget).checked)} />
         <span class="ot-draft-label" class:on={draftMode}>DRAFT</span>
       </label>
@@ -1462,10 +1538,16 @@
            to stage a hedge leg into.
 
            Reordered after DRAFT, and made mutually exclusive with it
-           (2026-11-26, operator ask): Draft always wins — turning Draft
-           ON forces Hedge off AND disables it (see the `$effect` below);
-           Draft itself is NEVER disabled by Hedge and stays clickable
-           either way.
+           (2026-11-26, operator ask; made SYMMETRIC 2026-11-28, see the
+           comment above `hedgeOn`'s own declaration) — Draft still
+           "wins" in the sense that turning Draft ON actively forces
+           Hedge off AND disables it (see the `$effect` above); turning
+           Hedge ON does not force Draft off (Draft can never legitimately
+           be on at that moment — see that same comment), but it now
+           DOES disable the DRAFT checkbox (see above) the whole time
+           Hedge is on, so neither control can ever be hidden while the
+           other is active — only disabled, matching the operator's
+           explicit layout-stability ask.
 
            Also disabled for BFO underlyings (SENSEX/BANKEX, 2026-11-27
            audit finding) — see `_hedgeUnsupportedBfo`'s own comment
@@ -2066,6 +2148,19 @@
   }
   .oes-common-chase-label.on { color: var(--c-action); }
   .oes-chase-agg-gap { margin-left: 0.4rem; display: inline-flex; }
+  /* "Protected" state while Draft is on (2026-11-28, mirrors
+     SymbolPanel.svelte's own `.oes-chase-protected` rule verbatim —
+     Svelte scopes `<style>` per component so that copy cannot reach
+     markup rendered inside this child component). The cluster keeps
+     its layout space (no row reflow when toggling Draft) but every
+     control inside is deselected/greyed. `pointer-events:none` is a
+     visual belt-and-suspenders only — the markup's own `inert`
+     attribute (not a CSS property) is what actually makes the cluster
+     unreachable by click, Tab or assistive tech. */
+  .oes-chase-protected {
+    opacity: 0.4;
+    pointer-events: none;
+  }
   /* DRAFT toggle (2026-11-03, moved onto the Expiry row — operator:
      "move draft to days before expiry row") — class names + styling
      duplicated verbatim from SymbolPanel.svelte's own shared-row copy
@@ -2104,6 +2199,16 @@
     background: rgba(192,132,252,0.18);
     border-color: rgba(192,132,252,0.55);
     color: var(--algo-violet);
+  }
+  /* Hard-disabled while Hedge is on (2026-11-28) — the new, SYMMETRIC
+     half of the Hedge/Draft mutual-exclusivity rule. Mirrors
+     `.oct-hedge-toggle-disabled`'s own rule verbatim. */
+  .ot-draft-toggle-disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+  }
+  .ot-draft-toggle-disabled input[type="checkbox"] {
+    cursor: not-allowed;
   }
   /* .oct-tpl-demo-note removed 2026-10-21 (shared-row re-wire) — the
      demo-mode note now renders once, at shell level, inside
