@@ -196,6 +196,22 @@ def _reset_quote_batch_cache():
     _purge()
 
 
+@pytest.fixture(autouse=True)
+def _reset_close_time_for_exchange_cache():
+    """`date_time_utils.close_time_for_exchange()`'s `_CLOSE_TIME_CACHE`
+    (P3-4, 2026-11-27) is the same bug class as `_NSE_HOLIDAY_JSON_MEMO`
+    / the quote-batch cache above — process-global, keyed on (exchange,
+    date) with no test-scoped reset. A test that patches
+    `market_segments` config or `mcx_non_agri_close_time()` for a given
+    (exchange, date) pair and asserts a resolved close time would
+    otherwise silently read back a DIFFERENT, earlier test's cached
+    value for that exact same pair. Reset before AND after every test."""
+    from backend.shared.helpers.date_time_utils import clear_close_time_cache
+    clear_close_time_cache()
+    yield
+    clear_close_time_cache()
+
+
 @pytest.fixture
 def stub_kite_connection():
     """

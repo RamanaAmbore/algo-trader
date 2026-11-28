@@ -37,13 +37,30 @@ here:
    per-exchange token from `_metric_factory_is_expiry_preclose_window_
    for_exchange(exchange, lead_minutes)` below — same factory-reuse
    style as `metric_is_expiry_morning_preview_window.py`'s own
-   per-exchange bindings. The OLD combined tokens
-   (`is_expiry_preclose_alert_window`/`is_expiry_preclose_close_window`)
-   are left registered (no live BUILTIN_AGENTS consumer any more, but
-   not verified dead for every possible operator-authored custom agent
-   — removing a registered DSL token needs its own explicit verification
-   pass, the same discipline the 2026-11-26 stale-unsigned-divergence-
-   metric removal used, not done under tonight's time pressure).
+   per-exchange bindings.
+
+   **Verification pass done, catalog entries removed (2026-11-27).**
+   The OLD combined tokens (`is_expiry_preclose_alert_window`/
+   `is_expiry_preclose_close_window`) were confirmed dead — a direct
+   read-only query against BOTH prod (`ramboq`) and dev (`ramboq_dev`)
+   `agents` tables found zero rows (active or inactive) whose
+   `conditions`/`preamble` JSON mentions either token name — and have
+   been removed from `agent_grammar.yaml` / the golden baseline, so no
+   NEW custom agent can author a condition against the combined,
+   cross-exchange-conflating shape by name. The Python resolver
+   functions below (`_metric_is_expiry_preclose_alert_window`, and its
+   sibling in `metric_is_expiry_preclose_close_window.py`) are
+   DELIBERATELY still defined and still exported — `seed_grammar_
+   tokens()`'s own docstring states it never prunes a system token that
+   disappears from `SYSTEM_TOKENS` between releases ("left in the table
+   as is_active=True until manually cleaned — safer than auto-deleting
+   something an agent might still reference"), so an already-seeded
+   `grammar_tokens` row on an existing prod/dev database still points at
+   these dotted paths and must keep resolving. Removing the YAML
+   catalog entry stops it being authored FRESH; it does NOT retroactively
+   deactivate an already-seeded row — that would need a manual DB
+   action (`UPDATE grammar_tokens SET is_active=false WHERE token IN
+   (...)`), a deliberate choice outside the scope of a code change.
 
 The lead time is a genuine PARAMETER of the factory function (operator,
 2026-11-22: "the time should be a parameter in the function in the DSL
@@ -68,9 +85,12 @@ Python, not in the DSL. Retimed 2026-11-22 from 30/25 to 65/60 minutes
 the agents one hour before market close") — the alert still leads the
 close-action sibling by 5 minutes, same stagger as before, just moved to
 the hour mark. The actual position identification itself happens inside
-`_v2_expiry_position_breakdown()` (agent_engine.py), which re-derives
-the same per-exchange window check and then runs the real ExpiryEngine
-scan — this token is deliberately cheap (no broker call) so it is safe
+`_v2_expiry_exchange_breakdown_or_empty()`/`_v2_expiry_preclose_alert_
+section()` (`agent_engine.py`, since the 2026-11-26 exchange-pure split —
+the combined `_v2_expiry_position_breakdown()` this paragraph used to
+name no longer exists), which runs the real `ExpiryEngine` scan for ONE
+exchange, never re-deriving this token's own per-exchange window check
+itself. This token is deliberately cheap (no broker call) so it is safe
 to evaluate every cycle tick.
 
 Reuses the existing per-exchange metric resolvers directly (never a
@@ -79,6 +99,25 @@ second, possibly-drifting day-boundary or close-time definition):
 expiry day for this exchange", `metric_minutes_until_mcx_close`/
 `metric_minutes_until_nse_close` for the close countdown (None while that
 exchange is closed — treated as "not in window", not as unknown-is-true).
+
+Perf (P3-4, 2026-11-27): `_expiry_preclose_exchanges()` checks the cheap
+minutes-until-close value FIRST, short-circuiting before the expensive
+`_is_exchange_expiring_exactly_today()` row-walk — for nearly the whole
+trading day (everywhere outside the `lead_minutes` window), the minutes
+check alone resolves "not in window" and the row-walk never runs at all.
+`_is_exchange_expiring_exactly_today()` also memoizes its own per-
+exchange result on `ctx` itself (a plain, non-slotted `@dataclass`
+instance the agent engine already constructs fresh once per cycle — see
+`agent_evaluator.Context`), never a module-level cache keyed by
+`id(ctx)`: a module-level dict would risk serving a stale value for a
+RECYCLED id once an old `Context` is garbage-collected and a new one
+happens to get the same id, and would need its own date-keyed
+invalidation; attaching the memo directly to the per-cycle `ctx` instance
+needs neither — a fresh `ctx` means a fresh (empty) memo, by
+construction, with no possibility of leaking across cycles or days. The
+attribute probe guards against a non-dict value (e.g. a bare `MagicMock`
+test double auto-vivifying a truthy, non-dict attribute on first access)
+by checking `isinstance(memo, dict)`, never bare truthiness.
 """
 
 from __future__ import annotations
@@ -118,12 +157,31 @@ def _is_exchange_expiring_exactly_today(ctx, exchange: str) -> bool:
     (`_parsed_or_none`, `days_to_expiry`, `close_time_for_exchange`) —
     deliberately a separate, narrower function rather than a parameter
     added to that one, so its ≤1.5-day semantic for every OTHER caller
-    is provably untouched."""
+    is provably untouched.
+
+    Perf (P3-4, 2026-11-27): memoized per `(ctx, exchange)` — see this
+    module's own docstring for why the memo lives on `ctx` itself
+    rather than a module-level, id()-keyed cache. `_expiry_preclose_
+    exchanges()` below already runs the cheap minutes-until-close check
+    first and only calls this at all when that check has already
+    passed, so in steady state this row-walk runs only inside the
+    actual pre-close window, not on every cycle tick."""
+    memo = getattr(ctx, '_expiry_exact_today_memo', None)
+    if not isinstance(memo, dict):
+        memo = {}
+        try:
+            ctx._expiry_exact_today_memo = memo
+        except Exception:
+            pass  # best-effort — correctness doesn't depend on this sticking
+    if exchange in memo:
+        return memo[exchange]
+
     rows_src = getattr(ctx, 'position_rows', None) or []
     from backend.api.algo.grammar import _parsed_or_none
     from backend.api.algo.derivatives import days_to_expiry
     from backend.shared.helpers.date_time_utils import close_time_for_exchange
 
+    result = False
     for r in rows_src:
         if (r.get('exchange') or '').upper() != exchange:
             continue
@@ -139,8 +197,11 @@ def _is_exchange_expiring_exactly_today(ctx, exchange: str) -> bool:
         except Exception:
             continue
         if d < 1.0:
-            return True
-    return False
+            result = True
+            break
+
+    memo[exchange] = result
+    return result
 
 
 def _expiry_preclose_exchanges(ctx, row, lead_minutes: float) -> set[str]:
@@ -164,13 +225,21 @@ def _expiry_preclose_exchanges(ctx, row, lead_minutes: float) -> set[str]:
     2026-11-26 fix (day-early false trigger): now gates each exchange on
     `_is_exchange_expiring_exactly_today()` (exact today), not the old
     ≤1.5-day `is_mcx_expiry_today`/`is_nse_expiry_today` — see this
-    module's own docstring."""
+    module's own docstring.
+
+    Perf (P3-4, 2026-11-27): the cheap `minutes_until_close` check runs
+    FIRST, short-circuiting before the expensive `_is_exchange_
+    expiring_exactly_today()` position-row walk — both conditions are
+    ANDed, so swapping their order changes nothing about the result,
+    only how often the expensive branch actually runs. Outside the
+    `lead_minutes` window (nearly the entire trading day) this means
+    the row-walk never runs at all."""
     exchanges: set[str] = set()
     for exchange, minutes_until_close in _MINUTES_UNTIL_CLOSE_RESOLVERS.items():
-        if not _is_exchange_expiring_exactly_today(ctx, exchange):
-            continue
         mins = minutes_until_close(ctx, row)
-        if mins is not None and mins <= lead_minutes:
+        if mins is None or mins > lead_minutes:
+            continue
+        if _is_exchange_expiring_exactly_today(ctx, exchange):
             exchanges.add(exchange)
     return exchanges
 
