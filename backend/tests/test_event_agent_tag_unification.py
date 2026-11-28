@@ -360,13 +360,17 @@ def test_all_23_pre_collapse_specs_still_accounted_for():
     # agent, excluded for the identical reason. `broker-login-blocked-
     # alert` (2026-11-20, live ZG0790 CAPTCHA incident) is also a
     # brand-new, unrelated standalone agent, excluded for the identical
-    # reason.
+    # reason. `chase-lock-evicted-alert` (2026-11-28) is excluded for
+    # the same reason — it is not one of the original 23 pre-collapse
+    # specs; it was never a standalone agent at all before folding
+    # straight into `_COLLAPSED_DETECTOR_SPECS`.
     channel_agent_slugs = {
         ea.TELEGRAM_CHANNEL_AGENT["slug"], ea.NTFY_CHANNEL_AGENT["slug"], ea.EMAIL_CHANNEL_AGENT["slug"],
         ea.MARKET_STATUS_ALERT_AGENT["slug"], ea.AGENT_CLOSE_HOLD_ALERT_AGENT["slug"],
         ea.ORDER_CANCELLED_AGENT["slug"], ea.GTT_ORPHAN_CANCELLED_AGENT["slug"],
         ea.DRAFT_SWEEP_AGENT["slug"], ea.APP_MESSAGE_AGENT["slug"],
         ea.BROKER_LOGIN_BLOCKED_AGENT["slug"], ea.PNL_RECONCILIATION_AGENT["slug"],
+        ea.CHASE_LOCK_EVICTED_AGENT["slug"],
     }
     all_pre_collapse_slugs = {
         spec["slug"] for spec in ea.SEEDED_AGENTS + ea._COLLAPSED_DETECTOR_SPECS

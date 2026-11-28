@@ -206,7 +206,13 @@ def test_frozen_oracle_covers_every_migrated_agent_exactly():
     `DRAFT_SWEEP_AGENT` (2026-11, alert-agent audit fix) is excluded for
     the identical reason — another brand-new, unrelated standalone
     agent; see `test_draft_sweep_alert_resolves_via_per_slug_override`
-    below for its own direct coverage."""
+    below for its own direct coverage. `CHASE_LOCK_EVICTED_AGENT`
+    (2026-11-28) is excluded for the same reason — the first
+    `_COLLAPSED_DETECTOR_SPECS` entry that was NEVER a standalone
+    `SEEDED_AGENTS` row in the first place, so it has no pre-migration
+    oracle entry to pin; see
+    `test_chase_lock_evicted_alert_resolves_to_zero_channels` below for
+    its own direct coverage."""
     all_specs = event_agents.SEEDED_AGENTS + event_agents._COLLAPSED_DETECTOR_SPECS
     migrated_slugs = {
         spec["slug"] for spec in all_specs
@@ -223,9 +229,27 @@ def test_frozen_oracle_covers_every_migrated_agent_exactly():
             event_agents.APP_MESSAGE_AGENT["slug"],
             event_agents.BROKER_LOGIN_BLOCKED_AGENT["slug"],
             event_agents.PNL_RECONCILIATION_AGENT["slug"],
+            event_agents.CHASE_LOCK_EVICTED_AGENT["slug"],
         )
     }
     assert migrated_slugs == set(_FROZEN_ORACLE)
+
+
+def test_chase_lock_evicted_alert_resolves_to_zero_channels():
+    """2026-11-28 — `chase-lock-evicted-alert` is a deliberate `[]`
+    (log-only), the same shape as `cycle-breach-alert` above, closing
+    the 22-fires-in-14-days `unrouted-alert-catch-all` gap for
+    `chase.py`'s own position-lock TTL eviction housekeeping. See
+    `backend/tests/test_chase_lock_evicted_alert_routing.py` for the
+    full end-to-end coverage of this fix (producer tagging, dispatch-
+    table entry, and the catch-all's own safety net for a genuinely
+    unmapped event)."""
+    resolved = alert_routing.resolve_channels(
+        name=event_agents.CHASE_LOCK_EVICTED_AGENT["slug"],
+        priority=event_agents.CHASE_LOCK_EVICTED_AGENT["priority"],
+        agent_events=[],
+    )
+    assert resolved == []
 
 
 def test_broker_login_blocked_agent_resolves_to_telegram_ntfy_email_gate_false():

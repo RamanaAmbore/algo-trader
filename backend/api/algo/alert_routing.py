@@ -232,6 +232,20 @@ _PER_SLUG_OVERRIDES: dict[str, list[dict]] = {
         {"channel": "ntfy", "enabled": True, "gate": False, "priority": "high"},
         {"channel": "email", "enabled": True, "gate": False},
     ],
+    # 2026-11-28 alert-routing fix — chase's own per-key position lock
+    # expiring its TTL and getting lazily evicted (`chase.py:_get_
+    # chase_position_lock`) is routine internal housekeeping, fully
+    # self-resolving, never operator-actionable. Before this row (and
+    # the matching `event_agents.CHASE_LOCK_EVICTED_AGENT` fold into
+    # `_COLLAPSED_DETECTOR_SPECS`), the producer carried no `alert_event`
+    # at all, so it matched no agent's conditions and fell through to
+    # `unrouted-alert-catch-all` on every single eviction — confirmed
+    # live: all 22 catch-all fires in the prior 14 days of prod
+    # `agent_events`/`log_events` were this one message, paging
+    # Telegram+ntfy for a non-event. Explicit `[]`, same precedent as
+    # `cycle-breach-alert` above — log it (so it's still visible in
+    # `/admin/alerts/history` via the `alert` tag), send it nowhere.
+    "chase-lock-evicted-alert": [],
     # 2026-10-25 alert-channel collapse — these 3 slugs
     # (`event_agents.TELEGRAM_CHANNEL_AGENT`/`NTFY_CHANNEL_AGENT`/
     # `EMAIL_CHANNEL_AGENT`) are the generic channel agents the 16

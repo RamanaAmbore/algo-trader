@@ -3375,9 +3375,31 @@ async def _get_chase_position_lock(key: tuple[str, str, str]) -> asyncio.Lock:
         for k in _stale:
             _CHASE_POSITION_LOCKS.pop(k, None)
         if _stale:
+            # 2026-11-28 alert-routing fix — this is routine, self-
+            # resolving housekeeping (a lock past its own TTL, evicted
+            # on the next lazy mint), never an operator-actionable
+            # event. Tagged shape mirrors every other alert-worthy call
+            # in this file (`cancel_unconfirmed`/`concurrent_chase_
+            # refused` above): `tags` additive (`log_store.tags_for()`
+            # would otherwise fall back to the bare logger-name tag
+            # "chase", which IS in the known alert-tag vocabulary —
+            # `agent_grammar.yaml:log_tags.tags` — so a WARNING here
+            # already read as alert-shaped even with no `alert_event`
+            # set); `alert_event` gives `event_agents.py`'s routing a
+            # real key to match on, so it stops falling through to
+            # `unrouted-alert-catch-all` (confirmed: all 22 catch-all
+            # fires in the prior 14 days of prod `agent_events`/
+            # `log_events` were this exact message). Routed to zero
+            # channels via `alert_routing._PER_SLUG_OVERRIDES
+            # ["chase-lock-evicted-alert"]` — see that entry's own
+            # comment and `event_agents.CHASE_LOCK_EVICTED_AGENT`.
             logger.warning(
                 "[CHASE-LOCK] evicted %d stale position lock(s) (TTL=%ss): keys=%s",
                 len(_stale), _CHASE_POSITION_LOCK_TTL_S, _stale,
+                extra={
+                    "tags": ["chase", "alert"], "alert_event": "chase_lock_evicted",
+                    "source_type": "process", "source_name": "chase",
+                },
             )
         entry = _CHASE_POSITION_LOCKS.get(key)
         if entry is None:

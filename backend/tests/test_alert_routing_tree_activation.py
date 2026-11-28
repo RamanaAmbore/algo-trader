@@ -551,9 +551,12 @@ class TestSeedVersionBumpTransition:
         bumped again, 11 -> 12, to insert BROKER_LOGIN_BLOCKED_AGENT (live
         ZG0790 CAPTCHA incident). 2026-11-26: bumped again, 12 -> 13, to
         insert PNL_RECONCILIATION_AGENT (Kite Console P&L reconciliation
-        Part 3)."""
+        Part 3). 2026-11-28: bumped again, 13 -> 14, folding
+        CHASE_LOCK_EVICTED_AGENT into `_COLLAPSED_DETECTOR_SPECS` (closes
+        the 22-fires-in-14-days `unrouted-alert-catch-all` gap for
+        chase.py's own position-lock TTL eviction housekeeping)."""
         from backend.api.algo.event_agents import SEED_VERSION
-        assert SEED_VERSION == 13
+        assert SEED_VERSION == 14
 
     def test_hash_match_row_from_old_version_updates_at_new_version(self):
         """A row last seeded at the OLD SEED_VERSION=2, whose current
@@ -657,7 +660,7 @@ class TestModifiedSkipLogsRealWarning:
         # then alert-channel-collapse) — this test's mechanism
         # (modified_skip still bumps seed_version) is unaffected; see
         # the historical note on test_seed_version_is_now_3 above.
-        assert row.seed_version == ea.SEED_VERSION == 13
+        assert row.seed_version == ea.SEED_VERSION == 14
         # stderr line preserved (an existing sibling test pins this too).
         assert "operator-modified" in capsys.readouterr().err
         # New Step 6 behaviour — a real, visible WARNING through
@@ -740,7 +743,7 @@ class TestSeedVersionBumpUpdateBranchEndToEnd:
         # 2026-10-25: SEED_VERSION moved 3 -> 4 -> 5 (tag-unification,
         # then alert-channel-collapse) —
         # see the historical note on test_seed_version_is_now_3 above.
-        assert row.seed_version == ea.SEED_VERSION == 13
+        assert row.seed_version == ea.SEED_VERSION == 14
         new_hash = ea.compute_seed_spec_hash(row.conditions, row.events, row.actions)
         assert row.seed_spec_hash == new_hash, "hash must reflect the NEW write, not the old one"
 

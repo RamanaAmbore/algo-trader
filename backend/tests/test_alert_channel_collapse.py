@@ -23,6 +23,13 @@ literal rendered text/priority for a retired agent (an independent,
 incident-driven oracle, not re-derived here), this file reuses those EXACT
 `rec` fixtures and expected literals and dispatches them through the new 3
 channel agents instead of the old single dedicated agent.
+
+Amended 2026-11-19 and 2026-11-28: `_COLLAPSED_DETECTOR_SPECS` grew to 18
+(two more retired standalone agents folded in), then to 19 with
+`CHASE_LOCK_EVICTED_AGENT` — the first entry that was never a standalone
+`SEEDED_AGENTS` row in the first place (see that spec's own comment in
+`event_agents.py`). The mechanism makes no distinction between the two
+cases; both just need `slug`/`conditions`/`actions`.
 """
 from __future__ import annotations
 
@@ -124,8 +131,11 @@ def test_seeded_agents_count_is_13_not_23():
     }
 
 
-def test_alert_event_dispatch_has_20_entries_from_18_specs():
-    assert len(ea.ALERT_EVENT_DISPATCH) == 20
+def test_alert_event_dispatch_has_21_entries_from_19_specs():
+    # 2026-11-28: 20 entries from 18 specs -> 21 entries from 19 specs —
+    # `CHASE_LOCK_EVICTED_AGENT` folded in (SEED_VERSION 13 -> 14), one
+    # new `alert_event` key (`chase_lock_evicted`), no branch pair.
+    assert len(ea.ALERT_EVENT_DISPATCH) == 21
     two_event_slugs = {"template-attach-urgent", "template-attach-high"}
     by_source = {}
     for entry in ea.ALERT_EVENT_DISPATCH.values():
@@ -133,6 +143,11 @@ def test_alert_event_dispatch_has_20_entries_from_18_specs():
         by_source[entry["source_slug"]] += 1
     for slug, count in by_source.items():
         assert count == (2 if slug in two_event_slugs else 1), slug
+    # The new entry resolves to zero channels (log-only), not an empty
+    # `channels` key being silently absent — this is the one row this
+    # test's own `by_source` loop above would not otherwise distinguish.
+    assert ea.ALERT_EVENT_DISPATCH["chase_lock_evicted"]["channels"] == []
+    assert ea.ALERT_EVENT_DISPATCH["chase_lock_evicted"]["source_slug"] == "chase-lock-evicted-alert"
 
 
 def test_every_collapsed_spec_slug_is_retired():
@@ -145,10 +160,13 @@ def test_every_collapsed_spec_slug_is_retired():
     # `_NOTIFY_ACTION_RETIRED_SLUGS` — see event_agents.py's own
     # comment above `_RETIRED_SLUGS`) = 17, PLUS `gtt-orphan-cancelled-
     # alert`/`app-message-alert` folded into `_COLLAPSED_DETECTOR_SPECS`
-    # (2026-11-19) = 19.
-    assert len(ea._RETIRED_SLUGS) == 19
+    # (2026-11-19) = 19, PLUS `chase-lock-evicted-alert` (2026-11-28,
+    # SEED_VERSION 13 -> 14) = 20.
+    assert len(ea._RETIRED_SLUGS) == 20
     assert "action-notify-alert" in ea._RETIRED_SLUGS
     assert "action-notify-alert" not in seeded_slugs
+    assert "chase-lock-evicted-alert" in ea._RETIRED_SLUGS
+    assert "chase-lock-evicted-alert" not in seeded_slugs
 
 
 # ─────────────────────────────────────────────────────────────────────────

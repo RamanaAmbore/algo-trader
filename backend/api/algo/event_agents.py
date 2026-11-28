@@ -2918,8 +2918,45 @@ PNL_RECONCILIATION_AGENT = {
     "actions": [{"type": "render", "render": "generic_notice"}],
 }
 
+CHASE_LOCK_EVICTED_AGENT = {
+    "slug": "chase-lock-evicted-alert",
+    "name": "Chase lock evicted",
+    "description": "chase_order()'s own per-(account, exchange, symbol) "
+                    "position lock expired its 1800s TTL and was lazily "
+                    "evicted on the next mint — routine internal "
+                    "housekeeping, fully self-resolving. No operator "
+                    "action is implied; log-only.",
+    # 2026-11-28 live incident — all 22 `unrouted_alert` catch-all fires
+    # in the prior 14 days of prod `agent_events`/`log_events` were this
+    # IDENTICAL message (`chase.py:_get_chase_position_lock`), paging
+    # Telegram+ntfy on every eviction because the producer carried no
+    # `alert_event` at all. Producer now tags `["chase", "alert"]` (see
+    # `chase.py`'s own comment on that log call) and sets
+    # `alert_event="chase_lock_evicted"` — this spec gives
+    # `_record_matches_any_agent()` something real to match, which is
+    # what stops the record from reaching `_emit_unrouted_self_alert()`
+    # in the first place (routing alone, with no matching condition
+    # anywhere, would NOT have been enough — see
+    # `event_agents.py`'s own module docstring / `_run_unrouted_catch_
+    # all()`). NOT a standalone `SEEDED_AGENTS` entry: folded straight
+    # into `_COLLAPSED_DETECTOR_SPECS` below, because its real channel
+    # list is a plain empty `[]` (see `alert_routing._PER_SLUG_
+    # OVERRIDES["chase-lock-evicted-alert"]`'s own comment) — unlike
+    # `draft-sweep-alert`/`broker-login-blocked-alert`/`pnl-
+    # reconciliation-alert` just above (each pinned to `telegram_info`,
+    # a channel the 3 generic channel agents' `only_channel` exact-
+    # match filter cannot route to), an EMPTY channel list is exactly
+    # what that filter already produces correctly for any channel key,
+    # so there is no structural reason this needs its own dedicated
+    # agent.
+    "conditions": {"log": {"tag": "alert", "min_level": "WARNING",
+                           "where": {"alert_event": "chase_lock_evicted"}}},
+    "priority": "low",
+    "actions": [{"type": "render", "render": "generic_notice"}],
+}
 
-SEED_VERSION = 13
+
+SEED_VERSION = 14
 # Bump this whenever an EXISTING seeded row's `conditions`/`events`/
 # `actions` shape changes (so already-seeded prod/dev rows get
 # re-synced) — a brand-new slug doesn't strictly need a bump, since
@@ -2928,6 +2965,20 @@ SEED_VERSION = 13
 # `seed_action()`'s own docstring for the hash-based `modified_skip`
 # protection that keeps an operator-edited row from being silently
 # overwritten on a bump. Per-version detail lives in git log, not here.
+#
+# 2026-11-28 (13 -> 14): `CHASE_LOCK_EVICTED_AGENT` folds into
+# `_COLLAPSED_DETECTOR_SPECS` below. This is NOT a brand-new standalone
+# `SEEDED_AGENTS` row (so, strictly, no bump would have been required
+# for ITS OWN insert) — the bump is needed because folding adds a new
+# leaf to `_CHANNEL_AGENT_CONDITION`, the single `conditions` dict
+# shared by the 3 ALREADY-SEEDED `alert-channel-telegram`/`-ntfy`/
+# `-email` DB rows. Without the bump, those 3 rows' stored `conditions`
+# on prod/dev stay at the pre-fix shape forever, `_record_matches_any_
+# agent()` (which reads DB-loaded agents, not this module's live specs)
+# never matches a `chase_lock_evicted` record, and the fix is a no-op
+# in production. Pre-flight: `scripts/alert_seed_audit.py` confirmed
+# all 3 rows hash-clean (no `modified_skip` risk) on both prod and dev
+# before this bump shipped.
 
 
 def validate_seed_spec(spec: dict) -> list[str]:
@@ -3056,6 +3107,16 @@ _COLLAPSED_DETECTOR_SPECS: tuple[dict, ...] = (
     # `market-summary` stay dedicated (see the block comment above this
     # tuple).
     GTT_ORPHAN_CANCELLED_AGENT, APP_MESSAGE_AGENT,
+    # 2026-11-28 (SEED_VERSION 13 -> 14) — `CHASE_LOCK_EVICTED_AGENT`,
+    # the first entry here that was NEVER a standalone `SEEDED_AGENTS`
+    # row before folding (every entry above WAS standalone, then
+    # retired into this table). Nothing about the mechanism requires
+    # prior standalone existence — `_build_alert_event_dispatch_table()`
+    # only needs `slug`/`conditions`/`actions`, and `_retire_collapsed_
+    # event_agents()` deactivating a slug with no matching DB row is a
+    # harmless no-op. See `CHASE_LOCK_EVICTED_AGENT`'s own comment above
+    # for the incident this closes.
+    CHASE_LOCK_EVICTED_AGENT,
 )
 
 
