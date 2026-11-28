@@ -1576,65 +1576,95 @@
            LAST (topmost) svg layer, guarantees it is never occluded
            by a curve, dart or the vertical spot line, regardless of
            where the current price or P&L value falls.
-           Fill/border scheme (2026-11-27, later same day, operator
-           again: "background color and border not clearly visible...
-           use better color scheme" — the z-order fix above did not
-           address this; it's a genuinely separate contrast defect).
-           The prior solid-bright-cyan-fill + dark-text + light-white-
-           border version read, in a real rendered screenshot, as a
-           flat, washed-out cyan blob: a 1.5px white rim at 0.85
-           opacity sits only marginally lighter than the `#22d3ee`
-           fill it outlines, so the border all but disappears, and the
-           solid fill gives the pill no visible depth against the dark
-           chart background it sits on. The bottom Exp P&L pill (same
-           chart, same session, operator confirmed "looks good") uses
-           a different recipe entirely — a translucent colour-tinted
-           WASH fill + a full-brightness colour border + full-
-           brightness colour text — and that recipe genuinely reads
-           clearly in the same screenshot. This pill now reuses that
-           exact recipe, keeping the cyan hue (cyan still means
-           "spot/current price" everywhere else on this chart — the
-           spot line, the spot flash, the LTP chip — so only the fill/
-           border/text TREATMENT changes, not what the colour means):
-           `--algo-cyan-bg-strong`/`--algo-cyan-border` (the same
-           soft-tint-fill + full-colour-border + full-colour-text
-           shape `.algo-status-pill` and the Exp P&L pill both use),
-           full-brightness `#22d3ee` text instead of dark `#0c1830` —
-           dark text only reads cleanly against a solid bright fill,
-           which this pill no longer has.
-           `vector-effect="non-scaling-stroke"` — this SVG uses
-           `preserveAspectRatio="none"`, so the two axes scale
+           Fill/border scheme, final (2026-11-27, revised again
+           2026-11-28 — the standing instruction this file already
+           records on the Exp P&L pill below, "a genuinely different
+           background scheme from the top pill, not just a shade
+           variant," was found to have been violated by the
+           intermediate fix this paragraph used to describe).
+           History: the ORIGINAL version (solid bright `#22d3ee` fill +
+           dark `#0c1830` text + a near-white 0.85-opacity 1.5px rim)
+           read, in a real rendered screenshot, as a flat blob — the
+           rim sat too close in lightness to the bright fill to
+           register as an edge. The fix that followed solved that by
+           copying the Exp P&L pill's own translucent-wash recipe
+           outright (soft tinted fill + full-brightness border + full-
+           brightness text, just swapped to the cyan hue) — which
+           fixed the contrast but reintroduced the OTHER standing
+           complaint from the other direction: the two pills became
+           structurally identical, differing only by hue (cyan ≈190°
+           vs sky ≈199° — two adjacent light blues), i.e. exactly the
+           "shade variant" the operator had already rejected once.
+           This version keeps the pill itself a SOLID opaque `--algo-
+           cyan` fill with dark `#0c1830` text — a real lightness jump
+           against both the fill (dark-on-bright) and the surrounding
+           dark chart background (bright-on-dark) — which is a
+           genuinely different CONSTRUCTION from the Exp P&L pill's
+           glassy wash-fill/bright-text pill below, not merely a
+           different hue. This is also the SAME solid-accent +
+           dark-navy-foreground pairing app.css already uses for a
+           lit/"on" control state (`--btn-buy-on-fg`/`--btn-sell-on-
+           fg`/`--btn-amber-on-fg`/`--btn-sky-on-fg`, all `#0c1830`),
+           so it is a proven-legible pattern elsewhere in this
+           codebase, not a new guess.
+           A dark stroke drawn directly on the pill's own edge would
+           reproduce the SAME invisible-rim failure in reverse —
+           `#0c1830` sitting right next to the `#0d1829` navy mask
+           immediately outside it is nearly the identical colour, so
+           the border would vanish into the backdrop the exact way the
+           original white rim vanished into the bright fill. The
+           border is instead a SEPARATE ring element
+           (`.payoff-spot-pill-ring`, just below), drawn 2 units
+           outside the pill with a navy gap on both sides — against
+           the mask on its outside, against the solid pill fill on its
+           inside — so the bright cyan ring is visibly distinct from
+           both neighbours, never blended into either.
+           Cyan is kept as the fill/ring hue because cyan still means
+           "spot/current price" everywhere else on this chart (the
+           spot vertical line, the spot flash, the LTP chip); only the
+           FILL TREATMENT changes from the Exp P&L pill below, not
+           what the colour means.
+           `vector-effect="non-scaling-stroke"` on the ring — this SVG
+           uses `preserveAspectRatio="none"`, so the two axes scale
            independently; without this, a 1.5-unit stroke can render
            thinner than 1 real CSS px on a narrow mobile viewport (or
            thicker in fullscreen), rather than a constant visual
-           weight. `.payoff-spot-pill`/`-text` classes are selector
-           hooks for Playwright `getComputedStyle` assertions only —
-           every other SVG element in this chart is styled via inline
-           presentation attributes, not CSS classes, and that
-           convention is kept here; the classes carry no `<style>`
-           rule of their own. -->
+           weight. `.payoff-spot-pill`/`-pill-ring`/`-pill-text`
+           classes are selector hooks for Playwright
+           `getComputedStyle` assertions only — every other SVG
+           element in this chart is styled via inline presentation
+           attributes, not CSS classes, and that convention is kept
+           here; the classes carry no `<style>` rule of their own. -->
       {#if spot > 0 && spot > sMin && spot < sMax}
         {@const spotLabel = spot.toFixed(0)}
         {@const spotChipW = spotLabel.length * 8 + 14}
         {@const spotChipH = 18}
         {@const spotChipY = PAD_T + 3}
-        <!-- Navy mask underneath in case the pill overlaps a σ label
-             or a curve segment. -->
-        <rect x={spotX - spotChipW / 2 - 1} y={spotChipY - 1}
-              width={spotChipW + 2} height={spotChipH + 2} rx="5"
+        <!-- Navy mask underneath — sized to also host the ring's navy
+             gap below, not just a thin 1px halo. Masks any σ label or
+             curve segment behind it too. -->
+        <rect x={spotX - spotChipW / 2 - 4} y={spotChipY - 4}
+              width={spotChipW + 8} height={spotChipH + 8} rx="7"
               fill="#0d1829"/>
-        <!-- Cyan-tinted WASH pill — translucent fill (not a solid
-             bright fill), bright cyan border + bright cyan text, same
-             recipe as the Exp P&L pill below. -->
+        <!-- Bright cyan ring — the pill's visible border, deliberately
+             a separate element with a navy gap on both sides (see the
+             "Fill/border scheme" comment above for why a stroke drawn
+             on the pill itself would have vanished into the mask). -->
+        <rect class="payoff-spot-pill-ring"
+              x={spotX - spotChipW / 2 - 2} y={spotChipY - 2}
+              width={spotChipW + 4} height={spotChipH + 4} rx="5"
+              fill="none"
+              stroke="var(--algo-cyan, #22d3ee)" stroke-width="1.5"
+              vector-effect="non-scaling-stroke"/>
+        <!-- Solid opaque cyan pill — dark navy text for contrast
+             against the bright fill (see the comment above). -->
         <rect class="payoff-spot-pill"
               x={spotX - spotChipW / 2} y={spotChipY}
               width={spotChipW} height={spotChipH} rx="4"
-              fill="var(--algo-cyan-bg-strong, rgba(34,211,238,0.22))"
-              stroke="var(--algo-cyan, #22d3ee)" stroke-width="1.5"
-              vector-effect="non-scaling-stroke"/>
+              fill="var(--algo-cyan, #22d3ee)"/>
         <text class="payoff-spot-pill-text" x={spotX} y={spotChipY + spotChipH / 2 + 4}
               text-anchor="middle"
-              fill="var(--algo-cyan, #22d3ee)"
+              fill="#0c1830"
               font-size="12" font-weight="800"
               style="font-family: var(--font-numeric); font-variant-numeric: tabular-nums">
           {spotLabel}
@@ -1670,18 +1700,20 @@
            sky-tinted WASH pill (not a solid bright fill) with a bright
            sky rim and bright sky text. Border weight (1.5px) matches
            the spot pill's own.
-           (2026-11-27, later the same day — this wash recipe is now
-           ALSO the spot pill's own treatment above, swapped to the
-           cyan hue; see that pill's "Fill/border scheme" comment for
-           why its original solid-bright-fill/dark-text version read
-           as low-contrast and was changed to match this one. The two
-           pills are therefore no longer "structurally different" —
-           they share one recipe, distinguished only by hue, which is
-           fine: nothing here ever claimed the colour-to-MEANING
-           mapping — cyan=spot, sky=Exp P&L — needed to differ in
-           fill TREATMENT as well as hue.) See that pill's comment for
-           the `vector-effect`/class-hook rationale, applied
-           identically here.
+           (2026-11-27, later the same day — a follow-up briefly made
+           the spot pill above copy this exact wash recipe, swapped to
+           the cyan hue, which fixed that pill's own low-contrast rim
+           but reintroduced the "shade variant" problem this comment's
+           own instruction rejects: two near-identical light-blue
+           pills (cyan ≈190° vs sky ≈199°) distinguished only by hue.
+           Reverted 2026-11-28 — the spot pill above is now a solid
+           opaque fill with dark text and a separate bright ring
+           border, a genuinely different CONSTRUCTION from this
+           translucent-wash pill, not just a different hue. See that
+           pill's own "Fill/border scheme, final" comment for the
+           full history and root-cause screenshot description.) See
+           that pill's comment for the `vector-effect`/class-hook
+           rationale, applied identically here.
            Z-order (2026-11-27, later same day) — moved here from the
            background svg for the identical reason as the spot pill
            above: this foreground svg's own today/expiry curves could

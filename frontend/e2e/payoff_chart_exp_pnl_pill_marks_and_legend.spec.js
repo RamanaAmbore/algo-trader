@@ -38,14 +38,29 @@
  * marginally lighter than the `#22d3ee` fill it's meant to outline.
  * The bottom Exp P&L pill's own translucent-wash recipe (from follow-
  * up #1 above) was confirmed, in the same screenshot, to read clearly.
- * The top spot pill now reuses that EXACT recipe — translucent
+ * The top spot pill briefly reused that EXACT recipe — translucent
  * `--algo-cyan-bg-strong` wash fill + full-brightness `#22d3ee`
- * border + full-brightness `#22d3ee` text — keeping its own cyan hue
- * (cyan still means "spot/current price" chart-wide), so the two
- * pills are now visually IDENTICAL in structure, distinguished only
- * by hue (cyan vs sky), not by fill treatment. See the "Fill/border
- * scheme" comment above the spot pill in OptionsPayoff.svelte for the
- * full rationale and root-cause screenshot description.
+ * border + full-brightness `#22d3ee` text — which fixed the contrast
+ * but made the two pills visually IDENTICAL in structure, distinguished
+ * only by hue (cyan vs sky), not by fill treatment — reintroducing the
+ * exact "shade variant" the follow-up #1 instruction above already
+ * rejected.
+ *
+ * 2026-11-28 revert — restores follow-up #1's "genuinely different
+ * background scheme" instruction for BOTH pills, not just the Exp P&L
+ * one. The top spot pill is now a SOLID opaque `--algo-cyan` fill with
+ * dark `#0c1830` text (dark-on-bright), plus a separate bright-cyan
+ * ring element (`.payoff-spot-pill-ring`) drawn with a navy gap on
+ * both sides as its border — a stroke on the pill's own edge would
+ * reproduce the original invisible-rim bug, since `#0c1830` sits right
+ * next to the `#0d1829` navy mask immediately outside it. The bottom
+ * Exp P&L pill is untouched: still the translucent sky wash + bright
+ * sky border/text (bright-on-dark). The two constructions — solid
+ * opaque dark-on-bright vs. translucent wash bright-on-dark — are
+ * genuinely different, not merely a different hue. See the "Fill/
+ * border scheme, final" comment above the spot pill in
+ * OptionsPayoff.svelte for the full history and root-cause screenshot
+ * description.
  *
  * Reuses the same mock-endpoint pattern as
  * `derivatives_payoff_dart_number_parity.spec.js` (flat payoff curve,
@@ -195,31 +210,47 @@ test.describe('Payoff chart — Exp P&L bottom pill, label renames, legend marke
     expect(block).toMatch(/expChipY = height - PAD_B - expChipH - 3/);
   });
 
-  test('SOURCE: the top spot pill and bottom Exp P&L pill share one translucent-wash recipe, distinguished only by hue (2026-11-27, follow-up #2)', () => {
+  test('SOURCE: the top spot pill and bottom Exp P&L pill use genuinely different background schemes (2026-11-28 revert)', () => {
     const src = readFileSync(PAYOFF_PATH, 'utf8');
 
+    // The pill fill itself is a SOLID opaque cyan (dark-on-bright), not
+    // the translucent wash the bottom pill uses — this is the actual
+    // regression guard: a prior intermediate fix made this element read
+    // `fill="var(--algo-cyan-bg-strong, ...)"` (a wash), which would be
+    // the exact "shade variant" of the bottom pill this test rejects.
     const spotIdx = src.indexOf('class="payoff-spot-pill"');
     expect(spotIdx, 'top spot pill (.payoff-spot-pill) not found').toBeGreaterThan(-1);
-    const spotBlock = src.slice(spotIdx, spotIdx + 400);
-    // Top pill now uses the SAME translucent-wash recipe as the bottom
-    // pill (cyan hue): no solid "#22d3ee" fill, no light-white rim —
-    // both were found to read as a flat, low-contrast blob in a real
-    // screenshot. Translucent wash fill + full-brightness cyan border
-    // + full-brightness cyan text instead.
-    expect(spotBlock).toMatch(/fill="var\(--algo-cyan-bg-strong/);
-    expect(spotBlock).not.toMatch(/fill="#22d3ee"/);
-    expect(spotBlock).not.toMatch(/stroke="#ffffff"/);
-    expect(spotBlock).toMatch(/stroke="#22d3ee"/);
-    expect(spotBlock).toMatch(/stroke-width="1\.5"/);
-    expect(spotBlock).toMatch(/vector-effect="non-scaling-stroke"/);
+    const spotBlock = src.slice(spotIdx, spotIdx + 250);
+    expect(spotBlock).toMatch(/fill="var\(--algo-cyan, #22d3ee\)"/);
+    expect(spotBlock).not.toMatch(/--algo-cyan-bg-strong/);
+    // No stroke on the pill's own edge — a border drawn directly on a
+    // solid bright fill is the original invisible-rim bug; the border
+    // is a separate ring element instead (asserted below).
+    expect(spotBlock).not.toMatch(/stroke=/);
+
+    // The border is a dedicated ring, drawn OUTSIDE the pill with a
+    // navy gap on both sides, in the same bright cyan the fill uses —
+    // genuinely visible against both the fill and the dark backdrop,
+    // unlike a dark stroke (which would blend into the navy mask) or a
+    // bright stroke on the fill's own edge (which would blend into the
+    // fill, the original bug).
+    const ringIdx = src.indexOf('class="payoff-spot-pill-ring"');
+    expect(ringIdx, 'top spot pill ring (.payoff-spot-pill-ring) not found').toBeGreaterThan(-1);
+    const ringBlock = src.slice(ringIdx, ringIdx + 300);
+    expect(ringBlock).toMatch(/fill="none"/);
+    expect(ringBlock).toMatch(/stroke="var\(--algo-cyan, #22d3ee\)"/);
+    expect(ringBlock).toMatch(/stroke-width="1\.5"/);
+    expect(ringBlock).toMatch(/vector-effect="non-scaling-stroke"/);
+    expect(ringBlock).not.toMatch(/stroke="#ffffff"/);
 
     const spotTextIdx = src.indexOf('class="payoff-spot-pill-text"');
     expect(spotTextIdx, 'top spot pill text (.payoff-spot-pill-text) not found').toBeGreaterThan(-1);
     const spotTextBlock = src.slice(spotTextIdx, spotTextIdx + 150);
-    // Bright cyan text (readable against the dark translucent fill),
-    // not the dark "#0c1830" text the old solid-fill version used.
-    expect(spotTextBlock).toMatch(/fill="#22d3ee"/);
-    expect(spotTextBlock).not.toMatch(/fill="#0c1830"/);
+    // Dark navy text (readable against the SOLID bright fill) — the
+    // opposite of the bottom pill's bright-on-dark text.
+    expect(spotTextBlock).toMatch(/fill="#0c1830"/);
+    expect(spotTextBlock).not.toMatch(/fill="#22d3ee"/);
+    expect(spotTextBlock).not.toMatch(/fill="var\(--algo-cyan/);
 
     const expIdx = src.indexOf('class="payoff-exp-pill"');
     expect(expIdx, 'bottom Exp P&L pill (.payoff-exp-pill) not found').toBeGreaterThan(-1);
@@ -261,27 +292,35 @@ test.describe('Payoff chart — Exp P&L bottom pill, label renames, legend marke
     const matchFound = pillTexts.some((t) => cleaned(t) !== '' && cleaned(t) === cleaned(expText));
     expect(matchFound, `expected a chart <text> matching the Exp P&L stat row's own text (${expText}); saw: ${JSON.stringify(pillTexts)}`).toBe(true);
 
-    // Two <rect>s for the top spot pill, two more for the new bottom pill
-    // (mask + pill each) — now in the foreground svg layer, still inside
-    // the same .payoff-svg-stack wrapper.
+    // Three <rect>s for the top spot pill (mask + ring + solid fill),
+    // two more for the bottom Exp P&L pill (mask + pill) — now in the
+    // foreground svg layer, still inside the same .payoff-svg-stack
+    // wrapper.
     const rectCount = await chartStack.locator('rect').count();
-    expect(rectCount, 'expected at least 4 <rect> elements (2 top spot pill + 2 new bottom Exp P&L pill)').toBeGreaterThanOrEqual(4);
+    expect(rectCount, 'expected at least 5 <rect> elements (3 top spot pill + 2 bottom Exp P&L pill)').toBeGreaterThanOrEqual(5);
   });
 
-  test('LIVE (2026-11-27 follow-up #2): both pills render the same translucent-wash recipe, distinguished only by hue, each with a visible, non-zero border', async ({ page }) => {
+  test('LIVE (2026-11-28 revert): the top spot pill and bottom Exp P&L pill use genuinely different, each-visible background schemes', async ({ page }) => {
     await gotoNiftyStrategy(page, { expPnl: 2345, todayPnl: 1500 });
 
     const spotPill = page.locator('.payoff-spot-pill').first();
+    const spotRing = page.locator('.payoff-spot-pill-ring').first();
+    const spotText = page.locator('.payoff-spot-pill-text').first();
     const expPill = page.locator('.payoff-exp-pill').first();
+    const expText = page.locator('.payoff-exp-pill-text').first();
     await expect(spotPill).toBeVisible({ timeout: 15_000 });
+    await expect(spotRing).toBeVisible({ timeout: 15_000 });
     await expect(expPill).toBeVisible({ timeout: 15_000 });
 
     const styleOf = async (locator) => locator.evaluate((el) => {
       const cs = getComputedStyle(el);
       return { fill: cs.fill, stroke: cs.stroke, strokeWidth: cs.strokeWidth };
     });
-    const spotStyle = await styleOf(spotPill);
-    const expStyle = await styleOf(expPill);
+    const spotPillStyle = await styleOf(spotPill);
+    const spotRingStyle = await styleOf(spotRing);
+    const spotTextStyle = await styleOf(spotText);
+    const expPillStyle = await styleOf(expPill);
+    const expTextStyle = await styleOf(expText);
 
     const alphaOf = (rgbaStr) => {
       const m = rgbaStr.match(/rgba?\(([^)]+)\)/);
@@ -289,27 +328,47 @@ test.describe('Payoff chart — Exp P&L bottom pill, label renames, legend marke
       const parts = m[1].split(',').map((s) => parseFloat(s.trim()));
       return parts.length === 4 ? parts[3] : 1;
     };
-    // Both pills now use the SAME translucent-wash recipe (2026-11-27
-    // follow-up #2) — the top pill's prior fully-opaque solid fill was
-    // found, in a real screenshot, to read as a flat, low-contrast
-    // blob next to the bottom pill's already-good wash treatment.
-    // Neither pill's fill is a solid, fully-opaque colour any more.
-    expect(alphaOf(spotStyle.fill), 'top pill fill must be a translucent wash, not a solid fill').toBeLessThan(0.9);
-    expect(alphaOf(expStyle.fill), 'bottom pill fill must be a translucent wash, not a solid fill').toBeLessThan(0.9);
-    // The two pills still carry genuinely different HUE (cyan vs sky —
-    // the colour-to-meaning mapping is unchanged), even though the fill
-    // TREATMENT (translucent wash) is now shared.
-    expect(spotStyle.fill, 'top pill fill').not.toBe(expStyle.fill);
-    expect(spotStyle.stroke, 'top pill stroke').not.toBe(expStyle.stroke);
+    // Luminance of an "r, g, b" (or "r, g, b, a") string — used below to
+    // confirm the top pill's text is genuinely DARK and the bottom
+    // pill's text is genuinely BRIGHT, not just two different colour
+    // strings that happen to both be "blue".
+    const luminanceOf = (rgbaStr) => {
+      const m = rgbaStr.match(/rgba?\(([^)]+)\)/);
+      if (!m) return 0;
+      const [r, g, b] = m[1].split(',').map((s) => parseFloat(s.trim()));
+      return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+    };
 
-    // Both pills must carry a real, visible border (non-zero stroke
-    // width, with a stroke colour set).
-    expect(parseFloat(spotStyle.strokeWidth), 'top pill border width').toBeGreaterThan(0);
-    expect(parseFloat(expStyle.strokeWidth), 'bottom pill border width').toBeGreaterThan(0);
-    expect(spotStyle.stroke, 'top pill must have a stroke colour').not.toBe('none');
-    expect(expStyle.stroke, 'bottom pill must have a stroke colour').not.toBe('none');
-    // Same border WEIGHT across both pills ("consistent treatment").
-    expect(parseFloat(spotStyle.strokeWidth)).toBeCloseTo(parseFloat(expStyle.strokeWidth), 1);
+    // The top pill's FILL is a solid, opaque colour (the badge itself);
+    // the bottom pill's fill is a translucent wash. This is the real
+    // regression guard for "genuinely different background scheme, not
+    // just a shade variant" — a hue-only difference (e.g. cyan vs sky,
+    // both still washes) would pass a bare string-inequality check but
+    // fail this alpha-based one.
+    expect(alphaOf(spotPillStyle.fill), 'top pill fill must be solid/opaque').toBeGreaterThan(0.9);
+    expect(alphaOf(expPillStyle.fill), 'bottom pill fill must be a translucent wash').toBeLessThan(0.5);
+
+    // Text contrast is reversed between the two pills: dark text on the
+    // top pill's bright solid fill, bright text on the bottom pill's
+    // dark translucent fill.
+    expect(luminanceOf(spotTextStyle.fill), 'top pill text must be dark (reads against a bright solid fill)').toBeLessThan(0.3);
+    expect(luminanceOf(expTextStyle.fill), 'bottom pill text must be bright (reads against a dark translucent fill)').toBeGreaterThan(0.5);
+
+    // Both pills must carry a real, visible border — the top pill's
+    // border lives on the separate ring element, not the pill itself.
+    expect(parseFloat(spotRingStyle.strokeWidth), 'top pill ring border width').toBeGreaterThan(0);
+    expect(parseFloat(expPillStyle.strokeWidth), 'bottom pill border width').toBeGreaterThan(0);
+    expect(spotRingStyle.stroke, 'top pill ring must have a stroke colour').not.toBe('none');
+    expect(expPillStyle.stroke, 'bottom pill must have a stroke colour').not.toBe('none');
+    // Same border WEIGHT across both pills ("consistent treatment"),
+    // compared via the top pill's ring (its actual border element).
+    expect(parseFloat(spotRingStyle.strokeWidth)).toBeCloseTo(parseFloat(expPillStyle.strokeWidth), 1);
+
+    // The top pill's own rect carries no stroke at all — its border is
+    // exclusively the separate ring element (confirms the two-layer
+    // gap-ring construction, not a stroke drawn on the fill's own edge).
+    expect(spotPillStyle.strokeWidth === '0px' || spotPillStyle.stroke === 'none',
+      'top pill rect itself must have no stroke of its own').toBe(true);
   });
 
   test('SOURCE (2026-11-27 same-day follow-up): both pills live in the foreground svg, never the background one, so a curve/dart/vertical-spot-line can never paint over them', () => {
