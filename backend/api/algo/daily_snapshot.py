@@ -954,13 +954,36 @@ _UPSERT_SQL = text("""
 """)
 
 
-async def _upsert_rows(rows: list[dict]) -> int:
-    """Upsert a batch of row dicts. Returns count of rows processed."""
+async def _upsert_rows(rows: list[dict], *, captured_at: "datetime | None" = None) -> int:
+    """Upsert a batch of row dicts. Returns count of rows processed.
+
+    `captured_at` — explicit stamp override for every row in this batch.
+    Every normal caller (the main EOD snapshot write) omits this and gets
+    the default `datetime.now(timezone.utc)` stamp, byte-identical to
+    this function's behaviour before this parameter existed.
+
+    Only `run_expiry_devolve_backfill()` passes an explicit value — the
+    already-persisted EOD batch's own `captured_at` for that account, so
+    a backfilled row joins the SAME batch instead of becoming a later,
+    exclusive "latest batch" that would mask every other row the main
+    EOD write already captured correctly for that account (2026-11-28
+    fix). Stamping a backfilled row with `now()` would make
+    `positions.py`'s `latest_batch` CTE (`DISTINCT ON (account) ... ORDER
+    BY captured_at DESC`) pick ONLY the backfilled row as "current" for
+    that account — every other, correctly-captured position would drop
+    out of the closed-hours grid — and would make `_fetch_baseline_pnl_map`
+    / `_BASELINE_PNL_CTE_SQL`'s per-account-per-kind `MAX(captured_at)`
+    anchor the NEXT session's Day P&L baseline to that one backfilled
+    symbol alone, losing every other leg's baseline for the whole
+    session. See `run_expiry_devolve_backfill()`'s own call site for the
+    helper (`_edb_existing_captured_at_for_account`) that resolves the
+    value this parameter must be passed.
+    """
     if not rows:
         return 0
-    now_utc = datetime.now(timezone.utc)
+    stamp = captured_at if captured_at is not None else datetime.now(timezone.utc)
     for r in rows:
-        r["captured_at"] = now_utc
+        r["captured_at"] = stamp
         # Seed previous_close_backup with the same value as previous_close on first INSERT.
         # ON CONFLICT preserves the first-ever written value via COALESCE.
         # NOTE: the dict keys are still "previous_close" / "previous_close_backup" because
@@ -1758,6 +1781,48 @@ async def _edb_existing_symbols_for_account(target_date: date, account: str) -> 
         return {r[0] for r in result.all()}
 
 
+async def _edb_existing_captured_at_for_account(
+    target_date: date, account: str,
+) -> "datetime | None":
+    """Return the already-persisted EOD batch's own `captured_at` for
+    (target_date, account, kind='positions') — the stamp a backfilled
+    row must reuse instead of a fresh `now()` (see `_upsert_rows`'s own
+    docstring for the full incident this closes).
+
+    `MAX(captured_at)` rather than an arbitrary row's value: the main
+    EOD write stamps every row in one `_upsert_rows()` call with a
+    SINGLE shared timestamp, and a later `close_settled` re-write
+    (`_upsert_rows` is called again, same symbols, `ON CONFLICT ...
+    captured_at = EXCLUDED.captured_at`) advances every re-touched row to
+    that later shared stamp too — so by the time this backfill tick runs
+    (~30 min after MCX close, after both the `close` and `close_settled`
+    writes have landed), every existing row for this account+date+kind
+    should already share one common `captured_at`. `MAX` is the
+    defensive choice in case of any skew, so the backfill always joins
+    the MOST RECENT of that account's own already-written rows rather
+    than an older, stale one.
+
+    Returns `None` when no row exists yet — should not normally happen,
+    since the caller only reaches this for a candidate account, which is
+    itself derived from an existing MCX positions row for `target_date`
+    (see `_edb_mcx_expiring_accounts`) — but the caller must treat `None`
+    as "do not write" rather than silently falling back to `_upsert_rows`'s
+    own `now()` default.
+    """
+    from sqlalchemy import func, select
+    from backend.api.models import DailyBook
+
+    async with async_session() as session:
+        result = await session.execute(
+            select(func.max(DailyBook.captured_at)).where(
+                DailyBook.date == target_date,
+                DailyBook.account == account,
+                DailyBook.kind == "positions",
+            )
+        )
+        return result.scalar()
+
+
 def _edb_mcx_expiring_accounts(
     rows: "list[tuple[str, str, int]]", target_date: date,
 ) -> "dict[str, list[str]]":
@@ -1870,7 +1935,24 @@ async def run_expiry_devolve_backfill(target_date: "date | None" = None) -> dict
         if not missing_rows:
             continue
         try:
-            n = await _upsert_rows(missing_rows)
+            # Reuse the already-persisted EOD batch's own captured_at —
+            # NEVER let this write pick up `_upsert_rows`'s own `now()`
+            # default, which would make the backfilled row a later,
+            # exclusive "latest batch" that masks every other correctly-
+            # captured row for this account (see `_upsert_rows`'s own
+            # docstring for the full rationale).
+            existing_captured_at = await _edb_existing_captured_at_for_account(
+                target_date, account,
+            )
+            if existing_captured_at is None:
+                logger.warning(
+                    f"[EXPIRY-DEVOLVE-BACKFILL] [{account}] no existing EOD "
+                    f"batch captured_at found for {target_date} — skipping "
+                    f"backfill write rather than risk corrupting the "
+                    f"account's latest-batch anchor with a fresh now() stamp"
+                )
+                continue
+            n = await _upsert_rows(missing_rows, captured_at=existing_captured_at)
         except Exception as e:
             logger.warning(f"[EXPIRY-DEVOLVE-BACKFILL] [{account}] backfill write failed: {e}")
             continue

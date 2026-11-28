@@ -4476,19 +4476,42 @@ async def _ds_tick_expiry_devolve_backfill(now: datetime, today: date, done_ref:
     path never re-reads the DB marker once it's already fired today;
     `_edb_marker_date()` / `_edb_mark_done()` give the same guarantee
     across a process restart.
+
+    2026-11-28 fix — `session_day` (the trading day this backfill
+    belongs to) is now resolved BEFORE the gate-rows lookup, and that
+    lookup calls `_effective_gate_rows_for_date("MCX", session_day)`
+    instead of the bare, today-anchored `_effective_gate_rows("MCX")`.
+    Since close_time + 30 minutes reliably crosses midnight (see above),
+    this tick almost always runs on the CALENDAR day AFTER the session
+    — e.g. a Friday MCX close is checked just after midnight on
+    Saturday. The old `_effective_gate_rows("MCX")` call resolved rows
+    for "today" at tick-run time (Saturday), whose Mon-Fri weekday
+    filter (or a next-day MCX holiday override) returns `[]` — `close_t`
+    then resolved to `None` and the function returned before the
+    already-correct `is_post_midnight`/`session_day` adjustment below
+    ever mattered, silently skipping the backfill for every Friday MCX
+    session (or any session immediately followed by an MCX holiday).
+    Same bug class as `_sg_recover_mcx_snapshot()`'s and
+    `_run_nav_compute_once()`'s own midnight-wrap fixes (see CLAUDE.md's
+    "`exchange_clock.py` weekday/midnight-wrap root cause" entry) —
+    resolving a session's own governing rows must always use the
+    SESSION's calendar date, never "now"'s real-clock date, once a
+    derived post-close trigger crosses midnight.
     """
-    rows = exchange_clock._effective_gate_rows("MCX")
-    close_t = rows[0].close_time if rows else None
-    if close_t is None:
-        return
     # [00:00, 02:00) IST: `now` has already rolled past midnight, so the
     # close we're checking belongs to YESTERDAY's session (same
     # post-midnight catch-up window `_ds_tick_mcx_stop` uses, just
-    # applied before building the threshold rather than after).
+    # applied before building the threshold rather than after). Resolved
+    # FIRST, before the gate-rows lookup below, so that lookup always
+    # resolves the SESSION's own governing rows rather than "today"'s.
     is_post_midnight = now.time() < dtime(2, 0)
     session_day = today - timedelta(days=1) if is_post_midnight else today
     fire_date = session_day
     if done_ref[0] == fire_date:
+        return
+    rows = exchange_clock._effective_gate_rows_for_date("MCX", session_day)
+    close_t = rows[0].close_time if rows else None
+    if close_t is None:
         return
     thresh_dt = datetime.combine(session_day, close_t, tzinfo=now.tzinfo) + timedelta(minutes=30)
     if now < thresh_dt:

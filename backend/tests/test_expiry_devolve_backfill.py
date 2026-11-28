@@ -29,7 +29,7 @@ post-midnight-rollover handling), gated by a one-shot-per-day DB marker
 from __future__ import annotations
 
 import types
-from datetime import date, datetime, time as dtime
+from datetime import date, datetime, time as dtime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -204,9 +204,17 @@ class TestRunExpiryDevolveBackfillGapFound:
         ]
 
         upserted: list = []
+        upsert_calls: list = []
+        # The already-persisted main EOD batch's own captured_at for this
+        # account — the backfilled row MUST reuse this exact stamp, never
+        # a fresh `now()` (see `_upsert_rows`'s own docstring: a later
+        # stamp would make the backfilled row a later, exclusive "latest
+        # batch" that masks every other correctly-captured row).
+        existing_eod_captured_at = datetime(2026, 11, 27, 18, 15, tzinfo=timezone.utc)
 
-        async def _fake_upsert(rows):
+        async def _fake_upsert(rows, *, captured_at=None):
             upserted.extend(rows)
+            upsert_calls.append(captured_at)
             return len(rows)
 
         broker = _fake_broker("ZG0790")
@@ -215,6 +223,9 @@ class TestRunExpiryDevolveBackfillGapFound:
             ds, "_edb_query_mcx_positions_rows", AsyncMock(return_value=candidate_rows),
         ), patch.object(
             ds, "_edb_existing_symbols_for_account", AsyncMock(return_value=existing_symbols),
+        ), patch.object(
+            ds, "_edb_existing_captured_at_for_account",
+            AsyncMock(return_value=existing_eod_captured_at),
         ), patch("backend.brokers.registry.all_brokers", return_value=[broker]), \
              patch.object(
                  ds, "_fetch_account_data",
@@ -237,6 +248,11 @@ class TestRunExpiryDevolveBackfillGapFound:
         assert row["kind"] == "positions"
         assert row["date"] == _TARGET_DATE
         assert row["qty"] == -1
+
+        # The defect-1 regression check: the backfilled row's captured_at
+        # was threaded through as the account's own existing EOD batch
+        # stamp, not left to default to a fresh `now()`.
+        assert upsert_calls == [existing_eod_captured_at]
 
         mock_broadcast.assert_called_once_with(["ZG0790"])
 
@@ -277,10 +293,23 @@ class TestRunExpiryDevolveBackfillGapFound:
         async def _fake_existing(target_date, account):
             return {_ZG_OPTION} if account == "ZG0790" else {_ZJ_OPTION}
 
-        upserted: list = []
+        # Each account's own, DIFFERENT existing EOD batch captured_at —
+        # proves the stamp is resolved per-account, never shared/mixed up.
+        _captured_at_by_account = {
+            "ZG0790": datetime(2026, 11, 27, 18, 15, tzinfo=timezone.utc),
+            "ZJ6294": datetime(2026, 11, 27, 18, 16, tzinfo=timezone.utc),
+        }
 
-        async def _fake_upsert(rows):
+        async def _fake_existing_captured_at(target_date, account):
+            return _captured_at_by_account[account]
+
+        upserted: list = []
+        upsert_captured_at_by_symbol: dict = {}
+
+        async def _fake_upsert(rows, *, captured_at=None):
             upserted.extend(rows)
+            for r in rows:
+                upsert_captured_at_by_symbol[r["symbol"]] = captured_at
             return len(rows)
 
         broker_zg = _fake_broker("ZG0790")
@@ -289,6 +318,7 @@ class TestRunExpiryDevolveBackfillGapFound:
         with patch.object(
             ds, "_edb_query_mcx_positions_rows", AsyncMock(return_value=candidate_rows),
         ), patch.object(ds, "_edb_existing_symbols_for_account", _fake_existing), \
+             patch.object(ds, "_edb_existing_captured_at_for_account", _fake_existing_captured_at), \
              patch("backend.brokers.registry.all_brokers", return_value=[broker_zg, broker_zj]), \
              patch.object(ds, "_fetch_account_data", side_effect=lambda broker, account, target_date: _raw_for(account)), \
              patch.object(ds, "_upsert_rows", _fake_upsert), \
@@ -300,6 +330,15 @@ class TestRunExpiryDevolveBackfillGapFound:
         assert result["symbols_backfilled"]["ZJ6294"] == [_ZJ_DEVOLVED_FUTURE]
         backfilled_symbols = {r["symbol"] for r in upserted}
         assert backfilled_symbols == {_ZG_DEVOLVED_FUTURE, _ZJ_DEVOLVED_FUTURE}
+
+        # Each account's backfilled row reused ITS OWN existing EOD batch
+        # captured_at — never cross-contaminated with the other account's.
+        assert upsert_captured_at_by_symbol[_ZG_DEVOLVED_FUTURE] == (
+            _captured_at_by_account["ZG0790"]
+        )
+        assert upsert_captured_at_by_symbol[_ZJ_DEVOLVED_FUTURE] == (
+            _captured_at_by_account["ZJ6294"]
+        )
 
 
 class TestRunExpiryDevolveBackfillNoGap:
@@ -380,7 +419,7 @@ class TestDsTickExpiryDevolveBackfill:
         now = datetime(2026, 11, 27, 23, 55, tzinfo=IST)  # close(23:30)+25min, before +30
         today = now.date()
         done_ref = [None]
-        with patch.object(exchange_clock, "_effective_gate_rows", return_value=[_mcx_row()]), \
+        with patch.object(exchange_clock, "_effective_gate_rows_for_date", return_value=[_mcx_row()]), \
              patch(
                  "backend.api.algo.daily_snapshot.run_expiry_devolve_backfill", AsyncMock(),
              ) as mock_run:
@@ -395,7 +434,7 @@ class TestDsTickExpiryDevolveBackfill:
         now = datetime(2026, 11, 28, 0, 0, 0, tzinfo=IST)  # MCX close(23:30)+30min = 00:00
         today = now.date()  # real caller convention — today is always now.date()
         done_ref = [None]
-        with patch.object(exchange_clock, "_effective_gate_rows", return_value=[_mcx_row()]), \
+        with patch.object(exchange_clock, "_effective_gate_rows_for_date", return_value=[_mcx_row()]), \
              patch(
                  "backend.api.algo.daily_snapshot.run_expiry_devolve_backfill",
                  AsyncMock(return_value={"accounts_backfilled": []}),
@@ -413,7 +452,7 @@ class TestDsTickExpiryDevolveBackfill:
         now = datetime(2026, 11, 28, 1, 0, tzinfo=IST)
         today = now.date()
         done_ref = [None]
-        with patch.object(exchange_clock, "_effective_gate_rows", return_value=[]), \
+        with patch.object(exchange_clock, "_effective_gate_rows_for_date", return_value=[]), \
              patch(
                  "backend.api.algo.daily_snapshot.run_expiry_devolve_backfill", AsyncMock(),
              ) as mock_run:
@@ -430,7 +469,7 @@ class TestDsTickExpiryDevolveBackfill:
         today = now.date()
         fire_date = date(2026, 11, 27)
         done_ref = [fire_date]  # already fired for this session date
-        with patch.object(exchange_clock, "_effective_gate_rows", return_value=[_mcx_row()]), \
+        with patch.object(exchange_clock, "_effective_gate_rows_for_date", return_value=[_mcx_row()]), \
              patch(
                  "backend.api.algo.daily_snapshot.run_expiry_devolve_backfill", AsyncMock(),
              ) as mock_run:
@@ -448,7 +487,7 @@ class TestDsTickExpiryDevolveBackfill:
         today = now.date()
         fire_date = date(2026, 11, 27)
         done_ref = [None]  # fresh process — no in-memory record
-        with patch.object(exchange_clock, "_effective_gate_rows", return_value=[_mcx_row()]), \
+        with patch.object(exchange_clock, "_effective_gate_rows_for_date", return_value=[_mcx_row()]), \
              patch(
                  "backend.api.algo.daily_snapshot.run_expiry_devolve_backfill", AsyncMock(),
              ) as mock_run, \
@@ -469,7 +508,7 @@ class TestDsTickExpiryDevolveBackfill:
         today = now.date()  # real caller convention — today is always now.date()
         fire_date = date(2026, 11, 27)
         done_ref = [None]
-        with patch.object(exchange_clock, "_effective_gate_rows", return_value=[_mcx_row()]), \
+        with patch.object(exchange_clock, "_effective_gate_rows_for_date", return_value=[_mcx_row()]), \
              patch(
                  "backend.api.algo.daily_snapshot.run_expiry_devolve_backfill",
                  AsyncMock(side_effect=RuntimeError("boom")),
@@ -478,6 +517,183 @@ class TestDsTickExpiryDevolveBackfill:
             await _ds_tick_expiry_devolve_backfill(now, today, done_ref)
         assert done_ref[0] == fire_date
         mock_mark_done.assert_awaited_once_with(fire_date)
+
+
+# ---------------------------------------------------------------------------
+# _ds_tick_expiry_devolve_backfill — session-day gate-row resolution
+# (2026-11-28 fix for defect 2: the OLD code called
+# `exchange_clock._effective_gate_rows("MCX")` — today-anchored, at
+# tick-run time — BEFORE computing `session_day`. Since MCX close + 30
+# minutes reliably crosses IST midnight, this tick almost always runs on
+# the calendar day AFTER the session (e.g. a Friday close checked just
+# after midnight on Saturday). "Today" at that moment is Saturday, whose
+# Mon-Fri weekday filter returns `[]` — close_t resolves to None and the
+# function returns before the already-correct `session_day` adjustment
+# ever mattered, silently skipping every Friday MCX session.
+#
+# These tests exercise the REAL `exchange_clock._CACHE` + real
+# `_effective_gate_rows_for_date`/`_effective_gate_rows` (not a mocked
+# return value) — same pattern as
+# `test_exchange_clock_mcx_winter_snapshot_gap.py`'s sibling midnight-
+# wrap fix, which this fix follows.
+# ---------------------------------------------------------------------------
+
+
+class TestDsTickExpiryDevolveBackfillSessionDayResolution:
+    FRIDAY = date(2026, 11, 20)
+    SATURDAY = date(2026, 11, 21)
+
+    @staticmethod
+    def _default_row(close_time, weekdays=(0, 1, 2, 3, 4)):
+        """A default (date=None) MCX gate row, weekday-filtered — same
+        shape `_row_matches_date`/`_effective_gate_rows_for_date`
+        inspect (`gate`, `date`, `weekdays`, `close_time`)."""
+        return types.SimpleNamespace(
+            gate="MCX", date=None, weekdays=list(weekdays), close_time=close_time,
+        )
+
+    @staticmethod
+    def _override_row(for_date, close_time):
+        """A date-specific override row (e.g. an MCX holiday,
+        close_time=None) — overrides have absolute priority over
+        default rows for that one date, per
+        `_effective_gate_rows_for_date`'s own docstring."""
+        return types.SimpleNamespace(
+            gate="MCX", date=for_date, weekdays=None, close_time=close_time,
+        )
+
+    @pytest.fixture(autouse=True)
+    def _restore_cache(self):
+        """`exchange_clock._CACHE` is module-level global state — isolate
+        it per test so this class can't leak into any other test's cache
+        (same convention as `test_exchange_clock_mcx_winter_snapshot_gap.py`)."""
+        from backend.api.helpers import exchange_clock
+        original = exchange_clock._CACHE
+        yield
+        exchange_clock._CACHE = original
+
+    async def test_friday_winter_close_fires_when_checked_saturday_post_midnight(self):
+        """The real reported hazard: a Friday MCX close at the winter
+        23:55 IST close, checked just after midnight on Saturday
+        (close+30min reliably crosses midnight). The fix must resolve
+        Friday's own default row via `_effective_gate_rows_for_date`
+        (keyed on `session_day`=Friday), not the bare, today-anchored
+        `_effective_gate_rows` (which would resolve "today"=Saturday and
+        find nothing, per the next test)."""
+        from backend.api.background import _ds_tick_expiry_devolve_backfill
+        from backend.api.helpers import exchange_clock
+
+        assert self.FRIDAY.weekday() == 4 and self.SATURDAY.weekday() == 5
+        exchange_clock._CACHE = [self._default_row(dtime(23, 55))]
+        now = datetime(2026, 11, 21, 0, 25, tzinfo=IST)  # Sat 00:25 = Fri close(23:55)+30min
+        today = now.date()
+        done_ref = [None]
+
+        with patch(
+            "backend.api.algo.daily_snapshot.run_expiry_devolve_backfill",
+            AsyncMock(return_value={"accounts_backfilled": []}),
+        ) as mock_run, \
+             patch("backend.api.background._edb_marker_date", AsyncMock(return_value=None)), \
+             patch("backend.api.background._edb_mark_done", AsyncMock()) as mock_mark_done:
+            await _ds_tick_expiry_devolve_backfill(now, today, done_ref)
+
+        mock_run.assert_awaited_once()
+        mock_mark_done.assert_awaited_once_with(self.FRIDAY)
+        assert done_ref[0] == self.FRIDAY
+
+    def test_old_today_anchored_lookup_would_have_found_nothing(self):
+        """Contrast proof, not exercising the tick itself: the bare,
+        today-anchored `_effective_gate_rows` (what the PRE-FIX code
+        called) genuinely returns `[]` at the exact clock moment the
+        test above fires at — demonstrating the old code path's gate-rows
+        lookup really was the defect, not merely a cosmetic rename."""
+        from backend.api.helpers import exchange_clock
+
+        exchange_clock._CACHE = [self._default_row(dtime(23, 55))]
+        saturday_post_midnight = datetime(2026, 11, 21, 0, 25, tzinfo=IST)
+
+        with patch.object(exchange_clock, "_now_ist", return_value=saturday_post_midnight):
+            today_anchored = exchange_clock._effective_gate_rows("MCX")
+        assert today_anchored == []  # the bug: "today" is Saturday, no Mon-Fri row matches
+
+        session_anchored = exchange_clock._effective_gate_rows_for_date("MCX", self.FRIDAY)
+        assert len(session_anchored) == 1  # the fix: resolved directly against Friday
+
+    async def test_unrelated_holiday_override_the_day_after_does_not_block_the_session(self):
+        """A date-specific MCX holiday override row for the day AFTER
+        the session (e.g. a long weekend) must never suppress resolution
+        of the SESSION's own (Friday's) default row — overrides are
+        matched by their own exact date, never leak across dates."""
+        from backend.api.background import _ds_tick_expiry_devolve_backfill
+        from backend.api.helpers import exchange_clock
+
+        exchange_clock._CACHE = [
+            self._default_row(dtime(23, 30)),
+            self._override_row(self.SATURDAY, None),  # Saturday itself irrelevant here
+        ]
+        now = datetime(2026, 11, 21, 0, 5, tzinfo=IST)  # Fri close(23:30)+30min = Sat 00:00
+        today = now.date()
+        done_ref = [None]
+
+        with patch(
+            "backend.api.algo.daily_snapshot.run_expiry_devolve_backfill",
+            AsyncMock(return_value={"accounts_backfilled": []}),
+        ) as mock_run, \
+             patch("backend.api.background._edb_marker_date", AsyncMock(return_value=None)), \
+             patch("backend.api.background._edb_mark_done", AsyncMock()):
+            await _ds_tick_expiry_devolve_backfill(now, today, done_ref)
+
+        mock_run.assert_awaited_once()
+
+    async def test_session_day_itself_an_mcx_holiday_override_does_not_fire(self):
+        """When the SESSION's own date carries a holiday override
+        (close_time=None — e.g. a date-specific Muhurat/holiday row),
+        the resolved close_t is None and the tick must not fire at all,
+        regardless of how far past midnight `now` is."""
+        from backend.api.background import _ds_tick_expiry_devolve_backfill
+        from backend.api.helpers import exchange_clock
+
+        exchange_clock._CACHE = [
+            self._default_row(dtime(23, 30)),
+            self._override_row(self.FRIDAY, None),  # Friday ITSELF is an MCX holiday
+        ]
+        now = datetime(2026, 11, 21, 0, 30, tzinfo=IST)  # well past any threshold
+        today = now.date()
+        done_ref = [None]
+
+        with patch(
+            "backend.api.algo.daily_snapshot.run_expiry_devolve_backfill", AsyncMock(),
+        ) as mock_run:
+            await _ds_tick_expiry_devolve_backfill(now, today, done_ref)
+
+        mock_run.assert_not_awaited()
+
+    async def test_normal_weekday_pre_midnight_resolves_rows_but_still_waits(self):
+        """Non-regression for the `is_post_midnight=False` branch
+        (`session_day == today`, no wrap in play yet): the reordering in
+        this fix must not change the common pre-midnight case — rows
+        still resolve correctly against `today` via the REAL
+        `_effective_gate_rows_for_date`, and the tick still correctly
+        waits (close+30min for a 23:30 close always lands the NEXT
+        calendar day, so it can never fire before midnight)."""
+        from backend.api.background import _ds_tick_expiry_devolve_backfill
+        from backend.api.helpers import exchange_clock
+
+        tuesday = date(2026, 11, 24)
+        assert tuesday.weekday() == 1
+        exchange_clock._CACHE = [self._default_row(dtime(23, 30))]
+        now = datetime(2026, 11, 24, 23, 31, tzinfo=IST)  # same day, well past 23:30 (not +30 yet)
+        today = now.date()
+        done_ref = [None]
+
+        with patch(
+            "backend.api.algo.daily_snapshot.run_expiry_devolve_backfill", AsyncMock(),
+        ) as mock_run:
+            await _ds_tick_expiry_devolve_backfill(now, today, done_ref)
+
+        # 23:31 is before close(23:30)+30min=00:00 the next day — must not fire yet.
+        mock_run.assert_not_awaited()
+        assert done_ref[0] is None
 
 
 # ---------------------------------------------------------------------------
@@ -551,6 +767,19 @@ def _make_session_mock(all_return):
     return mock_session
 
 
+def _make_scalar_session_mock(scalar_return):
+    """Same convention as `_make_session_mock` above, but for a query
+    whose result is read via `.scalar()` (a `select(func.max(...))`)
+    rather than `.all()`."""
+    result = MagicMock()
+    result.scalar.return_value = scalar_return
+    mock_session = AsyncMock()
+    mock_session.execute = AsyncMock(return_value=result)
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+    return mock_session
+
+
 class TestEdbDbReadFunctions:
     async def test_query_mcx_positions_rows_real_body(self):
         from backend.api.algo import daily_snapshot as ds
@@ -589,6 +818,27 @@ class TestEdbDbReadFunctions:
             existing = await ds._edb_existing_symbols_for_account(_TARGET_DATE, "ZG0790")
         assert existing == set()
 
+    async def test_existing_captured_at_for_account_real_body(self):
+        """The real SELECT func.max(captured_at) body — defect-1 fix."""
+        from backend.api.algo import daily_snapshot as ds
+
+        stamp = datetime(2026, 11, 27, 18, 15, tzinfo=timezone.utc)
+        mock_session = _make_scalar_session_mock(stamp)
+        with patch.object(ds, "async_session", return_value=mock_session):
+            result = await ds._edb_existing_captured_at_for_account(_TARGET_DATE, "ZG0790")
+        assert result == stamp
+
+    async def test_existing_captured_at_for_account_none_when_no_row(self):
+        """No existing row for (target_date, account, kind='positions')
+        → `None`, never a fabricated/defaulted value — the caller must
+        treat this as 'do not write'."""
+        from backend.api.algo import daily_snapshot as ds
+
+        mock_session = _make_scalar_session_mock(None)
+        with patch.object(ds, "async_session", return_value=mock_session):
+            result = await ds._edb_existing_captured_at_for_account(_TARGET_DATE, "ZG0790")
+        assert result is None
+
 
 class TestRunExpiryDevolveBackfillUpsertFailure:
     """The `_upsert_rows` write itself failing for one account must be
@@ -612,6 +862,12 @@ class TestRunExpiryDevolveBackfillUpsertFailure:
             ds, "_edb_query_mcx_positions_rows", AsyncMock(return_value=candidate_rows),
         ), patch.object(
             ds, "_edb_existing_symbols_for_account", AsyncMock(return_value={_ZG_OPTION}),
+        ), patch.object(
+            # Resolve a real captured_at so the exercised failure is
+            # genuinely the `_upsert_rows` write itself, not an
+            # incidental fall-through from `captured_at is None`.
+            ds, "_edb_existing_captured_at_for_account",
+            AsyncMock(return_value=datetime(2026, 11, 27, 18, 15, tzinfo=timezone.utc)),
         ), patch("backend.brokers.registry.all_brokers", return_value=[broker]), \
              patch.object(
                  ds, "_fetch_account_data",
@@ -624,6 +880,44 @@ class TestRunExpiryDevolveBackfillUpsertFailure:
         assert result["accounts_checked"] == ["ZG0790"]
         assert result["accounts_backfilled"] == []
         assert result["symbols_backfilled"] == {}
+        mock_broadcast.assert_not_called()
+
+    async def test_missing_existing_captured_at_skips_write_instead_of_defaulting_to_now(self):
+        """When no existing EOD batch captured_at can be resolved for the
+        account (should not normally happen — see
+        `_edb_existing_captured_at_for_account`'s own docstring — but
+        must fail SAFE), the write is skipped entirely rather than
+        falling back to `_upsert_rows`'s own `now()` default, which
+        would risk corrupting the account's latest-batch anchor."""
+        from backend.api.algo import daily_snapshot as ds
+
+        candidate_rows = [("ZG0790", _ZG_OPTION, -50)]
+        raw_positions = [
+            {"tradingsymbol": _ZG_OPTION, "exchange": "MCX", "quantity": 0,
+             "average_price": 0.0, "last_price": 0.0, "pnl": -1200.0},
+            {"tradingsymbol": _ZG_DEVOLVED_FUTURE, "exchange": "MCX", "quantity": -1,
+             "average_price": 68000.0, "last_price": 68200.0, "pnl": -200.0,
+             "close_price": 68000.0},
+        ]
+        broker = _fake_broker("ZG0790")
+
+        with patch.object(
+            ds, "_edb_query_mcx_positions_rows", AsyncMock(return_value=candidate_rows),
+        ), patch.object(
+            ds, "_edb_existing_symbols_for_account", AsyncMock(return_value={_ZG_OPTION}),
+        ), patch.object(
+            ds, "_edb_existing_captured_at_for_account", AsyncMock(return_value=None),
+        ), patch("backend.brokers.registry.all_brokers", return_value=[broker]), \
+             patch.object(
+                 ds, "_fetch_account_data",
+                 return_value={"holdings": [], "positions": raw_positions, "trades": [], "funds": []},
+             ), \
+             patch.object(ds, "_upsert_rows", AsyncMock()) as mock_upsert, \
+             patch.object(ds, "_snap_broadcast_book_changed") as mock_broadcast:
+            result = await ds.run_expiry_devolve_backfill(target_date=_TARGET_DATE)
+
+        mock_upsert.assert_not_called()
+        assert result["accounts_backfilled"] == []
         mock_broadcast.assert_not_called()
 
 
