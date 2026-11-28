@@ -1027,6 +1027,300 @@ class TestEdbExistingCapturedAtRealSqlNullLtpFiltered:
         assert result.replace(tzinfo=None) == valid_at.replace(tzinfo=None)
 
 
+# ---------------------------------------------------------------------------
+# _edb_existing_symbols_for_account — Round 4 audit fix (same incident,
+# follow-up to the sibling fix above): the helper's own SQL must agree with
+# BOTH criteria `positions.py`'s own `_positions_snapshot()` query actually
+# applies — (1) batch membership, `captured_at` equal to this account's own
+# `MAX(captured_at WHERE ltp IS NOT NULL AND ltp > 0)` (the same stamp
+# `latest_batch` / `_edb_existing_captured_at_for_account()` resolve), AND
+# (2) the reader's own per-row delivery filter applied to every row sharing
+# that stamp, `db.ltp IS NULL OR db.ltp > 0` — a NULL-ltp row within the
+# current batch IS delivered, a ZERO-ltp row within the same batch is NOT
+# (confirmed by reading `positions.py`'s `_positions_snapshot()` WHERE
+# clause directly, not inferred). Without BOTH criteria the gap-detector in
+# `run_expiry_devolve_backfill()` either wrongly treats a later batch's
+# null-ltp-only row as "already captured" (missing criterion 1) or wrongly
+# treats a same-batch zero-ltp row as "already captured" even though the
+# reader never delivers it (missing criterion 2). Same real (sqlite, async)
+# session convention as `TestEdbExistingCapturedAtRealSqlNullLtpFiltered`
+# above.
+# ---------------------------------------------------------------------------
+
+
+class TestEdbExistingSymbolsForAccountRealSqlNullLtpFiltered:
+    """Round 4 audit finding: without this helper's combined batch-
+    membership + per-row-delivery filter, a devolved future `F` that
+    already has a NULL-ltp daily_book row in a LATER, separate batch
+    (e.g. a mid-session null-out batch — the 2026-11-26
+    `market_lifecycle.py` DST incident) would be wrongly counted as
+    'already captured', so the gap-detector in
+    `run_expiry_devolve_backfill()` would never flag `F` as missing and
+    the backfill would never fire for it — even though
+    `positions.py`'s own readers would never select that row either
+    (it isn't part of the account's current latest-valid batch),
+    leaving `F` genuinely invisible everywhere that matters."""
+
+    async def test_newer_null_ltp_symbol_not_counted_as_existing(
+        self, _edb_real_session_factory,
+    ):
+        from backend.api.algo import daily_snapshot as ds
+
+        older_valid_at = datetime(2026, 11, 27, 16, 0, tzinfo=timezone.utc)
+        newer_null_at = datetime(2026, 11, 27, 18, 15, tzinfo=timezone.utc)
+
+        # Older batch: the option O, already captured with a valid ltp.
+        await _edb_seed_positions_row(
+            _edb_real_session_factory, account="ZG0790", symbol=_ZG_OPTION,
+            ltp=70000.0, captured_at=older_valid_at,
+        )
+        # Newer batch: the devolved future F, present but with a NULL
+        # ltp — the exact mid-session null-out symptom this fix targets.
+        await _edb_seed_positions_row(
+            _edb_real_session_factory, account="ZG0790", symbol=_ZG_DEVOLVED_FUTURE,
+            ltp=None, captured_at=newer_null_at,
+        )
+
+        with patch.object(ds, "async_session", _edb_real_session_factory):
+            existing = await ds._edb_existing_symbols_for_account(_TARGET_DATE, "ZG0790")
+
+        # O (valid ltp) is "existing"; F (null ltp) must NOT be — so the
+        # gap-detector's `symbol not in existing` check correctly flags
+        # F as missing and the backfill proceeds for it.
+        assert existing == {_ZG_OPTION}
+        assert _ZG_DEVOLVED_FUTURE not in existing
+
+    async def test_zero_ltp_symbol_also_not_counted_as_existing(
+        self, _edb_real_session_factory,
+    ):
+        """A zero-ltp row in a LATER, separate batch (not sharing the
+        valid batch's own captured_at stamp) must be excluded too —
+        batch membership alone already fails this case, independent of
+        whichever of NULL/zero the row's own ltp happens to be. See
+        `test_zero_ltp_row_sharing_the_valid_batch_stamp_does_not_count_as_existing`
+        below for the harder, same-batch case where the per-row delivery
+        filter (not batch membership) is what excludes it."""
+        from backend.api.algo import daily_snapshot as ds
+
+        await _edb_seed_positions_row(
+            _edb_real_session_factory, account="ZG0790", symbol=_ZG_OPTION,
+            ltp=70000.0, captured_at=datetime(2026, 11, 27, 16, 0, tzinfo=timezone.utc),
+        )
+        await _edb_seed_positions_row(
+            _edb_real_session_factory, account="ZG0790", symbol=_ZG_DEVOLVED_FUTURE,
+            ltp=0.0, captured_at=datetime(2026, 11, 27, 18, 15, tzinfo=timezone.utc),
+        )
+
+        with patch.object(ds, "async_session", _edb_real_session_factory):
+            existing = await ds._edb_existing_symbols_for_account(_TARGET_DATE, "ZG0790")
+
+        assert existing == {_ZG_OPTION}
+        assert _ZG_DEVOLVED_FUTURE not in existing
+
+    async def test_valid_ltp_symbol_still_counted_as_existing(
+        self, _edb_real_session_factory,
+    ):
+        """Non-regression: an ordinary, genuinely valid row (the common
+        case) must still read as 'existing' through the real SQL path
+        once the filter is applied."""
+        from backend.api.algo import daily_snapshot as ds
+
+        await _edb_seed_positions_row(
+            _edb_real_session_factory, account="ZG0790", symbol=_ZG_OPTION,
+            ltp=70000.0, captured_at=datetime(2026, 11, 27, 18, 0, tzinfo=timezone.utc),
+        )
+        await _edb_seed_positions_row(
+            _edb_real_session_factory, account="ZG0790", symbol=_ZG_DEVOLVED_FUTURE,
+            ltp=68200.0, captured_at=datetime(2026, 11, 27, 18, 0, tzinfo=timezone.utc),
+        )
+
+        with patch.object(ds, "async_session", _edb_real_session_factory):
+            existing = await ds._edb_existing_symbols_for_account(_TARGET_DATE, "ZG0790")
+
+        assert existing == {_ZG_OPTION, _ZG_DEVOLVED_FUTURE}
+
+    async def test_null_ltp_row_sharing_the_valid_batch_stamp_counts_as_existing(
+        self, _edb_real_session_factory,
+    ):
+        """Combined criterion, NULL-ltp half: a row with ltp=NULL,
+        sharing the EXACT SAME captured_at stamp as a genuinely valid
+        (ltp>0) sibling row in the same account+date batch, IS a row
+        `positions.py`'s own `_positions_snapshot()` actually delivers —
+        its outer WHERE clause (`db.ltp IS NULL OR db.ltp > 0`) lets a
+        NULL-ltp row through once batch membership is satisfied. It must
+        count as 'existing', or the gap-detector would wrongly flag it
+        as missing and fire a false action-required alert on an
+        ordinary night — e.g. a mixed-exchange account whose MCX leg is
+        still mid-session (ltp=NULL, per `_snap_position_eod_vals`'s own
+        `mid_session` branch) while its NSE leg in the SAME upsert batch
+        has already closed (valid ltp) — the exact 2026-11-26
+        `market_lifecycle.py` DST incident shape, one batch, two
+        exchanges, split validity."""
+        from backend.api.algo import daily_snapshot as ds
+
+        shared_at = datetime(2026, 11, 27, 18, 15, tzinfo=timezone.utc)
+        # O: written with ltp=NULL (still mid-session for its own
+        # exchange) — but SAME captured_at as a valid sibling row in the
+        # identical upsert batch.
+        await _edb_seed_positions_row(
+            _edb_real_session_factory, account="ZG0790", symbol=_ZG_OPTION,
+            ltp=None, captured_at=shared_at,
+        )
+        # The sibling valid row that makes shared_at this account's own
+        # MAX(captured_at WHERE ltp>0) stamp.
+        await _edb_seed_positions_row(
+            _edb_real_session_factory, account="ZG0790", symbol="SOMEOTHERSYMBOL",
+            ltp=12345.0, captured_at=shared_at,
+        )
+
+        with patch.object(ds, "async_session", _edb_real_session_factory):
+            existing = await ds._edb_existing_symbols_for_account(_TARGET_DATE, "ZG0790")
+
+        # Both rows share the batch the reader actually serves — both
+        # must count as existing, even though O's own ltp is NULL.
+        assert existing == {_ZG_OPTION, "SOMEOTHERSYMBOL"}
+
+    async def test_zero_ltp_row_sharing_the_valid_batch_stamp_does_not_count_as_existing(
+        self, _edb_real_session_factory,
+    ):
+        """Combined criterion, ZERO-ltp half (the asymmetric other side
+        of the test above): a row with ltp=0, even sharing the EXACT
+        SAME captured_at stamp as a genuinely valid sibling row, is NOT
+        delivered by `positions.py`'s own outer WHERE clause
+        (`db.ltp IS NULL OR db.ltp > 0` — a literal 0 satisfies neither
+        half). It must NOT count as 'existing' — this row genuinely is
+        invisible to every reader, so the gap-detector correctly treats
+        it the same as a missing row and the backfill may legitimately
+        try to replace it with a fresh, valid ltp from the live broker.
+        A pure batch-level-only criterion (no per-row ltp check at all)
+        would get this case wrong — see this helper's own docstring for
+        why that shape was rejected during review."""
+        from backend.api.algo import daily_snapshot as ds
+
+        shared_at = datetime(2026, 11, 27, 18, 15, tzinfo=timezone.utc)
+        await _edb_seed_positions_row(
+            _edb_real_session_factory, account="ZG0790", symbol=_ZG_OPTION,
+            ltp=0.0, captured_at=shared_at,
+        )
+        await _edb_seed_positions_row(
+            _edb_real_session_factory, account="ZG0790", symbol="SOMEOTHERSYMBOL",
+            ltp=12345.0, captured_at=shared_at,
+        )
+
+        with patch.object(ds, "async_session", _edb_real_session_factory):
+            existing = await ds._edb_existing_symbols_for_account(_TARGET_DATE, "ZG0790")
+
+        assert existing == {"SOMEOTHERSYMBOL"}
+        assert _ZG_OPTION not in existing
+
+    async def test_null_ltp_row_in_an_older_batch_than_the_current_valid_one_not_existing(
+        self, _edb_real_session_factory,
+    ):
+        """A null-ltp row from an OLDER, superseded batch (not the
+        current latest-valid stamp) must NOT count as existing either —
+        only exact membership in the CURRENT latest-valid batch counts."""
+        from backend.api.algo import daily_snapshot as ds
+
+        older_null_at = datetime(2026, 11, 27, 14, 0, tzinfo=timezone.utc)
+        newer_valid_at = datetime(2026, 11, 27, 18, 15, tzinfo=timezone.utc)
+
+        await _edb_seed_positions_row(
+            _edb_real_session_factory, account="ZG0790", symbol=_ZG_DEVOLVED_FUTURE,
+            ltp=None, captured_at=older_null_at,
+        )
+        await _edb_seed_positions_row(
+            _edb_real_session_factory, account="ZG0790", symbol=_ZG_OPTION,
+            ltp=70000.0, captured_at=newer_valid_at,
+        )
+
+        with patch.object(ds, "async_session", _edb_real_session_factory):
+            existing = await ds._edb_existing_symbols_for_account(_TARGET_DATE, "ZG0790")
+
+        assert existing == {_ZG_OPTION}
+        assert _ZG_DEVOLVED_FUTURE not in existing
+
+
+class TestRunExpiryDevolveBackfillGapFoundRealSqlEndToEnd:
+    """End-to-end extension of `TestRunExpiryDevolveBackfillGapFound`
+    above, using a REAL sqlite session (not a mocked return value) for
+    ALL THREE `daily_book` read helpers — `_edb_query_mcx_positions_rows`,
+    `_edb_existing_symbols_for_account`, and
+    `_edb_existing_captured_at_for_account` — to prove
+    `run_expiry_devolve_backfill()` as a WHOLE correctly detects a
+    null-ltp-only devolved future as missing and backfills it, exercising
+    the real WHERE clauses together rather than each helper in isolation."""
+
+    async def test_null_ltp_future_row_is_detected_as_missing_and_backfilled(
+        self, _edb_real_session_factory,
+    ):
+        from backend.api.algo import daily_snapshot as ds
+
+        older_valid_at = datetime(2026, 11, 27, 16, 0, tzinfo=timezone.utc)
+        newer_null_at = datetime(2026, 11, 27, 18, 15, tzinfo=timezone.utc)
+
+        # Older, valid batch: the option O (also the row
+        # `_edb_query_mcx_positions_rows` reads to identify ZG0790 as a
+        # candidate account with an MCX option expiring _TARGET_DATE).
+        await _edb_seed_positions_row(
+            _edb_real_session_factory, account="ZG0790", symbol=_ZG_OPTION,
+            ltp=70000.0, captured_at=older_valid_at,
+        )
+        # Newer batch: the devolved future F already has a row, but with
+        # a NULL ltp (the mid-session null-out symptom).
+        await _edb_seed_positions_row(
+            _edb_real_session_factory, account="ZG0790", symbol=_ZG_DEVOLVED_FUTURE,
+            ltp=None, captured_at=newer_null_at,
+        )
+
+        # Live broker fetch: O is now flat (devolved away), F is held
+        # with a real, valid LTP.
+        raw_positions = [
+            {"tradingsymbol": _ZG_OPTION, "exchange": "MCX", "quantity": 0,
+             "average_price": 0.0, "last_price": 0.0, "pnl": -1200.0,
+             "close_price": 68500.0},
+            {"tradingsymbol": _ZG_DEVOLVED_FUTURE, "exchange": "MCX", "quantity": -1,
+             "average_price": 68000.0, "last_price": 68200.0, "pnl": -200.0,
+             "close_price": 68000.0, "overnight_quantity": 0},
+        ]
+
+        upserted: list = []
+        upsert_calls: list = []
+
+        async def _fake_upsert(rows, *, captured_at=None):
+            upserted.extend(rows)
+            upsert_calls.append(captured_at)
+            return len(rows)
+
+        broker = _fake_broker("ZG0790")
+
+        with patch.object(ds, "async_session", _edb_real_session_factory), \
+             patch("backend.brokers.registry.all_brokers", return_value=[broker]), \
+             patch.object(
+                 ds, "_fetch_account_data",
+                 return_value={"holdings": [], "positions": raw_positions, "trades": [], "funds": []},
+             ), \
+             patch.object(ds, "_upsert_rows", _fake_upsert), \
+             patch.object(ds, "_snap_broadcast_book_changed") as mock_broadcast:
+            result = await ds.run_expiry_devolve_backfill(target_date=_TARGET_DATE)
+
+        assert result["accounts_checked"] == ["ZG0790"]
+        assert result["accounts_backfilled"] == ["ZG0790"]
+        assert result["symbols_backfilled"] == {"ZG0790": [_ZG_DEVOLVED_FUTURE]}
+
+        # Exactly F was backfilled — never O, which was already captured
+        # with a valid ltp and reports flat (qty=0) on the live fetch.
+        assert len(upserted) == 1
+        assert upserted[0]["symbol"] == _ZG_DEVOLVED_FUTURE
+        assert upserted[0]["qty"] == -1
+
+        # The backfilled row reused the account's own existing VALID
+        # (older_valid_at) EOD batch stamp — never the newer null batch's
+        # stamp, and never a fresh now().
+        assert upsert_calls == [older_valid_at]
+
+        mock_broadcast.assert_called_once_with(["ZG0790"])
+
+
 class TestRunExpiryDevolveBackfillUpsertFailure:
     """The `_upsert_rows` write itself failing for one account must be
     tolerated (logged, skipped) — never fatal to the whole backfill pass,

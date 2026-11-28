@@ -1764,18 +1764,115 @@ async def _edb_query_mcx_positions_rows(target_date: date) -> "list[tuple[str, s
 
 
 async def _edb_existing_symbols_for_account(target_date: date, account: str) -> set:
-    """Every symbol already present in today's daily_book positions batch
-    for one account. The backfill gap-check compares a fresh live fetch
-    against this set — only a symbol absent here is genuinely missing."""
-    from sqlalchemy import select
+    """Every symbol genuinely VISIBLE to a reader in today's daily_book
+    positions batch for one account — byte-for-byte matching the two
+    criteria `positions.py`'s own closed-hours `_positions_snapshot()`
+    query actually applies (confirmed by reading that query directly,
+    not inferred):
+
+      1. Batch membership — the row's own `captured_at` equals this
+         account's latest VALID batch stamp (`MAX(captured_at)` among
+         rows with `ltp IS NOT NULL AND ltp > 0` — the identical value
+         `_edb_existing_captured_at_for_account()` computes, and the
+         identical filter `positions.py`'s own `latest_batch` CTE uses
+         to pick that one stamp per account:
+         `WHERE kind='positions' AND ltp IS NOT NULL AND ltp > 0`).
+      2. The reader's own per-row delivery filter, applied to every row
+         joined via that batch stamp:
+         `(db.ltp IS NULL OR db.ltp > 0)` — see `positions.py`'s
+         `_positions_snapshot()`, the WHERE clause immediately after the
+         `latest_batch`/`prev_batch` joins. A NULL-ltp row inside the
+         current batch IS delivered (shown with no ltp value); a
+         ZERO-ltp row inside the same batch is NOT delivered (silently
+         dropped from `raw_rows`) — this asymmetry is deliberate,
+         three-layer defense against MCX settlement writes stomping a
+         good EOD value with a stray zero (commit `ab8ecfa5`, 2026-08-29:
+         "writer neutralises ltp_val=None (not skip — row needed for
+         batch join); reader CTE+WHERE filter `(ltp IS NULL OR ltp > 0)`
+         excludes zero rows from snapshot delivery").
+
+    The backfill gap-check compares a fresh live fetch against this set
+    — only a symbol absent here is genuinely missing (invisible to every
+    reader), matching what the gap-detector needs: a symbol the reader
+    does not and will not show.
+
+    Round 4 audit fix (2026-11-28), follow-up to the identical fix just
+    applied to the sibling `_edb_existing_captured_at_for_account` in
+    this same incident. Two prior, REJECTED shapes for this query, both
+    found wrong during review before shipping — kept here so a future
+    change does not reintroduce either:
+
+      - A naive PER-ROW `ltp IS NOT NULL AND ltp > 0` filter (no batch
+        membership at all) is too strict in the opposite direction from
+        what it was meant to fix: `_positions_rows()` computes
+        `mid_session` PER ROW from that row's OWN exchange
+        (`_exchange_clock.is_exchange_open(exchange)`), while
+        `run_expiry_devolve_backfill()`'s caller (`snapshot_daily_book()`)
+        writes an account's FULL raw positions list — every exchange it
+        holds — in ONE `_upsert_rows()` call stamped with a SINGLE
+        shared `captured_at`. A mixed-exchange account can therefore
+        have one exchange's row null-out (still mid-session for THAT
+        exchange) while another exchange's row in the exact SAME batch
+        is valid — e.g. the 2026-11-26 `market_lifecycle.py` DST
+        incident in CLAUDE.md, where MCX stayed open 24 minutes past the
+        stale 23:30 boundary while NSE had long closed. A pure per-row
+        filter would wrongly flag that genuinely-visible NULL-ltp
+        sibling row as "missing", firing a needless backfill write and
+        the action-required "backfilled a daily_book gap" ERROR-level
+        alert on an ordinary night.
+      - A pure BATCH-LEVEL filter (batch membership alone, no per-row
+        ltp check at all) is too loose: it would also count a ZERO-ltp
+        row sharing the batch stamp as "existing", even though the
+        reader's own `(ltp IS NULL OR ltp > 0)` filter actually drops
+        that row from delivery — such a row genuinely IS invisible, so
+        treating it as "existing" would silently leave a real,
+        confirmed-bad `ltp=0` row un-backfilled forever.
+
+    Combining both criteria is what actually matches delivery: a symbol
+    is "existing" iff its row shares the account's latest-valid-batch
+    stamp AND its own ltp is either NULL or a real positive value. A
+    later, separate batch's null-ltp-only row (the original incident
+    symptom — a devolved future with ONLY a null-ltp row, stamped AFTER
+    the account's last valid batch) fails criterion 1 regardless of its
+    own ltp, and is still correctly flagged missing. When no valid batch
+    exists at all (`max_at` is `NULL`), criterion 1 matches nothing —
+    every live row then reads as "missing", but the caller's existing
+    `None`-captured_at guard already skips the write entirely in that
+    case (see `_edb_existing_captured_at_for_account`'s own docstring),
+    so this degrades safely rather than firing a spurious backfill.
+
+    This helper's SOLE caller/purpose is the gap-detection comparison
+    above (`missing_rows = [r for r in p_rows if r["symbol"] not in
+    existing]` in `run_expiry_devolve_backfill()`) — a different,
+    candidacy-style question ("did this account hold an expiring option
+    today at all?") is answered separately by
+    `_edb_query_mcx_positions_rows()` / `_edb_mcx_expiring_accounts()`,
+    which deliberately do NOT filter on ltp or batch membership, since a
+    null-ltp row still proves the account held the position. This helper
+    must never be reused for that candidacy purpose.
+    """
+    from sqlalchemy import func, or_, select
     from backend.api.models import DailyBook
 
     async with async_session() as session:
+        max_valid_captured_at = (
+            select(func.max(DailyBook.captured_at))
+            .where(
+                DailyBook.date == target_date,
+                DailyBook.account == account,
+                DailyBook.kind == "positions",
+                DailyBook.ltp.isnot(None),
+                DailyBook.ltp > 0,
+            )
+            .scalar_subquery()
+        )
         result = await session.execute(
             select(DailyBook.symbol).where(
                 DailyBook.date == target_date,
                 DailyBook.account == account,
                 DailyBook.kind == "positions",
+                DailyBook.captured_at == max_valid_captured_at,
+                or_(DailyBook.ltp.is_(None), DailyBook.ltp > 0),
             )
         )
         return {r[0] for r in result.all()}
