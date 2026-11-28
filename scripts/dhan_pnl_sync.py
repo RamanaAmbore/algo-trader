@@ -68,11 +68,23 @@ same invariant as every other log/alert/storage surface in this codebase
 
 REPORT TYPES — only `tradebook` and `ledger` are populated here. Dhan has
 no endpoint analogous to Kite Console's separate P&L-statement export
-(realized P&L per symbol over a date range); it would have to be derived
-from the tradebook itself (a FIFO/weighted-average cost calculation), which
-is explicitly OUT OF SCOPE for this change — `report_type='pnl'` rows are
-never written by this script. A future task could derive them from the
-`tradebook` rows this script already writes.
+(realized P&L per symbol over a date range); a full FIFO/weighted-average
+cost-basis derivation of one remains explicitly OUT OF SCOPE for this
+change — `report_type='pnl'` rows are never written by this script, and
+a future task could derive them from the `tradebook` rows this script
+already writes.
+
+RECONCILIATION (added 2026-11-28) — `get_dhan_tradebook_realized_pnl()` /
+`reconcile_dhan_against_daily_book()` / `_dhan_run_reconciliation()` (see
+their own docstrings, below the per-account orchestration section) ARE,
+despite the paragraph above, a genuine — if deliberately approximate —
+ground-truth check against `daily_book`, mirroring
+`scripts.kite_console_pnl_sync.reconcile_against_daily_book()`. It is NOT
+full FIFO: it sums Σsell_value − Σbuy_value per (account, symbol) from
+already-ingested tradebook rows, restricted to symbols that are flat
+(fully closed) across the queried rows, excluding and counting (never
+silently including) any symbol that isn't. Run once, best-effort, at the
+end of a successful `main()` call (unless `--ledger-only`).
 
 ROW SHAPE — every row this script writes lands in the SAME
 `kite_console_pnl_sync` table Kite's own rows use, with `broker='dhan'`
@@ -128,6 +140,7 @@ logger = get_logger(__name__)
 # Reused, never copied — see module docstring.
 from scripts.kite_console_pnl_sync import (  # noqa: E402
     alert_critical,
+    alert_pnl_reconciliation_disagreement,
     build_ledger_sync_row,
     build_sync_row,
     chunk_by_calendar_month,
@@ -507,6 +520,217 @@ async def sync_account(row, *, start: date, end: date, ledger_only: bool = False
 
 
 # ---------------------------------------------------------------------------
+# Reconciliation — mirrors `scripts.kite_console_pnl_sync.
+# reconcile_against_daily_book()` / `alert_pnl_reconciliation_disagreement()`
+# for Dhan, reusing their SHARED, broker-agnostic core
+# (`_reconcile_ground_truth_against_daily_book()` / `compare_pnl_groups()`
+# / `_build_reconciliation_alert()` / `alert_pnl_reconciliation_disagreement()`
+# itself) rather than a second, independent comparator or sender. The one
+# genuinely Dhan-specific piece is the GROUND TRUTH SOURCE below — Dhan has
+# no broker-reported P&L-statement export analogous to Kite Console's
+# scrape (see module docstring's "REPORT TYPES" section: `report_type='pnl'`
+# rows are never written for Dhan), so it is derived from this script's own
+# already-ingested tradebook rows instead.
+# ---------------------------------------------------------------------------
+
+# Tolerance for treating one (account, symbol)'s queried tradebook rows as
+# genuinely FLAT (fully closed) — i.e. Σbuy_qty == Σsell_qty. Quantities
+# here are already-converted CONTRACT counts (see
+# `get_dhan_tradebook_realized_pnl()`'s own docstring), stored as float-
+# cast `Numeric` columns, so a tiny float epsilon absorbs Decimal/float
+# round-trip noise without masking a genuinely still-open leg (which would
+# differ by at least one whole contract, many orders of magnitude larger
+# than this).
+_DHAN_RECON_FLAT_QTY_EPSILON = 1e-6
+
+
+async def get_dhan_tradebook_realized_pnl(
+    account: "str | None" = None, start: "date | None" = None, end: "date | None" = None,
+) -> dict:
+    """Derives an APPROXIMATE realized-P&L ground truth for Dhan from
+    THIS SCRIPT'S OWN already-ingested `kite_console_pnl_sync` tradebook
+    rows (`broker='dhan'`, `report_type='tradebook'`) — NOT full
+    FIFO-matched realized P&L (that remains explicitly out of scope; see
+    module docstring's "REPORT TYPES" section), but
+    Σsell_value − Σbuy_value per (account, symbol), restricted to symbols
+    that are genuinely FLAT across the queried rows
+    (`abs(Σbuy_qty − Σsell_qty) <= _DHAN_RECON_FLAT_QTY_EPSILON`). A
+    non-flat symbol (still carries an open leg over the queried rows) is
+    EXCLUDED, counted, and returned under `excluded_symbols`/
+    `excluded_count` — never silently included with a wrong realized
+    figure derived from a mix of closed and still-open cost basis.
+
+    MCX LOT->CONTRACT CONVERSION — CONFIRMED, NOT ASSUMED: `buy_value`/
+    `sell_value` are `qty * price`
+    (`scripts.kite_console_pnl_sync._fill_fields_for_row()`), where `qty`
+    is `build_sync_row()`'s own `row["quantity"]`
+    (`scripts.kite_console_pnl_sync.build_sync_row()`, via
+    `_parse_float_cell(row.get("quantity"))`). For a Dhan MCX trade, that
+    `row["quantity"]` is `dhan_trade_to_kite_shape()`'s passthrough of
+    the ALREADY-NORMALISED Dhan trade's own `t["quantity"]`
+    (`dhan_trade_to_kite_shape()`'s own docstring — deliberately reused
+    UNCHANGED rather than re-read from Dhan's raw per-trade fields a
+    second time), which in turn is `_normalise_trades(strict_mcx_lot=True)`'s
+    own `_tq` (`backend/brokers/adapters/dhan.py`) AFTER its
+    lot->contract multiplication (`_tq *= _ls` / `_tq *= _root_ls`) has
+    already run — confirmed by reading all three functions in this one
+    call chain, not assumed from the historical MCX lot-size bug fix
+    alone. So a Dhan MCX round-trip's `buy_value`/`sell_value`, and
+    therefore this function's `realized` figure, are already in
+    CONTRACT units, matching `daily_book`'s own convention. See
+    `backend/tests/test_dhan_pnl_reconciliation.py::TestMcxUnitsAlreadyConverted`
+    for the explicit end-to-end regression covering this exact chain —
+    confirmed to fail (computing a ~100x-too-small realized figure) when
+    `_normalise_trades(strict_mcx_lot=False)` is substituted in, i.e.
+    when the lot->contract step is skipped.
+
+    UNBOUNDED BY DEFAULT (`start`/`end` both `None` — the way
+    `_dhan_run_reconciliation()` below calls this): "flat" then means
+    genuinely fully closed across the ENTIRE ingested tradebook history
+    for that (account, symbol), not merely within an arbitrary window —
+    so the carry-over ambiguity described next does not arise for the
+    intended, default usage (a backfill range covering the symbol's
+    whole life).
+
+    KNOWN RESIDUAL when `start`/`end` DO narrow the query (flagged, not
+    fixed here — a deliberate scope decision, not an oversight): "flat
+    within the window" is not the same as "flat at window start". A
+    position opened before `start` and only partly closed inside
+    `[start, end]` can look flat here by coincidence (e.g. long 1
+    contract before the window, then one SELL and one BUY inside it)
+    while still carrying pre-window cost basis this function cannot see.
+    Detecting that would need cross-checking `daily_book`'s own qty as
+    of `start` — a second query shape this function doesn't otherwise
+    need, deliberately left for a future task.
+
+    Returns the same shape `scripts.kite_console_pnl_sync.
+    get_accumulated_pnl()`'s `by_account_root_expiry` dict, plus an
+    explicit exclusion count (no equivalent exists on the Kite side,
+    since its ground truth has no such exclusion step):
+        {"by_account_root_expiry": {(account, symbol_root, expiry): pnl, ...},
+         "overall_total": float,
+         "excluded_count": int, "excluded_symbols": [(account, symbol), ...]}
+    """
+    from sqlalchemy import select, and_
+    from backend.api.models import KiteConsolePnlSync
+    from backend.api.database import async_session
+    from backend.shared.helpers.utils import mask_account
+
+    T = KiteConsolePnlSync
+    filters = [T.broker == "dhan", T.report_type == "tradebook"]
+    if account:
+        filters.append(T.account == mask_account(account))
+    if start:
+        filters.append(T.trade_date >= start)
+    if end:
+        filters.append(T.trade_date <= end)
+
+    async with async_session() as session:
+        result = await session.execute(
+            select(
+                T.account, T.symbol, T.symbol_root, T.expiry,
+                T.buy_qty, T.sell_qty, T.buy_value, T.sell_value,
+            ).where(and_(*filters))
+        )
+        rows = result.all()
+
+    per_symbol: "dict[tuple, dict]" = {}
+    for acct, symbol, root, exp, buy_qty, sell_qty, buy_value, sell_value in rows:
+        key = (acct, symbol)
+        entry = per_symbol.setdefault(key, {
+            "root": None, "expiry": None,
+            "buy_qty": 0.0, "sell_qty": 0.0,
+            "buy_value": 0.0, "sell_value": 0.0,
+        })
+        entry["buy_qty"] += float(buy_qty or 0.0)
+        entry["sell_qty"] += float(sell_qty or 0.0)
+        entry["buy_value"] += float(buy_value or 0.0)
+        entry["sell_value"] += float(sell_value or 0.0)
+        # root/expiry are deterministic per symbol (classify_instrument()
+        # is a pure function of the symbol string alone), so every row
+        # for one symbol agrees — this just tolerates a hypothetical
+        # null on one row rather than requiring every row to carry it.
+        if entry["root"] is None and root is not None:
+            entry["root"] = root
+        if entry["expiry"] is None and exp is not None:
+            entry["expiry"] = exp
+
+    by_account_root_expiry: "dict[tuple, float]" = {}
+    overall_total = 0.0
+    excluded_symbols: "list[tuple]" = []
+    for (acct, symbol), e in per_symbol.items():
+        if abs(e["buy_qty"] - e["sell_qty"]) > _DHAN_RECON_FLAT_QTY_EPSILON:
+            excluded_symbols.append((acct, symbol))
+            continue
+        realized = e["sell_value"] - e["buy_value"]
+        root = e["root"] or (symbol or "").upper()
+        gkey = (acct, root, e["expiry"])
+        by_account_root_expiry[gkey] = by_account_root_expiry.get(gkey, 0.0) + realized
+        overall_total += realized
+
+    return {
+        "by_account_root_expiry": by_account_root_expiry,
+        "overall_total": overall_total,
+        "excluded_count": len(excluded_symbols),
+        "excluded_symbols": excluded_symbols,
+    }
+
+
+async def reconcile_dhan_against_daily_book(
+    account: "str | None" = None, start: "date | None" = None, end: "date | None" = None,
+) -> dict:
+    """Dhan equivalent of `scripts.kite_console_pnl_sync.
+    reconcile_against_daily_book()` — reuses that script's SAME, now-
+    shared comparison core (`_reconcile_ground_truth_against_daily_book()`
+    / `compare_pnl_groups()`), never a second, independent comparator,
+    with Dhan's own derived ground truth
+    (`get_dhan_tradebook_realized_pnl()`) in place of Kite's
+    broker-scraped P&L statement. Adds `excluded_count`/
+    `excluded_symbols` onto the returned summary — absent from Kite's
+    own summary shape, since its ground truth has no equivalent
+    exclusion step."""
+    from scripts.kite_console_pnl_sync import _reconcile_ground_truth_against_daily_book
+
+    ground_truth = await get_dhan_tradebook_realized_pnl(account=account, start=start, end=end)
+    summary = await _reconcile_ground_truth_against_daily_book(
+        ground_truth["by_account_root_expiry"],
+        account=account, start=start, end=end,
+    )
+    summary["excluded_count"] = ground_truth["excluded_count"]
+    summary["excluded_symbols"] = ground_truth["excluded_symbols"]
+    return summary
+
+
+async def _dhan_run_reconciliation() -> None:
+    """Best-effort reconciliation summary, run once after a successful
+    backfill — never raises, never blocks the real sync outcome.
+    Mirrors `scripts.kite_console_pnl_sync.main()`'s own post-backfill
+    reconciliation call (same unbounded, no-account/no-date-filter
+    invocation — see `get_dhan_tradebook_realized_pnl()`'s own
+    docstring for why calling it unbounded is also the one that avoids
+    its documented carry-over-ambiguity residual). Extracted out of
+    `main()` to keep that function's own complexity under this
+    project's CC gate."""
+    try:
+        summary = await reconcile_dhan_against_daily_book()
+        logger.info(
+            "dhan_pnl_sync: reconciliation: %d group(s) compared, %d "
+            "discrepancy/discrepancies found (%d missing, %d disagree); "
+            "%d symbol(s) excluded as not-yet-flat",
+            summary["groups_compared"], summary["discrepancy_count"],
+            summary["missing_count"], summary["disagree_count"],
+            summary.get("excluded_count", 0),
+        )
+        await alert_pnl_reconciliation_disagreement(
+            summary,
+            title_prefix="Dhan P&L reconciliation",
+            source_name="Dhan P&L sync",
+        )
+    except Exception:
+        logger.exception("dhan_pnl_sync: reconciliation summary failed (non-fatal)")
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -636,6 +860,17 @@ async def main(argv: "list[str] | None" = None) -> int:
                 "dhan_pnl_sync: %s ok — %d trade row(s), %d ledger row(s)",
                 outcome.account, outcome.trades_ingested, outcome.ledger_ingested,
             )
+
+    # Best-effort reconciliation summary — mirrors
+    # scripts.kite_console_pnl_sync.main()'s own post-backfill gate
+    # (`exit_code == 0`), plus skipping a `--ledger-only` run (which
+    # never touched the tradebook this invocation, so there would be
+    # nothing fresh to reconcile against) — never raises, never blocks
+    # the real sync outcome. See `_dhan_run_reconciliation()`'s own
+    # docstring for why it is called unbounded, not scoped to
+    # `start`/`end`.
+    if exit_code == 0 and not args.ledger_only:
+        await _dhan_run_reconciliation()
 
     return exit_code
 

@@ -2875,6 +2875,53 @@ async def _daily_book_latest_pnl_by_symbol(
     return grouped
 
 
+async def _reconcile_ground_truth_against_daily_book(
+    ground_truth_by_account_root_expiry: "dict[tuple, float]",
+    *, account: "str | None" = None, symbol_root: "str | None" = None,
+    expiry: "date | None" = None, start: "date | None" = None,
+    end: "date | None" = None,
+) -> dict:
+    """Broker-agnostic CORE of the daily_book reconciliation comparison
+    — extracted 2026-11-28 (the Dhan reconciliation addition) so
+    `scripts/dhan_pnl_sync.py` can reuse the IDENTICAL `daily_book`
+    rollup + `compare_pnl_groups()` comparison this function already
+    performed inline, rather than a second, independent copy of either.
+    Dhan has no broker-reported P&L-statement export analogous to Kite
+    Console's scrape (see `KiteConsolePnlSync`'s own model docstring and
+    `scripts/dhan_pnl_sync.py`'s "REPORT TYPES" section — Dhan never
+    writes `report_type='pnl'` rows), so its ground truth is derived
+    differently (`scripts.dhan_pnl_sync.get_dhan_tradebook_realized_pnl()`)
+    and handed to THIS function already computed, in the identical
+    `{(account, symbol_root, expiry): pnl}` shape
+    `get_accumulated_pnl()`'s own `by_account_root_expiry` returns.
+
+    `ground_truth_by_account_root_expiry` must already be keyed on the
+    MASKED account form (exactly `get_accumulated_pnl()`'s own
+    convention) — this function masks only the `daily_book` side
+    (which stores the raw account code), never the ground-truth side,
+    so a caller handing in an unmasked ground-truth key would silently
+    never match anything rather than raising.
+
+    `start`/`end` scope only the `daily_book` side (it has no natural
+    equivalent on the ground-truth side for Kite's own caller — see
+    `get_accumulated_pnl()`'s own docstring; Dhan's own ground-truth
+    function has an independent, explicitly-documented reason for
+    usually being called unbounded instead)."""
+    from backend.shared.helpers.utils import mask_account
+
+    daily_book_grouped = await _daily_book_latest_pnl_by_symbol(
+        account=account, symbol_root=symbol_root, expiry=expiry,
+        start=start, end=end,
+    )
+    daily_book_masked = {
+        (mask_account(acct), root, exp): pnl
+        for (acct, root, exp), pnl in daily_book_grouped.items()
+    }
+    return compare_pnl_groups(
+        ground_truth_by_account_root_expiry, daily_book_masked,
+    )
+
+
 async def reconcile_against_daily_book(
     account: "str | None" = None, symbol_root: "str | None" = None,
     expiry: "date | None" = None, start: "date | None" = None,
@@ -2898,22 +2945,20 @@ async def reconcile_against_daily_book(
     storage convention). Both sides are remapped onto the masked form
     here, via `mask_account()`, before comparing — so this reconciliation
     is only as reliable as whatever account roster `register_accounts()`
-    was last called with in this process."""
-    from backend.shared.helpers.utils import mask_account
+    was last called with in this process.
 
+    2026-11-28: the actual `daily_book` rollup + comparison now lives in
+    `_reconcile_ground_truth_against_daily_book()` (extracted so
+    `scripts/dhan_pnl_sync.py` can reuse it) — this function's own
+    signature, return shape, and behaviour for every existing Kite
+    caller are byte-identical to before the extraction."""
     ground_truth_result = await get_accumulated_pnl(
         account=account, symbol_root=symbol_root, expiry=expiry,
     )
-    daily_book_grouped = await _daily_book_latest_pnl_by_symbol(
+    return await _reconcile_ground_truth_against_daily_book(
+        ground_truth_result["by_account_root_expiry"],
         account=account, symbol_root=symbol_root, expiry=expiry,
         start=start, end=end,
-    )
-    daily_book_masked = {
-        (mask_account(acct), root, exp): pnl
-        for (acct, root, exp), pnl in daily_book_grouped.items()
-    }
-    return compare_pnl_groups(
-        ground_truth_result["by_account_root_expiry"], daily_book_masked,
     )
 
 
@@ -2930,13 +2975,21 @@ async def reconcile_against_daily_book(
 _RECONCILE_ALERT_TOP_N = 15
 
 
-def _build_reconciliation_alert(summary: dict) -> "tuple[str, str, dict] | None":
+def _build_reconciliation_alert(
+    summary: dict, *, title_prefix: str = "Kite Console P&L reconciliation",
+) -> "tuple[str, str, dict] | None":
     """Pure builder — extracted so `alert_pnl_reconciliation_disagreement()`
     stays a thin I/O wrapper and this is directly unit-testable with no
     DB/dispatch pipeline involved. Returns `None` when there is nothing
     to alert on (`disagree_count == 0` / no 'disagree'-status group) —
     this is the ONLY gate; a 'missing' or 'match' group never reaches
     this function's output.
+
+    `title_prefix` (added 2026-11-28, defaults to the exact pre-existing
+    literal so every Kite call site is byte-identical) — lets
+    `scripts/dhan_pnl_sync.py` reuse this SAME builder for its own
+    reconciliation summary with a distinct title (e.g. "Dhan P&L
+    reconciliation"), rather than a second, near-duplicate builder.
 
     Returns `(title, body, extra)`:
       - `title`/`body` are plain text (this codebase's 2026-10 plain-
@@ -2989,7 +3042,7 @@ def _build_reconciliation_alert(summary: dict) -> "tuple[str, str, dict] | None"
     if remaining > 0:
         lines.append(f"+{remaining} more")
 
-    title = f"Kite Console P&L reconciliation — {len(all_groups)} group(s) disagree"
+    title = f"{title_prefix} — {len(all_groups)} group(s) disagree"
     body = "\n".join(lines)
     extra = {
         "groups_compared": summary.get("groups_compared"),
@@ -3000,12 +3053,30 @@ def _build_reconciliation_alert(summary: dict) -> "tuple[str, str, dict] | None"
     return title, body, extra
 
 
-async def alert_pnl_reconciliation_disagreement(summary: dict) -> None:
+async def alert_pnl_reconciliation_disagreement(
+    summary: dict, *,
+    title_prefix: str = "Kite Console P&L reconciliation",
+    source_name: str = "Kite Console P&L sync",
+) -> None:
     """Logs ONE tagged record when `reconcile_against_daily_book()`'s
     summary carries at least one genuine 'disagree' group, then runs the
     real flush+dispatch pipeline once (exactly like `alert_critical()`
     above — this is a standalone, short-lived process, so nothing else
     will ever dispatch this record on a timer).
+
+    `title_prefix`/`source_name` (added 2026-11-28, both default to the
+    exact pre-existing literals so every existing Kite call site —
+    including every pre-existing test asserting
+    `extra["source_name"] == "Kite Console P&L sync"` — is byte-
+    identical) — reused, never copied, by
+    `scripts/dhan_pnl_sync.py:_dhan_run_reconciliation()` with its own
+    distinct values, so a disagreement found by the Dhan backfill is
+    visibly distinguishable from a Kite one in the delivered alert,
+    without needing a second, near-duplicate alert function or a
+    second seeded event agent — both share the exact same
+    `alert_event="pnl_reconciliation_disagreement"` and therefore the
+    SAME `PNL_RECONCILIATION_AGENT` ("P&L reconciliation disagreement",
+    `backend/api/algo/event_agents.py`) for routing/delivery.
 
     Uses this module's OWN `logger` — the SAME logger `alert_critical()`
     already uses, not a different one — at WARNING, not ERROR+:
@@ -3019,14 +3090,14 @@ async def alert_pnl_reconciliation_disagreement(summary: dict) -> None:
     has no bearing on tagging, and neither name is in
     `log_store._SKIP_PREFIXES`, so the record genuinely reaches the
     in-process alert queue either way."""
-    built = _build_reconciliation_alert(summary)
+    built = _build_reconciliation_alert(summary, title_prefix=title_prefix)
     if built is None:
         return
     title, body, extra = built
     extra = {
         **extra,
         "source_type": "process",
-        "source_name": "Kite Console P&L sync",
+        "source_name": source_name,
         "tags": ["alert"],
         "alert_event": "pnl_reconciliation_disagreement",
         "title": title,
