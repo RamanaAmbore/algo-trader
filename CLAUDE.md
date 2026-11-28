@@ -2700,16 +2700,117 @@ scrolls. Nothing changes above ~460px. The compact `.cc-row` override
 compact cards are not in the drawer. Invariant: a grid track may not squeeze its content past
 legibility. Overflow scrolls instead.
 
-**Chase hidden (not greyed) while Draft is on; one submit label (2026-10-23; commit `75685b7b`)** —
-Operator report: "when submitting draft order, chase is getting invoked." A live DB query on prod
-and dev found no `mode='draft'` `AlgoOrder` row ever created. Both draft-submit paths
-(`OrderTicket.svelte`, `SymbolPanel.svelte:submitBasket()`) return before any chase or broker call.
-Nothing was invoked. The confusion came from the CHASE toggle and picker staying rendered, greyed,
-while Draft was on. They are now hidden entirely (`_chaseEnabled && !_sharedDraftMode`,
-[`SymbolPanel.svelte:2965`](frontend/src/lib/SymbolPanel.svelte#L2965)). BRACKET keeps its
-grey-not-hide treatment. The shared `.oes-common-submit` button's "Add to Payoff" label is gone. A
-single staged leg gets the standard `formatSubmitLabel` like every other mode. A multi-leg basket
-keeps the plain "Submit".
+**Chase, Draft and Hedge are disabled, never hidden, while the other is on — layout must not shift
+(2026-11-28; supersedes the 2026-10-23 "Chase hidden (not greyed) while Draft is on" rule, commit
+`75685b7b`)** — Operator (2026-10-23): "when submitting draft order, chase is getting invoked." A live
+DB query on prod and dev found no `mode='draft'` `AlgoOrder` row ever created; both draft-submit paths
+return before any chase or broker call. Operator (2026-11-28): "when draft mode is on, chase still
+should be displayed but disabled ... to make sure the front end layout doesn't shift." Current behaviour:
+- **Chain tab** ([OptionChainTab.svelte](frontend/src/lib/order/OptionChainTab.svelte)). The CHASE
+  cluster always renders ([:1481](frontend/src/lib/order/OptionChainTab.svelte#L1481)). While
+  `draftMode` is on it takes `.oes-chase-protected` (greyed, [:2160](frontend/src/lib/order/OptionChainTab.svelte#L2160))
+  and the native `inert` attribute. The CHASE label drops to `tabindex=-1` ([:1481-1489](frontend/src/lib/order/OptionChainTab.svelte#L1481)).
+- **DRAFT checkbox** is `disabled={hedgeOn}` ([:1524-1530](frontend/src/lib/order/OptionChainTab.svelte#L1524)).
+- **HEDGE checkbox** is `disabled={draftMode || _hedgeUnsupportedBfo}` ([:1557-1563](frontend/src/lib/order/OptionChainTab.svelte#L1557)).
+  `_hedgeUnsupportedBfo` also disables Hedge for SENSEX/BANKEX ([:251](frontend/src/lib/order/OptionChainTab.svelte#L251)).
+- **Draft wins.** Turning Draft on forces `hedgeOn` false in a `$effect` ([:159-161](frontend/src/lib/order/OptionChainTab.svelte#L159)).
+  This covers a Draft change from the Ticket tab, since both share `draftMode`.
+- **Hedge does not force Draft off.** Hedge ON disables the DRAFT checkbox instead. `hedgeOn` is local
+  state, and an enabled HEDGE checkbox can only be clicked while Draft is off. No path leaves both on.
+- **Ticket tab** ([SymbolPanel.svelte](frontend/src/lib/SymbolPanel.svelte)). The CHASE cluster is gated
+  on order type only (`_chaseEnabled`, [:1390](frontend/src/lib/SymbolPanel.svelte#L1390)). It is hidden
+  for MARKET and SL-M orders, which is unrelated to Draft. Draft ON adds `.oes-chase-protected`
+  ([:2522](frontend/src/lib/SymbolPanel.svelte#L2522), CSS [:4449](frontend/src/lib/SymbolPanel.svelte#L4449)),
+  the same greyed, inert treatment. The DRAFT toggle renders at [:2578-2586](frontend/src/lib/SymbolPanel.svelte#L2578).
+  Hedge is Chain-only.
+- The BRACKET grey-not-hide treatment is gone with the Bracket removal (see the "REMOVED — Bracket/Template/GTT"
+  entries).
+- The shared `.oes-common-submit` button no longer shows an "Add to Payoff" label. While Draft is on its
+  tooltip reads "Add legs to payoff chart (no broker order)" ([SymbolPanel.svelte:3092](frontend/src/lib/SymbolPanel.svelte#L3092)).
+  A single staged leg gets the standard `formatSubmitLabel` like every other mode. A multi-leg basket
+  keeps the plain "Submit".
+- Invariant: while Draft is on, Chase is displayed inert and never unmounted. Draft and Hedge are never
+  both on, and neither control is hidden by the other, only disabled.
+
+**Order-ticket current quantity — `heldQtyFor` / `_effCurrentQty` (2026-11; commit `d2f3eb5e9`)** —
+- `heldQtyFor(sym, account, positionRows)` ([spreadGate.js:308](frontend/src/lib/data/spreadGate.js#L308))
+  returns the signed held quantity for one symbol and account, summed across product rows. It is the
+  same cross-product sum `isCloseIntentLeg` uses. It is correct for open/close classification, not for
+  execution-time product resolution.
+- `OrderTicket.svelte` derives `_liveHeldQty` from `portfolioStore.positions.rows` ([:1933-1938](frontend/src/lib/order/OrderTicket.svelte#L1933)).
+  `_effCurrentQty` ([:1952-1955](frontend/src/lib/order/OrderTicket.svelte#L1952)) is the single source every
+  open/close and margin-chip read in the file uses. It trusts the host's `currentQty` prop only when that is
+  non-zero and the ticket has not resolved to a different contract from the host's `symbol`. Otherwise it
+  uses the live lookup.
+- **Known gap, open.** `_liveHeldQty` returns 0 for equity ([:1934](frontend/src/lib/order/OrderTicket.svelte#L1934)),
+  because a same-day holdings sale appears as a negative CNC position row. So the equity `cash_released` branch
+  of `marginChipMode` ([orderTicketSubmit.js:89-101](frontend/src/lib/order/orderTicketSubmit.js#L89)) fires only
+  when the host passes `currentQty` explicitly. Per the 2026-11-28 audit, a ticket opened from the watchlist never
+  gets it for equity. Needs an operator decision on whether equity held quantity should also resolve from the
+  position row.
+
+**`resolveChipCashFlowKind` — the one margin-chip classifier (2026-11; commit `381b5dcf0`)** —
+`resolveChipCashFlowKind(meta, { currentQty, orderQty })` ([orderTicketSubmit.js:145-159](frontend/src/lib/order/orderTicketSubmit.js#L145))
+is the canonical resolver for the margin chip's `cashFlowKind`. It returns the meta's own value when set.
+Otherwise it delegates to `marginChipMode()` ([:152](frontend/src/lib/order/orderTicketSubmit.js#L152)), replacing an
+earlier duplicate classification that could diverge from it. `SymbolPanel.svelte` calls it at
+[:1188](frontend/src/lib/SymbolPanel.svelte#L1188) and [:1210](frontend/src/lib/SymbolPanel.svelte#L1210). Do not add a
+second classifier.
+
+**`resolveHedgeParentChange` — the hedge leg follows its parent's lots 1:1 (2026-11-28)** —
+`resolveHedgeParentChange(sig, parent)` ([spreadGate.js:263-282](frontend/src/lib/data/spreadGate.js#L263)) returns
+keep, resize or remove. A parent lots change returns `resize`, which sets the hedge's lots to the parent's new lots.
+A symbol, side or account change removes the hedge. `OptionChainTab` applies it in an effect
+([:977-1013](frontend/src/lib/order/OptionChainTab.svelte#L977), decision at [:985](frontend/src/lib/order/OptionChainTab.svelte#L985)).
+- **Known behaviour, flagged.** A manual stepper edit to the hedge leg's own lots is overwritten the next time the
+  parent's lots change. This is documented but not yet approved by the operator as the intended tradeoff.
+
+**MCX agri close time — UNVERIFIED, and a known DTE inconsistency with the backend (2026-11-28; commit `6bd728b84`)** —
+- `MCX_AGRI_CLOSE_TIME = { hour: 17, minute: 0 }` ([mcxCloseTime.js:169](frontend/src/lib/data/mcxCloseTime.js#L169))
+  is applied by `resolveExpiryCloseDateTime(expiryIso, isMcx, isAgri)` ([:195-205](frontend/src/lib/data/mcxCloseTime.js#L195))
+  for COTTON, MENTHAOIL and CPO (`MCX_AGRI_COMMODITIES`, [resolveUnderlying.js:313](frontend/src/lib/data/resolveUnderlying.js#L313)).
+  The Chain tab's DTE chip passes `isAgri` ([OptionChainTab.svelte:392-393](frontend/src/lib/order/OptionChainTab.svelte#L392)).
+- **UNVERIFIED.** The 17:00 value is not confirmed against an authoritative MCX circular. The code comment says so
+  ([mcxCloseTime.js:158-167](frontend/src/lib/data/mcxCloseTime.js#L158)).
+- **Known, unresolved inconsistency.** The backend has no agri branch. `_MCX_COMMODITIES` includes the agri roots
+  ([derivatives.py:567-569](backend/api/algo/derivatives.py#L567)). `_close_time_for_row` routes every MCX row through
+  `close_time_for_exchange("MCX", expiry)` ([derivatives.py:1087-1089](backend/api/algo/derivatives.py#L1087)), which
+  returns the standard DST-aware non-agri close (23:30 or 23:55) and has no agri branch. So for COTTON, CPO and
+  MENTHAOIL the Chain tab's DTE chip (17:00) and the backend Greeks/payoff DTE (23:30 or 23:55) can disagree.
+  Needs an operator decision: confirm the agri close, then mirror it in the backend or document the difference.
+
+**`marketOpenStore` — one shared market-open poll (2026-11)** —
+- `marketOpenStore` ([stores.js:1438-1444](frontend/src/lib/stores.js#L1438)) is one `readable` backed by
+  `createMarketOpenPoll()` ([marketHours.js:316](frontend/src/lib/marketHours.js#L316)). It replaces four independent
+  30s pollers, each calling `isNseOpen()`/`isMcxOpen()` and caching locally: `RefreshButton.svelte` ([:121](frontend/src/lib/RefreshButton.svelte#L121)),
+  `PositionStrip.svelte` ([:360](frontend/src/lib/PositionStrip.svelte#L360)), `OrderTicket.svelte` ([:2584](frontend/src/lib/order/OrderTicket.svelte#L2584))
+  and `SymbolPanel.svelte`'s Chain-tab resolution ([:2138](frontend/src/lib/SymbolPanel.svelte#L2138)).
+- It is wired through `visibleInterval` ([stores.js:1434-1436](frontend/src/lib/stores.js#L1434)), not a bare
+  `setInterval`. Per the `stores.js` comment, that keeps pause-while-hidden, immediate refire on return and the
+  hibernation subscriber. `visibleInterval` returns a teardown function, which `clearIntervalFn` invokes.
+- Consolidation test: `frontend/src/lib/__tests__/marketOpenStoreConsolidation.test.js`.
+
+**`baselineGapDayPnlSubstitute` — OPEN RISK, needs an operator decision (2026-11-28)** —
+- `baselineGapDayPnlSubstitute(p)` ([nav.js:119-121](frontend/src/lib/data/nav.js#L119)) returns the row's own
+  lifetime `pnl` for a `baseline_stale` row. `baseDayPnlForPosition` returns it ([:160](frontend/src/lib/data/nav.js#L160)),
+  so every aggregate built on it inherits the value. The backend mirror is `pnl_math.baseline_gap_day_pnl_substitute`.
+  A hard 0 was rejected earlier, because it hid a real loss from `loss-positions-total`.
+- **OPEN RISK — flagged, not approved.** The substitute shows a full LIFETIME P&L figure as Day P&L. It is only a fair
+  proxy for today's move when prior-day gains are small. Per the 2026-11-28 audit, most display surfaces (NavStrip,
+  derivatives Legs grid, PerformancePage, TOTAL rows) show this figure with no staleness marker. Only the MarketPulse
+  Day P&L column renders "—" for `baseline_stale` rows ([pulseColumns.js:718](frontend/src/lib/data/pulseColumns.js#L718)).
+- Needs an operator decision: keep lifetime P&L as the displayed Day P&L with a marker on every surface, render "—"
+  as MarketPulse does, or choose another tradeoff. Do not treat the current behaviour as settled.
+
+**CSS colour tokens — row stripe and amber alphas, consolidated (2026-11; commit `7e61fe64d`)** —
+- `--grid-row-alt-bg` ([app.css:647](frontend/src/app.css#L647)) is the single canonical row-stripe token.
+  `--row-tint-odd-bg` ([:656](frontend/src/app.css#L656)) and the ag-Grid `--ag-odd-row-background-color`
+  ([:1643](frontend/src/app.css#L1643)) alias it. `--grid-row-alt-bg-strong` ([:655](frontend/src/app.css#L655)) is a
+  deliberate α0.55 variant for pills, not drift.
+- `--algo-amber-18`, `-22` and `-55` ([app.css:88-90](frontend/src/app.css#L88)) are pure aliases of existing amber
+  tokens, so they resolve to the exact prior literal values. `--algo-amber-70`, `-85` and `-90` ([:91-93](frontend/src/app.css#L91))
+  are new names for alphas that previously had no token. The 2026-11-28 audit reports no visible colour change.
+- Use these tokens. Do not reintroduce the literal rgba values.
 
 **Chain ITM wash spans the strike column; basket-leg pill contrast (2026-10-23; commit `a0e2e3e0`)**
 — Cosmetic. The ITM call and put background wash stopped at the CE/PE cell boundary. It now extends
@@ -6143,6 +6244,10 @@ values it produces no longer feed account/symbol rollups or Pulse display. Repla
 baseline-diff formula (see "Frontend Day P&L SSOT" below).
 
 **Frontend Day P&L SSOT (2026-09 redesign)** — Atomic baseline-diff formula, no branching.
+
+> **Cross-reference (2026-11-28):** a `baseline_stale` row's Day P&L is substituted by
+> `baselineGapDayPnlSubstitute` (lifetime `pnl`), not 0. This is an OPEN RISK that needs an operator
+> decision. See the "`baselineGapDayPnlSubstitute` — OPEN RISK" entry under the Chase/Draft/Hedge section.
 
 Canonical formula for a single position's day P&L (valid for ALL position states — new entry, 
 full exit, partial exit, re-entry, flip):
