@@ -547,8 +547,10 @@ transactional with rollback on audit failure). Guards: `view_settings_readonly`
 *(`expiry_close_lead_minutes_mcx`/`_nfo` were removed 2026-11-24, audit finding
 #17 — their one backend reader, `order_hold_gate.py:cutoff_for()`/
 `before_cutoff()`, had zero live callers. The real pre-close lead time for the
-`expiry-day-itm-auto-close` agent is a hardcoded constant in
-`grammar_tokens/metric_is_expiry_preclose_close_window.py`, not an admin setting.)*
+`expiry-day-{mcx,nse}-itm-auto-close` agents is a hardcoded constant
+(`CLOSE_LEAD_MINUTES = 60`) in `grammar_tokens/metric_is_expiry_preclose_close_window.py`, not an
+admin setting. Amended 2026-11-27: the alert agents use `ALERT_LEAD_MINUTES = 65` in
+`metric_is_expiry_preclose_alert_window.py`. Neither is editable from `/admin/settings`.)*
 
 The `default_agent_trade_mode` dropdown is a direct read/write of the same
 `execution.default_agent_trade_mode` setting that appears in the regular

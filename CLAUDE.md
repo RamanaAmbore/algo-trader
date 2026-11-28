@@ -512,6 +512,10 @@ Alerts tab flooded. Each fix below closes one of those gaps.
     not the generic `generic_notice` renderer, because that one reads `extra["body"]`, which this
     producer does not set. `SEED_VERSION` goes 11 to 12
     ([event_agents.py:2926](backend/api/algo/event_agents.py#L2926)).
+    *Amended 2026-11-27 — the number is stale. `SEED_VERSION` is now 13
+    ([event_agents.py:2922](backend/api/algo/event_agents.py#L2922)). The 12→13 bump (commit
+    `bba641405`, hash as reported, not re-verified here) seeds `pnl-reconciliation-alert`. See the
+    Kite Console and Dhan backfill entries in Key Patterns, above "Things to Avoid".*
   - Channels come from `_PER_SLUG_OVERRIDES` ([alert_routing.py:279](backend/api/algo/alert_routing.py#L279)):
     Telegram, ntfy at urgent priority, and email, all `gate: False`. Routing through `error-alert` was
     rejected because that catch-all is Telegram-only by design, so an 8.5-hour outage never escalated.
@@ -1426,6 +1430,15 @@ The fix makes the text wrap inside the column. In
 - **`expiry-nfo-risk-alert` absorbs `expiry-mcx-risk-alert`.** The NFO row was edited in place, not replaced by a new slug. Its condition is now `any[nfo_tree, mcx_tree]` ([agent_engine.py:2700](backend/api/algo/agent_engine.py#L2700)). Each branch keeps its own exchange-scoped pre-close suppression leaf. A shared outer suppression would let one exchange's pre-close window silence the other exchange's breach. `expiry-mcx-risk-alert` is removed from `_EXPIRY_RISK_AGENTS` ([agent_engine.py:2682-2698](backend/api/algo/agent_engine.py#L2682)).
 - **Why in-place.** `_ae_prune_retired_builtins()` ([agent_engine.py:3536](backend/api/algo/agent_engine.py#L3536)) DELETES rows. The event-agent path only deactivates. Editing one slug in place keeps one row's history. Two new slugs would have lost both rows' history.
 - **Upgrade trigger.** `_AE_CONTENT_MATCHED_COND_MIGRATIONS["expiry-nfo-risk-alert"]` ([agent_engine.py:3377](backend/api/algo/agent_engine.py#L3377)) holds the pre-merge `all[...]` tree. An already-seeded row still in that shape is force-upgraded. An operator-customised row is left alone.
+- *Amended 2026-11-27 — the "`expiry-nfo-risk-alert` absorbs `expiry-mcx-risk-alert`" claim above
+  is stale. `expiry-mcx-risk-alert` is LIVE again as its own exchange-pure agent. It was split back
+  out 2026-11-26 (see "Amended 2026-11-26 — split exchange-pure" in the expiry section). Its spec is
+  [agent_engine.py:3086](backend/api/algo/agent_engine.py#L3086), with topic `expiry_warning_mcx`
+  at [:3090](backend/api/algo/agent_engine.py#L3090). The NFO-only `expiry-nfo-risk-alert` keeps
+  its own topic `expiry_warning_nfo`. The absorb-and-retire described above is historical only.
+  The split added its own value-gated migration for `name`, `description` and `topic`
+  ([agent_engine.py:4238](backend/api/algo/agent_engine.py#L4238), `_ae_sync_expiry_risk_alert_split`).
+  It touches only rows still at the exact pre-split stock values.
 - Invariant: a builtin-agent slug removed from its own spec table is PRUNED (deleted), not deactivated. Prefer an in-place edit over a fresh slug whenever one row's history is worth keeping. A collapsed event-agent spec with no per-slug channel override must get one before the fold, or its dispatch channel list silently defaults to empty.
 
 **Alert-agent audit, all 4 waves — every remaining direct-send alert path converted to log+dispatch
@@ -2124,6 +2137,10 @@ below. Order placement, template attach, chase, the agent close-all action and
     code with zero production callers, so it was never a real gate. Earlier docs listed it as a
     live ticket-gate call site, which was wrong.
   - `run_cycle` and `actions.py` (`_exchange_gate_passes`): **never exposed**.
+    *Amended 2026-11-27: this "never exposed" claim is stale for the saved-agent action path.
+    `_exchange_gate_passes()` ([actions.py:135](backend/api/algo/actions.py#L135)) does run for
+    real exchange-targeted actions, and it had a context-key bug of its own. See "Expiry
+    auto-close never reached the broker" under Critical math guards.
     `run_cycle` builds its context via `asyncio.to_thread(_build_context, ...)`, so the cold-cache
     path runs in a worker thread. `actions.py` reads the already-built context dict and does not
     fetch.
@@ -3299,6 +3316,193 @@ abstractions — `exchange_schedule`, `market_special_sessions`, `_segment_is_op
 new IST-only check). This does NOT mean retrofitting existing IST-specific code, and does NOT mean
 building US-market support now — it's a preference to apply when touching new code, nothing more.
 
+**Kite Console P&L, tradebook and ledger backfill — Playwright over the web Console, not an API
+(2026-11-26/27; commits not verified)** — Zerodha's Kite Connect API has no historical trade or P&L
+report. `orders()`, `order_history()` and `trades()` take no date range, and the client has no
+report method. So [scripts/kite_console_pnl_sync.py](scripts/kite_console_pnl_sync.py) drives the
+human Kite Console web UI with Playwright, for one offline report pull. It must never place orders.
+The script runs standalone, outside `ramboq_api` and `ramboq_conn`, and is cron-driven. The
+operator manages the schedule; the script installs none. The module docstring is the reference for
+selector status and residuals.
+- **Why it exists.** The operator wants to mine trading history for patterns. The sanctioned API
+  cannot supply the historical trade record, so the Console web report is the only source.
+- **Modes.** `--mode backfill` pulls equity, derivatives and commodities from `_BACKFILL_START`
+  ([kite_console_pnl_sync.py:233](scripts/kite_console_pnl_sync.py#L233)). The code value is
+  2026-04-01. The module docstring's 2026-03-01 is stale. `--mode sync` pulls derivatives and
+  commodities only. It scrapes only on the first trading day on or after an MCX or NFO expiry that
+  is not yet synced ([`should_sync_today()`, :1785](scripts/kite_console_pnl_sync.py#L1785)). The
+  "synced through" marker is `task_markers.kite_console_pnl_sync_last_expiry_date`
+  ([:246](scripts/kite_console_pnl_sync.py#L246)). A missed run is caught up later, not skipped.
+- **CLI.** `--account` (repeatable), `--segment` (repeatable: `equity`, `derivatives`,
+  `commodities`), `--ledger-only` and `--dry-run`
+  ([:2792-2834](scripts/kite_console_pnl_sync.py#L2792)). `--segment` gives each segment a fresh
+  browser. One long browser session degraded late in a full multi-month run. `--ledger-only` gives
+  the Funds Statement its own invocation, so segment runs do not re-scrape it each time.
+- **Chunking.** `chunk_by_calendar_month()` ([:1832](scripts/kite_console_pnl_sync.py#L1832)) splits
+  each range by calendar month. `resolve_sync_plan()` ([:1884](scripts/kite_console_pnl_sync.py#L1884))
+  widens the sync window to span two expiry cycles (`_SYNC_RANGE_LOOKBACK_DAYS = 70`,
+  [:241](scripts/kite_console_pnl_sync.py#L241)). When no previous expiry is resolvable it falls back
+  to a 35-day start bound ([:245](scripts/kite_console_pnl_sync.py#L245)).
+- **Dedup.** `ingest_rows()` ([:1547](scripts/kite_console_pnl_sync.py#L1547)) upserts
+  `ON CONFLICT (account, report_type, dedup_key)`. Tradebook rows key on the broker's `trade_id`,
+  which is stable across overlapping pulls. P&L rows key on (symbol, expiry, requested range). Two
+  pull ranges therefore land as two rows and are never merged into a wrong aggregate.
+  `build_dedup_key()` is at [:1423](scripts/kite_console_pnl_sync.py#L1423).
+- **Cooloff isolation.** `KiteConsoleConnection` ([:855](scripts/kite_console_pnl_sync.py#L855))
+  overrides two hooks. `init_kite_conn()` is the browser login, and `_login_cooloff_path()` points
+  at the script's own file, `/tmp/ramboq_kite_console_login_cooloff.json`
+  ([:292](scripts/kite_console_pnl_sync.py#L292)). It never touches the live REST path's
+  `_KITE_LOGIN_COOLOFF_PATH`, so a failed Console login cannot block the live account, and the
+  reverse holds too. The escalating backoff and the in-memory streak are reused unchanged from
+  `connections.py`. Only login-step failures (`ConsoleLoginError`,
+  [:299](scripts/kite_console_pnl_sync.py#L299)) arm the cooloff. Post-login scraping failures
+  (`ConsoleStructuralError`, [:321](scripts/kite_console_pnl_sync.py#L321)) never do, so a broken
+  selector cannot lock the account out. The cooloff-independence decision was made 2026-11-26. It
+  reverses an earlier, deliberate shared-file design.
+- **Known residuals, flagged and not fixed (per the module docstring).** `sync_account()` holds the
+  live path's cross-process login lock for the whole browser login. That can outlast the lock's 30s
+  timeout, and a concurrent live REST re-login for the same account would then raise
+  `BrokerNetworkError`. The console object also loads the live path's cached token on construction.
+  That is inert today, but would be harmful if a future caller used the token.
+- **Credentials from the DB.** `load_active_kite_accounts()` ([:977](scripts/kite_console_pnl_sync.py#L977))
+  reads `broker_accounts`. `build_console_secrets_blob()` ([:1001](scripts/kite_console_pnl_sync.py#L1001))
+  decrypts the same columns `Connections._build_kite_conn()` reads. `secrets.yaml` is never the
+  account-credential source, so a stale file value cannot arm the cooloff.
+- **Masking.** The full active roster is registered, so the mask matches the live `Z1####` form. The
+  downloaded file name is built from the masked account, never from Kite's suggested name, which
+  embeds the raw code ([:845](scripts/kite_console_pnl_sync.py#L845)). The diagnostics directory
+  is mode 0700, because a raw DOM dump cannot be scrubbed the way a log line can
+  ([:341-369](scripts/kite_console_pnl_sync.py#L341)).
+- **Alerts from a short-lived process.** A standalone script never starts `log_store.run_forever()`,
+  so a bare `logger.critical()` would be lost on exit. `alert_critical()`
+  ([:1046](scripts/kite_console_pnl_sync.py#L1046)) logs one tagged CRITICAL record. It then runs one
+  real flush and dispatch cycle through `_flush_and_dispatch_once()`
+  ([:1026](scripts/kite_console_pnl_sync.py#L1026)). No alert logic is duplicated.
+- **Reconciliation.** `reconcile_against_daily_book()` ([:2627](scripts/kite_console_pnl_sync.py#L2627))
+  compares the synced P&L with `daily_book` through `compare_pnl_groups()`
+  ([:2505](scripts/kite_console_pnl_sync.py#L2505)). A disagreement goes to
+  `alert_pnl_reconciliation_disagreement()` ([:2752](scripts/kite_console_pnl_sync.py#L2752)). It
+  routes to the `pnl-reconciliation-alert` agent ([event_agents.py:2889](backend/api/algo/event_agents.py#L2889)),
+  which is an FYI on `telegram_info`, not action-required.
+- **Selectors.** The module header still says the selectors are unverified placeholders. That is
+  stale. The 2026-11-26/27 live runs verified and corrected them. Each fix is recorded in the
+  docstrings of `verify_logged_in()` and `navigate_to_reports()`
+  ([:475-641](scripts/kite_console_pnl_sync.py#L475)).
+- **Storage.** Rows land in `KiteConsolePnlSync` ([models.py:2637](backend/api/models.py#L2637)).
+  The `broker` column defaults to `kite` at the DDL level
+  ([models.py:2777](backend/api/models.py#L2777)). Raw CSV and XLSX downloads are kept under
+  `data/kite_console_downloads/` ([:231](scripts/kite_console_pnl_sync.py#L231)) as the audit source,
+  and are never deleted.
+- Invariant: a Console scrape never changes the live trading account's login state. The masked
+  account is the only account identity written to disk, to logs, or into an alert.
+
+**Dhan historical trade and ledger backfill — the REST SDK, not a browser (2026-11-27; commits not
+verified)** — [scripts/dhan_pnl_sync.py](scripts/dhan_pnl_sync.py) mirrors the Kite Console backfill's
+architecture. It uses the same mode and CLI shape, writes the same table, and imports the same
+shared helpers rather than copying them. It differs in one important way: it calls Dhan's real REST
+endpoints, not a browser.
+- **Why no browser.** The `dhanhq` v2 SDK exposes `Statement.get_trade_history(from_date, to_date,
+  page_number)`, which is paginated, and `Statement.ledger_report(from_date, to_date)`. Both were
+  confirmed by introspecting the installed SDK ([dhan_pnl_sync.py:7-12](scripts/dhan_pnl_sync.py#L7)).
+- **Shared token, by design.** Unlike Kite Console, Dhan's historical endpoints use the SAME REST
+  access token as live trading. A second, independent `DhanConnection` here would invalidate
+  conn_service's live token, because Dhan allows one active token per source IP. It would also arm
+  the shared on-disk login cooloff on a failed script login. The script therefore never builds its
+  own connection. It calls `Connections().rebuild_from_db()` once, then resolves accounts through
+  `backend.brokers.registry.get_broker()` ([dhan_pnl_sync.py:14-39](scripts/dhan_pnl_sync.py#L14)).
+  `history.py:backfill_funds` uses the same accessor.
+- **Adapter methods.** `DhanBroker.funds_ledger()` ([dhan.py:1007](backend/brokers/adapters/dhan.py#L1007)),
+  `ledger_entries_raw()` ([:1037](backend/brokers/adapters/dhan.py#L1037)) and `trade_history()`
+  ([:1092](backend/brokers/adapters/dhan.py#L1092)). `ledger_entries_raw()` is a separate method
+  rather than a `funds_ledger(raw=True)` flag, because `funds_ledger()` already has a shipped caller.
+- **SDK-name fix (commit `198277260`, not verified).** The SDK method was once called
+  `get_ledger_report`. The real name is `ledger_report`. Both `funds_ledger()` and
+  `ledger_entries_raw()` now use it ([dhan.py:1013-1020](backend/brokers/adapters/dhan.py#L1013),
+  [:1073](backend/brokers/adapters/dhan.py#L1073)).
+- **Deploy coupling.** These methods live in `backend/brokers/`. They take effect only on a prod
+  deploy that sets `CONN_TOUCHED`. Against a stale conn_service, every account fails with "has no
+  method 'trade_history'". That is a clean `BrokerError`, not a silent no-op
+  ([dhan_pnl_sync.py:41-51](scripts/dhan_pnl_sync.py#L41)).
+- **Scope.** Only `tradebook` and `ledger` rows are written. Dhan has no P&L-statement endpoint, so
+  `report_type='pnl'` is never produced. Deriving P&L by FIFO from tradebook rows is out of scope.
+- **Unverified against a live account.** No Dhan credentials were available when this was built.
+  The client-id key name is unverified, so several spellings are scrubbed by `_dhan_scrub_client_id()`
+  before anything reaches `raw_row` ([dhan_pnl_sync.py:61-67](scripts/dhan_pnl_sync.py#L61)).
+- **Known defect, cross-referenced, not repeated here.** The backfill has an MCX lot-size defect.
+  When a security's lot size is not cached, `_normalise_trades()` falls back to a raw quantity that
+  may be in lots, not contracts. It logs only a WARNING ([dhan_pnl_sync.py:476-488](scripts/dhan_pnl_sync.py#L476)).
+  The warm-up call there lowers the risk without removing it. The fix is in a parallel work stream
+  and has no CLAUDE.md entry yet. Read that entry when it lands.
+- Invariant: a Dhan backfill never opens a second session against the live Dhan token. Its rows
+  carry `broker='dhan'` in the shared table.
+
+**History API and MCP tools — historical order, trade, funds and Console P&L surfaces
+(2026-11-26/27; commits not verified)** — [backend/api/routes/history.py](backend/api/routes/history.py)
+exposes read routes under `/api/admin/history/`, all gated by `view_audit`:
+`/orders` ([:882](backend/api/routes/history.py#L882)), `/trades` ([:935](backend/api/routes/history.py#L935)),
+`/funds` ([:988](backend/api/routes/history.py#L988)), `/realized-pnl` ([:1053](backend/api/routes/history.py#L1053)),
+`/tradebook` ([:1108](backend/api/routes/history.py#L1108)), `/ledger` ([:1178](backend/api/routes/history.py#L1178)),
+and `/pnl-summary` ([:1234](backend/api/routes/history.py#L1234)).
+- **Two different things share each name.** `/trades` is the `daily_book` settlement snapshot, not
+  the Console tradebook. `/funds` is the `daily_book` cash snapshot, not the Console ledger. The
+  Console data is `/tradebook` and `/ledger` ([history.py:28-34](backend/api/routes/history.py#L28)).
+- **Source of each route.** `/tradebook` and `/ledger` query `kite_console_pnl_sync` directly.
+  `/realized-pnl` and `/pnl-summary` go through `get_accumulated_pnl()`
+  ([kite_console_pnl_sync.py:2351](scripts/kite_console_pnl_sync.py#L2351)). `/pnl-summary` is a
+  win/loss aggregate meant as a first pass at pattern analysis. It does no backtesting.
+- **`broker` filter.** `/tradebook` and `/ledger` use `getattr()`, so the filter engages once the
+  column exists. `/realized-pnl` and `/pnl-summary` accept `kite` or no value. Any other value
+  returns an empty result until `get_accumulated_pnl()` gains a `broker` kwarg
+  ([history.py:39-50](backend/api/routes/history.py#L39)).
+- **MCP tools.** Seven read tools are added in [kite_server.py](backend/mcp/kite_server.py):
+  `get_order_history` ([:955](backend/mcp/kite_server.py#L955)), `get_trade_history`
+  ([:1007](backend/mcp/kite_server.py#L1007)), `get_funds_history` ([:1049](backend/mcp/kite_server.py#L1049)),
+  `get_realized_pnl_history` ([:1083](backend/mcp/kite_server.py#L1083)),
+  `get_historical_tradebook` ([:1136](backend/mcp/kite_server.py#L1136)),
+  `get_historical_ledger` ([:1198](backend/mcp/kite_server.py#L1198)) and
+  `get_pnl_summary` ([:1253](backend/mcp/kite_server.py#L1253)). None needs a confirm token. The
+  server now registers 34 `@app.tool()` functions in total.
+- **Reconciliation is pushed, not pulled.** A genuine disagreement reaches the operator through the
+  alert pipeline (`pnl-reconciliation-alert`, [event_agents.py:2889](backend/api/algo/event_agents.py#L2889),
+  `SEED_VERSION` 13). These endpoints never report it.
+- Invariant: the GET routes never write. Every row a route returns is already in an audited table.
+
+**`hedge_pct` — auto-staged hedge leg, DSL param and Chain-tab Hedge checkbox (2026-11, Part A;
+commits not verified)** — A hedge leg is a second, further-OTM, opposite-side option on the same
+underlying, expiry and option type as the parent. It is sized to cost roughly `hedge_pct`% of the
+parent's premium. It is neither the deleted Bracket wing nor Part C's MCX netting. Do not unify the
+three ([hedge_strike.py:12-20](backend/api/algo/hedge_strike.py#L12)).
+- **DSL.** `hedge_pct` is an optional number on the `place_order` token
+  ([agent_grammar.yaml:1193](backend/config/grammars/agent_grammar.yaml#L1193)) and on the `order`
+  token ([:1293](backend/config/grammars/agent_grammar.yaml#L1293)). It applies only to NFO options
+  and is ignored otherwise.
+- **Server.** `_action_place_order()` ([actions_live.py:801](backend/api/algo/actions_live.py#L801))
+  reads `params.hedge_pct` at [:903](backend/api/algo/actions_live.py#L903). The helpers are
+  `_al_hedge_precheck_symbol()` ([:359](backend/api/algo/actions_live.py#L359)),
+  `_al_resolve_hedge_plan()` ([:546](backend/api/algo/actions_live.py#L546)),
+  `_al_prepare_hedge_leg()` ([:608](backend/api/algo/actions_live.py#L608)),
+  `_al_handle_hedge_chase_outcome()` ([:700](backend/api/algo/actions_live.py#L700)) and
+  `_al_detect_hedge_pairing_issue()` ([:739](backend/api/algo/actions_live.py#L739)).
+- **Strike search.** `resolve_hedge_strike()` in [hedge_strike.py](backend/api/algo/hedge_strike.py)
+  accepts a candidate inside a ±50% band around the target. `_TOLERANCE_FRACTION` is at
+  [:44](backend/api/algo/hedge_strike.py#L44). A target of 50 accepts a real cost ratio in 25–75.
+- **Never blocks the parent.** A close, a non-option symbol or no candidate inside tolerance each
+  skip the hedge silently ([agent_grammar.yaml:1190-1192](backend/config/grammars/agent_grammar.yaml#L1190)).
+- **Chain tab.** The Hedge checkbox ([OptionChainTab.svelte:117-130](frontend/src/lib/order/OptionChainTab.svelte#L117))
+  defaults to 50% for a BUY parent and 25% for a SELL parent. Staging happens in the block at
+  [:809-857](frontend/src/lib/order/OptionChainTab.svelte#L809). The staged leg carries
+  `_hedgeParentKey` and `_hedgeParentSig`. It is never a merge or netting target
+  ([:639](frontend/src/lib/order/OptionChainTab.svelte#L639), [:668](frontend/src/lib/order/OptionChainTab.svelte#L668)).
+  It is removed when its parent changes or disappears ([:893-895](frontend/src/lib/order/OptionChainTab.svelte#L893)).
+- **Duplicated on purpose.** The Python `hedge_strike.py` and the JS `resolveHedgeStrike()` implement
+  the same rules without sharing code. Each docstring says it mirrors the other
+  ([hedge_strike.py:4-10](backend/api/algo/hedge_strike.py#L4)).
+- **Console DSL gap.** The Console parser under `frontend/src` does not reference `hedge_pct`. A
+  saved agent can carry it through the backend catalog only. The EBNF spec now records this
+  ([AGENTS_GRAMMAR_EBNF.md](docs/specs/AGENTS_GRAMMAR_EBNF.md), "Actions").
+- Invariant: a hedge is never staged for a close, never blocks its parent, and never merges into a
+  manually staged leg.
+
 ## Things to Avoid
 
 - Don't mock broker API calls — `@for_all_accounts` and singleton behave differently
@@ -3325,6 +3529,29 @@ building US-market support now — it's a preference to apply when touching new 
 ---
 
 ## Critical math guards
+
+**Expiry auto-close never reached the broker — an exchange-gate context mismatch (fixed) and a
+string-vs-date expiry comparison (open) — 2026-11-27** — Live incident:
+`expiry-day-mcx-itm-auto-close` skipped three cycles on the night of a real MCX GOLD26NOV expiry
+with `exchange closed: MCX`, while MCX was genuinely open. Two independent defects sit on that path.
+Only the first is fixed. Expiry auto-close is therefore NOT yet functional end to end.
+- **Fixed: the exchange gate read keys that were never set.** `_exchange_gate_passes()`
+  ([actions.py:135](backend/api/algo/actions.py#L135)) read flat `nse_open`/`mcx_open` keys off the
+  top-level `run_cycle` context. `run_cycle` stores the real flags only under
+  `context["segment_flags"]`. A missing key reads as closed, so every action with a real exchange
+  target was blocked. The gate now prefers `segment_flags` and falls back to the flat dict for a
+  hand-built context ([actions.py:163-188](backend/api/algo/actions.py#L163)). The root-cause note
+  sits at [agent_engine.py:918-930](backend/api/algo/agent_engine.py#L918). The commit is not
+  verified in this pass.
+- **Open: `expiry.py` compares a string to a date.** `OptionPosition.expiry` is declared `date`
+  ([expiry.py:122](backend/api/algo/expiry.py#L122)). The position builder assigns it from
+  `inst.get("expiry")` ([expiry.py:566](backend/api/algo/expiry.py#L566)). In conn-service mode that
+  value arrives as a JSON string, not a `date`. The filter `p.expiry == today`
+  ([expiry.py:833](backend/api/algo/expiry.py#L833)) is therefore always False, and
+  `scan_positions()` finds zero expiring positions. The mechanism and the 2026-11-26/27 prod-log
+  confirmation are as reported by the 6D documentation audit. They were not re-checked here.
+  **Status: a fix is in progress in a parallel work stream and has not landed.** Do not describe
+  expiry auto-close as working until that fix ships and is confirmed live.
 
 **Auto-close a short option at 90% of premium captured — one real agent, staged through a generic
 hold/release/auto-release mechanism, 4 sprints (2026-11-08; commits `5583e869`, `4aea966a`,
@@ -3422,6 +3649,15 @@ Held Orders first; release re-verifies the live position before resuming the cha
     exception (scoped by slug, not loosened blanket), because its fan-out condition matches a different
     leg per fire and `close_position` must bind that leg's own `account_id`/`symbol`/`exchange`
     (`resolve_row_ref_params`, actions.py — Sprint 16's pre-existing bare-NAME mechanism, unmodified).
+- *Amended 2026-11-27 — DEACTIVATED pending review of its first live firing.*
+  `exit-tp-short-option-90` was set to inactive on prod (DB id 103) and dev (DB id 184) per a
+  direct operator instruction relayed 2026-11-27. The ids are as reported; they were not
+  re-queried in this pass. The seed still ships `"status": "active"`
+  ([agent_engine.py:3586](backend/api/algo/agent_engine.py#L3586)). That does NOT re-arm the row
+  on restart. `seed_agents()` force-syncs `status` only for the "Ships INACTIVE" category
+  ([agent_engine.py:4421-4426](backend/api/algo/agent_engine.py#L4421)), and this agent's
+  description carries no such phrase. Re-enable it only after reviewing the first real fire,
+  including its staged hold and its rich-alert enrichment.
 - Invariant: a `close_position` fired by a `require_release=True` agent never reaches the broker
   without first being staged as a HELD row for operator review; the hold auto-releases on its own
   schedule, re-verifying the live position, unless explicitly cancelled first. Across all 4 sprints,
@@ -3638,8 +3874,10 @@ see `~/.claude/plans/lovely-stirring-allen.md` for the full review transcript.
 - **`loss-positions-underlying-divergence` redesigned to be SIGNED instead of unsigned (slug
   kept).** New metric `underlying_loss_divergence_signed`
   ([`grammar_tokens/metric_underlying_loss_divergence_signed.py`](backend/api/algo/grammar_tokens/metric_underlying_loss_divergence_signed.py))
-  = `market − theoretical` (signed; the unsigned `underlying_loss_divergence` sibling is kept,
-  unchanged, in case a future custom agent reads it). Negative means the underlying's actual day
+  = `market − theoretical` (signed; the unsigned `underlying_loss_divergence` sibling was
+  *fully removed* — its metric file and catalog row are gone, *amended 2026-11-27*; see the
+  "Amended 2026-11-27 — the unsigned sibling is FULLY REMOVED" bullet near the end of this
+  entry). Negative means the underlying's actual day
   P&L is UNDERPERFORMING its own Greeks/theta-model-predicted path — moving away from the expected
   decay trajectory, the adverse direction. Positive means outperforming it — benign, never fires,
   however large the gap. Reuses `_underlying_theoretical_loss`/`_metric_underlying_market_loss`
@@ -3694,6 +3932,18 @@ see `~/.claude/plans/lovely-stirring-allen.md` for the full review transcript.
   tested, operator-driven fix (`test_scheduled_info_agent_renders_name_and_schedule_not_margin_table`,
   docstring cites the operator's own complaint: "it should clearly tell what the alert is about.
   it is not clear from the alert.") — removing it risks reintroducing that exact complaint.
+- *Amended 2026-11-27 — the unsigned sibling is FULLY REMOVED, not "kept".* The
+  `underlying_loss_divergence` metric file and its catalog row are gone. Only
+  `underlying_loss_divergence_signed` resolves. Four references remain, and none is live:
+  (1) the YAML description on the underlying-divergence row
+  ([agent_grammar.yaml:638](backend/config/grammars/agent_grammar.yaml#L638)) still says "Pairs
+  with ... `underlying_loss_divergence`". This is stale prose only and not yet corrected.
+  (2) a docstring example in [agent_evaluator.py:575](backend/api/algo/agent_evaluator.py#L575).
+  (3) a docstring in `metric_underlying_loss_divergence_signed.py` (line 6) still says the unsigned
+  metric "stays". That docstring is stale and not yet corrected. (4) an intentional literal in the
+  pre-redesign shape of `_AE_CONTENT_MATCHED_COND_MIGRATIONS`
+  ([agent_engine.py:4087](backend/api/algo/agent_engine.py#L4087)), which must keep matching the
+  old row.
 - Invariant: a direction-aware ("toward/away from X") redesign of a rate-of-change alert must
   reuse a metric that already accounts for time-value/theta decay (the Greeks-model-predicted
   path), never a raw spot-only intrinsic-value re-derivation — the latter is structurally blind to
@@ -4123,13 +4373,23 @@ seasonal branch at all.
     date (2026-11-05) that is itself inside the winter window — updated to the real 23:55-derived
     values (894/55 minutes, and a boundary check moved from 23:45, now genuinely still-open, to
     23:56). This is the expected, correct consequence of the fix, not a new bug.
-  - **Still NOT fixed, flagged, out of scope for this pass**: `grammar.py`, the OTHER
-    `agent_engine.py` hardcode (line ~612, IV/theoretical-repricing baseline capture for alert
-    conditions — unrelated to the order-placement gate just fixed), `actions_paper.py`,
-    `order_hold_gate._CLOSE_HM` (checked: `cutoff_for`/`before_cutoff`, the only consumers of this
-    dict, have NO live caller anywhere outside `order_hold_gate.py` itself — effectively dead code
-    today, confirmed by grep, not assumed), `derivatives._close_time_for_row`,
-    `metric_days_until_expiry.py`, `scope_positions_expiring_today.py`.
+  - **Still NOT fixed, flagged, out of scope for this pass** — *list corrected 2026-11-27; every
+    item below was fixed by a later commit and is now struck from the residual list:*
+    `grammar.py`, the OTHER `agent_engine.py` hardcode (line ~612, IV/theoretical-repricing
+    baseline capture), `actions_paper.py`, `derivatives._close_time_for_row`,
+    `metric_days_until_expiry.py`, `scope_positions_expiring_today.py`. All six now route through
+    the shared helper `close_time_for_exchange()`
+    ([date_time_utils.py:265](backend/shared/helpers/date_time_utils.py#L265)), which reads the
+    same `market_segments` config + `resolve_dst_aware_sessions()` the order gates use. Call sites
+    are [derivatives.py:1087](backend/api/algo/derivatives.py#L1087),
+    [agent_engine.py:616](backend/api/algo/agent_engine.py#L616),
+    [grammar.py:489](backend/api/algo/grammar.py#L489),
+    [actions_paper.py:93](backend/api/algo/actions_paper.py#L93),
+    [metric_days_until_expiry.py:18](backend/api/algo/grammar_tokens/metric_days_until_expiry.py#L18)
+    and [scope_positions_expiring_today.py:36](backend/api/algo/grammar_tokens/scope_positions_expiring_today.py#L36).
+    `order_hold_gate._CLOSE_HM` is also gone (removed 2026-11-24,
+    [order_hold_gate.py:185](backend/api/algo/order_hold_gate.py#L185)), so it is not a residual.
+    The `calendar_gate.py` fallback constant above is still open.
   - **`expiry.py`'s two internal close-time hardcodes — FIXED (2026-11-21, follow-up pass).**
     A Greeks/theta helper (`_compute_theta`, ~L311-349) hardcoded `close_time = (23, 30) if is_mcx
     else (15, 30)` for its own `days_to_expiry()` call — theta drives `_net_commodity_group()`'s
@@ -4214,9 +4474,15 @@ seasonal branch at all.
     the stop-ticker reason string reading "23:56 IST" in winter, staying byte-identical to the
     pre-fix "23:31 IST" literal during DST season, and falling back to that same literal on a
     forced resolver exception while still landing the real idle mark.
-  - **Frontend residual, confirmed, NOT fixed (outside this agent's domain)** —
-    `frontend/src/lib/marketHours.js`'s `MCX_CLOSE_MIN = 23 * 60 + 30` is a static, non-DST-aware
-    constant. During the winter window, the ticket UI would show a "Market closed" warning for an
+  - **Frontend residual — FIXED (amended 2026-11-27; originally "confirmed, NOT fixed")** —
+    the flat `MCX_CLOSE_MIN = 23 * 60 + 30` constant in `frontend/src/lib/marketHours.js` is gone.
+    The replacement is `resolveExpiryCloseDateTime(expiryIso, isMcx)`
+    ([mcxCloseTime.js:163](frontend/src/lib/data/mcxCloseTime.js#L163)), which the ticket's Chain
+    tab calls at [OptionChainTab.svelte:328](frontend/src/lib/order/OptionChainTab.svelte#L328).
+    Its test file pins the old constant's absence
+    ([mcxCloseTime.test.js](frontend/src/lib/__tests__/data/mcxCloseTime.test.js)). The original
+    residual text follows. Its "FIRST follow-up" framing no longer applies. The constant was
+    a static, non-DST-aware constant. During the winter window, the ticket UI would show a "Market closed" warning for an
     MCX order at, say, 23:40 IST, even though the backend (per this pass's fix) now correctly
     accepts it. This is the single most operator-visible residual of this whole entry and should be
     the FIRST follow-up a frontend agent picks up.
@@ -5196,13 +5462,18 @@ agent 30 mins before expiry market closure, close agents 25 mins before". Final 
   then filters the scan result to them ([:1847](backend/api/algo/actions_live.py#L1847)). The
   condition decides whether the action runs. This filter decides which exchange's positions it
   closes. `before_cutoff()` is still not used.
-- **Wording never claims a verdict it can't back.** MCX: a root with zero `needs_close` legs
-  renders demoted/last as `netted: ROOT`, NEUTRAL wording only — never "safe"/"hedged, no action
-  needed" (a long-CE+long-PE pair legitimately nets to zero but can still devolve into a naked
-  future on settlement if spot lands between strikes). NFO: an OTM leg renders demoted/last as
-  `no action (OTM): ROOT` — never "netted" (no pairing step exists for equity at all; a root can
-  genuinely mix an ITM leg needing closure with an OTM leg needing none, and NFO's render loop is
-  per-leg, not per-root, specifically so both facts show). A `scan_positions()` failure renders an
+- **Wording never claims a verdict it can't back.** *Amended 2026-11-27 — the demoted-line
+  formats described here are REMOVED.* `netted: ROOT` (MCX) and `no action (OTM): ROOT` (NFO) no
+  longer render. The section now lists only the positions that need closing, per-account and
+  per-symbol, with no "netted"/"no action" rows at all
+  ([agent_engine.py:1532-1540](backend/api/algo/agent_engine.py#L1532)). Its `section is None`
+  meaning changed with it: it is also true when expiring positions exist but none need closing,
+  and both fallbacks share one wording. The rule that still holds: never say "safe" or "hedged,
+  no action needed" for MCX, because a long-CE+long-PE pair can still devolve into a naked future
+  if spot lands between strikes. Original (superseded) wording follows. MCX: a root with zero
+  `needs_close` legs renders demoted/last as `netted: ROOT`, NEUTRAL wording only. NFO: an OTM
+  leg renders demoted/last as `no action (OTM): ROOT`, never "netted" (no pairing step exists for
+  equity at all). A `scan_positions()` failure renders an
   explicit `(position detail unavailable...)` note, never a silent blank (which would read as a
   false "all clear" — the same "Staleness indicator freeze rule" invariant applied here).
 - **Order-level safety was already built — no new plumbing.** `expiry-day-itm-auto-close` ships
@@ -5725,7 +5996,7 @@ now caches + returns a `stale` flag; `/api/nav/by-account` masks `errors` for no
 | Expiry pre-close alert + auto-close (exchange-pure, one agent per exchange per role, 4 total) | `backend/api/algo/agent_engine.py` (`expiry-day-{mcx,nse}-preclose-alert`/`expiry-day-{mcx,nse}-itm-auto-close`, `_v2_expiry_preclose_alert_section`, `_v2_expiry_exchange_breakdown_or_empty`) + `backend/api/algo/actions_live.py:_action_live_expiry_auto_close` (unchanged — narrows via `params.exchange`) + `backend/api/algo/grammar_tokens/metric_is_expiry_preclose_{alert,close}_window.py` (`_metric_factory_is_expiry_preclose_window_for_exchange`, `_is_exchange_expiring_exactly_today`) |
 | Expiry morning preview (two agents, one per exchange) | `backend/api/algo/agent_engine.py` (`expiry-day-mcx-morning-preview`/`expiry-day-nse-morning-preview`, `_v2_expiry_morning_preview`) + `backend/api/algo/grammar_tokens/metric_is_expiry_morning_preview_window.py` (`_metric_factory_is_expiry_morning_preview_window`) |
 | Double-close-prevention guard for expiry closes | `backend/api/algo/expiry.py:_exp_leg_in_flight_this_session` (called from `close_positions()`) |
-| Expiry risk alert (`expiry-nfo-risk-alert`, since 2026-11-19 covers NFO+MCX in one `any[]` — `expiry-mcx-risk-alert` is retired) — classifier and pre-close window suppression | `backend/api/algo/grammar_tokens/scope_positions_expiring_today_mcx_unhedged.py` (`classify_from_context`) + `backend/api/algo/grammar_tokens/scope_positions_expiring_today_nfo.py` (`qty != 0` filter) + `backend/api/algo/agent_engine.py` (`_EXPIRY_RISK_AGENTS`, `_AE_CONTENT_MATCHED_COND_MIGRATIONS`) + `backend/api/algo/expiry.py` (`classify_prepared`) |
+| Expiry risk alerts (`expiry-nfo-risk-alert` and `expiry-mcx-risk-alert`, split into exchange-pure agents 2026-11-26; the 2026-11-19 merge is historical) — classifier and pre-close window suppression | `backend/api/algo/grammar_tokens/scope_positions_expiring_today_mcx_unhedged.py` (`classify_from_context`) + `backend/api/algo/grammar_tokens/scope_positions_expiring_today_nfo.py` (`qty != 0` filter) + `backend/api/algo/agent_engine.py` (`_EXPIRY_RISK_AGENTS`, `_AE_CONTENT_MATCHED_COND_MIGRATIONS`) + `backend/api/algo/expiry.py` (`classify_prepared`) |
 | Expiry close hold/release | `/admin/settings` → `expiry_close_hold_enabled` (inverted: `true`=held, default) |
 | Auto-close short option at 90% profit (`exit-tp-short-option-90`) | `backend/api/algo/agent_engine.py` (seed spec + `_v2_exit_tp_short_option_enrichment`) + `backend/api/algo/grammar_tokens/metric_short_option_gain_from_entry_pct.py` + `backend/api/algo/actions_live.py:_al_maybe_stage_agent_close_hold` |
 | Generic agent-close hold/release/auto-release infra (`require_release`) | `backend/api/algo/actions.py:_dispatch_live_action` + `backend/api/algo/actions_live.py` (`_al_maybe_stage_agent_close_hold`, `_al_agent_close_recently_cancelled_this_session`) + `backend/api/background.py:_task_agent_close_auto_release` |
@@ -5778,6 +6049,11 @@ now caches + returns a `stale` flag; `/api/nav/by-account` masks `errors` for no
 | Add audit snapshot | `docs/audits/AUDIT_<TOPIC>.md` |
 | Update ops runbook | `docs/deployment.md` |
 | Chase Kill / CANCEL_FAILED retry | `backend/api/routes/orders.py:kill_chase` + `chase.py:mark_order_killed` |
+| Kite Console P&L / tradebook / ledger backfill (Playwright, cooloff-isolated) | `scripts/kite_console_pnl_sync.py` (`--mode backfill\|sync`, `--segment`, `--ledger-only`) + `KiteConsolePnlSync` in `backend/api/models.py` |
+| Dhan historical trade / ledger backfill (REST SDK, shared token) | `scripts/dhan_pnl_sync.py` + `backend/brokers/adapters/dhan.py` (`trade_history`, `ledger_entries_raw`, `funds_ledger`) |
+| Historical order / trade / funds / Console P&L routes | `backend/api/routes/history.py` (`/api/admin/history/*`) + the seven `get_*_history` / `get_pnl_summary` MCP tools in `backend/mcp/kite_server.py` |
+| P&L reconciliation disagreement alert | `backend/api/algo/event_agents.py:PNL_RECONCILIATION_AGENT` (`pnl-reconciliation-alert`) + `alert_routing.py:_PER_SLUG_OVERRIDES` |
+| Auto-staged hedge leg (`hedge_pct`) | `backend/api/algo/hedge_strike.py` + `backend/api/algo/actions_live.py:_action_place_order` (hedge helpers) + `frontend/src/lib/order/OptionChainTab.svelte` (Hedge checkbox) + `docs/specs/AGENTS_GRAMMAR_EBNF.md` (spec) |
 | Alert identity line + email subject ("Alert:" label) | `backend/shared/helpers/alert_utils.py:dispatch_payload` (merged `alert_line`) + `_email_alert_body` |
 | MCX real per-contract expiry (live freeze filter) | `expiry_freeze.py:_mcx_future_real_expiry` |
 | MCX DST-aware non-agri close time (23:30 in-DST / 23:55 winter) | `backend/api/algo/derivatives.py:mcx_non_agri_close_time`, used by `options.py` (`/analytics`, `/strategy-analytics`, `/chain-snapshot`) and `backend/api/algo/expiry.py` (`ExpiryEngine._compute_theta`, `_parse_segment_close_times` via `resolve_dst_aware_sessions`). Self-maintaining `exchange_schedule` DB sync wired: `broker_apis.py:_sync_mcx_dst_close_time_coro` in `background.py:_task_holiday_refresh` — confirmed live on dev (`close_time: 23:55:00` queried directly from `exchange_schedule`); prod still on `dev` only, pending the operator's "deploy" (see CLAUDE.md entry's "Live DB state" bullet). Order-placement gate: `date_time_utils.py:resolve_dst_aware_sessions`, used by `_segment_is_open()` and `agent_engine.py:_ae_segment_flags` — confirmed on dev via the real `_ticket_gate_market_hours_and_align_price()` at 23:40/23:56 IST on a genuine future trading day. Ticker connectivity window (idle badge, first-connect restart tick, SessionGuard cold-start catch-up, stop-ticker reason text): `backend/api/background.py:_ticker_window_end`, used by `get_ticker_calendar_status`, `_ds_tick_ticker_restart`, `_sg_recover_ticker_connect`, and `_snapshot_stop_ticker` |

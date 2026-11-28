@@ -237,7 +237,7 @@ The shared dispatcher writes both real + sim events to the same tables. `/activi
 3. Scenario: any (the expiry agent triggers on `days_until_expiry`, not price)
 4. Market state preset: `expiry_day` + `is_expiry_day: true`
 5. Start
-6. Watch `expiry-day-itm-auto-close` agent fire (if you've activated it) — chase orders should land for every ITM contract
+6. Watch the `expiry-day-{mcx,nse}-itm-auto-close` agent for the exchange under test fire (amended 2026-11-27: the combined agent is retired, and these are active, staging HELD orders) — chase orders should land for every ITM contract
 
 ### 4. Stress-test a single agent without writing yaml
 

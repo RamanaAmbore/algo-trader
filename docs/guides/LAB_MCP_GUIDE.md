@@ -332,6 +332,30 @@ needed; read-only for audit. Useful when you've placed an order and
 want to trace what went down in the seconds after: "did the chase fire?
 did the template attach?"
 
+### History tools (7, read-only, added 2026-11-27)
+
+These read the historical surfaces behind `/api/admin/history/*`
+([history.py](../../backend/api/routes/history.py)). They take no confirm token, and each returns
+its own `rows` or summary dict. The count in the heading above predates them. The server registers
+34 `@app.tool()` functions in total ([kite_server.py](../../backend/mcp/kite_server.py)).
+
+- `get_order_history(from_date, to_date, accounts, symbols, status, mode, limit, offset)`. Every
+  AlgoOrder placed in a date range, filtered by `created_at`, not by when it filled.
+- `get_trade_history(...)`. The `daily_book` settlement snapshot (one row per account, symbol and
+  day). This is NOT the Console tradebook.
+- `get_funds_history(...)`. The `daily_book` cash snapshot. This is NOT the Console ledger.
+- `get_realized_pnl_history(...)`. Realised P&L per account and symbol, from the Kite Console
+  backfill.
+- `get_historical_tradebook(...)`. Raw per-fill rows from the Console tradebook, keyed by trade id.
+- `get_historical_ledger(...)`. Raw Funds Statement vouchers (margin block and reversal, cash events).
+- `get_pnl_summary(...)`. A win and loss aggregate by symbol root and segment. A first-pass input
+  for pattern analysis. It does no backtesting.
+
+Ask Claude Code to call these for questions like "which symbols were consistently profitable last
+quarter". Read the summary yourself before acting on it. A disagreement between the Console P&L and
+`daily_book` reaches you through the alert pipeline (`pnl-reconciliation-alert`), not through these
+tools.
+
 ---
 
 ## 6. The confirm-token gate
@@ -446,7 +470,8 @@ on every boot. **9 agents today** (6 loss + 2 expiry + 1 manual):
 | `loss-funds-negative` | critical | funds_warning | **active** | ANY account's cash OR available margin dips below 0 |
 | `loss-pos-total-auto-close` | critical | positions_loss | **inactive** | Destructive — chase-closes every position when total pnl ≤ −₹50k. Run in simulator first, then flip on. |
 | `expiry-day-positions-alert` | high | expiry_warning | **active** | Phase 25 — any F&O position with `days_until_expiry ≤ 1.5`. Notify-only. |
-| `expiry-day-itm-auto-close` | critical | expiry_warning | **inactive** | Phase 25 — ITM options expiring today get chase-closed. Wraps existing ExpiryEngine via `chase_close_positions`. |
+| `expiry-day-mcx-itm-auto-close` / `expiry-day-nse-itm-auto-close` | critical | expiry_warning | **active** | Amended 2026-11-27 — one per exchange, 60 min before that exchange's close. Stages HELD closing orders, not direct chase orders, unless `expiry_close_hold_enabled` is off. Replaces the retired combined `expiry-day-itm-auto-close`. |
+| `expiry-day-mcx-preclose-alert` / `expiry-day-nse-preclose-alert` | high | expiry_warning | **active** | Amended 2026-11-27 — 65 min before close. Alert only. Replaces the retired combined `expiry-day-preclose-alert`. |
 | `manual` | — | — | **active** | Captures every operator-initiated order (ticket / chain / console) into the agent_events stream |
 
 Each loss-* agent uses `any:` blocks to OR multiple threshold types
@@ -674,8 +699,9 @@ Returns `None` until window holds ≥ 2 samples — no first-tick fires.
 | `is_ntm` | metric | 1.0 when within ±1.5% of spot |
 | `positions.expiring_today` | scope | Per-symbol rows where contract expires in ≤ 1.5 days |
 
-Two seeded agents using them — `expiry-day-positions-alert`
-(notify-only) and `expiry-day-itm-auto-close` (destructive).
+Seeded agents using them — `expiry-day-positions-alert` (notify-only)
+and the exchange-pure `expiry-day-{mcx,nse}-itm-auto-close` (destructive, staged as HELD).
+Amended 2026-11-27: the older combined `expiry-day-itm-auto-close` is retired.
 
 **Reusable fragments (Item 2)** — saved sub-trees referenced via
 `{"$ref": "<name>"}`. Two kinds: notify (channel lists for

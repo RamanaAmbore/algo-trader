@@ -432,6 +432,13 @@ Prose rules (all shipped, Wave 2):
   the Console tab only. Rejected on order-scoped CLI mounts (`allowedKinds`). Resolved by
   `help_lookup` in [actions.py](../../backend/api/algo/actions.py).
 - **`alert(…)`** — see the call-shape note above. Compiles to `{type:'alert', events:[…]}`.
+- **`hedge_pct`** — optional number param on the `place_order` and `order` action tokens. Both
+  are catalogued in [agent_grammar.yaml](../../backend/config/grammars/agent_grammar.yaml): the
+  `place_order` declaration is at line 1193 and the `order` declaration at line 1293. It is a
+  backend-catalog param only. No Console parser code under `frontend/src` references it, so a
+  typed `hedge_pct=` in Console has no defined behaviour in this spec. It applies only to NFO
+  options and is ignored otherwise. Omit it for no hedge. Runtime behaviour is recorded in
+  [CLAUDE.md](../../CLAUDE.md) under "`hedge_pct` — auto-staged hedge leg".
 
 ---
 

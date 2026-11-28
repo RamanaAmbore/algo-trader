@@ -138,8 +138,9 @@ status, thresholds and channels. They change more often than this file does.
 | `market-open-nse` | NSE open notice (fires at 09:15 IST) |
 | `market-preclose-mcx-v2` | MCX pre-close notice (fires 30 min before MCX closes today) |
 | `market-preclose-nonmcx` | NSE pre-close notice (fires 30 min before NSE closes today) |
-| `expiry-day-preclose-alert` | One agent, both exchanges: held MCX or NFO position expires today AND that exchange closes in 30 min; lists affected roots + real unnetted/ITM positions |
-| `expiry-day-itm-auto-close` | One agent, both exchanges: same identification, 5 min later (25 min before close) — stages HELD closing orders |
+| `expiry-day-mcx-preclose-alert` / `expiry-day-nse-preclose-alert` | One per exchange: a held position of that exchange expires today and its close is 65 min away. Lists the positions to close. Active. |
+| `expiry-day-mcx-itm-auto-close` / `expiry-day-nse-itm-auto-close` | One per exchange: 60 min before that exchange's close. Stages HELD closing orders for that exchange only. Active. |
+| `expiry-day-mcx-morning-preview` / `expiry-day-nse-morning-preview` | Once each morning on an expiry day, after that exchange has been open 5 min. Tentative list at opening prices. Active. |
 | `market-status-report` | Market-status notice |
 | `manual` | Audit trail for every manual ticket or chain order |
 
@@ -148,31 +149,38 @@ reminder fires 30 minutes before MCX closes that day, and the NSE reminder 30 mi
 closes. If the exchange moves a close time for a day, the reminder moves with it. Each reminder
 fires at most once per day.
 
-**Expiry pre-close alert and auto-close (`expiry-day-preclose-alert` / `expiry-day-itm-auto-close`,
-2026-10-29)** — one agent for the alert, one for the order-placing side, each covering MCX and
-NFO internally (not four separate agents, not split by exchange). Both fire only when a held F&O
-position expires today AND that exchange is within 30 (alert) or 25 (auto-close, 5 minutes later)
-minutes of its own close — not the instant the expiry-day flag first turns true.
+**Expiry pre-close alert, auto-close and morning preview (amended 2026-11-27)** — the expiry
+agents are now split by exchange: four exchange-pure agents, plus two morning previews. The
+earlier combined agents (`expiry-day-preclose-alert` / `expiry-day-itm-auto-close`, 2026-10-29)
+are retired. They fired 30 and 25 minutes before close. The current agents fire 65 and 60
+minutes before close, and each is active. A pre-close alert or auto-close fires only when a held
+F&O position of that exchange expires that day AND that exchange is inside its own lead window.
+The lead times are the constants `ALERT_LEAD_MINUTES = 65`
+([metric_is_expiry_preclose_alert_window.py:95](../../backend/api/algo/grammar_tokens/metric_is_expiry_preclose_alert_window.py#L95))
+and `CLOSE_LEAD_MINUTES = 60`
+([metric_is_expiry_preclose_close_window.py:25](../../backend/api/algo/grammar_tokens/metric_is_expiry_preclose_close_window.py#L25)).
+Each agent has a 30-minute cooldown, so a leg that turns unnetted late in the window is re-scanned.
 
-- The alert lists which underlying roots are affected and, for each, whether the position is
-  genuinely unnetted/needs closing or fully resolved — using the exact same identification
-  (`ExpiryEngine.scan_positions()`, the backend mirror of the Derivatives Exp-close tab) the
-  auto-close agent uses, so the two surfaces can never disagree. MCX gets real netting language
-  ("unnetted"/"netted" — a root with zero residual after the 4-rule pass is demoted and worded
-  neutrally, never "safe"); NFO gets ITM/NTM language ("no action (OTM)" — equity has no netting
-  step at all, every ITM/NTM leg must close regardless of hedging).
+- The alert lists only the positions that need closing, by account and symbol. The per-root
+  "netted" and "no action (OTM)" lines were removed on 2026-11-26. Positions that need no action
+  are not listed at all. The alert uses the same identification as the auto-close agent
+  (`ExpiryEngine.scan_positions()`, the backend mirror of the Derivatives Exp-close tab), so the
+  two can never disagree. The alert never says "safe" for MCX. A long-CE plus long-PE pair can
+  still devolve into a naked future if spot settles between strikes.
+- The morning preview is the same identification, priced at the opening LTP. It is labelled
+  tentative. The final decision happens at the 60-minute auto-close window.
 - The auto-close agent stages the closing orders as **HELD** by default — it identifies and
   records what needs closing, but does not send anything to the broker unless you explicitly turn
   on `expiry_close_hold_enabled=false` on `/admin/settings` (inverted naming: this setting being
   *true*, the default, means closes ARE held). Once released, a close goes through the same chase
   engine (cancel-and-replace at improving prices) every other close-position action uses — nothing
   special about this path once it leaves the hold.
-- Both the Telegram/email body and the in-app alert text read "Expiry pre-close — ..." so an
-  expiry reminder is never confused with the plain, non-expiry pre-close reminder above it.
+- The alert title is prefixed "Expiry pre-close", so an expiry reminder is never confused with the
+  plain, non-expiry pre-close reminder above it
+  ([agent_engine.py:1409](../../backend/api/algo/agent_engine.py#L1409)).
 - They check your own positions, not the whole exchange, so a day with no expiring position in
-  your account stays silent. The alert sends to Telegram, email, the log and a high-priority ntfy
-  push; the auto-close agent sends to Telegram, email and the log (no ntfy — it's a staging
-  action, not an action-required alert in that sense).
+  your account stays silent. Channels are resolved by the alert-routing tree, not listed per
+  agent, so check `alert_routing.py` for the current set.
 
 Alert channel routing for event agents is not defined per agent. It is resolved by
 `alert_routing.py`. See [CLAUDE.md](../../CLAUDE.md) (Alert channels resolved by a routing tree).

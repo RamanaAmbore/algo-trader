@@ -384,8 +384,9 @@ that you don't edit directly; see "Notification channels" below):
 **Expiry-day:**
 - `expiry-nfo-risk-alert` — Any NFO position expiring today that's ITM or an open future
 - `expiry-mcx-risk-alert` — Any MCX position expiring today that's unhedged or an open future
-- `expiry-day-preclose-alert` — 30 minutes before that exchange's own close, lists which affected roots are genuinely unnetted (MCX) or ITM/NTM (NFO) and need closing
-- `expiry-day-itm-auto-close` — 25 minutes before close (5 minutes after the alert above), stages the actual closing orders for those same positions — held pending release unless you've turned on auto-release (the setting here is `expiry_close_hold_enabled`)
+- `expiry-day-mcx-preclose-alert` / `expiry-day-nse-preclose-alert` — 65 minutes before that exchange's own close on an expiry day. Lists the positions that need closing. (Amended 2026-11-27: these replace the older combined `expiry-day-preclose-alert`, which fired 30 minutes before close.)
+- `expiry-day-mcx-itm-auto-close` / `expiry-day-nse-itm-auto-close` — 60 minutes before that exchange's close. Stages the closing orders for those same positions. They are held pending release unless you have turned on auto-release (the setting is `expiry_close_hold_enabled`). These replace the older combined `expiry-day-itm-auto-close`, which fired 25 minutes before close.
+- `expiry-day-mcx-morning-preview` / `expiry-day-nse-morning-preview` — once each morning on an expiry day, a tentative list of what will need closing, priced at the opening price.
 
 **Market schedule:**
 - `market-open-nse` — NSE open notification
