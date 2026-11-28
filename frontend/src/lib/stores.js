@@ -1424,7 +1424,17 @@ function stopMarketStatusPoller() {
 // on last unsubscribe — the shared timer only runs while at least one
 // consumer is mounted and subscribed, same lifecycle every per-component
 // timer it replaces already had.
-const _marketOpenPoll = createMarketOpenPoll();
+//
+// Wired through `visibleInterval` (not a bare setInterval) — every one of
+// the four former per-component timers used `visibleInterval(fn, 30_000)`,
+// so the shared poll must preserve its pause-while-hidden + immediate-
+// refire-on-return + hibernation-subscriber behaviour. `visibleInterval`
+// returns a teardown function rather than a numeric timer handle, so
+// `clearIntervalFn` just invokes it.
+const _marketOpenPoll = createMarketOpenPoll({
+  setIntervalFn: (fn, ms) => visibleInterval(fn, ms),
+  clearIntervalFn: (teardown) => teardown?.(),
+});
 export const marketOpenStore = readable(
   { nseOpen: isNseOpen(), mcxOpen: isMcxOpen() },
   (set) => {

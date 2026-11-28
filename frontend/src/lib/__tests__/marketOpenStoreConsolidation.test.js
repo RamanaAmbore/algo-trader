@@ -51,6 +51,13 @@ describe('stores.js — shared marketOpenStore singleton', () => {
     expect(storesSrc).toMatch(/createMarketOpenPoll/);
     expect(storesSrc).toMatch(/import\s*\{[^}]*createMarketOpenPoll[^}]*\}\s*from\s*'\$lib\/marketHours'/);
   });
+
+  it('wires visibleInterval into the poll, preserving pause-while-hidden ' +
+     '+ immediate-refire-on-return — the exact behaviour every per-component ' +
+     'timer it replaces already had, not a bare setInterval', () => {
+    expect(storesSrc).toMatch(/setIntervalFn:\s*\(fn,\s*ms\)\s*=>\s*visibleInterval\(fn,\s*ms\)/);
+    expect(storesSrc).toMatch(/clearIntervalFn:\s*\(teardown\)\s*=>\s*teardown\?\.\(\)/);
+  });
 });
 
 describe('RefreshButton.svelte — consolidated onto marketOpenStore', () => {

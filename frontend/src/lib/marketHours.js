@@ -272,9 +272,18 @@ export function segmentOpenForExchange(exch) {
 }
 
 /**
+ * Defaults to the real global `setInterval`/`clearInterval`. `stores.js`
+ * passes `visibleInterval` instead for `setIntervalFn`, plus a
+ * `clearIntervalFn` that invokes the teardown function `visibleInterval`
+ * returns — so the shared poll pauses while the tab is hidden and
+ * refires immediately on return, the exact behaviour every per-component
+ * timer it replaces already had. `setIntervalFn`'s return type is
+ * deliberately `any` (not `typeof setInterval`'s numeric handle), since
+ * `visibleInterval` returns a teardown function instead.
+ *
  * @typedef {object} MarketOpenPollDeps
- * @property {typeof setInterval} [setIntervalFn]
- * @property {typeof clearInterval} [clearIntervalFn]
+ * @property {(fn: () => void, ms: number) => any} [setIntervalFn]
+ * @property {(handle: any) => void} [clearIntervalFn]
  * @property {number} [intervalMs]
  * @property {(cb: () => void) => () => void} [onStatusChange]
  */
