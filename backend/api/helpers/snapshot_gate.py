@@ -139,6 +139,29 @@ def _segment_today_open_time(seg_cfg: dict, now):
     never disagree with `_segment_is_open()` about WHEN today's session
     starts — see `is_segment_pending_open()`'s own docstring for why that
     agreement matters (2026-11-27 post-close pin incident).
+
+    P3 fix (2026-11-28): a ZERO-WIDTH override row (`start == end`, this
+    codebase's convention for "the EVENING EXTENSION is cancelled" — see
+    `broker_apis._upsert_mcx_evening_closed_sessions_coro`, which only
+    ever writes such a row for a date that is ALREADY an MCX holiday with
+    `morning_session: "Closed"` too) used to be treated the same as a
+    real override and returned its own literal `start` value (00:00) as
+    "today's open time" — making `is_segment_pending_open` read False for
+    the ENTIRE day on such a date. An interval with `start == end` can
+    never contain any `t` (`start <= t < end`, the exact half-open test
+    `is_market_open()._check_special_sessions` itself uses, is
+    unsatisfiable), so it carries no real open-time signal — mirroring
+    `is_market_open()`'s own precedence, ANY override row for today
+    (zero-width or not) makes that function return closed for the WHOLE
+    day, unconditionally, ignoring the holiday/regular-session branches
+    below entirely (see CLAUDE.md "MCX evening-closed holidays": "read as
+    closed all day by is_market_open()"). To stay consistent with that —
+    never falling through to the `evening_open_on_holidays` branch below,
+    which would apply a STATIC per-segment flag the per-date override
+    specifically exists to cancel — a zero-width-only override day
+    resolves the same way a plain "never opens today" holiday does:
+    `datetime.time.max`. A real (non-zero-width) override row for today
+    still wins exactly as before; only the all-zero-width case changes.
     """
     from datetime import time as _dtime
     from backend.shared.helpers.date_time_utils import (
@@ -150,14 +173,19 @@ def _segment_today_open_time(seg_cfg: dict, now):
     exch = (seg_cfg or {}).get("holiday_exchange", "NSE")
 
     # ① Special-session override for today wins outright, same as
-    # is_market_open()'s own precedence.
+    # is_market_open()'s own precedence — but a ZERO-WIDTH row carries no
+    # real open-time signal (see docstring above), so it resolves to
+    # "never opens today" rather than its own literal `start` (00:00).
     try:
         special = fetch_special_sessions(exch)
     except Exception:
         special = []
     today_overrides = [s for s in (special or []) if s.get("date") == today]
     if today_overrides:
-        return min(s["start"] for s in today_overrides)
+        real_overrides = [s for s in today_overrides if s["start"] < s["end"]]
+        if real_overrides:
+            return min(s["start"] for s in real_overrides)
+        return _dtime.max
 
     # ② Holiday — never opens today unless the segment has an explicit
     # evening-open-on-holidays rule (MCX evening session), which starts

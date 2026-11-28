@@ -16,7 +16,7 @@ Covers:
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, time
 from zoneinfo import ZoneInfo
 from unittest.mock import patch
 
@@ -575,3 +575,136 @@ class TestPostCloseExpiryPinRegression:
         # re-marked at yesterday's close.
         assert closed["pnl"] == pytest.approx(0.0)
         assert open_["pnl"] == pytest.approx((435.5 - 846.6666666666666) * -300)
+
+
+class TestZeroWidthSpecialSessionOpenTime:
+    """P3 fix (2026-11-28) — a zero-width `market_special_sessions` row
+    (`start == end == 00:00`, the convention
+    `broker_apis._upsert_mcx_evening_closed_sessions_coro` uses for an
+    MCX evening-closed holiday) used to make `_segment_today_open_time`
+    return its own literal `start` (00:00) as "today's open time",
+    pinning `is_segment_pending_open` to False for the ENTIRE day
+    instead of correctly reading "never opens today" (pending stays True
+    all day, same harmless semantics as a plain holiday with no evening
+    session)."""
+
+    def _zero_width_row(self, d) -> dict:
+        return {"date": d, "start": time(0, 0), "end": time(0, 0)}
+
+    def test_direct_open_time_is_never_resolves_to_max_for_zero_width_row(self):
+        """Unit-level: `_segment_today_open_time` itself must resolve a
+        zero-width-only override day to `datetime.time.max`, not 00:00."""
+        from datetime import time as _dtime
+        from backend.api.helpers.snapshot_gate import _segment_today_open_time
+        from backend.shared.helpers.utils import config as _cfg
+
+        now = datetime(2026, 11, 26, 20, 0, tzinfo=IST)  # Thursday
+        seg_cfg = next(
+            s for s in _cfg.get("market_segments", {}).values()
+            if (s.get("holiday_exchange") or "").upper() == "MCX"
+        )
+        with patch(
+            "backend.brokers.broker_apis.fetch_special_sessions",
+            side_effect=lambda exch: [self._zero_width_row(now.date())] if exch.upper() == "MCX" else [],
+        ):
+            assert _segment_today_open_time(seg_cfg, now) == _dtime.max
+
+    def test_zero_width_mcx_holiday_pending_true_at_2000(self):
+        """Core regression: an MCX evening-closed holiday (zero-width
+        override + the date is also in the MCX holiday set) must read
+        pending=True at 20:00 — pre-fix this read False for the whole
+        day."""
+        from backend.api.helpers.snapshot_gate import is_segment_pending_open
+
+        now = datetime(2026, 11, 26, 20, 0, tzinfo=IST)  # Thursday
+        holiday_date = now.date()
+        with patch(
+            "backend.brokers.broker_apis.fetch_holidays",
+            side_effect=lambda exch: {holiday_date} if exch.upper() == "MCX" else set(),
+        ), patch(
+            "backend.brokers.broker_apis.fetch_special_sessions",
+            side_effect=lambda exch: [self._zero_width_row(holiday_date)] if exch.upper() == "MCX" else [],
+        ):
+            assert is_segment_pending_open("MCX", now) is True
+
+    def test_zero_width_mcx_holiday_pending_true_at_0830(self):
+        """Same date, before the broad broker-connect window would
+        normally resolve pending — still True (never opens today)."""
+        from backend.api.helpers.snapshot_gate import is_segment_pending_open
+
+        now = datetime(2026, 11, 26, 8, 30, tzinfo=IST)
+        holiday_date = now.date()
+        with patch(
+            "backend.brokers.broker_apis.fetch_holidays",
+            side_effect=lambda exch: {holiday_date} if exch.upper() == "MCX" else set(),
+        ), patch(
+            "backend.brokers.broker_apis.fetch_special_sessions",
+            side_effect=lambda exch: [self._zero_width_row(holiday_date)] if exch.upper() == "MCX" else [],
+        ):
+            assert is_segment_pending_open("MCX", now) is True
+
+    def test_zero_width_row_on_non_holiday_weekday_still_pending(self):
+        """A zero-width override on a date that is NOT in the holiday set
+        (e.g. an operator-entered row, or a holiday-fetch failure) must
+        still resolve to "never opens today" at 10:00 — it must never
+        fall through to the regular-session branch and read 09:00/09:15
+        as a real open time, which would disagree with `_segment_is_open`
+        (always closed-all-day for ANY override row, per
+        `is_market_open()`'s own precedence)."""
+        from backend.api.helpers.snapshot_gate import is_segment_pending_open
+
+        now = datetime(2026, 11, 26, 10, 0, tzinfo=IST)  # well past 09:00
+        with patch(
+            "backend.brokers.broker_apis.fetch_holidays",
+            side_effect=lambda exch: set(),
+        ), patch(
+            "backend.brokers.broker_apis.fetch_special_sessions",
+            side_effect=lambda exch: [self._zero_width_row(now.date())] if exch.upper() == "MCX" else [],
+        ):
+            assert is_segment_pending_open("MCX", now) is True
+
+    def test_mixed_zero_width_and_real_override_same_date(self):
+        """The table's unique key is (exchange, date, start_time), so a
+        zero-width `nse_auto` row and a real operator Muhurat-style
+        override (18:00-19:15) can coexist for the same date. The real
+        row must still win — pending resolves against 18:00, not 00:00
+        and not `time.max`."""
+        from backend.api.helpers.snapshot_gate import is_segment_pending_open
+
+        d = datetime(2026, 11, 26, 0, 0, tzinfo=IST).date()
+        rows = [
+            self._zero_width_row(d),
+            {"date": d, "start": time(18, 0), "end": time(19, 15)},
+        ]
+
+        def _special(exch):
+            return rows if exch.upper() == "MCX" else []
+
+        with patch(
+            "backend.brokers.broker_apis.fetch_holidays", side_effect=lambda exch: set(),
+        ), patch(
+            "backend.brokers.broker_apis.fetch_special_sessions", side_effect=_special,
+        ):
+            # Before the real window opens.
+            assert is_segment_pending_open("MCX", datetime(2026, 11, 26, 17, 0, tzinfo=IST)) is True
+            # Inside the real override window — genuinely open, not pending.
+            assert is_segment_pending_open("MCX", datetime(2026, 11, 26, 18, 30, tzinfo=IST)) is False
+            # After the real override window closes — not pending (already had its session).
+            assert is_segment_pending_open("MCX", datetime(2026, 11, 26, 20, 0, tzinfo=IST)) is False
+
+    def test_pure_non_zero_width_override_unchanged(self):
+        """Regression guard: a pure (non-zero-width) override day must
+        resolve exactly as before this fix — min(start) of the real
+        override rows."""
+        from backend.api.helpers.snapshot_gate import is_segment_pending_open
+
+        d = datetime(2026, 11, 26, 0, 0, tzinfo=IST).date()
+        row = {"date": d, "start": time(18, 0), "end": time(19, 15)}
+        with patch(
+            "backend.brokers.broker_apis.fetch_holidays", side_effect=lambda exch: set(),
+        ), patch(
+            "backend.brokers.broker_apis.fetch_special_sessions",
+            side_effect=lambda exch: [row] if exch.upper() == "MCX" else [],
+        ):
+            assert is_segment_pending_open("MCX", datetime(2026, 11, 26, 17, 30, tzinfo=IST)) is True
+            assert is_segment_pending_open("MCX", datetime(2026, 11, 26, 18, 30, tzinfo=IST)) is False
