@@ -6955,7 +6955,7 @@
     width: 5px;
     height: 5px;
     border-radius: 50%;
-    background: rgba(251, 191, 36, 0.9);
+    background: var(--algo-amber-90);
     flex-shrink: 0;
     animation: pos-dot-blink 2s ease-in-out infinite;
   }
@@ -7419,7 +7419,7 @@
     /* Left-inset SSOT (2026-11-25) — only the left component changes;
        right stays the pre-existing 0.35rem. */
     padding: 0.15rem 0.35rem 0.15rem var(--grid-pad-left);
-    border-bottom: 1px solid rgba(126,151,184,0.10);
+    border-bottom: 1px solid var(--grid-cell-divider);
     /* Vertical divider (2026-11-25; alpha corrected 2026-11-26) — this
        cell has no bleed margin (it's `width: 100%` with no negative
        margin, unlike the header cells above), so a plain `-1px` offset
@@ -7706,7 +7706,7 @@
      cosmetic residual" precedent the divider-exclusion comment above
      already establishes for this exact 5-vs-6-pair case. */
   .opt-kv-risk {
-    --risk-stripe: var(--ag-odd-row-background-color, rgba(13,22,42,0.30));
+    --risk-stripe: var(--ag-odd-row-background-color, var(--grid-row-alt-bg));
   }
   /* Narrow (default, <1180px, 2 pairs/row): RowB = pairs 3-4. */
   .opt-kv-risk .kv-pair:nth-of-type(3) > .kv-k,
@@ -7873,7 +7873,7 @@
     text-transform: uppercase;
     letter-spacing: 0.04em;
     padding-bottom: 0.15rem;
-    border-bottom: 1px solid rgba(251,191,36,0.18);
+    border-bottom: 1px solid var(--algo-amber-18);
   }
   :global(.leg-row .field-input) {
     font-size: var(--fs-sm);
@@ -8188,7 +8188,7 @@
     height: var(--grid-row-height);
     line-height: var(--grid-row-height);
     box-sizing: border-box;
-    border-bottom: 1px solid rgba(126,151,184,0.10);
+    border-bottom: 1px solid var(--grid-cell-divider);
     color: var(--algo-slate);
     transition: background-color 0.1s;
   }
@@ -8229,7 +8229,7 @@
   }
   /* Alternating row background — matches ag-theme-algo .ag-row-odd */
   .byund-row:nth-of-type(odd) > span {
-    background-color: var(--ag-odd-row-background-color, rgba(13,22,42,0.30));
+    background-color: var(--ag-odd-row-background-color, var(--grid-row-alt-bg));
   }
   /* Row hover — cyan tint, matching History hover rgba(34,211,238,0.05). */
   .byund-row:hover > span {
@@ -8409,7 +8409,7 @@
     border-radius: 4px;
   }
   .cand-scroll::-webkit-scrollbar-thumb:hover {
-    background: rgba(251,191,36,0.85);
+    background: var(--algo-amber-85);
   }
   /* .legs-header-row/.legs-header retired — this card's chrome now
      renders via <CardHeader>, with a plain `title="Positions"`
@@ -8596,10 +8596,10 @@
   .cand-row.cand-row-total,
   .byund-row-total > span {
     background:
-      linear-gradient(rgba(251,191,36,0.22), rgba(251,191,36,0.22)),
+      linear-gradient(var(--algo-amber-22), var(--algo-amber-22)),
       #1d2a44 !important;
-    border-top: 2px solid rgba(251,191,36,0.70);
-    border-bottom: 1px solid rgba(251,191,36,0.55);
+    border-top: 2px solid var(--algo-amber-70);
+    border-bottom: 1px solid var(--algo-amber-55);
     color: var(--c-action);
     font-weight: 700;
   }

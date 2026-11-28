@@ -1790,7 +1790,13 @@
     padding: 0.15rem 0.45rem;
     border-radius: 3px;
     border: 1px solid rgba(255,255,255,0.12);
-    background: rgba(13,22,42,0.55);
+    /* 2026-11 token-drift audit — this is the same navy base
+       (13,22,42) as the shared alternating-row tint, but at double
+       the alpha. A discrete pill badge needs more contrast against
+       the panel than a subtle row-stripe wash, so this is kept as a
+       deliberate stronger variant (`--grid-row-alt-bg-strong`), not
+       collapsed to the 0.30 row-tint value. */
+    background: var(--grid-row-alt-bg-strong);
     color: var(--algo-slate);
     white-space: nowrap;
   }

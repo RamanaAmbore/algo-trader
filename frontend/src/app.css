@@ -74,6 +74,24 @@
   --algo-amber-border-soft:rgba(251, 191, 36, 0.30);
   --algo-amber-border:     rgba(251, 191, 36, 0.55);
 
+  /* Amber alpha scale (2026-11 token-drift audit) — named by their own
+     alpha percentage, mirroring how --algo-cyan-bg-strong names a
+     specific strong variant above. Extracted from derivatives
+     `+page.svelte` TOTAL-row border/background literals that had each
+     hand-picked their own alpha with no shared scale. -18/-22/-55 are
+     pure var() aliases of the pre-existing tokens at those exact alphas
+     (--algo-amber-bg-hover / --algo-amber-bg-strong / --algo-amber-border)
+     — never redefined as a second literal, which would just recreate the
+     --row-tint-odd-bg / --ag-odd-row-background-color drift this same
+     audit fixed elsewhere in this file. -70/-85/-90 are genuinely new
+     alphas with no prior token. */
+  --algo-amber-18: var(--algo-amber-bg-hover);   /* rgba(251,191,36,0.18) */
+  --algo-amber-22: var(--algo-amber-bg-strong);  /* rgba(251,191,36,0.22) */
+  --algo-amber-55: var(--algo-amber-border);     /* rgba(251,191,36,0.55) */
+  --algo-amber-70: rgba(251, 191, 36, 0.70);
+  --algo-amber-85: rgba(251, 191, 36, 0.85);
+  --algo-amber-90: rgba(251, 191, 36, 0.90);
+
   /* ── Modal frame ring (2026-10-31) ─────────────────────────────────────
      Operator: "add some kind border decoration, to show the modal. some
      times, I am confused, if it is a modal or a page." Audit found the
@@ -355,6 +373,12 @@
      are deliberate deviations — do not repoint those to this token. */
   --sep-color:  rgba(126, 151, 184, 0.10);
   --sep-margin: 0.15rem 0.4rem;
+  /* --grid-cell-divider (2026-11 token-drift audit) — an alias of
+     --sep-color, not a second literal. Two derivatives `+page.svelte`
+     call sites (the Greeks/Risk/Snapshot divider-unification work) had
+     the identical rgba() value hand-typed instead of referencing the
+     canonical token already defined above for this exact hairline. */
+  --grid-cell-divider: var(--sep-color);
 
   /* --grid-header-gap (2026-10 CardHeader/grid consistency pass, Part A)
      retired — it put a deliberate gap between a CardHeader's bottom
@@ -612,10 +636,24 @@
   --c-underlying-bg:  rgba(192, 132, 252, 0.10);
   --c-underlying-bar: rgba(192, 132, 252, 0.80);
 
-  /* Alternating row tint — standard α 0.30 used by .row-tint-odd, LogPanel,
-     BrokerHealthBadge, and the derivatives legs grid. Single SSOT so any
-     palette adjustment propagates to all four consumers automatically. */
-  --row-tint-odd-bg: rgba(13, 22, 42, 0.30);
+  /* Alternating row tint — standard α 0.30, navy base (13,22,42). This is
+     the ONE canonical token for this value (2026-11 token-drift audit).
+     `--row-tint-odd-bg` and the algo ag-Grid theme's own
+     `--ag-odd-row-background-color` (app.css, `.ag-theme-algo` block)
+     both alias this — they used to be two independently-literal copies
+     of the identical rgba() value with no shared SSOT. Consumers:
+     .row-tint-odd, LogPanel, BrokerHealthBadge, the derivatives legs
+     grid, and every ag-theme-algo odd row. */
+  --grid-row-alt-bg: rgba(13, 22, 42, 0.30);
+  /* A stronger (α 0.55), same-navy-base variant for a discrete chip/pill
+     background (SimulatorPanel `.sim-pill`) — NOT a row stripe. A pill
+     badge needs more contrast against its panel than a subtle
+     alternating-row wash does, so this is a deliberate separate variant,
+     not drift from --grid-row-alt-bg. Named `-strong` to match the
+     `--algo-cyan-bg-strong` / `--algo-amber-bg-strong` alpha-variant
+     naming convention already used elsewhere in this file. */
+  --grid-row-alt-bg-strong: rgba(13, 22, 42, 0.55);
+  --row-tint-odd-bg: var(--grid-row-alt-bg);
 }
 
 /* ── Canonical .algo-modal recipe ─────────────────────────────────────────
@@ -1602,7 +1640,7 @@
   --ag-header-font-size: var(--grid-header-font-size);
   --ag-foreground-color: var(--algo-slate);
   --ag-background-color: #1d2a44;
-  --ag-odd-row-background-color: rgba(13,22,42,0.30);
+  --ag-odd-row-background-color: var(--grid-row-alt-bg);
   --ag-row-hover-color: rgba(34,211,238,0.05);
   --ag-selected-row-background-color: rgba(34,211,238,0.12);
   --ag-border-color: rgba(255,255,255,0.08);
@@ -1740,7 +1778,7 @@
   background-color: transparent !important;
 }
 .ag-theme-algo .ag-row-odd {
-  background-color: rgba(13,22,42,0.30) !important;
+  background-color: var(--grid-row-alt-bg) !important;
 }
 .ag-theme-algo .ag-row-hover {
   background-color: rgba(34,211,238,0.05) !important;
@@ -1813,7 +1851,7 @@
   border-bottom: 1px solid var(--sep-color);
 }
 .algo-table tbody tr:nth-child(odd) td {
-  background: var(--ag-odd-row-background-color, rgba(13,22,42,0.30));
+  background: var(--ag-odd-row-background-color, var(--grid-row-alt-bg));
 }
 .algo-table tbody tr:hover td {
   background: var(--ag-row-hover-color, rgba(34,211,238,0.05));
