@@ -708,11 +708,13 @@ export function mkRightColDefs({
     { field: 'day_pnl', headerName: 'Day P&L', width: 58, minWidth: 45, maxWidth: 72,
       type: 'numericColumn', headerClass: numericHdr,
       cellClass: (p) => pnlCellClass(p, 'day_pnl'),
-      // baseline_stale (2026-11 Day P&L audit) — a daily_book snapshot
+      // baseline_stale (2026-11 Day P&L audit; 6D follow-up fixed a loss-
+      // guard blind spot in the underlying value) — a daily_book snapshot
       // writer gap, not a confirmed base_pnl=0. day_pnl's own numeric value
-      // is already a safe 0 (see nav.js:baseDayPnlForPosition), not the
-      // wrong lifetime P&L — render it as unavailable rather than a plain
-      // 0, which would misleadingly read as "flat today".
+      // is a conservative substitute (the row's own lifetime pnl, never a
+      // hard 0 — see nav.js:baselineGapDayPnlSubstitute), not a genuine
+      // Day P&L for this row — render "—" rather than that substitute,
+      // which would misleadingly read as today's real move.
       valueFormatter: (p) => p.data?.baseline_stale === true ? '—' : aggFmtGrid(p),
       headerTooltip: 'Day P&L shows "—" when daily_book has a snapshot gap for this position (broker confirms it carried over, but no baseline was found) — never a stale lifetime total.' },
     { field: 'pnl', headerName: 'P&L', width: 58, minWidth: 45, maxWidth: 72,

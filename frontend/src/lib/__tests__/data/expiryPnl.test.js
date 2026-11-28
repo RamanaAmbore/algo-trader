@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { expiryPnl, expiryPnlWithRealised, AVG_PRICE_IS_COST_BASIS, legExtrinsicDisplay, positionExpPnl, positionExpPnlPieces, buildPositionRowFromBroker, splitClosedReopened } from '../../data/expiryPnl.js';
+import { baseDayPnlForPosition, isBaselineGap } from '../../data/nav.js';
 
 describe('expiryPnl', () => {
   const spot = 100;
@@ -769,5 +770,106 @@ describe('buildPositionRowFromBroker — product passthrough (2026-11 real-money
     const pieces = splitClosedReopened(p);
     expect(pieces.length).toBeGreaterThan(0);
     for (const piece of pieces) expect(piece.product).toBe('MIS');
+  });
+});
+
+// ============================================================================
+// _forceBaseline / baseline_stale resolution across splitClosedReopened
+// (2026-11 Day P&L audit, 6D follow-up — frontend mirror of the backend's
+// `pnl_math.baseline_gap_day_pnl_substitute` fix).
+//
+// `_forceBaseline` is the one place `splitClosedReopened` computes an
+// explicit, deliberate baseline for a derived split piece. Before this
+// fix, a piece spread from a `baseline_stale: true` original row carried
+// that flag through unchanged — and because `baseDayPnlForPosition`
+// short-circuits on `isBaselineGap(row)` BEFORE ever consulting
+// `prev_settlement_pnl`, a later re-call to `baseDayPnlForPosition(piece)`
+// (e.g. the derivatives page's `_candDayPnl`, which runs on exactly these
+// split pieces) would silently ignore the baseline `_forceBaseline` just
+// computed and return the gap substitute instead. `_forceBaseline` now
+// clears `baseline_stale` on the piece it builds, since forcing an
+// explicit baseline genuinely resolves that one derived row's gap.
+//
+// These tests assert the SUM-CONSERVATION property end to end: every
+// `splitClosedReopened` branch that can see `baseline_stale: true` on its
+// input (only the oq≠0 branches — `is_baseline_gap` requires a non-zero
+// overnight carry, so the oq=0 branches structurally never see it) must
+// produce pieces whose `baseDayPnlForPosition` sums back EXACTLY to
+// `baseDayPnlForPosition` of the original unsplit row.
+// ============================================================================
+
+describe('splitClosedReopened — baseline_stale resolution (2026-11 6D follow-up)', () => {
+  it('oq=0 branches never see baseline_stale=true (is_baseline_gap requires a non-zero overnight carry)', () => {
+    // Sanity/documentation check — not exercising a real backend response,
+    // just confirming the precondition every test below relies on.
+    const p = buildPositionRowFromBroker({
+      tradingsymbol: 'NIFTY25AUG24000CE', account: 'ACC1',
+      quantity: 0, overnight_quantity: 0,
+      day_buy_quantity: 50, day_sell_quantity: 50,
+      day_buy_value: 6000, day_sell_value: 6500, pnl: 500,
+      baseline_stale: true, // a hypothetical malformed backend row
+    }, 'live');
+    // buildPositionRowFromBroker copies baseline_stale through verbatim —
+    // the real backend is the one that never emits this combination (see
+    // pnl_math.is_baseline_gap's own overnight_qty!=0 requirement).
+    expect(p.baseline_stale).toBe(true);
+  });
+
+  it('oq!=0, partial close (still open): both pieces resolve baseline_stale=false, and their baseDayPnlForPosition sums back to the original gap-row substitute', () => {
+    const p = buildPositionRowFromBroker({
+      tradingsymbol: 'NIFTY25AUG24000CE', account: 'ACC1',
+      quantity: 50,               // still open — broker qty != 0
+      overnight_quantity: 100,    // overnight long
+      day_buy_quantity: 0, day_sell_quantity: 50,
+      day_buy_value: 0, day_sell_value: 7000,   // exit price 140
+      average_price: 120, last_price: 130, prev_close: 125,
+      pnl: 2000,                  // lifetime pnl — the gap substitute value
+      baseline_stale: true,       // broker-confirmed carry, no resolved baseline
+    }, 'live');
+
+    expect(isBaselineGap(p)).toBe(true);
+    const originalDayPnl = baseDayPnlForPosition(p);
+    expect(originalDayPnl).toBe(2000); // substitute = p.pnl, never a hard 0
+
+    const pieces = splitClosedReopened(p);
+    expect(pieces).toHaveLength(2);
+    const closed = pieces.find((x) => x._splitTag === 'closed');
+    const open = pieces.find((x) => x._splitTag === 'open');
+
+    // The gap is genuinely resolved for each derived piece — a forced,
+    // explicit baseline was just computed for it.
+    expect(closed.baseline_stale).toBe(false);
+    expect(open.baseline_stale).toBe(false);
+
+    // (exitPrice - close) * closedQty = (140-125)*50 = 750
+    expect(baseDayPnlForPosition(closed)).toBeCloseTo(750, 6);
+    // originalDayPnl - closed_day_pnl = 2000 - 750 = 1250
+    expect(baseDayPnlForPosition(open)).toBeCloseTo(1250, 6);
+
+    // Sum-conservation: the split must never create or destroy Day P&L.
+    expect(baseDayPnlForPosition(closed) + baseDayPnlForPosition(open))
+      .toBeCloseTo(originalDayPnl, 6);
+  });
+
+  it('oq!=0, fully closed today (brokerQty=0): the single output row resolves baseline_stale=false and matches the original gap-row substitute exactly', () => {
+    const p = buildPositionRowFromBroker({
+      tradingsymbol: 'NIFTY25AUG24000CE', account: 'ACC1',
+      quantity: 0,                 // fully closed
+      overnight_quantity: 100,
+      day_buy_quantity: 0, day_sell_quantity: 100,
+      day_buy_value: 0, day_sell_value: 14000,
+      average_price: 120, last_price: 130, prev_close: 125,
+      pnl: 1800,
+      baseline_stale: true,
+    }, 'live');
+
+    const originalDayPnl = baseDayPnlForPosition(p);
+    expect(originalDayPnl).toBe(1800);
+
+    const pieces = splitClosedReopened(p);
+    expect(pieces).toHaveLength(1);
+    const [row] = pieces;
+    expect(row.baseline_stale).toBe(false);
+    expect(baseDayPnlForPosition(row)).toBeCloseTo(originalDayPnl, 6);
   });
 });

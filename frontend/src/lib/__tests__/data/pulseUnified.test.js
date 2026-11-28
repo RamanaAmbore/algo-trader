@@ -604,20 +604,22 @@ describe('mergePositionRows — product propagation (2026-11 real-money audit fi
 });
 
 // ============================================================================
-// mergePositionRows — baseline_stale propagation (2026-11 Day P&L audit)
+// mergePositionRows — baseline_stale propagation (2026-11 Day P&L audit;
+// 6D follow-up fixed a critical-tier loss-guard blind spot)
 //
 // A daily_book snapshot-writer gap row (baseline_stale=true, no resolved
-// prev_settlement_pnl) must contribute 0 — not its full lifetime pnl — to
-// the merged row's day_pnl (via baseDayPnlForPosition/isBaselineGap short-
-// circuiting in nav.js), AND the merged row itself must carry
-// baseline_stale=true (OR-merged across contributing raw rows, mirroring
-// account_stale's own propagation convention in _propagateStaleAndSource)
-// so the grid's day_pnl cellFormatter (pulseColumns.js) can render it as
-// unavailable rather than a plain (safe but still somewhat misleading) 0.
+// prev_settlement_pnl) contributes its own lifetime pnl — never a hard 0 —
+// to the merged row's day_pnl (via baseDayPnlForPosition/isBaselineGap in
+// nav.js, see nav.js:baselineGapDayPnlSubstitute), AND the merged row
+// itself must carry baseline_stale=true (OR-merged across contributing raw
+// rows, mirroring account_stale's own propagation convention in
+// _propagateStaleAndSource) so the grid's day_pnl cellFormatter
+// (pulseColumns.js) can render it as unavailable ("—") rather than that
+// substitute number, which would misleadingly read as today's real move.
 // ============================================================================
 
 describe('mergePositionRows — baseline_stale propagation (2026-11 Day P&L audit)', () => {
-  it('a gap row contributes 0 to day_pnl, not its full lifetime pnl, and sets baseline_stale on the merged row', () => {
+  it('a gap row contributes its lifetime pnl (never a hard 0) to day_pnl, and sets baseline_stale on the merged row', () => {
     const byKey = {};
     const row = makeOvernightPositionRow({
       account: 'ACC1',
@@ -629,7 +631,7 @@ describe('mergePositionRows — baseline_stale propagation (2026-11 Day P&L audi
     });
     mergePositionRows(byKey, [row], true, {}, makeCtx());
     const result = byKey['NIFTY25AUG24000CE::ACC1__pos'];
-    expect(result.day_pnl).toBe(0);
+    expect(result.day_pnl).toBe(48250);
     expect(result.baseline_stale).toBe(true);
   });
 

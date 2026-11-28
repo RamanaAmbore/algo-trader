@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { splitPairedLots, consolidateLotSplitPieces, mergedLegPieces } from '../../data/lotPairSplit.js';
+import { baseDayPnlForPosition, isBaselineGap } from '../../data/nav.js';
 
 /** @param {Partial<any>} overrides */
 function row(overrides) {
@@ -141,6 +142,41 @@ describe('splitPairedLots — pro-rating invariant', () => {
     }
     // qty sums back exactly too
     expect(pieces.reduce((s, p) => s + p.quantity, 0)).toBe(300);
+  });
+
+  // 2026-11 6D follow-up (frontend mirror of pnl_math.baseline_
+  // gap_day_pnl_substitute): `baseline_stale` is a boolean flag, not in
+  // `_PRORATE_FIELDS`, so every lot-split piece inherits it verbatim from
+  // the original row (unlike `pnl`, which IS prorated, remainder-based, so
+  // Σ piece.pnl === original.pnl exactly). Because `baseDayPnlForPosition`
+  // reads each piece's own (prorated) `pnl` as the gap substitute, this
+  // already conserves correctly with NO additional fix needed in this
+  // module — this test documents and pins that fact.
+  it('baseline_stale rows: baseDayPnlForPosition sums across pieces to the original gap-row substitute, and every piece stays flagged stale', () => {
+    const longRow = row({
+      tradingsymbol: 'CRUDEOIL26OCTFUT', quantity: 30,
+      pnl: 900, realised: 0, unrealised: 0,
+      baseline_stale: true,
+    });
+    const shortA = row({ tradingsymbol: 'CRUDEOIL26NOVFUT', quantity: -10 });
+    const shortB = row({ tradingsymbol: 'CRUDEOIL26DECFUT', quantity: -5 });
+
+    expect(isBaselineGap(longRow)).toBe(true);
+    const originalDayPnl = baseDayPnlForPosition(longRow);
+    expect(originalDayPnl).toBe(900); // substitute = row's own pnl, never a hard 0
+
+    const out = splitPairedLots([longRow, shortA, shortB]);
+    const pieces = out.filter(r => r.tradingsymbol === 'CRUDEOIL26OCTFUT');
+    // 30 qty: 10 matched + 5 matched + 15 leftover/orphan → 3 genuine pieces.
+    expect(pieces).toHaveLength(3);
+
+    for (const p of pieces) {
+      expect(p.baseline_stale).toBe(true); // verbatim passthrough, never prorated
+      expect(isBaselineGap(p)).toBe(true);
+    }
+
+    const summed = pieces.reduce((s, p) => s + baseDayPnlForPosition(p), 0);
+    expect(summed).toBeCloseTo(originalDayPnl, 6);
   });
 });
 

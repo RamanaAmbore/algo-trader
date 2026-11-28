@@ -170,11 +170,14 @@ function _propagateStaleAndSource(row, r) {
     row.account_stale = true;
     if (r.account_stale_since) row.account_stale_since = r.account_stale_since;
   }
-  // baseline_stale (2026-11 Day P&L audit) — a daily_book snapshot-writer
-  // gap, distinct from account_stale (whole-account LKG substitution).
-  // OR-merged: one stale contributor is enough to mark the aggregated row,
-  // since baseDayPnlForPosition(r) already contributes 0 (not a wrong
-  // number) for that one raw row's share of row.day_pnl.
+  // baseline_stale (2026-11 Day P&L audit; 6D follow-up corrected the
+  // substitute below) — a daily_book snapshot-writer gap, distinct from
+  // account_stale (whole-account LKG substitution). OR-merged: one stale
+  // contributor is enough to mark the aggregated row. baseDayPnlForPosition(r)
+  // contributes that one raw row's own lifetime pnl (never a hard 0 — see
+  // nav.js:baselineGapDayPnlSubstitute) to row.day_pnl; row.baseline_stale
+  // still drives the "—" display convention (pulseColumns.js) independent
+  // of that numeric value.
   if (r.baseline_stale === true) row.baseline_stale = true;
   const _rps = r.price_source ?? r.ltp_source;
   if (_rps && _rps !== 'live') {

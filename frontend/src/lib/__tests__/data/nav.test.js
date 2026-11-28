@@ -3,6 +3,7 @@ import {
   currentTotalProfit,
   baseDayPnlForPosition,
   isBaselineGap,
+  baselineGapDayPnlSubstitute,
   aggregateDayPnlForPositions,
   navTotalRow,
   positionsPnlFiltered,
@@ -111,7 +112,9 @@ describe('baseDayPnlForPosition', () => {
   });
 });
 
-// ── isBaselineGap / baseline_stale (2026-11 Day P&L audit) ──────────────────
+// ── isBaselineGap / baseline_stale (2026-11 Day P&L audit; 6D follow-up
+// fixed a critical-tier loss-guard blind spot in the substitute value —
+// mirrors backend commit for `pnl_math.baseline_gap_day_pnl_substitute`) ──
 //
 // `prev_settlement_pnl: null` is ambiguous on its own: it means "genuinely
 // new position" OR "daily_book snapshot-writer gap". The backend sets
@@ -119,6 +122,15 @@ describe('baseDayPnlForPosition', () => {
 // a non-zero overnight carry-over but no baseline was resolved. Without this
 // guard, baseDayPnlForPosition would silently render the row's full LIFETIME
 // P&L as if it were TODAY's P&L (current_total_profit − 0).
+//
+// A PRIOR revision of this fix substituted a hard 0.0 for a gap row's
+// contribution instead — which traded one bug for another: it silently
+// read a position that is genuinely losing real money today as "no loss"
+// in exactly the aggregate the critical-tier `loss-positions-total` agent
+// reads, violating CLAUDE.md's "Staleness indicator freeze rule" ("never
+// silently collapse to 0/blank"). The current, correct behaviour
+// substitutes the row's own lifetime `pnl` instead — mirroring the
+// backend's `baseline_gap_day_pnl_substitute` exactly.
 
 describe('isBaselineGap', () => {
   it('true when baseline_stale is explicitly true', () => {
@@ -134,11 +146,35 @@ describe('isBaselineGap', () => {
   });
 });
 
+describe('baselineGapDayPnlSubstitute', () => {
+  it('returns the row\'s own lifetime pnl', () => {
+    expect(baselineGapDayPnlSubstitute({ pnl: 48250 })).toBe(48250);
+  });
+
+  it('a large negative lifetime pnl is never masked to 0 (the exact bug this fixes)', () => {
+    expect(baselineGapDayPnlSubstitute({ pnl: -250000 })).toBe(-250000);
+  });
+
+  it('missing pnl falls back to 0.0 (no real-pnl signal available either way)', () => {
+    expect(baselineGapDayPnlSubstitute({})).toBe(0);
+    expect(baselineGapDayPnlSubstitute(null)).toBe(0);
+  });
+
+  it('never recomputes realised+unrealised — reads the raw pnl field directly, matching the backend exactly', () => {
+    // If this read currentTotalProfit(p) instead of p.pnl, split pieces
+    // (expiryPnl.js:splitClosedReopened) that explicitly set realised/
+    // unrealised to something OTHER than pnl would sum to a different
+    // total than the backend's own row.pnl-based substitute.
+    const p = { pnl: 5000, realised: 1, unrealised: 1 };
+    expect(baselineGapDayPnlSubstitute(p)).toBe(5000);
+  });
+});
+
 describe('baseDayPnlForPosition — baseline gap handling', () => {
-  it('a daily_book gap row (baseline_stale=true) returns 0, NEVER the lifetime pnl', () => {
+  it('a daily_book gap row (baseline_stale=true) returns the lifetime pnl, NEVER a hard 0', () => {
     // Position carried a large lifetime gain (e.g. unrealised=48250) with no
-    // resolved baseline — this is the exact bug: current_total_profit − 0
-    // would otherwise render 48250 as "today's" day P&L.
+    // resolved baseline. The pre-6D-fix bug substituted a hard 0.0 here,
+    // which would have silently masked a genuinely large loss instead.
     const p = {
       realised: 0,
       unrealised: 48250,
@@ -146,7 +182,18 @@ describe('baseDayPnlForPosition — baseline gap handling', () => {
       prev_settlement_pnl: null,
       baseline_stale: true,
     };
-    expect(baseDayPnlForPosition(p)).toBe(0);
+    expect(baseDayPnlForPosition(p)).toBe(48250);
+  });
+
+  it('a large negative lifetime pnl on a gap row reaches the caller — the critical-tier loss guard must never go blind', () => {
+    const p = {
+      realised: 0,
+      unrealised: -250000,
+      pnl: -250000,
+      prev_settlement_pnl: null,
+      baseline_stale: true,
+    };
+    expect(baseDayPnlForPosition(p)).toBe(-250000);
   });
 
   it('a genuinely new position (baseline_stale=false, prev_settlement_pnl=null) is unchanged', () => {
@@ -163,19 +210,28 @@ describe('baseDayPnlForPosition — baseline gap handling', () => {
     // Defensive: the backend never sets baseline_stale=true alongside a
     // resolved prev_settlement_pnl, but the frontend guard must still take
     // baseline_stale as authoritative over the (should-be-unreachable) combo
-    // — this documents the guard's priority, not a real backend state.
+    // — this documents the guard's priority, not a real backend state. The
+    // substitute reads row.pnl directly (9000), not total-minus-base (500).
     const p = { pnl: 9000, prev_settlement_pnl: 8500, baseline_stale: true };
-    expect(baseDayPnlForPosition(p)).toBe(0);
+    expect(baseDayPnlForPosition(p)).toBe(9000);
   });
 });
 
-describe('aggregateDayPnlForPositions — baseline gap rows contribute 0, not their lifetime pnl', () => {
-  it('a mix of a gap row and a normal row sums only the normal row', () => {
+describe('aggregateDayPnlForPositions — baseline gap rows contribute their real lifetime pnl, not a hard 0', () => {
+  it('a mix of a gap row and a normal row sums both, using the substitute for the gap row', () => {
     const rows = [
       { pnl: 5000, prev_settlement_pnl: 3000 },                                   // → 2000
-      { pnl: 48250, prev_settlement_pnl: null, baseline_stale: true },            // gap → 0, not 48250
+      { pnl: 48250, prev_settlement_pnl: null, baseline_stale: true },            // gap → 48250 (lifetime pnl substitute)
     ];
-    expect(aggregateDayPnlForPositions(rows)).toBe(2000);
+    expect(aggregateDayPnlForPositions(rows)).toBe(50250);
+  });
+
+  it('a gap row with a large real loss reaches the aggregate — the exact scenario the 6D fix exists for', () => {
+    const rows = [
+      { pnl: 1000, prev_settlement_pnl: 0 },
+      { pnl: -250000, prev_settlement_pnl: null, baseline_stale: true },
+    ];
+    expect(aggregateDayPnlForPositions(rows)).toBe(-249000);
   });
 });
 

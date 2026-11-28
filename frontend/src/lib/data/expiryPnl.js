@@ -442,12 +442,29 @@ function _closedLifetimePnl(
  * independently (`open_dcv` / `baseDayPnlForPosition(p) - closed_day_pnl`)
  * and must not silently diverge depending on which total-profit field pair
  * the backend has populated on the pre-split row.
+ *
+ * Also clears `row.baseline_stale` (2026-11 Day P&L audit, 6D follow-up
+ * fix): the caller's spread (`{...p, ...}`) carries the ORIGINAL row's
+ * `baseline_stale` flag through onto this split piece. Since
+ * `baseDayPnlForPosition` short-circuits on `isBaselineGap(row)` BEFORE
+ * ever consulting `prev_settlement_pnl` (see nav.js), a forced row that
+ * still read `baseline_stale: true` would silently defeat the very
+ * baseline this function just computed — any later re-call to
+ * `baseDayPnlForPosition(row)` (e.g. the derivatives page's
+ * `_candDayPnl`, which runs on exactly these split pieces) would return
+ * `baselineGapDayPnlSubstitute(row)` (the piece's own, already-forced
+ * `pnl`) instead of `targetDayPnl`. Forcing an explicit, deliberate
+ * baseline on this one derived piece genuinely resolves its gap — it is
+ * no longer "unknown", so `baseline_stale` must read false here. The
+ * ORIGINAL unsplit row `p` (passed to this function's caller) is never
+ * mutated — only the split piece built from a spread of it.
  * @param {any} row
  * @param {number} targetDayPnl
  * @returns {any} the same row, mutated
  */
 function _forceBaseline(row, targetDayPnl) {
   row.prev_settlement_pnl = currentTotalProfit(row) - targetDayPnl;
+  row.baseline_stale = false;
   return row;
 }
 

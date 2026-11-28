@@ -71,14 +71,53 @@ export function currentTotalProfit(p) {
  * overnight carry-over (`overnight_quantity != 0`) yet no baseline row was
  * resolved. Row-level UI should render Day P&L as unavailable/stale for a
  * row where this returns true, instead of trusting `baseDayPnlForPosition`'s
- * (deliberately neutral) numeric return for that row — see that function's
- * own doc for why it returns 0, not the row's full lifetime P&L, on a gap.
+ * numeric return for that row at face value — see that function's own doc
+ * (and `baselineGapDayPnlSubstitute`) for what it returns on a gap.
  *
  * @param {{ baseline_stale?: boolean|null }} p
  * @returns {boolean}
  */
 export function isBaselineGap(p) {
   return p?.baseline_stale === true;
+}
+
+/**
+ * Day P&L contribution for a `baseline_stale` row — i.e. one where
+ * `isBaselineGap(p)` is true, so the real base_pnl is genuinely unknown
+ * (not a confirmed 0).
+ *
+ * Mirrors the backend's `pnl_math.baseline_gap_day_pnl_substitute`
+ * EXACTLY (2026-11 6D audit fix, frontend mirror): a prior revision
+ * short-circuited a flagged row's Day P&L contribution to a HARD 0.0 in
+ * every aggregate (`baseDayPnlForPosition`, `portfolioStore.svelte.js`'s
+ * rollups, the derivatives Snapshot/Legs/Payoff totals). That silently
+ * collapsed a position that is genuinely losing real money today to "no
+ * loss" in the very aggregate the critical-tier `loss-positions-total`
+ * agent's `day_val`/`day_pct`/rate-of-change leaves read — the exact
+ * direction CLAUDE.md's "Staleness indicator freeze rule" forbids ("any
+ * degraded/failed fetch must freeze to last-known-good ... never
+ * silently collapse to 0/blank").
+ *
+ * There is no genuine last-known-good DAY P&L figure for a baseline gap
+ * (that is precisely what's missing) — so this uses the row's own
+ * lifetime `pnl` (realised + unrealised) as a conservative, always-
+ * available substitute. It is not a perfect Day P&L value (a position
+ * with large prior-day gains can mask a smaller loss today), but it is
+ * never silently read as "flat" the way 0.0 was, and a genuinely large
+ * move — the scenario this fix exists for — still reaches the aggregate.
+ * Deliberately reads the row's own `pnl` field directly (not
+ * `currentTotalProfit(p)`) to match the backend's own substitution
+ * EXACTLY — `pnl_math.baseline_gap_day_pnl_substitute` takes `row.pnl`,
+ * never a recomputed realised+unrealised sum. `pnl` is never
+ * null-coerced to a wrong zero either: a missing `pnl` still needs an
+ * explicit 0.0 fallback here, since the row's real total profit is
+ * unknown either way in that case.
+ *
+ * @param {{ pnl?: number|null }} p
+ * @returns {number}
+ */
+export function baselineGapDayPnlSubstitute(p) {
+  return Number(p?.pnl) || 0;
 }
 
 /**
@@ -95,22 +134,30 @@ export function isBaselineGap(p) {
  * function (or a wrapper that calls it) instead of reading a raw broker
  * day-change field directly.
  *
- * Baseline gap (2026-11 Day P&L audit): when `isBaselineGap(p)` is true,
- * `prev_settlement_pnl` being null is NOT a confirmed base_pnl=0 — using 0
- * here would silently render this row's full LIFETIME P&L as if it were
- * TODAY's P&L (the exact bug this guard exists to prevent). Returns 0 for
- * such a row instead — a deliberately neutral placeholder, safe to sum
- * into an aggregate (never inflates a total with an unknown-but-wrong
- * number) — rather than null, so every existing numeric caller of this
- * function keeps working unmodified. Row-level UI that wants to show a
- * "—"/stale indicator instead of this 0 must check `isBaselineGap(p)`
- * separately.
+ * Baseline gap (2026-11 Day P&L audit; 6D follow-up fixed the blind spot
+ * below): when `isBaselineGap(p)` is true, `prev_settlement_pnl` being
+ * null is NOT a confirmed base_pnl=0 — using 0 here would silently
+ * render this row's full LIFETIME P&L as if it were TODAY's P&L (the
+ * exact bug this guard exists to prevent). An earlier revision then
+ * substituted a hard 0.0 instead — which traded one bug for another:
+ * it silently collapsed a position that is genuinely losing real money
+ * today to "no loss" in the critical-tier `loss-positions-total`
+ * agent's own feed (mirrors the backend fix for the identical blind
+ * spot — see `pnl_math.baseline_gap_day_pnl_substitute`). Returns
+ * `baselineGapDayPnlSubstitute(p)` (the row's own lifetime `pnl`, a
+ * conservative always-available substitute) for such a row instead —
+ * never a hard 0, and never null, so every existing numeric caller of
+ * this function keeps working unmodified. Row-level UI that wants to
+ * show a "—"/stale indicator instead of this value must check
+ * `isBaselineGap(p)` separately (e.g. `pulseColumns.js`'s Day P&L
+ * column, which renders "—" for `baseline_stale` rows regardless of
+ * the numeric value feeding the aggregate).
  *
  * @param {{ realised?: number|null, unrealised?: number|null, pnl?: number|null, prev_settlement_pnl?: number|null, baseline_stale?: boolean|null, tradingsymbol?: string|null, symbol?: string|null }} p
  * @returns {number}
  */
 export function baseDayPnlForPosition(p) {
-  if (isBaselineGap(p)) return 0;
+  if (isBaselineGap(p)) return baselineGapDayPnlSubstitute(p);
   const total    = currentTotalProfit(p);
   const basePnl  = p?.prev_settlement_pnl;
   const base     = (basePnl != null && isFinite(Number(basePnl))) ? Number(basePnl) : 0;
