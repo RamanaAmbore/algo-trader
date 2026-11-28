@@ -1363,9 +1363,13 @@ def validate_pnl_rows(rows: "list[dict]", *, segment: str,
 
 
 def validate_ledger_rows(rows: "list[dict]", *, start: date, end: date,
-                          allow_empty: bool = True) -> None:
+                          allow_empty: bool = True,
+                          drop_out_of_range: bool = False) -> "list[dict]":
     """Raises `ReportValidationError` on a malformed/implausible ledger
-    export. The two Opening/Closing Balance sentinel rows (no
+    export; returns the rows this caller should actually ingest for
+    `[start, end]` (by default, identical to the input `rows` on
+    success — see `drop_out_of_range` below for the one case where it
+    differs). The two Opening/Closing Balance sentinel rows (no
     `posting_date` at all — see `parse_ledger_csv()`'s own docstring)
     are deliberately exempt from the date-range check, not flagged as
     bad: they describe the pull's own boundary, not a dated event, so
@@ -1373,31 +1377,101 @@ def validate_ledger_rows(rows: "list[dict]", *, start: date, end: date,
     HAS some non-empty `particulars` text but neither a sentinel label
     nor a parseable `posting_date` is genuinely malformed and IS
     flagged — this only exempts the two known, expected sentinel
-    shapes, not every dateless row."""
+    shapes, not every dateless row.
+
+    `drop_out_of_range` (added 2026-11-28, defaults `False` — every
+    pre-existing caller, including `scripts/dhan_pnl_sync.py`'s own
+    ledger sync, is byte-identical to before this param existed; a
+    `posting_date` earlier than `start` raises exactly as it always
+    did). Confirmed live, 2026-11-27/28 (288 `kite_console_sync_failed`
+    CRITICAL fires in two days, every one citing the backfill's OWN
+    start date -- e.g. 2026-04-01 -- as "outside the requested range"
+    for unrelated LATER months' chunks, e.g. June/July/September/
+    October): Kite Console's ledger export carries forward a batch of
+    earlier, genuinely well-formed rows (valid particulars/debit/
+    credit) from a date BEFORE this chunk's own requested start, inside
+    every later month's exported page too -- an export-scoping quirk on
+    Kite's side, not a parsing defect. Those rows are real, dated,
+    well-formed entries -- just not FOR this chunk; they are correctly
+    captured under their OWN real month's chunk, which already runs its
+    own pull covering that date (see `_scrape_segment_chunks()` --
+    every chunk in one backfill targets a disjoint calendar month, so a
+    row that genuinely belongs to an earlier month is never silently
+    lost, only not double-counted here).
+
+    Only `d < start` is ever treated this leniently, never `d > end`
+    (a future-dated row relative to this chunk's own requested range
+    has no confirmed benign explanation the way the carried-forward-
+    prefix case does, and stays hard-failed in both modes) and never an
+    unparseable `posting_date` (still genuinely malformed, in both
+    modes). When `drop_out_of_range=True`, a `d < start` row is removed
+    from the RETURNED list (never raised on, never ingested under this
+    chunk's own `pull_start`/`pull_end`) and logged at INFO — expected,
+    routine Console behaviour once understood, not an anomaly.
+
+    Guard against a degenerate, unconfirmed case: if EVERY dated,
+    otherwise-well-formed row in the pull falls before `start` (i.e.
+    nothing at all for this chunk's own window survives filtering),
+    this still raises rather than silently returning an empty/
+    sentinel-only result — a totally mismatched/stale export (e.g. a
+    date-range-picker race landing on an entirely wrong month, the same
+    class of race the pnl-type stale-duplicate fix elsewhere in this
+    module guards against) must never be treated as "no ledger
+    activity this month" and silently overwrite a real bucket with
+    nothing via `ingest_ledger_rows()`'s own delete-then-insert."""
     if not rows:
         if allow_empty:
-            return
+            return []
         raise ReportValidationError(f"ledger has zero rows for {start}..{end}")
     bad: "list[object]" = []
+    kept: "list[dict]" = []
+    out_of_range_count = 0
+    in_range_dated_count = 0
     for r in rows:
         particulars = (r.get("particulars") or "").strip()
         if not particulars:
             bad.append(r)
             continue
         if particulars in ("Opening Balance", "Closing Balance"):
-            continue
-        d = _parse_date_cell(r.get("posting_date"))
-        if d is None or d < start or d > end:
-            bad.append(r.get("posting_date"))
+            kept.append(r)
             continue
         if _parse_float_cell(r.get("debit")) is None or _parse_float_cell(r.get("credit")) is None:
             bad.append(r)
+            continue
+        d = _parse_date_cell(r.get("posting_date"))
+        if d is None or d > end:
+            bad.append(r.get("posting_date"))
+            continue
+        if d < start:
+            if drop_out_of_range:
+                out_of_range_count += 1
+                continue
+            bad.append(r.get("posting_date"))
+            continue
+        kept.append(r)
+        in_range_dated_count += 1
     if bad:
         raise ReportValidationError(
             f"ledger: {len(bad)} row(s) have a missing particulars, an "
             f"unparsable debit/credit, or a posting_date outside the "
             f"requested range {start}..{end}: {bad[:5]}"
         )
+    if out_of_range_count and in_range_dated_count == 0:
+        raise ReportValidationError(
+            f"ledger: every dated row in this pull for {start}..{end} "
+            f"falls before the requested start date "
+            f"({out_of_range_count} row(s)) -- suspected stale/mismatched "
+            "export, refusing to treat this chunk as genuinely empty"
+        )
+    if out_of_range_count:
+        logger.info(
+            "[KITE-CONSOLE-SYNC] ledger %s..%s: filtered out %d row(s) "
+            "dated before the requested start (Kite Console export-"
+            "scoping quirk -- carried-forward earlier rows; each belongs "
+            "to its own real month's chunk)",
+            start, end, out_of_range_count,
+        )
+    return kept
 
 
 # ---------------------------------------------------------------------------
@@ -2232,7 +2306,7 @@ def _validate_raw_report(report_type: str, segment: str, start: date, end: date,
         validate_pnl_rows(rows, segment=segment)
     else:
         rows = parse_ledger_csv(raw_bytes)
-        validate_ledger_rows(rows, start=start, end=end)
+        rows = validate_ledger_rows(rows, start=start, end=end, drop_out_of_range=True)
     return rows
 
 
@@ -2482,7 +2556,9 @@ async def _ingest_one_report(
             await _assert_pnl_not_cross_run_duplicate(masked, segment, start, parsed_rows)
         else:
             parsed_rows = parse_ledger_csv(raw_bytes)
-            validate_ledger_rows(parsed_rows, start=start, end=end)
+            parsed_rows = validate_ledger_rows(
+                parsed_rows, start=start, end=end, drop_out_of_range=True,
+            )
     except ReportValidationError as e:
         await alert_critical(
             f"Kite Console report failed validation ({segment}/{label})", masked,

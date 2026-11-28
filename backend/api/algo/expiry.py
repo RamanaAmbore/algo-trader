@@ -941,6 +941,33 @@ class ExpiryEngine:
         `_fetch_future_positions`'s own two-bucket exchange convention."""
         return mcx_close_utc if (exchange or "").upper() in ("MCX", "NCO") else equity_close_utc
 
+    async def _flush_staged_hold_alerts(self, staged_holds: "list[dict]") -> None:
+        """Send ONE batched action-required alert for every leg
+        `close_positions()` staged HELD this pass, instead of one alert
+        per leg (2026-11-28 noise-reduction fix — see the comment above
+        `staged_holds`' declaration in `close_positions()` for the full
+        rationale). A no-op when nothing was staged (the common case:
+        most passes find nothing newly unhedged). Never raises — a
+        failed alert must not surface as a `close_positions()` failure;
+        the holds themselves are already committed to the DB regardless."""
+        if not staged_holds:
+            return
+        from types import SimpleNamespace
+        from backend.api.algo.actions_live import (
+            _al_send_batch_agent_close_hold_alert,
+        )
+        try:
+            await _al_send_batch_agent_close_hold_alert(
+                SimpleNamespace(id=self._agent_id, slug=None, name=None),
+                staged_holds,
+                title_prefix="Expiry close held",
+            )
+        except Exception as e:
+            logger.error(
+                f"Expiry: batched hold alert failed for {len(staged_holds)} "
+                f"staged leg(s): {e}"
+            )
+
     async def close_positions(self, positions: list[OptionPosition],
                               release_policy: "dict | None" = None):
         """Chase-close all flagged positions concurrently. Uses the
@@ -1015,138 +1042,161 @@ class ExpiryEngine:
             mcx_close_utc = datetime.combine(today, mcx_close_t, tzinfo=_ist).astimezone(timezone.utc)
 
         tasks = []
-        for pos in positions:
-            effective = pos.residual_qty
-            if effective == 0:
-                continue   # fully netted; nothing to close
-            # Determine transaction type: close long → SELL, close short → BUY
-            txn = "SELL" if effective > 0 else "BUY"
-            qty = abs(effective)
-            if await _exp_leg_in_flight_this_session(pos.account, pos.tradingsymbol,
-                                                      pos.exchange, txn):
-                logger.info(
-                    f"Expiry: {pos.tradingsymbol} ({pos.account}) already has an "
-                    f"unresolved order this session (HELD/OPEN/CANCEL_FAILED) — "
-                    f"skipping re-stage/re-chase"
-                )
-                continue
-            if expiry_close_held():
-                if self._agent_id is None:
-                    logger.error(
-                        f"Expiry: refusing to stage HELD close for {pos.tradingsymbol} "
-                        f"({pos.account}) — this ExpiryEngine has no agent_id, and a "
-                        f"HELD row with no agent_id can never be auto-released. "
-                        f"Skipping this leg; it needs manual attention."
-                    )
-                    continue
-                # 2026-11-24 fix (audit finding #1): without this check, an
-                # operator-cancelled EXPIRY_CLOSE hold was silently re-staged
-                # on the next re-fire (this agent's own cooldown) and could
-                # auto-release into a real chase near close, directly
-                # overriding the explicit cancel. Reuses the exact same
-                # generic, category-agnostic check `_al_maybe_stage_agent_
-                # close_hold` already uses for AGENT_CLOSE — discriminated
-                # purely by `agent_id` + identity + `status=='CANCELLED'
-                # AND broker_order_id==''`, with no HoldCategory coupling.
-                # Deliberately NOT a change to `_EXP_IN_FLIGHT_STATUSES`
-                # (CANCELLED must stay excluded from that set — see this
-                # check's own sibling function for why).
-                from backend.api.algo.actions_live import (
-                    _al_agent_close_recently_cancelled_this_session,
-                )
-                if await _al_agent_close_recently_cancelled_this_session(
-                    self._agent_id, pos.account, pos.tradingsymbol, pos.exchange, txn,
-                ):
+        # 2026-11-28 noise-reduction fix (operator: "the real functionality
+        # ... should add the messages to log with proper tags so that the
+        # alert agent picks them and show in alert notification" — applied
+        # here to the hold-staging alert specifically) — legs staged HELD
+        # in this one `close_positions()` pass used to each fire their own
+        # `_al_send_agent_close_hold_alert` call immediately (see the
+        # 2026-11-24 comment this replaces, "one per staged leg (a single
+        # expiry-day pass can stage several)"). With 4+ ITM legs staged in
+        # one scan, that produced 4+ separate action-required pushes for
+        # what the operator should see as ONE batch review. `staged_holds`
+        # accumulates every leg this pass actually stages; ONE alert is
+        # sent after the loop, grouped by account — same "Account: X /
+        # side qty symbol" shape `_v2_expiry_account_lines()` already uses
+        # for the pre-close reminder (not imported directly — importing
+        # agent_engine.py here would add a module coupling this file
+        # doesn't otherwise have; `_al_send_batch_agent_close_hold_alert`
+        # builds its own grouped text locally).
+        staged_holds: list[dict] = []
+        try:
+            for pos in positions:
+                effective = pos.residual_qty
+                if effective == 0:
+                    continue   # fully netted; nothing to close
+                # Determine transaction type: close long → SELL, close short → BUY
+                txn = "SELL" if effective > 0 else "BUY"
+                qty = abs(effective)
+                if await _exp_leg_in_flight_this_session(pos.account, pos.tradingsymbol,
+                                                          pos.exchange, txn):
                     logger.info(
-                        f"Expiry: {pos.tradingsymbol} ({pos.account}) {txn} was "
-                        f"explicitly cancelled earlier this session — suppressing "
-                        f"re-stage"
+                        f"Expiry: {pos.tradingsymbol} ({pos.account}) already has an "
+                        f"unresolved order this session (HELD/OPEN/CANCEL_FAILED) — "
+                        f"skipping re-stage/re-chase"
                     )
                     continue
-                auto_release_at = None
-                price_policy = "CHASE_MED"
-                if release_policy is not None:
-                    held_at = datetime.now(timezone.utc)
-                    close_time = self._close_time_utc_for_exchange(
-                        pos.exchange, equity_close_utc, mcx_close_utc)
-                    auto_release_at = _resolve_hold_auto_release_at(
-                        release_policy, held_at, close_time, held_at,
-                        default_chase_tier="high",
-                    )
-                    if auto_release_at is None:
+                if expiry_close_held():
+                    if self._agent_id is None:
                         logger.error(
-                            f"Expiry: refusing to stage HELD close for "
-                            f"{pos.tradingsymbol} ({pos.account}) — release_policy "
-                            f"{release_policy!r} could not resolve an auto-release "
-                            f"deadline (close_time={close_time!r}). Staging an "
-                            f"unreleasable hold is exactly the bug this guard "
-                            f"exists to prevent. Skipping this leg; it needs "
-                            f"manual attention."
+                            f"Expiry: refusing to stage HELD close for {pos.tradingsymbol} "
+                            f"({pos.account}) — this ExpiryEngine has no agent_id, and a "
+                            f"HELD row with no agent_id can never be auto-released. "
+                            f"Skipping this leg; it needs manual attention."
                         )
                         continue
-                    tier = (release_policy.get("floor_tier") or "high").upper()
-                    price_policy = f"CHASE_{tier}"
-                held_row_id = await record_held_order(
-                    HoldCategory.EXPIRY_CLOSE,
-                    account=pos.account, symbol=pos.tradingsymbol,
-                    exchange=pos.exchange, side=txn, qty=qty,
-                    product=pos.product, reason="expiry close (held by default)",
-                    agent_id=self._agent_id,
-                    price_policy=price_policy,
-                    auto_release_at=auto_release_at,
-                )
-                # 2026-11-24 fix (audit finding #6): AGENT_CLOSE sends a
-                # dedicated action-required alert when it stages a hold
-                # (`_al_send_agent_close_hold_alert`) — EXPIRY_CLOSE never
-                # did, so an operator with the Held Orders card closed had
-                # no signal a leg was staged until a manual reload. Reuses
-                # the exact same alert mechanism/renderer, one per staged
-                # leg (a single expiry-day pass can stage several).
-                if held_row_id is not None:
-                    from types import SimpleNamespace
+                    # 2026-11-24 fix (audit finding #1): without this check, an
+                    # operator-cancelled EXPIRY_CLOSE hold was silently re-staged
+                    # on the next re-fire (this agent's own cooldown) and could
+                    # auto-release into a real chase near close, directly
+                    # overriding the explicit cancel. Reuses the exact same
+                    # generic, category-agnostic check `_al_maybe_stage_agent_
+                    # close_hold` already uses for AGENT_CLOSE — discriminated
+                    # purely by `agent_id` + identity + `status=='CANCELLED'
+                    # AND broker_order_id==''`, with no HoldCategory coupling.
+                    # Deliberately NOT a change to `_EXP_IN_FLIGHT_STATUSES`
+                    # (CANCELLED must stay excluded from that set — see this
+                    # check's own sibling function for why).
                     from backend.api.algo.actions_live import (
-                        _al_send_agent_close_hold_alert,
+                        _al_agent_close_recently_cancelled_this_session,
                     )
-                    await _al_send_agent_close_hold_alert(
-                        SimpleNamespace(id=self._agent_id, slug=None, name=None),
-                        held_row_id, pos.account, pos.tradingsymbol, pos.exchange,
-                        txn, qty, "expiry close (held by default)",
-                        title_prefix="Expiry close held",
+                    if await _al_agent_close_recently_cancelled_this_session(
+                        self._agent_id, pos.account, pos.tradingsymbol, pos.exchange, txn,
+                    ):
+                        logger.info(
+                            f"Expiry: {pos.tradingsymbol} ({pos.account}) {txn} was "
+                            f"explicitly cancelled earlier this session — suppressing "
+                            f"re-stage"
+                        )
+                        continue
+                    auto_release_at = None
+                    price_policy = "CHASE_MED"
+                    if release_policy is not None:
+                        held_at = datetime.now(timezone.utc)
+                        close_time = self._close_time_utc_for_exchange(
+                            pos.exchange, equity_close_utc, mcx_close_utc)
+                        auto_release_at = _resolve_hold_auto_release_at(
+                            release_policy, held_at, close_time, held_at,
+                            default_chase_tier="high",
+                        )
+                        if auto_release_at is None:
+                            logger.error(
+                                f"Expiry: refusing to stage HELD close for "
+                                f"{pos.tradingsymbol} ({pos.account}) — release_policy "
+                                f"{release_policy!r} could not resolve an auto-release "
+                                f"deadline (close_time={close_time!r}). Staging an "
+                                f"unreleasable hold is exactly the bug this guard "
+                                f"exists to prevent. Skipping this leg; it needs "
+                                f"manual attention."
+                            )
+                            continue
+                        tier = (release_policy.get("floor_tier") or "high").upper()
+                        price_policy = f"CHASE_{tier}"
+                    held_row_id = await record_held_order(
+                        HoldCategory.EXPIRY_CLOSE,
+                        account=pos.account, symbol=pos.tradingsymbol,
+                        exchange=pos.exchange, side=txn, qty=qty,
+                        product=pos.product, reason="expiry close (held by default)",
+                        agent_id=self._agent_id,
+                        price_policy=price_policy,
+                        auto_release_at=auto_release_at,
                     )
-                continue
+                    # 2026-11-28 fix: accumulate instead of alerting
+                    # immediately — see the comment above `staged_holds`'
+                    # own declaration for why. One batched alert fires
+                    # after the loop (in the `finally` below), covering
+                    # every leg genuinely staged this pass.
+                    if held_row_id is not None:
+                        staged_holds.append({
+                            "held_order_id": held_row_id,
+                            "account": pos.account,
+                            "symbol": pos.tradingsymbol,
+                            "exchange": pos.exchange,
+                            "side": txn,
+                            "qty": qty,
+                            "reason": "expiry close (held by default)",
+                        })
+                    continue
 
-            cfg = ChaseConfig(
-                interval_seconds=self._chase_cfg.interval_seconds,
-                aggression_step=self._chase_cfg.aggression_step,
-                max_attempts=self._chase_cfg.max_attempts,
-                exchange=pos.exchange,
-                product=pos.product,
-                intent="close",
-            )
-
-            async def _chase_one(p=pos, t=txn, q=qty, c=cfg):
-                result = await chase_order(
-                    account=p.account,
-                    symbol=p.tradingsymbol,
-                    transaction_type=t,
-                    quantity=q,
-                    cfg=c,
-                    on_event=self.on_event,
-                    agent_id=self._agent_id,
+                cfg = ChaseConfig(
+                    interval_seconds=self._chase_cfg.interval_seconds,
+                    aggression_step=self._chase_cfg.aggression_step,
+                    max_attempts=self._chase_cfg.max_attempts,
+                    exchange=pos.exchange,
+                    product=pos.product,
+                    intent="close",
                 )
-                if result.status == ChaseStatus.FILLED:
-                    self.state.closed.append(result)
-                    self.state.total_slippage += result.slippage
-                else:
-                    self.state.failed.append(result)
-                return result
 
-            self.state.pending_chases[pos.tradingsymbol] = ChaseResult(
-                account=pos.account, symbol=pos.tradingsymbol,
-                transaction_type=txn, quantity=qty,
-                status=ChaseStatus.PENDING,
-            )
-            tasks.append(_chase_one())
+                async def _chase_one(p=pos, t=txn, q=qty, c=cfg):
+                    result = await chase_order(
+                        account=p.account,
+                        symbol=p.tradingsymbol,
+                        transaction_type=t,
+                        quantity=q,
+                        cfg=c,
+                        on_event=self.on_event,
+                        agent_id=self._agent_id,
+                    )
+                    if result.status == ChaseStatus.FILLED:
+                        self.state.closed.append(result)
+                        self.state.total_slippage += result.slippage
+                    else:
+                        self.state.failed.append(result)
+                    return result
+
+                self.state.pending_chases[pos.tradingsymbol] = ChaseResult(
+                    account=pos.account, symbol=pos.tradingsymbol,
+                    transaction_type=txn, quantity=qty,
+                    status=ChaseStatus.PENDING,
+                )
+                tasks.append(_chase_one())
+        finally:
+            # Runs even when the loop above raised partway through — a
+            # leg already staged HELD (its `record_held_order()` call
+            # already committed) must never end up with zero alert just
+            # because a LATER leg's processing blew up. See the operator
+            # instruction in the comment above `staged_holds`.
+            await self._flush_staged_hold_alerts(staged_holds)
 
         # Run all chases concurrently
         results = await asyncio.gather(*tasks, return_exceptions=True)

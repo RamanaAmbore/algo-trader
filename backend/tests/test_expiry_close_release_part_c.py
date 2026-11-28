@@ -687,10 +687,22 @@ class TestExpiryCloseCancelSuppression:
 
 class TestExpiryCloseHoldStagingAlert:
     """Audit finding #6 (backend half, 2026-11-24): EXPIRY_CLOSE staging
-    must send the same action-required alert AGENT_CLOSE already does."""
+    must send the same action-required alert AGENT_CLOSE already does.
+
+    2026-11-28 noise-reduction fix (amends these two tests): a single
+    `close_positions()` pass now accumulates every leg it stages and
+    sends ONE batched alert (`_al_send_batch_agent_close_hold_alert`)
+    after the staging loop, instead of one alert per leg inline (the
+    original "one per staged leg (a single expiry-day pass can stage
+    several)" shape this class originally pinned). See
+    `test_expiry_close_batch_hold_alert_2026_11_28.py` for the full
+    multi-leg/multi-account/mid-exception coverage of the new batching
+    behaviour — these two tests are kept here (updated, not deleted) as
+    the single-leg regression guard in this file's own original
+    location."""
 
     @pytest.mark.asyncio
-    async def test_successful_stage_sends_one_alert_per_leg(self):
+    async def test_successful_stage_sends_one_batched_alert(self):
         from backend.api.algo.expiry import ExpiryEngine, OptionPosition
 
         engine = ExpiryEngine(agent_id=42)
@@ -709,17 +721,19 @@ class TestExpiryCloseHoldStagingAlert:
              patch("backend.api.algo.actions_live._al_agent_close_recently_cancelled_this_session",
                    new=AsyncMock(return_value=False)), \
              patch("backend.api.algo.expiry.record_held_order", new=AsyncMock(return_value=101)), \
-             patch("backend.api.algo.actions_live._al_send_agent_close_hold_alert", new=alert_mock):
+             patch("backend.api.algo.actions_live._al_send_batch_agent_close_hold_alert", new=alert_mock):
             await engine.close_positions([pos], release_policy={"after_min": 30, "floor_tier": "high"})
 
         alert_mock.assert_awaited_once()
         args, kwargs = alert_mock.await_args
         assert args[0].id == 42  # lightweight agent stand-in carries the real agent_id
-        assert args[1] == 101  # held_row_id
-        assert args[2] == "ZG0790"
-        assert args[3] == "CRUDEOIL26NOV5500CE"
-        assert args[4] == "MCX"
-        assert args[5] == "SELL"
+        staged = args[1]
+        assert len(staged) == 1
+        assert staged[0]["held_order_id"] == 101
+        assert staged[0]["account"] == "ZG0790"
+        assert staged[0]["symbol"] == "CRUDEOIL26NOV5500CE"
+        assert staged[0]["exchange"] == "MCX"
+        assert staged[0]["side"] == "SELL"
         assert kwargs["title_prefix"] == "Expiry close held"
 
     @pytest.mark.asyncio
@@ -744,7 +758,7 @@ class TestExpiryCloseHoldStagingAlert:
              patch("backend.api.algo.actions_live._al_agent_close_recently_cancelled_this_session",
                    new=AsyncMock(return_value=False)), \
              patch("backend.api.algo.expiry.record_held_order", new=AsyncMock(return_value=None)), \
-             patch("backend.api.algo.actions_live._al_send_agent_close_hold_alert", new=alert_mock):
+             patch("backend.api.algo.actions_live._al_send_batch_agent_close_hold_alert", new=alert_mock):
             await engine.close_positions([pos], release_policy={"after_min": 30, "floor_tier": "high"})
 
         alert_mock.assert_not_awaited()

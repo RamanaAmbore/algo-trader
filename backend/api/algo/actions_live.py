@@ -2668,10 +2668,20 @@ async def _al_send_agent_close_hold_alert(
 
     `title_prefix` (2026-11-24, audit finding #6): defaults to the exact
     original "Agent close held" text, so every pre-existing AGENT_CLOSE
-    caller is byte-identical to before. `close_positions()` (expiry.py)
-    is the one other caller, passing "Expiry close held" — same
-    mechanism, same renderer (`_render_agent_close_hold` already reads
-    `extra["title"]` verbatim), no new alert agent/renderer needed."""
+    caller is byte-identical to before.
+
+    The ONLY caller of this single-leg function today is
+    `_al_maybe_stage_agent_close_hold` (the `require_release` AGENT_CLOSE
+    path above), which genuinely processes one `close_position` action
+    call at a time. `close_positions()` (expiry.py) used to be a second
+    caller, passing "Expiry close held" — it was moved to the BATCH
+    sibling, `_al_send_batch_agent_close_hold_alert()`, on 2026-11-28
+    (see that function's own docstring) because a single expiry-day scan
+    can stage several legs in one pass, and calling this function once
+    per leg produced one separate action-required push per leg. Both
+    functions share the identical renderer (`_render_agent_close_hold`
+    reads `extra["title"]`/`extra["body"]` verbatim either way), so no
+    new alert agent/renderer was needed for the batch path either."""
     try:
         from backend.shared.helpers.alert_utils import _DISPATCH_LOGGER
         agent_key = getattr(agent, "slug", None) or getattr(agent, "id", None) or "unknown"
@@ -2693,6 +2703,94 @@ async def _al_send_agent_close_hold_alert(
         logger.error(
             f"[AGENT-CLOSE-HOLD] alert log record failed for held order "
             f"{held_order_id}: {log_e}"
+        )
+
+
+async def _al_send_batch_agent_close_hold_alert(
+    agent, staged: "list[dict]", *, title_prefix: str = "Agent close held",
+) -> None:
+    """Fire ONE action-required alert for a BATCH of holds staged in a
+    single caller pass, instead of one alert per leg (2026-11-28
+    noise-reduction fix — confirmed live finding: `close_positions()`
+    used to call `_al_send_agent_close_hold_alert` once per leg inside
+    its own staging loop, so a single expiry-day scan that staged 4
+    ITM legs fired 4 separate urgent pushes for what should have been
+    one consolidated review).
+
+    `staged` is a list of dicts, each with keys: `held_order_id`,
+    `account`, `symbol`, `exchange`, `side`, `qty`, `reason`. Groups by
+    masked account (same "Account: X / side qty symbol" shape
+    `agent_engine.py:_v2_expiry_account_lines()` already uses for the
+    pre-close reminder — kept as a LOCAL, deliberately-duplicated
+    grouping here rather than importing that function, to avoid adding
+    a module-level coupling between `actions_live.py`/`expiry.py` and
+    `agent_engine.py` that doesn't otherwise exist).
+
+    This is the BATCH sibling of `_al_send_agent_close_hold_alert`
+    above, not a replacement for it — the single-leg function is still
+    the right call for a caller that genuinely only ever stages one leg
+    per invocation (e.g. `_al_maybe_stage_agent_close_hold`, the
+    `require_release` AGENT_CLOSE path, which processes exactly one
+    `close_position` action call at a time; see that function's own
+    docstring). Reuses the identical `alert_event="agent_close_hold"`
+    tag and renderer (`event_agents.py:_render_agent_close_hold`), so
+    channel routing is unchanged — only the NUMBER of records logged
+    per staging pass changes, from N to 1.
+
+    A no-op for an empty `staged` list (never logs a zero-leg alert).
+    Never raises — a failed alert must not leave the caller believing
+    its holds weren't actually staged; they already were, in the DB,
+    regardless of whether this alert succeeds."""
+    if not staged:
+        return
+    try:
+        from backend.shared.helpers.alert_utils import _DISPATCH_LOGGER
+        from backend.shared.helpers.utils import mask_account
+
+        agent_key = getattr(agent, "slug", None) or getattr(agent, "id", None) or "unknown"
+        by_acct: dict[str, list[str]] = {}
+        held_ids: list[int] = []
+        for leg in staged:
+            masked = mask_account(leg.get("account") or "")
+            line = f"{leg.get('side')} {leg.get('qty')} {leg.get('symbol')} ({leg.get('exchange')})"
+            by_acct.setdefault(masked, []).append(line)
+            if leg.get("held_order_id") is not None:
+                held_ids.append(leg["held_order_id"])
+
+        lines: list[str] = []
+        for masked in sorted(by_acct):
+            lines.append(f"Account: {masked}")
+            for entry_line in by_acct[masked]:
+                lines.append(f"  {entry_line}")
+
+        # The first leg's reason stands in for the batch — every caller
+        # today (close_positions()) stages a whole batch under one
+        # uniform reason string ("expiry close (held by default)"), so
+        # this is never actually a mix in practice; it is read, never
+        # assumed, so a future caller with mixed reasons still produces
+        # a sensible (if generic) header rather than a wrong one.
+        reason = staged[0].get("reason") or "staged for release, not placed"
+        n = len(staged)
+        leg_word = "leg" if n == 1 else "legs"
+        message = (
+            f"{n} {leg_word} staged for release, not placed — {reason}\n"
+            + "\n".join(lines)
+        )
+        _DISPATCH_LOGGER.warning(
+            f"[AGENT-CLOSE-HOLD] {message}",
+            extra={
+                "tags": ["agent", "alert"], "alert_event": "agent_close_hold",
+                "title": f"{title_prefix} — {agent_key}", "body": message,
+                "action_required": True,
+                "agent_id": getattr(agent, "id", None),
+                "agent_name": getattr(agent, "name", None),
+                "held_order_ids": held_ids,
+            },
+        )
+    except Exception as log_e:
+        logger.error(
+            f"[AGENT-CLOSE-HOLD] batch alert log record failed for "
+            f"{len(staged)} held order(s): {log_e}"
         )
 
 

@@ -678,6 +678,172 @@ class TestValidateLedgerRows:
         with pytest.raises(mod.ReportValidationError, match="unparsable debit/credit"):
             mod.validate_ledger_rows(rows, start=date(2026, 11, 1), end=date(2026, 11, 30))
 
+    def test_default_return_value_is_the_input_rows_on_success(self):
+        """`validate_ledger_rows()` now returns the rows the caller
+        should ingest, not `None` — on a clean, all-in-range pull this
+        must be exactly the input list (strict mode is a pure pass-
+        through, byte-identical to every existing caller's expectation
+        before the `drop_out_of_range` param existed)."""
+        rows = [_one_ledger_row()]
+        result = mod.validate_ledger_rows(rows, start=date(2026, 11, 1), end=date(2026, 11, 30))
+        assert result == rows
+
+    def test_empty_report_returns_empty_list(self):
+        result = mod.validate_ledger_rows([], start=date(2026, 11, 1), end=date(2026, 11, 30))
+        assert result == []
+
+
+class TestValidateLedgerRowsDropOutOfRange:
+    """2026-11-28 fix — confirmed live: Kite Console's ledger export
+    carries forward a batch of earlier-dated, otherwise well-formed
+    rows (the backfill's own start date) inside every LATER month's
+    exported page too. `drop_out_of_range=True` (used by both of this
+    module's own ledger call sites) filters those rows out instead of
+    failing the whole chunk, while every OTHER malformed-row case still
+    raises exactly as before."""
+
+    _START = date(2026, 6, 1)
+    _END = date(2026, 6, 30)
+
+    def test_well_formed_out_of_range_row_is_filtered_not_fatal(self):
+        """The exact confirmed incident shape: a genuinely well-formed
+        row dated before this chunk's own requested start (e.g. the
+        backfill's own 2026-04-01 start date showing up inside the
+        June chunk) must be dropped from the result, never raised on."""
+        in_range = _one_ledger_row(posting_date="2026-06-15")
+        carried_forward = _one_ledger_row(posting_date="2026-04-01")
+        result = mod.validate_ledger_rows(
+            [carried_forward, in_range],
+            start=self._START, end=self._END, drop_out_of_range=True,
+        )
+        assert result == [in_range]
+
+    def test_rest_of_chunk_genuinely_in_range_rows_still_ingest(self):
+        """Several genuinely in-range rows alongside the carried-
+        forward prefix -- every in-range row must survive, in order,
+        none dropped or duplicated."""
+        carried_forward = _one_ledger_row(posting_date="2026-04-01")
+        row_a = _one_ledger_row(posting_date="2026-06-02", debit="100.0000")
+        row_b = _one_ledger_row(posting_date="2026-06-20", debit="200.0000")
+        result = mod.validate_ledger_rows(
+            [carried_forward, row_a, carried_forward, row_b],
+            start=self._START, end=self._END, drop_out_of_range=True,
+        )
+        assert result == [row_a, row_b]
+
+    def test_malformed_row_still_raises_empty_particulars(self):
+        """Tier 1 (hard-fail) is unaffected by `drop_out_of_range` —
+        an empty-particulars row still raises, even mixed in with a
+        genuinely out-of-range row that would otherwise be filtered."""
+        rows = [
+            _one_ledger_row(posting_date="2026-04-01"),  # would-be-filtered
+            _one_ledger_row(particulars=""),  # genuinely malformed
+        ]
+        with pytest.raises(mod.ReportValidationError, match="missing particulars"):
+            mod.validate_ledger_rows(rows, start=self._START, end=self._END, drop_out_of_range=True)
+
+    def test_malformed_row_still_raises_unparsable_debit_credit(self):
+        rows = [
+            _one_ledger_row(posting_date="2026-04-01"),  # would-be-filtered
+            _one_ledger_row(debit="garbage"),  # genuinely malformed
+        ]
+        with pytest.raises(mod.ReportValidationError, match="unparsable debit/credit"):
+            mod.validate_ledger_rows(rows, start=self._START, end=self._END, drop_out_of_range=True)
+
+    def test_malformed_row_still_raises_unparsable_posting_date(self):
+        """A non-sentinel row whose own posting_date fails to parse is
+        genuinely malformed, not the carried-forward-prefix quirk —
+        it must still raise even in lenient mode."""
+        rows = [_one_ledger_row(posting_date="not-a-date")]
+        with pytest.raises(mod.ReportValidationError, match="requested range"):
+            mod.validate_ledger_rows(rows, start=self._START, end=self._END, drop_out_of_range=True)
+
+    def test_row_dated_after_end_still_raises_not_filtered(self):
+        """Only `d < start` is ever treated leniently -- a row dated
+        AFTER this chunk's own `end` has no confirmed benign
+        explanation and stays hard-failed even in lenient mode."""
+        rows = [_one_ledger_row(posting_date="2026-07-15")]
+        with pytest.raises(mod.ReportValidationError, match="requested range"):
+            mod.validate_ledger_rows(rows, start=self._START, end=self._END, drop_out_of_range=True)
+
+    def test_mixed_out_of_range_and_malformed_raises_for_the_malformed_one(self):
+        """Both kinds in one chunk: the well-formed-but-out-of-range
+        row must not be what trips the raise -- the malformed row is
+        what the error is about."""
+        carried_forward = _one_ledger_row(posting_date="2026-04-01")
+        malformed = _one_ledger_row(particulars="")
+        in_range = _one_ledger_row(posting_date="2026-06-10")
+        with pytest.raises(mod.ReportValidationError, match="missing particulars"):
+            mod.validate_ledger_rows(
+                [carried_forward, malformed, in_range],
+                start=self._START, end=self._END, drop_out_of_range=True,
+            )
+
+    def test_opening_closing_balance_sentinels_still_exempt_in_lenient_mode(self):
+        rows = [
+            {"particulars": "Opening Balance", "posting_date": "", "cost_center": "",
+             "voucher_type": "", "debit": "", "credit": "", "net_balance": "1861672.145694"},
+            _one_ledger_row(posting_date="2026-04-01"),  # filtered
+            _one_ledger_row(posting_date="2026-06-10"),  # kept
+            {"particulars": "Closing Balance", "posting_date": "", "cost_center": "",
+             "voucher_type": "", "debit": "", "credit": "", "net_balance": "-6331331.418538"},
+        ]
+        result = mod.validate_ledger_rows(rows, start=self._START, end=self._END, drop_out_of_range=True)
+        particulars = [r["particulars"] for r in result]
+        assert particulars == ["Opening Balance", _one_ledger_row()["particulars"], "Closing Balance"]
+
+    def test_zero_bad_rows_baseline_case_unaffected(self):
+        """A chunk with no bad rows at all behaves identically whether
+        or not `drop_out_of_range` is set — every row is kept, in
+        order, with no filtering and no raise."""
+        rows = [
+            _one_ledger_row(posting_date="2026-06-05"),
+            _one_ledger_row(posting_date="2026-06-20", debit="55.0000"),
+        ]
+        strict = mod.validate_ledger_rows(rows, start=self._START, end=self._END)
+        lenient = mod.validate_ledger_rows(rows, start=self._START, end=self._END, drop_out_of_range=True)
+        assert strict == rows
+        assert lenient == rows
+
+    def test_strict_mode_is_unchanged_default_still_raises_on_out_of_range(self):
+        """Regression guard for the existing Dhan ledger caller and
+        every pre-existing test: with no `drop_out_of_range` kwarg at
+        all, an earlier-dated row still raises exactly as before this
+        fix — the fix is opt-in, not a silent global behaviour change."""
+        rows = [_one_ledger_row(posting_date="2026-04-01")]
+        with pytest.raises(mod.ReportValidationError, match="outside the requested range"):
+            mod.validate_ledger_rows(rows, start=self._START, end=self._END)
+        with pytest.raises(mod.ReportValidationError, match="outside the requested range"):
+            mod.validate_ledger_rows(rows, start=self._START, end=self._END, drop_out_of_range=False)
+
+    def test_all_rows_filtered_out_still_raises_suspected_stale_export(self):
+        """Degenerate guard: if EVERY dated row in the pull falls
+        before `start` (nothing genuinely belongs to this chunk at
+        all), this must still raise rather than silently returning an
+        empty result that `ingest_ledger_rows()`'s delete-then-insert
+        would otherwise treat as 'no ledger activity this month' and
+        wipe the real bucket with nothing."""
+        rows = [
+            _one_ledger_row(posting_date="2026-04-01"),
+            _one_ledger_row(posting_date="2026-04-15", debit="50.0000"),
+        ]
+        with pytest.raises(mod.ReportValidationError, match="suspected stale/mismatched export"):
+            mod.validate_ledger_rows(rows, start=self._START, end=self._END, drop_out_of_range=True)
+
+    def test_all_filtered_guard_does_not_fire_on_a_genuinely_empty_month(self):
+        """A chunk with ONLY the two sentinel rows (a real, flat,
+        no-activity month) must not trip the all-filtered guard — the
+        guard is keyed on out-of-range rows existing, not on a lack of
+        in-range rows alone."""
+        rows = [
+            {"particulars": "Opening Balance", "posting_date": "", "cost_center": "",
+             "voucher_type": "", "debit": "", "credit": "", "net_balance": "100.0"},
+            {"particulars": "Closing Balance", "posting_date": "", "cost_center": "",
+             "voucher_type": "", "debit": "", "credit": "", "net_balance": "100.0"},
+        ]
+        result = mod.validate_ledger_rows(rows, start=self._START, end=self._END, drop_out_of_range=True)
+        assert len(result) == 2
+
 
 class TestBuildDedupKeyLedger:
     def test_ledger_key_is_range_plus_sequence(self):
@@ -3355,6 +3521,167 @@ class TestPnlCrossRunDuplicateDetection:
         assert errs and "validation failed" in errs[0]
         ingest_mock.assert_not_called()
         alert_mock.assert_awaited_once()
+
+
+class TestIngestOneReportLedgerFiltering:
+    """2026-11-28 fix — the real ingestion caller, `_ingest_one_report()`,
+    must pass the FILTERED return value of `validate_ledger_rows(
+    drop_out_of_range=True)` to `ingest_ledger_rows()`, never the raw
+    unfiltered parsed rows. This is the correctness point the task
+    names: a carried-forward earlier-dated row must never be silently
+    ingested under THIS chunk's `pull_start`/`pull_end` bucket."""
+
+    @pytest.mark.asyncio
+    async def test_carried_forward_row_never_reaches_ingest_ledger_rows(self, monkeypatch):
+        ingest_mock = AsyncMock(return_value=1)
+        monkeypatch.setattr(mod, "ingest_ledger_rows", ingest_mock)
+        alert_mock = AsyncMock()
+        monkeypatch.setattr(mod, "alert_critical", alert_mock)
+
+        carried_forward = _one_ledger_row(posting_date="2026-04-01")
+        in_range = _one_ledger_row(posting_date="2026-06-15")
+        raw = _ledger_csv_bytes([carried_forward, in_range])
+
+        n, errs = await mod._ingest_one_report(
+            "ZLEDGER1##", "all", "ledger",
+            date(2026, 6, 1), date(2026, 6, 30), raw,
+        )
+
+        assert errs == []
+        alert_mock.assert_not_called()
+        ingest_mock.assert_awaited_once()
+        _session, _masked, passed_rows = ingest_mock.call_args.args
+        assert len(passed_rows) == 1
+        assert passed_rows[0]["posting_date"] == "2026-06-15"
+        assert ingest_mock.call_args.kwargs == {"pull_start": date(2026, 6, 1), "pull_end": date(2026, 6, 30)}
+
+    @pytest.mark.asyncio
+    async def test_genuinely_in_range_rows_still_ingest_despite_carried_forward_prefix(self, monkeypatch):
+        """The REST of the chunk's genuinely in-range rows must still
+        ingest correctly -- the carried-forward prefix must not abort
+        the whole chunk the way the pre-fix code did."""
+        ingest_mock = AsyncMock(return_value=2)
+        monkeypatch.setattr(mod, "ingest_ledger_rows", ingest_mock)
+        alert_mock = AsyncMock()
+        monkeypatch.setattr(mod, "alert_critical", alert_mock)
+
+        carried_forward = _one_ledger_row(posting_date="2026-04-01")
+        row_a = _one_ledger_row(posting_date="2026-06-02", debit="123.0000")
+        row_b = _one_ledger_row(posting_date="2026-06-28", debit="456.0000")
+        raw = _ledger_csv_bytes([carried_forward, row_a, row_b])
+
+        n, errs = await mod._ingest_one_report(
+            "ZLEDGER2##", "all", "ledger",
+            date(2026, 6, 1), date(2026, 6, 30), raw,
+        )
+
+        assert n == 2
+        assert errs == []
+        _session, _masked, passed_rows = ingest_mock.call_args.args
+        assert len(passed_rows) == 2
+        assert {r["posting_date"] for r in passed_rows} == {"2026-06-02", "2026-06-28"}
+
+    @pytest.mark.asyncio
+    async def test_genuinely_malformed_ledger_row_still_fails_the_whole_chunk(self, monkeypatch):
+        """No regression: a genuinely malformed row (missing
+        particulars) still fails validation and `ingest_ledger_rows()`
+        is never called -- this is the 'STILL raises, no regression'
+        requirement, exercised through the real caller, not just the
+        validator in isolation."""
+        ingest_mock = AsyncMock(return_value=1)
+        monkeypatch.setattr(mod, "ingest_ledger_rows", ingest_mock)
+        alert_mock = AsyncMock()
+        monkeypatch.setattr(mod, "alert_critical", alert_mock)
+
+        malformed = _one_ledger_row(particulars="")
+        raw = _ledger_csv_bytes([malformed])
+
+        n, errs = await mod._ingest_one_report(
+            "ZLEDGER3##", "all", "ledger",
+            date(2026, 6, 1), date(2026, 6, 30), raw,
+        )
+
+        assert n == 0
+        assert errs and "validation failed" in errs[0]
+        ingest_mock.assert_not_called()
+        alert_mock.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_opening_closing_balance_sentinels_unaffected_through_real_caller(self, monkeypatch):
+        ingest_mock = AsyncMock(return_value=1)
+        monkeypatch.setattr(mod, "ingest_ledger_rows", ingest_mock)
+        alert_mock = AsyncMock()
+        monkeypatch.setattr(mod, "alert_critical", alert_mock)
+
+        raw = _ledger_csv_bytes([
+            {"particulars": "Opening Balance", "posting_date": "", "cost_center": "",
+             "voucher_type": "", "debit": "", "credit": "", "net_balance": "100.0"},
+            _one_ledger_row(posting_date="2026-06-10"),
+            {"particulars": "Closing Balance", "posting_date": "", "cost_center": "",
+             "voucher_type": "", "debit": "", "credit": "", "net_balance": "100.0"},
+        ])
+
+        n, errs = await mod._ingest_one_report(
+            "ZLEDGER4##", "all", "ledger",
+            date(2026, 6, 1), date(2026, 6, 30), raw,
+        )
+
+        assert errs == []
+        alert_mock.assert_not_called()
+        ingest_mock.assert_awaited_once()
+        _session, _masked, passed_rows = ingest_mock.call_args.args
+        assert len(passed_rows) == 3  # both sentinels + the one real in-range row
+
+    @pytest.mark.asyncio
+    async def test_zero_bad_rows_baseline_through_real_caller(self, monkeypatch):
+        """A chunk with no bad rows at all behaves exactly as before
+        this fix, through the real ingestion caller."""
+        ingest_mock = AsyncMock(return_value=1)
+        monkeypatch.setattr(mod, "ingest_ledger_rows", ingest_mock)
+        alert_mock = AsyncMock()
+        monkeypatch.setattr(mod, "alert_critical", alert_mock)
+
+        row = _one_ledger_row(posting_date="2026-06-15")
+        raw = _ledger_csv_bytes([row])
+
+        n, errs = await mod._ingest_one_report(
+            "ZLEDGER5##", "all", "ledger",
+            date(2026, 6, 1), date(2026, 6, 30), raw,
+        )
+
+        assert errs == []
+        alert_mock.assert_not_called()
+        ingest_mock.assert_awaited_once()
+        _session, _masked, passed_rows = ingest_mock.call_args.args
+        assert len(passed_rows) == 1
+        assert passed_rows[0]["posting_date"] == "2026-06-15"
+
+
+class TestValidateRawReportLedgerFiltering:
+    """`_validate_raw_report()` — the scrape-retry-loop validation path
+    (the OTHER caller of `validate_ledger_rows()`) — must also pass
+    `drop_out_of_range=True` and return the filtered rows, so a
+    deterministic carried-forward-prefix chunk succeeds on its first
+    scrape attempt instead of exhausting all retries and firing the
+    'Kite Console scraping failed' CRITICAL alert the live incident
+    actually reported."""
+
+    def test_ledger_report_type_filters_and_does_not_raise(self):
+        carried_forward = _one_ledger_row(posting_date="2026-04-01")
+        in_range = _one_ledger_row(posting_date="2026-06-15")
+        raw = _ledger_csv_bytes([carried_forward, in_range])
+
+        rows = mod._validate_raw_report(
+            "ledger", "all", date(2026, 6, 1), date(2026, 6, 30), raw,
+        )
+
+        assert len(rows) == 1
+        assert rows[0]["posting_date"] == "2026-06-15"
+
+    def test_ledger_report_type_still_raises_on_malformed_row(self):
+        raw = _ledger_csv_bytes([_one_ledger_row(particulars="")])
+        with pytest.raises(mod.ReportValidationError, match="missing particulars"):
+            mod._validate_raw_report("ledger", "all", date(2026, 6, 1), date(2026, 6, 30), raw)
 
 
 # ===========================================================================
