@@ -847,6 +847,117 @@ def _update_underlying_pnl_history(alert_state: dict, now, position_rows,
             del bucket[:len(bucket) - _PNL_HISTORY_CAP]
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+#  Portfolio-wide theoretical-total-loss history (leaf 2's rate window —
+#  2026-11-28 redesign of `loss-positions-total`)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Leaf 1 (`theoretical_total_loss`) is a LEVEL, not a delta — it carries a
+# constant per-leg offset `qty × (ltp_base − avg_cost)` for every F&O leg
+# currently in the book (see `grammar._underlying_theo_legs_since_
+# baseline_and_entry`'s own docstring). Opening, closing, or partially
+# closing ANY leg — or an underlying's own availability flipping — steps
+# this level with ZERO real P&L movement. Without a guard, closing a
+# profitable leg (a NEGATIVE step in THIS specific signed value) would
+# read as "the book is bleeding" to the rate window and could falsely
+# fire leaf 2. The composition guard below clears the ONE bucket (never
+# the whole `pnl_history` dict) whenever the exact set of non-flat F&O
+# legs (by `(tradingsymbol, quantity)`) changes from the prior tick, so
+# the rate window restarts clean on the new composition instead of
+# computing a rate across a composition-driven step.
+#
+# Known, accepted residual: this guard tracks TRADES (symbol/qty
+# changes), not an underlying's theoretical value flipping between
+# available/unavailable with the SAME composition (e.g. a baseline
+# capture race on the first tick of a new leg, or a transient spot-feed
+# gap recovering). That narrower edge case is not covered — engineering
+# a full solution would need per-underlying availability tracking on top
+# of the composition set, which is out of scope for this redesign.
+
+_PORTFOLIO_THEO_TOTAL_COMPOSITION_KEY = '_portfolio_theo_total_composition'
+
+
+def _portfolio_theo_total_composition(position_rows) -> frozenset:
+    """The exact set of `(tradingsymbol, quantity)` for every currently
+    non-flat F&O leg — equity rows carry no truthy `underlying` and are
+    excluded automatically. Shared by the writer below (to detect a
+    composition change) and tests (to assert the guard's own trigger
+    condition without re-deriving it)."""
+    return frozenset(
+        (r.get('tradingsymbol') or '', int(r.get('quantity') or 0))
+        for r in (position_rows or [])
+        if r.get('underlying') and int(r.get('quantity') or 0) != 0
+    )
+
+
+def _update_portfolio_theo_total_history(alert_state: dict, now, position_rows,
+                                         spot_prices: dict, df_margins,
+                                         *, sum_positions=None,
+                                         market_state: dict | None = None) -> None:
+    """Writer for leaf 2's rate-of-change window — appends a `(now,
+    value, pct)` sample to `alert_state['pnl_history'][grammar.
+    PORTFOLIO_THEO_TOTAL_RATE_KEY]` once per tick, where `value` is leaf
+    1's own `grammar._portfolio_theoretical_loss_since_entry()` and `pct`
+    is that value expressed as a % of the TOTAL account margin base
+    (`pnl_math.account_margin_base` — the SAME denominator `day_pct`/
+    `pnl_pct` already use for Positions-scope percentages), so `theo_
+    total_rate_pct` isn't permanently None. `pct` is None (not 0) when
+    margin data is unavailable — missing-vs-zero convention.
+
+    Outage guards mirror `_update_underlying_pnl_history`: skips
+    entirely (no append, no composition update) on a closed-market tick
+    (`market_state` gated), an empty `position_rows` (full-outage/never-
+    fetched tick), or a partial-outage-flagged `sum_positions`. A tick
+    where `value` itself is None (no F&O book at all) also records
+    nothing — never a fake 0.
+    """
+    if market_state is not None:
+        any_open = bool(market_state.get('nse_open') or market_state.get('mcx_open'))
+        if not any_open:
+            return  # closed-market tick — don't record the noise
+    if not position_rows or _ae_sum_positions_partial_outage(sum_positions):
+        return
+
+    # Local import (matches this module's existing convention of never
+    # importing from `grammar.py` at module top — see the local imports
+    # elsewhere in this file, e.g. `_capture_leg_theo_baseline`).
+    from backend.api.algo.grammar import (
+        PORTFOLIO_THEO_TOTAL_RATE_KEY, _portfolio_theoretical_loss_since_entry,
+    )
+
+    hist_map = alert_state.setdefault('pnl_history', {})
+    key = PORTFOLIO_THEO_TOTAL_RATE_KEY
+
+    composition = _portfolio_theo_total_composition(position_rows)
+    prior = alert_state.get(_PORTFOLIO_THEO_TOTAL_COMPOSITION_KEY)
+    if prior is not None and prior != composition:
+        hist_map.pop(key, None)  # composition changed — restart the rate window clean
+    alert_state[_PORTFOLIO_THEO_TOTAL_COMPOSITION_KEY] = composition
+
+    from types import SimpleNamespace
+    ctx_like = SimpleNamespace(
+        position_rows=position_rows, spot_prices=spot_prices or {},
+        alert_state=alert_state, now=now,
+    )
+    value = _portfolio_theoretical_loss_since_entry(ctx_like)
+    if value is None:
+        return  # nothing to record this tick — not a 0, not a failure
+
+    pct = None
+    try:
+        from backend.api.algo.pnl_math import account_margin_base
+        base = account_margin_base(df_margins, 'TOTAL')
+        if base:
+            pct = (value / base) * 100.0
+    except Exception:
+        pct = None
+
+    bucket = hist_map.setdefault(key, [])
+    bucket.append((now, value, pct))
+    if len(bucket) > _PNL_HISTORY_CAP:
+        del bucket[:len(bucket) - _PNL_HISTORY_CAP]
+
+
 # ---------------------------------------------------------------------------
 # v2 condition-tree helpers
 # ---------------------------------------------------------------------------
@@ -1230,12 +1341,32 @@ def _ae_funds_pnl(metric: str, value, row: dict) -> float:
     return float(value) if value is not None else 0.0
 
 
+# 2026-11-28 `loss-positions-total` redesign — these 4 metrics compute a
+# THEORETICAL value that has no relationship to the row's own market
+# `pnl`/`day_change_val` fields at all (they read `ctx.position_rows`/
+# `ctx.spot_prices`/`ctx.alert_state`, not `row`). Without this set,
+# `_v2_extract_pnl_fields`'s generic Positions fallback below would show
+# the row's raw market `pnl` as the rendered "pnl" field right next to a
+# theoretical threshold — a confirmed, misleading mismatch flagged before
+# this shipped (the operator's whole point in redesigning this agent was
+# to decouple it from market P&L). Trusting the match's own already-
+# resolved `value` directly mirrors `_ae_funds_pnl`'s existing precedent
+# (Fix #3/#4) of trusting a resolver's own value over independently
+# re-reading raw columns.
+_THEORETICAL_LOSS_METRICS = frozenset({
+    'theoretical_total_loss', 'theoretical_daily_loss',
+    'theo_total_rate_abs', 'theo_total_rate_pct',
+})
+
+
 def _v2_extract_pnl_fields(row: dict, section: str, metric: str,
                            value) -> tuple[float, float | None]:
     """Return (pnl, pct) appropriate for the given section.
 
     - Holdings  → day_change_val + day_change_percentage
     - Positions → pnl; pct stays None (computed later when used_margin is known)
+      — EXCEPT the theoretical-loss metrics (`_THEORETICAL_LOSS_METRICS`),
+      which trust the match's own already-resolved `value` instead.
     - Funds     → metric-driven field; pct always None
     """
     if section == 'Holdings':
@@ -1244,6 +1375,8 @@ def _v2_extract_pnl_fields(row: dict, section: str, metric: str,
     elif section == 'Positions':
         if metric == 'day_val':
             pnl = float(row.get('day_change_val', 0) or 0)
+        elif metric in _THEORETICAL_LOSS_METRICS:
+            pnl = float(value) if value is not None else 0.0
         else:
             pnl = float(row.get('pnl', 0) or 0)
         pct = None  # computed later only when we have used_margin
@@ -2758,37 +2891,61 @@ _LOSS_AGENTS = [
     #       meant to catch an 11.5-hour sustained grind.
     #
     # See `_ae_is_stale_loss_positions_total_cond` below for the one-time
-    # migration that force-syncs an already-seeded row still at the OLD
-    # shape — a code-only change here is otherwise inert against a live
-    # DB row (`_ae_sync_existing_builtin` never force-syncs conditions/
-    # cooldown except via a narrow, content-matched detector).
+    # migration that force-syncs an already-seeded row still at the
+    # ANCIENT (pre-drawdown-gate) shape, and `_AE_CONTENT_MATCHED_COND_
+    # MIGRATIONS["loss-positions-total"]` for the 2026-11-28 migration
+    # that force-syncs a row still at the drawdown-gated market-P&L
+    # shape this redesign retires — a code-only change here is otherwise
+    # inert against a live DB row (`_ae_sync_existing_builtin` never
+    # force-syncs conditions/cooldown except via these narrow,
+    # content-matched detectors).
     dict(slug="loss-positions-total",
-         long_name="when:positions.total.pnl<=total-thresholds   alert:critical/tg+email+log   do:notify-only",
+         long_name="when:positions.total.theoretical<=total-thresholds   alert:critical/tg+email+log   do:notify-only",
          tier="critical",
          topic="positions_loss",
          name="Positions total loss guardrail",
          description=(
-             "Fires when the book-wide positions trip total loss "
-             "thresholds: -2% of total margin OR -₹1,00,000, OR the "
-             "book is burning -₹6k/min / -0.25%/min WHILE either the "
-             "day is already negative or it has dropped ₹20,000+ from "
-             "its own session peak in the last 30 minutes. Critical-tier "
-             "— implicit 'the whole book is bleeding' signal."
+             "2026-11-28 redesign (operator: 'look for theoretical loss "
+             "for alert' instead of market loss) — this agent is now PURE "
+             "F&O THEORETICAL LOSS, with NO equity leaf at all. Deliberate "
+             "scope tradeoff, not an oversight: a pure equity-position "
+             "loss no longer fires this guard. Three independent leaves, "
+             "any[]-combined: (1) theoretical_total_loss<=-100000 — the "
+             "book's lifetime-since-ENTRY theoretical shortfall (a LEVEL: "
+             "Σ qty×(model_price_now−avg_cost) across every F&O leg, "
+             "frozen-vol Black-Scholes/Black-76 reprice at live spot/time, "
+             "same primitives the per-underlying divergence gate uses — "
+             "NOT a theta/vega-blind raw intrinsic-value metric). (2) a "
+             "rate-of-change pair (theo_total_rate_abs<=-6000 or "
+             "theo_total_rate_pct<=-0.25) on leaf 1's OWN value, gated on "
+             "leaf 1 having ALREADY crossed its own threshold — directly "
+             "implements 'only... when the total theoretical loss crosses "
+             "the threshold'. (3) theoretical_daily_loss<=-100000 — "
+             "TODAY's theoretical P&L move (a DELTA since the per-session "
+             "frozen baseline, summed per-underlying). Replaces the old "
+             "market-P&L day_val/day_pct static floors and the drawdown-"
+             "from-peak-gated rate leaves outright — that mechanism does "
+             "not carry over. See CLAUDE.md's dated entry for the full "
+             "rationale, including the known vega limitation (a frozen "
+             "σ cannot see intraday IV expansion — a pure IV-spike loss "
+             "on a short-premium book, with no theta/spot move, fires "
+             "nothing here)."
          ),
          conditions={"any": [
-             {"metric": "day_val", "scope": "positions.total", "op": "<=", "value": -100000},
-             {"metric": "day_pct", "scope": "positions.total", "op": "<=", "value": -2.0},
+             {"metric": "theoretical_total_loss", "scope": "positions.total",
+              "op": "<=", "value": -100000},
              {"all": [
+                 {"metric": "theoretical_total_loss", "scope": "positions.total",
+                  "op": "<=", "value": -100000},
                  {"any": [
-                     {"metric": "day_val", "scope": "positions.total", "op": "<", "value": 0},
-                     {"metric": "max_drawdown_pnl(30)", "scope": "positions.total",
-                      "op": "<=", "value": -20000},
-                 ]},
-                 {"any": [
-                     {"metric": "pnl_rate_abs", "scope": "positions.total", "op": "<=", "value": -6000},
-                     {"metric": "pnl_rate_pct", "scope": "positions.total", "op": "<=", "value": -0.25},
+                     {"metric": "theo_total_rate_abs", "scope": "positions.total",
+                      "op": "<=", "value": -6000},
+                     {"metric": "theo_total_rate_pct", "scope": "positions.total",
+                      "op": "<=", "value": -0.25},
                  ]},
              ]},
+             {"metric": "theoretical_daily_loss", "scope": "positions.total",
+              "op": "<=", "value": -100000},
          ]},
          scope="total",
          cooldown_minutes=45,
@@ -4089,6 +4246,32 @@ _AE_CONTENT_MATCHED_COND_MIGRATIONS: dict[str, dict] = {
         {"any": [
             {"metric": "pnl_rate_abs", "scope": "positions.any_underlying", "op": "<=", "value": -10000},
             {"metric": "pnl_rate_pct", "scope": "positions.any_underlying", "op": "<=", "value": -0.25},
+        ]},
+    ]},
+    # 2026-11-28 — pure-theoretical-loss redesign (see this agent's own
+    # BUILTIN_AGENTS entry above for the full rationale; operator: "look
+    # for theoretical loss for alert" instead of market loss). The shape
+    # below is the EXACT drawdown-gated market-P&L tree this agent
+    # shipped with since the 2026-11 noise-reduction redesign — confirmed
+    # BYTE-FOR-BYTE identical on both prod and dev via a direct DB read
+    # before this edit (both report status='inactive', unaffected by
+    # this migration — see `_ae_sync_existing_builtin`'s own docstring:
+    # status is never force-synced here). An operator who customized
+    # this agent's conditions in any way is left on their own shape, same
+    # safety contract as every other entry in this table.
+    "loss-positions-total": {"any": [
+        {"metric": "day_val", "scope": "positions.total", "op": "<=", "value": -100000},
+        {"metric": "day_pct", "scope": "positions.total", "op": "<=", "value": -2.0},
+        {"all": [
+            {"any": [
+                {"metric": "day_val", "scope": "positions.total", "op": "<", "value": 0},
+                {"metric": "max_drawdown_pnl(30)", "scope": "positions.total",
+                 "op": "<=", "value": -20000},
+            ]},
+            {"any": [
+                {"metric": "pnl_rate_abs", "scope": "positions.total", "op": "<=", "value": -6000},
+                {"metric": "pnl_rate_pct", "scope": "positions.total", "op": "<=", "value": -0.25},
+            ]},
         ]},
     ]},
 }
@@ -6358,6 +6541,14 @@ async def run_cycle(context: dict, broadcast_fn=None,
         )
         _update_underlying_pnl_history(
             _alert_state, now, _position_rows, sum_positions=_sum_positions,
+            market_state=None if bypass_schedule else base_ctx,
+        )
+        # Portfolio-wide theoretical-total-loss history (2026-11-28
+        # `loss-positions-total` redesign) — same call site, same tick,
+        # feeds leaf 2's (theo_total_rate_abs/pct) rate window.
+        _update_portfolio_theo_total_history(
+            _alert_state, now, _position_rows, context.get("spot_prices") or {},
+            context.get("df_margins"), sum_positions=_sum_positions,
             market_state=None if bypass_schedule else base_ctx,
         )
 

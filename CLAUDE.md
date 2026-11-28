@@ -3951,6 +3951,132 @@ see `~/.claude/plans/lovely-stirring-allen.md` for the full review transcript.
   (per-underlying/per-account) scope; `cooldown_minutes=0` plus the per-leaf escalation gate's own
   fallback is the correct shape whenever one key's fire must not silence a different key's breach.
 
+**`loss-positions-total` rebuilt as pure F&O theoretical loss — three independent leaves, no
+equity leaf, market-P&L retired outright (2026-11-28)** — Operator: "Instead of looking for market
+loss, look for theoretical loss for alert", then "the rate of change alert should happen only in
+the negative direction when the total theoretical loss crosses the threshold", then in full:
+"1. total theory loss of position, if it crosses threshold. 2. once it crosses threshold, any rate
+of change that only increases the theory loss. 3. daily theory loss threshold." Leaf 1 ("total") is
+confirmed, explicitly, to be the book's overall/cumulative theoretical shortfall right now, a
+LEVEL — distinct from leaf 3 ("daily"), today's own theoretical P&L move, a DELTA.
+- **Deliberate, operator-approved scope tradeoff, stated plainly: PURE theoretical, F&O ONLY, no
+  hybrid equity fallback.** A pure equity-position loss no longer fires this guard at all, however
+  large. `TestEquityOnlyBookNeverFires`
+  ([test_loss_positions_total_theoretical_redesign.py](backend/tests/test_loss_positions_total_theoretical_redesign.py))
+  pins this.
+- **This is NOT the raw-intrinsic-value-at-expiry metric a 6-perspective council rejected on
+  2026-11-26 for this exact agent** (see the entry above). Both new leaves reuse the SAME
+  frozen-vol Black-Scholes/Black-76 reprice machinery already shipped and council-approved for
+  `underlying_loss_divergence_signed` — genuinely decay-aware, not spot-only.
+- **Leaf 1 (`theoretical_total_loss`) and leaf 3 (`theoretical_daily_loss`) are two different
+  computations with two different reference points, not the same number read twice.** Leaf 3
+  reuses the EXISTING per-session frozen baseline (`alert_state['underlying_theo_baseline']`,
+  `agent_engine._update_underlying_theo_baseline`) — a delta since this morning. Leaf 1 is
+  since-ENTRY: `Σ qty_base × (model_price_now − avg_cost)` across every F&O leg, where `avg_cost`
+  comes straight off the position row, not a new baseline-capture mechanism. Both share ONE
+  per-underlying walk, `grammar._underlying_theo_legs_since_baseline_and_entry`, via the algebraic
+  identity `qty × (model_price_now − avg_cost) = _theo_reprice_leg(b, S_now, now) + qty ×
+  (ltp_base − avg_cost)` — exact for an option leg; for a futures leg it holds only because a
+  future's own "model price now" is defined as `ltp_base + (S_now − S_base)` (the future's own
+  BASIS at baseline time, held constant while spot moves) — comparing `avg_cost` (a future's own
+  fill-price terms) against the raw underlying spot directly would be wrong, since
+  `ctx.spot_prices` holds the index, not the future's own price.
+  `TestLeaf1DiffersFromLeaf3::test_deep_in_red_since_entry_but_flat_today_fires_leaf1_only`
+  constructs a position opened days ago, deep in the red since entry, but flat/positive today —
+  leaf 1 fires, leaf 3 does not.
+- **Leaf 2 (`theo_total_rate_abs`/`theo_total_rate_pct`) is gated on leaf 1 itself having crossed
+  its own threshold** — `all[theoretical_total_loss<=-100000, any[theo_total_rate_abs<=-6000,
+  theo_total_rate_pct<=-0.25]]`, directly implementing "only... when the total theoretical loss
+  crosses the threshold." `<=` against a negative threshold is already one-sided, so a recovering
+  (positive) rate can never satisfy it — no extra sign check needed. The retired drawdown-from-peak
+  mechanism (`any[day_val<0, max_drawdown_pnl(30)<=-20000]`, see the "Positions loss guard" entry
+  elsewhere in this file) does NOT carry over; it is replaced outright, not kept alongside.
+- **History writer and the composition-reset guard.** `agent_engine._update_portfolio_theo_total_history`
+  appends `(now, value, pct)` to a new `alert_state['pnl_history'][grammar.
+  PORTFOLIO_THEO_TOTAL_RATE_KEY]` bucket (`('positions_theoretical_total', 'TOTAL')`) once per
+  tick, called from `run_cycle` right after `_update_underlying_pnl_history`. Leaf 1 is a LEVEL
+  carrying a constant per-leg offset `qty × (ltp_base − avg_cost)` for every F&O leg currently in
+  the book — opening, closing, or partially closing ANY leg steps this level with ZERO real P&L
+  movement, and closing a profitable leg is a NEGATIVE step that could falsely read as "the book is
+  bleeding" to the rate window. `_portfolio_theo_total_composition()` tracks the exact
+  `frozenset` of `(tradingsymbol, quantity)` for every non-flat F&O leg; a change from the prior
+  tick clears ONLY this one bucket (never the whole `pnl_history` dict), restarting the rate window
+  clean. Known, accepted residual: this tracks TRADES, not an underlying's theoretical value
+  flipping between available/unavailable with the SAME composition (e.g. a baseline-capture race) —
+  not engineered, out of scope for this redesign.
+- **`pct` is computed, not left permanently None.** `theo_total_rate_pct` reads `value /
+  pnl_math.account_margin_base(df_margins, 'TOTAL') * 100` — the SAME margin-base denominator
+  `day_pct`/`pnl_pct` already use for Positions-scope percentages — so the token isn't structurally
+  inert the way `_update_underlying_pnl_history`'s own pct slot deliberately is (no per-underlying
+  margin denominator exists). `None`, never `0`, when margin data is unavailable.
+- **Render fix: the theoretical metrics show their OWN value, not the row's market `pnl`.**
+  `_v2_extract_pnl_fields`'s generic Positions fallback (`day_val` reads `day_change_val`, every
+  OTHER Positions metric reads lifetime `pnl` — see the "grouped alert body" entry elsewhere in
+  this file) would otherwise show a misleading market number next to a theoretical threshold. A new
+  `_THEORETICAL_LOSS_METRICS` set routes `theoretical_total_loss`/`theoretical_daily_loss`/
+  `theo_total_rate_abs`/`theo_total_rate_pct` to trust the match's own already-resolved `value`
+  directly — the same precedent `_ae_funds_pnl` already established (Fix #3/#4).
+- **Known, flagged limitation — frozen σ cannot see vega moves.** Neither leaf ever reads a live
+  option premium again after baseline capture — only live spot and live time-to-expiry. A pure
+  IV-spike loss on a short-premium book, with no theta decay and no spot move, fires NOTHING here.
+  `TestFrozenSigmaCannotSeeVegaMoves` proves this structurally (the reprice primitive's only
+  parameters are the frozen baseline, live spot, and live clock — no live premium at all), rather
+  than faking a vega-spike fixture that the frozen-σ model could never represent anyway.
+- **Confirmed, FLAGGED, NOT fixed here — a pre-existing gap in the EXISTING
+  `underlying_theoretical_loss`/`underlying_loss_divergence_signed` metrics.** Kite keeps an
+  intraday-closed leg's row at qty=0 rather than removing it. `_underlying_theoretical_loss`'s row
+  filter does not exclude a qty=0 row, so if an underlying carries one open leg and one closed leg,
+  the closed leg has no baseline entry (baselines are dropped for flat legs), and the WHOLE
+  underlying returns None — even though the open leg alone is fine. `TestUnderlyingTheoreticalLossQtyZeroLegGapConfirmed`
+  reproduces this against the existing function directly. The NEW per-underlying walk
+  (`_underlying_theo_legs_since_baseline_and_entry`, shared by leaf 1 and leaf 3) filters to
+  non-flat legs BEFORE consulting the baseline, so it does NOT inherit this gap — but leaf 3 is
+  therefore NOT a literal passthrough of the existing `_underlying_theoretical_loss` function; it
+  is a new, qty-filtered walk computing the same conceptual value. `underlying_theoretical_loss`/
+  `underlying_loss_divergence_signed` themselves are left untouched (out of scope; they're already
+  shipped and active).
+- **Skip-the-gapped-underlying policy applies at the UNDERLYING level for both leaves**, not the
+  leg level the plan's own draft wording first suggested — a leg's reprice failure anywhere inside
+  an underlying makes that WHOLE underlying unavailable (never a partial sum), matching
+  `_underlying_theoretical_loss`'s existing all-or-nothing policy. A gapped underlying is then
+  skipped (not zero-filled) when summing the portfolio total, per the operator-agreed policy.
+- **Migration.** `_AE_CONTENT_MATCHED_COND_MIGRATIONS["loss-positions-total"]`
+  ([agent_engine.py](backend/api/algo/agent_engine.py)) force-upgrades a row still at the exact
+  drawdown-gated market-P&L shape — confirmed byte-for-byte identical on both prod and dev via a
+  direct DB read before this edit (both `status='inactive'`, untouched by this migration; `status`
+  is never force-synced here). The EARLIER, independent migration from the ANCIENT pre-drawdown-gate
+  shape (`_LOSS_POSITIONS_TOTAL_OLD_COND`/`_ae_is_stale_loss_positions_total_cond`) is unchanged and
+  still correct on its own terms.
+- **Status unchanged — ships inactive, same as before.** `loss-positions-total` was already
+  `status='inactive'` on both prod and dev at the time of this redesign (an operator choice this
+  change does not touch or override).
+- **Threshold flag for the operator.** Leaf 1 is a LEVEL, not a delta. A carried book that is deep
+  in the red can sit past −100000 permanently: it fires once, latches, and re-fires only once it
+  worsens past −200000 (the escalation step). Within a single session, rate(leaf 1) and rate(leaf 3)
+  are numerically identical — leaf 1's own composition-reset guard means its rate window behaves
+  the same as leaf 3's intraday, they only diverge across a multi-day holding period. The default
+  thresholds (−100000 / −6000 / −0.25) reuse the agent's pre-existing numbers and may need operator
+  tuning once exercised against real theoretical values, which run on a different scale than market
+  P&L.
+- Tests: [test_loss_positions_total_theoretical_redesign.py](backend/tests/test_loss_positions_total_theoretical_redesign.py)
+  (31 tests — decay fires both leaves, the structural vega-blindness proof, equity-only never
+  fires, leaf1-vs-leaf3 divergence, leaf 2 gating in both directions, nested-latch keying under the
+  new tree, skip-gapped-underlying policy for both aggregators, the confirmed qty=0 gap, the
+  writer's pct computation and composition-reset guard, the render fix, and the migration).
+  `test_loss_agents.py::TestLossPositionsTotal` and `TestConditionTreeStructure::
+  test_loss_positions_total_condition_tree` rewritten for the new leaf names (the 3-top-level-items/
+  1-nested-all[] STRUCTURE is unchanged). `test_agent_action_fanout.py::test_loss_positions_total_multi_leaf_coincident_breach`
+  re-pointed at the new leaf names at the same top-level indices (0 and 2). `test_loss_positions_total_drawdown_gate.py`
+  trimmed to keep only its still-valid `TestMigrationHelper` (the ancient-shape migration);
+  its three retired scenario classes are superseded by the new file.
+  `test_baseline_gap_loss_guard_blind_spot.py` re-pointed at `loss-positions-acct` (which still
+  reads day_val/day_pct off the same feed) with a new structural confirmation that
+  `loss-positions-total` itself no longer reads market P&L at all.
+- Invariant: this guard never reads market P&L (`day_change_val`/`pnl`/`day_change_percentage`)
+  again. Every leaf's value is a frozen-vol theoretical reprice or a rate of one. A gapped
+  underlying is skipped, never zero-filled, and a single bad leg takes down only its own
+  underlying, never the whole portfolio sum.
+
 **Fan-out actions (`cancel_all_orders`, `chase_close_positions`) can scope by role/user as well as
 account (2026-10-31, operator: "I should be able to select an account in actions... for accounts,
 roles, users, etc. If the parameters are not mentioned, it should be for all")** — `place_order`/
@@ -5984,7 +6110,7 @@ now caches + returns a `stale` flag; `/api/nav/by-account` masks `errors` for no
 | Change tab title / SEO | `frontend/src/app.html` + per-route `<svelte:head>` |
 | Change footer | `backend/config/frontend_config.yaml` |
 | Change loss threshold | `/agents` page → edit `loss-*` agent condition |
-| Change `loss-positions-total` floor / rate gate / cooldown | `backend/api/algo/agent_engine.py` (`_LOSS_AGENTS` `loss-positions-total`, `_ae_is_stale_loss_positions_total_cond`) |
+| Change `loss-positions-total` floor / rate gate / cooldown (pure F&O theoretical loss, 3 leaves) | `backend/api/algo/agent_engine.py` (`_LOSS_AGENTS` `loss-positions-total`, `_AE_CONTENT_MATCHED_COND_MIGRATIONS["loss-positions-total"]`, `_update_portfolio_theo_total_history`) + `backend/api/algo/grammar.py` (`_underlying_theo_legs_since_baseline_and_entry`, `_portfolio_theoretical_loss_since_entry`/`_daily`) + `backend/api/algo/grammar_tokens/metric_theoretical_{total,daily}_loss.py` + `metric_theo_total_rate_{abs,pct}.py` |
 | Change `loss-positions-underlying-divergence` (signed metric, threshold, cooldown) | `backend/api/algo/agent_engine.py` (the agent dict + `_ae_sync_divergence_cooldown`, `_AE_CONTENT_MATCHED_COND_MIGRATIONS["loss-positions-underlying-divergence"]`) + `backend/api/algo/grammar_tokens/metric_underlying_loss_divergence_signed.py` |
 | Grouped rich-alert body (co-firing leaves) | `backend/api/algo/agent_engine.py:_ae_group_alert_rows` + `backend/shared/helpers/alert_utils.py:_tg_rule_line` / `_tg_alert_body` / `_email_alert_body` |
 | Change alert recipients | `backend/config/secrets.yaml` on server |

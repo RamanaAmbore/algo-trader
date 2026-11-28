@@ -274,6 +274,21 @@ of the parent's own premium). Never blocks the parent order on any
 failure to resolve a hedge. See `backend/tests/test_hedge_strike.py`
 and CLAUDE.md's "Hedge leg" entry.
 
+Amendment (2026-11-28, `loss-positions-total` theoretical redesign): four
+new `(condition, metric, ...)` tokens — `theoretical_total_loss`,
+`theoretical_daily_loss`, `theo_total_rate_abs`, `theo_total_rate_pct` —
+were added to `agent_grammar.yaml` right after `underlying_loss_
+divergence_signed` (and mirrored here at the same position). Backs the
+redesigned `loss-positions-total` built-in agent (`agent_engine.py`),
+which now gates on pure F&O theoretical loss instead of market P&L — see
+CLAUDE.md's dated entry for the full rationale. Resolvers live in
+`grammar_tokens/`, reading `ctx.position_rows`/`ctx.spot_prices`/
+`ctx.alert_state['underlying_theo_baseline']` (leaf 1/leaf 3) and
+`ctx.rate_abs`/`ctx.rate_pct` against the new `('positions_theoretical_
+total', 'TOTAL')` history bucket (leaf 2, written once per tick by
+`agent_engine._update_portfolio_theo_total_history`). See
+`backend/tests/test_loss_positions_total_theoretical_redesign.py`.
+
 Perf: no DB / network calls, pure in-memory comparison.
 Reuse: shares the same SYSTEM_TOKENS / LOG_TAG_TOKENS module attributes
 every other grammar test and `seed_grammar_tokens()` read.

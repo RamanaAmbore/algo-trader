@@ -681,6 +681,42 @@
     },
     {
       "grammar_kind": "condition",
+      "token_kind": "metric",
+      "token": "theoretical_total_loss",
+      "value_type": "number",
+      "units": "₹",
+      "description": "Lifetime-since-ENTRY theoretical shortfall across the whole F&O book (leaf 1, \"total\", of the loss-positions-total redesign) — a LEVEL, not a delta. Σ qty_base × (model_price_now − avg_cost) across every currently-held F&O leg, frozen-vol Black-Scholes/Black-76 reprice at live spot/time-to-expiry. Skips (does not zero-fill) any underlying whose own value is unavailable this tick; None only when the book holds no F&O underlying at all.",
+      "resolver": "backend.api.algo.grammar_tokens.metric_theoretical_total_loss._metric_theoretical_total_loss"
+    },
+    {
+      "grammar_kind": "condition",
+      "token_kind": "metric",
+      "token": "theoretical_daily_loss",
+      "value_type": "number",
+      "units": "₹",
+      "description": "Today's theoretical P&L move across the whole F&O book (leaf 3, \"daily\", of the loss-positions-total redesign) — a DELTA since the per-session frozen baseline, summed per F&O underlying. Skips (does not zero-fill) any underlying whose own value is unavailable this tick; None only when the book holds no F&O underlying at all.",
+      "resolver": "backend.api.algo.grammar_tokens.metric_theoretical_daily_loss._metric_theoretical_daily_loss"
+    },
+    {
+      "grammar_kind": "condition",
+      "token_kind": "metric",
+      "token": "theo_total_rate_abs",
+      "value_type": "number",
+      "units": "₹/min",
+      "description": "Rate of change of theoretical_total_loss (leaf 1) in ₹ per minute over the last window (leaf 2 of the loss-positions-total redesign).",
+      "resolver": "backend.api.algo.grammar_tokens.metric_theo_total_rate_abs._metric_theo_total_rate_abs"
+    },
+    {
+      "grammar_kind": "condition",
+      "token_kind": "metric",
+      "token": "theo_total_rate_pct",
+      "value_type": "number",
+      "units": "%/min",
+      "description": "Rate of change of theoretical_total_loss (leaf 1), expressed as a percent-per-minute of the TOTAL account margin base, over the last window (leaf 2 of the loss-positions-total redesign).",
+      "resolver": "backend.api.algo.grammar_tokens.metric_theo_total_rate_pct._metric_theo_total_rate_pct"
+    },
+    {
+      "grammar_kind": "condition",
       "token_kind": "scope",
       "token": "holdings.total",
       "value_type": "object",

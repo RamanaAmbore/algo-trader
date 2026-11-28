@@ -562,6 +562,220 @@ def _underlying_theoretical_loss(ctx, underlying):
 # above) stay here — shared, used by both migrated metrics.
 
 
+# ── Portfolio-wide theoretical-loss aggregators (2026-11-28 redesign of
+#    `loss-positions-total` — operator: "look for theoretical loss for
+#    alert" instead of market loss) ─────────────────────────────────────
+#
+# Three leaves read these: `theoretical_total_loss` (leaf 1, a LEVEL —
+# lifetime-since-ENTRY theoretical shortfall), `theoretical_daily_loss`
+# (leaf 3, a DELTA — today's theoretical move since the per-session
+# frozen baseline), and the `theo_total_rate_abs`/`theo_total_rate_pct`
+# pair (leaf 2, rate-of-change of leaf 1's own value, gated on leaf 1
+# having already crossed its own threshold — see the agent's own
+# BUILTIN_AGENTS entry in agent_engine.py for the full condition tree).
+#
+# CONFIRMED BUG, NOT FIXED HERE (flagged for a separate pass): Kite keeps
+# an intraday-closed leg's row at qty=0 rather than removing it from
+# `position_rows` (see `_update_underlying_theo_baseline`'s own
+# docstring). `_underlying_theoretical_loss` above filters rows by
+# `underlying` only — it does NOT exclude a qty=0 row — so if an
+# underlying carries one open leg and one closed (qty=0) leg, the closed
+# leg has no baseline entry (baselines are dropped for flat legs), `b is
+# None` fires, and the WHOLE underlying returns None — even though the
+# genuinely open leg is perfectly fine. This means `underlying_
+# theoretical_loss`/`underlying_loss_divergence_signed` (the existing,
+# separately-shipped metrics) go blind on exactly the underlyings you
+# traded today. See `test_underlying_theoretical_loss_qty_zero_leg_gap_
+# confirmed` in `backend/tests/test_loss_positions_total_theoretical_
+# redesign.py` for a reproduction. The walk below (`_underlying_theo_
+# legs_since_baseline_and_entry`) works AROUND this for the new
+# portfolio-wide leaves by filtering to non-flat legs BEFORE consulting
+# the baseline — `_underlying_theoretical_loss` itself is left untouched
+# (out of scope for this change; a fix there needs its own review since
+# `underlying_loss_divergence_signed` already shipped and is active).
+
+
+def _underlying_theo_legs_since_baseline_and_entry(ctx, underlying):
+    """Shared per-underlying walk for the two portfolio-wide theoretical
+    aggregators below. Returns `(since_baseline_total, since_entry_total)`
+    — or `(None, None)` under an all-or-nothing availability policy, same
+    shape as `_underlying_theoretical_loss`'s own policy: no rows, no
+    live spot, ANY non-flat leg missing a baseline entry, or any leg's
+    reprice failing numerically makes the WHOLE underlying unavailable
+    (never a partial/understated sum for either side).
+
+    `since_baseline_total` is Σ `_theo_reprice_leg(b, S_now, now)` — the
+    SAME delta-since-this-morning value `_underlying_theoretical_loss`
+    computes (leaf 3's own building block).
+
+    `since_entry_total` is Σ `qty_base × (model_price_now − avg_cost)` —
+    leaf 1's own building block. Derived from the SAME per-leg reprice
+    via the algebraic identity (no new Black-Scholes/Black-76 math, no
+    new baseline-capture step — reuses the ALREADY-captured per-session
+    baseline for σ/K/expiry):
+
+        qty × (model_price_now − avg_cost)
+      = qty × (model_price_now − ltp_base) + qty × (ltp_base − avg_cost)
+      = _theo_reprice_leg(b, S_now, now) + qty × (ltp_base − avg_cost)
+
+    For an OPTION leg this is exact — `_theo_reprice_leg` already
+    computes `qty × (price_now − ltp_base)`. For a FUTURES leg,
+    `_theo_reprice_leg` returns `qty × (S_now − S_base)` (no `ltp_base`
+    term at all), so the identity above only holds when a future's own
+    "model price now" is defined as `ltp_base + (S_now − S_base)` — i.e.
+    the future's own BASIS at baseline time (`ltp_base − S_base`) held
+    constant while spot moves. This is deliberately NOT the same as
+    comparing `avg_cost` (a future's own fill-price terms) against the
+    raw underlying spot directly — `ctx.spot_prices` holds the index,
+    not the future's own price, so a bare `qty × (S_now − avg_cost)`
+    would compare index points against a future's fill price, which is
+    wrong. Using the frozen basis keeps both sides in the future's own
+    price terms.
+
+    Qty is read from the BASELINE's own frozen `qty` (`b['qty']`), not
+    the row's live `quantity` — this keeps the two summed terms
+    dimensionally consistent (both `qty × (...)` with the SAME qty), at
+    the cost of inheriting leaf 3's existing "qty can go stale if size
+    changes intraday after baseline capture" quirk for leaf 1 too — a
+    deliberate, documented tradeoff, not an oversight.
+    """
+    if not underlying:
+        return None, None
+    rows = [r for r in (getattr(ctx, 'position_rows', None) or [])
+            if r.get('underlying') == underlying]
+    if not rows:
+        return None, None
+    spot_prices = getattr(ctx, 'spot_prices', None) or {}
+    try:
+        S_now = float(spot_prices.get(underlying))
+    except (TypeError, ValueError):
+        return None, None
+    if S_now <= 0:
+        return None, None
+    baseline = ((getattr(ctx, 'alert_state', None) or {}).get('underlying_theo_baseline') or {})
+    now = getattr(ctx, 'now', None)
+    since_baseline_total = 0.0
+    since_entry_total = 0.0
+    any_leg = False
+    for row in rows:
+        if not _theo_leg_is_non_flat(row):
+            continue  # flat leg — Kite may keep the row; skip it, don't fail the underlying
+        any_leg = True
+        b = baseline.get(row.get('tradingsymbol') or '')
+        leg = _theo_leg_since_baseline_and_entry(row, b, S_now, now)
+        if leg is None:
+            return None, None  # not yet baselined / reprice failed — retry next tick
+        leg_since_baseline, leg_since_entry = leg
+        since_baseline_total += leg_since_baseline
+        since_entry_total += leg_since_entry
+    if not any_leg:
+        return None, None
+    return since_baseline_total, since_entry_total
+
+
+def _theo_leg_is_non_flat(row: dict) -> bool:
+    """True when `row`'s own `quantity` is a genuinely non-zero int.
+    Extracted from `_underlying_theo_legs_since_baseline_and_entry` to
+    keep it under the radon complexity gate."""
+    try:
+        return int(row.get('quantity') or 0) != 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _theo_leg_since_baseline_and_entry(row: dict, b: "dict | None", S_now: float, now):
+    """One leg's `(since_baseline, since_entry)` contribution, or `None`
+    on any failure (no baseline yet, a malformed baseline entry, a
+    numeric reprice failure, or a malformed `average_price`). Extracted
+    from `_underlying_theo_legs_since_baseline_and_entry` to keep it
+    under the radon complexity gate — see that function's own docstring
+    for the algebraic identity this applies."""
+    if b is None:
+        return None
+    leg_since_baseline = _theo_reprice_leg(b, S_now, now)
+    if leg_since_baseline is None:
+        return None
+    try:
+        avg_cost = float(row.get('average_price') or 0)
+        qty = int(b.get('qty', 0) or 0)
+        ltp_base = float(b['ltp_base'])
+    except (TypeError, ValueError, KeyError):
+        return None
+    return leg_since_baseline, leg_since_baseline + qty * (ltp_base - avg_cost)
+
+
+def _portfolio_theoretical_loss_since_entry(ctx) -> "float | None":
+    """Leaf 1 ("total") of the redesigned `loss-positions-total` guard —
+    the lifetime-since-ENTRY theoretical shortfall across the WHOLE F&O
+    book, a LEVEL (not a delta): "how far below cost basis is the book's
+    own theoretical fair value right now."
+
+    Σ over every distinct F&O underlying currently held of `_underlying_
+    theo_legs_since_baseline_and_entry(ctx, u)[1]`, skipping (not
+    zero-filling) any underlying whose own value is None — the
+    operator-agreed "skip the gapped underlying" policy. Returns None
+    only when the book holds NO F&O underlying at all (equity-only, or
+    genuinely flat) — see the "F&O-only, no equity leaf" note on this
+    agent (CLAUDE.md, operator-approved scope tradeoff).
+    """
+    rows = getattr(ctx, 'position_rows', None) or []
+    underlyings = {r.get('underlying') for r in rows if r.get('underlying')}
+    if not underlyings:
+        return None
+    total = 0.0
+    found_any = False
+    for u in underlyings:
+        _, since_entry = _underlying_theo_legs_since_baseline_and_entry(ctx, u)
+        if since_entry is None:
+            continue
+        found_any = True
+        total += since_entry
+    return total if found_any else None
+
+
+def _portfolio_theoretical_loss_daily(ctx) -> "float | None":
+    """Leaf 3 ("daily") of the redesigned `loss-positions-total` guard —
+    TODAY's theoretical P&L move, summed across every F&O underlying.
+    Each underlying's own value is ALREADY a delta-since-this-morning
+    (the per-session frozen-baseline reprice), so summing it across
+    underlyings is exactly today's theoretical Day P&L move for the
+    whole book.
+
+    Deliberately does NOT call `_underlying_theoretical_loss` directly —
+    see the confirmed qty=0 gap noted above this function's siblings.
+    Uses the same qty!=0-filtered walk leaf 1 uses instead, so this leaf
+    doesn't inherit that gap even though the public `underlying_
+    theoretical_loss` metric still does.
+
+    Per the operator-agreed gap policy: an underlying whose own value is
+    None (one leg not yet baselined, missing spot, etc.) is SKIPPED from
+    the sum, never zero-filled — the same "skip the gapped underlying"
+    rule applied to leaf 1. Returns None only when the book holds no F&O
+    underlying at all.
+    """
+    rows = getattr(ctx, 'position_rows', None) or []
+    underlyings = {r.get('underlying') for r in rows if r.get('underlying')}
+    if not underlyings:
+        return None
+    total = 0.0
+    found_any = False
+    for u in underlyings:
+        since_baseline, _ = _underlying_theo_legs_since_baseline_and_entry(ctx, u)
+        if since_baseline is None:
+            continue
+        found_any = True
+        total += since_baseline
+    return total if found_any else None
+
+
+# Shared history-bucket key for leaf 2's rate-of-change window (written
+# once per tick by `agent_engine._update_portfolio_theo_total_history`,
+# read by `ctx.rate_abs`/`ctx.rate_pct` via the `theo_total_rate_abs`/
+# `theo_total_rate_pct` metric resolvers) — defined ONCE here so the
+# writer and both readers can never drift onto different keys.
+PORTFOLIO_THEO_TOTAL_RATE_KEY = ('positions_theoretical_total', 'TOTAL')
+
+
 # ── "Worst case" scope selectors — collapse N per-account agents to 1 ─────
 #
 # Returns the SINGLE row with the largest drawdown in the chosen dimension.

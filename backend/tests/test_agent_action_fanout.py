@@ -212,29 +212,34 @@ class TestBackwardCompatRealAgentShapes:
         agent itself is notify-only) to prove the dispatch-loop behavior
         the shape implies.
 
-        2026-11 noise-reduction redesign: the day_val floor raised to
-        -100000, and the 2 rate leaves moved into a nested all[]/any[]
-        branch gated on drawdown-from-peak (see agent_engine.py's own
+        2026-11-28 theoretical redesign: leaf 1 (theoretical_total_loss,
+        top-level index 0) and leaf 3 (theoretical_daily_loss, top-level
+        index 2) replace the retired day_val/day_pct market-P&L floors;
+        the rate pair (leaf 2) moved into a nested all[]/any[] branch
+        gated on leaf 1 itself crossing (see agent_engine.py's own
         comment on this agent, and test_loss_agents.py's
-        TestLossPositionsTotal for the dedicated shape tests). The
-        top-level day_val/day_pct leaves this fan-out test exercises are
-        unaffected by that nesting."""
+        TestLossPositionsTotal for the dedicated shape tests). The two
+        top-level leaves this fan-out test exercises are unaffected by
+        that nesting."""
         spec = _builtin("loss-positions-total")
         assert spec["conditions"]["any"][0] == {
-            "metric": "day_val", "scope": "positions.total", "op": "<=", "value": -100000,
+            "metric": "theoretical_total_loss", "scope": "positions.total",
+            "op": "<=", "value": -100000,
         }, "loss-positions-total's real condition shape changed — update this test"
-        assert spec["conditions"]["any"][1] == {
-            "metric": "day_pct", "scope": "positions.total", "op": "<=", "value": -2.0,
+        assert spec["conditions"]["any"][2] == {
+            "metric": "theoretical_daily_loss", "scope": "positions.total",
+            "op": "<=", "value": -100000,
         }, "loss-positions-total's real condition shape changed — update this test"
         agent = _Agent(id=102, slug=spec["slug"], tier=spec["tier"], topic=spec["topic"],
                        actions=[{"type": "chase_close_positions", "params": {"scope": "total"}}])
-        # Both day_val and day_pct leaves breach the SAME TOTAL row this tick.
+        # Both theoretical_total_loss and theoretical_daily_loss leaves
+        # breach the SAME TOTAL row this tick.
         total_row = _row("TOTAL", day_change_val=-120000, day_change_percentage=-3.0)
         matches = [
-            _m(metric="day_val", scope="positions.total", account="TOTAL",
+            _m(metric="theoretical_total_loss", scope="positions.total", account="TOTAL",
                op="<=", threshold=-100000, value=-120000, row=total_row),
-            _m(metric="day_pct", scope="positions.total", account="TOTAL",
-               op="<=", threshold=-2.0, value=-3.0, row=total_row),
+            _m(metric="theoretical_daily_loss", scope="positions.total", account="TOTAL",
+               op="<=", threshold=-100000, value=-130000, row=total_row),
         ]
 
         exec_mock, fired = await _run_tick(agent, matches)

@@ -238,7 +238,13 @@ class TestLossPositionsAcct:
 
 
 class TestLossPositionsTotal:
-    """Tests for loss-positions-total (critical, mixed static + rate)."""
+    """Tests for loss-positions-total (critical, PURE F&O theoretical
+    loss — redesigned 2026-11-28, see agent_engine.py's own comment on
+    this agent and CLAUDE.md for the full rationale. No longer reads
+    market day_change_val/day P&L at all; see
+    test_loss_positions_total_theoretical_redesign.py for the dedicated
+    scenario coverage (decay fires, equity-only never fires, rate-gating,
+    leaf1-vs-leaf3 divergence, migration, etc.)."""
 
     def test_exists(self):
         """loss-positions-total must be in BUILTIN_AGENTS."""
@@ -253,62 +259,75 @@ class TestLossPositionsTotal:
     def test_keeps_rate_conditions(self):
         """loss-positions-total still has rate conditions (unlike per-acct).
 
-        2026-11 redesign: these now live nested inside an
-        `all[any[...], any[...]]` subtree (gated on drawdown-from-peak),
-        not flat under the top-level `any` — see `_collect_metrics`."""
+        2026-11-28 redesign: these now live nested inside an
+        `all[theoretical_total_loss<=..., any[...]]` subtree (gated on
+        leaf 1 itself crossing its own threshold), not flat under the
+        top-level `any` — see `_collect_metrics`."""
         a = _agent("loss-positions-total")
         metrics = _collect_metrics(a["conditions"])
         rate_metrics = {m for m in metrics if "rate" in m}
-        assert rate_metrics == {"pnl_rate_abs", "pnl_rate_pct"}, (
+        assert rate_metrics == {"theo_total_rate_abs", "theo_total_rate_pct"}, (
             f"loss-positions-total should keep rate conditions, "
             f"got {rate_metrics}"
         )
 
     def test_keeps_static_conditions(self):
-        """loss-positions-total has day_val and day_pct static thresholds (migrated from pnl/pnl_pct)."""
+        """loss-positions-total has theoretical_total_loss (leaf 1,
+        since-ENTRY level) and theoretical_daily_loss (leaf 3,
+        since-this-morning delta) static thresholds. The 2026-11-28
+        redesign RETIRED day_val/day_pct (market P&L) entirely — this
+        agent is now pure F&O theoretical loss, no equity leaf."""
         a = _agent("loss-positions-total")
         metrics = _collect_metrics(a["conditions"])
-        static_metrics = {m for m in metrics if m in {"day_val", "day_pct"}}
-        assert static_metrics == {"day_val", "day_pct"}, (
-            f"loss-positions-total should have day_val + day_pct static conditions, "
-            f"got {static_metrics}"
+        static_metrics = {m for m in metrics
+                          if m in {"theoretical_total_loss", "theoretical_daily_loss"}}
+        assert static_metrics == {"theoretical_total_loss", "theoretical_daily_loss"}, (
+            f"loss-positions-total should have theoretical_total_loss + "
+            f"theoretical_daily_loss static conditions, got {static_metrics}"
+        )
+        assert "day_val" not in metrics and "day_pct" not in metrics, (
+            f"the market-P&L leaves must be fully retired, got {metrics}"
         )
 
-    def test_day_val_floor_raised_to_100000(self):
-        """2026-11 noise-reduction redesign (component B): the day_val
-        floor was raised -50,000 -> -100,000 to eliminate the 8 marginal
-        fires found in the 14-day replay (see the agent's own code
-        comment for the full data-justified rationale)."""
+    def test_theoretical_total_loss_floor_is_100000(self):
+        """Leaf 1 ("total") floor: -₹100,000 — the book's own
+        lifetime-since-entry theoretical shortfall."""
         a = _agent("loss-positions-total")
         top = a["conditions"]["any"]
-        day_val_leaf = next(c for c in top if c.get("metric") == "day_val")
-        assert day_val_leaf["value"] == -100000
+        leaf = next(c for c in top if c.get("metric") == "theoretical_total_loss")
+        assert leaf["value"] == -100000
 
-    def test_rate_leaves_gated_on_day_val_or_drawdown(self):
-        """2026-11 redesign (component C): the rate leaves are no longer
-        bare — they're wrapped in all[any[day_val<0, max_drawdown_pnl(30)
-        <=-threshold], any[rate_abs, rate_pct]], closing the risk
-        council's "permanent giveback blind spot" finding (a bare
-        day_val<0 gate alone would never catch a +600k->+300k bleed)."""
+    def test_theoretical_daily_loss_floor_is_100000(self):
+        """Leaf 3 ("daily") floor: -₹100,000 — today's own theoretical
+        P&L move since the per-session frozen baseline."""
+        a = _agent("loss-positions-total")
+        top = a["conditions"]["any"]
+        leaf = next(c for c in top if c.get("metric") == "theoretical_daily_loss")
+        assert leaf["value"] == -100000
+
+    def test_rate_leaves_gated_on_theoretical_total_loss_crossing(self):
+        """2026-11-28 redesign — leaf 2 (the rate pair) is wrapped in
+        all[theoretical_total_loss<=-100000, any[rate_abs, rate_pct]],
+        directly implementing the operator's "only... when the total
+        theoretical loss crosses the threshold" instruction. Replaces
+        the retired drawdown-from-peak gate outright."""
         a = _agent("loss-positions-total")
         top = a["conditions"]["any"]
         gated = next((c for c in top if "all" in c), None)
         assert gated is not None, "expected a nested all[] branch gating the rate leaves"
         all_children = gated["all"]
         assert len(all_children) == 2
-        gate_branch, rate_branch = all_children
-        gate_metrics = {c["metric"] for c in gate_branch["any"]}
-        assert gate_metrics == {"day_val", "max_drawdown_pnl(30)"}
-        day_val_gate = next(c for c in gate_branch["any"] if c["metric"] == "day_val")
-        assert day_val_gate["op"] == "<" and day_val_gate["value"] == 0
-        drawdown_gate = next(
-            c for c in gate_branch["any"] if c["metric"] == "max_drawdown_pnl(30)")
-        assert drawdown_gate["op"] == "<=" and drawdown_gate["value"] < 0
+        gate_leaf, rate_branch = all_children
+        assert gate_leaf["metric"] == "theoretical_total_loss", (
+            f"leaf 2's gate must be leaf 1 itself, got {gate_leaf}"
+        )
+        assert gate_leaf["op"] == "<=" and gate_leaf["value"] == -100000
         rate_metrics = {c["metric"] for c in rate_branch["any"]}
-        assert rate_metrics == {"pnl_rate_abs", "pnl_rate_pct"}
+        assert rate_metrics == {"theo_total_rate_abs", "theo_total_rate_pct"}
 
-    def test_cooldown_lengthened_to_45_minutes(self):
-        """2026-11 redesign (component D): cooldown 30 -> 45 minutes."""
+    def test_cooldown_unchanged_at_45_minutes(self):
+        """Cooldown stays 45 minutes — unchanged by the 2026-11-28
+        redesign (only the leaves themselves changed)."""
         a = _agent("loss-positions-total")
         assert a["cooldown_minutes"] == 45
 
@@ -580,12 +599,14 @@ class TestConditionTreeStructure:
     def test_loss_positions_total_condition_tree(self):
         """loss-positions-total conditions are a valid any: tree.
 
-        2026-11 redesign: 3 top-level items now (day_val, day_pct, and a
-        nested all[] branch gating the 2 rate leaves on drawdown-from-
-        peak) — the rate leaves moved from flat top-level items into
-        that nested branch, not removed. See TestLossPositionsTotal's
-        test_rate_leaves_gated_on_day_val_or_drawdown for the nested
-        shape itself."""
+        2026-11-28 redesign: 3 top-level items (theoretical_total_loss
+        [leaf 1], theoretical_daily_loss [leaf 3], and a nested all[]
+        branch gating the 2 rate leaves [leaf 2] on leaf 1 itself
+        crossing its own threshold) — same 3-item/1-nested-all[]
+        STRUCTURE the prior drawdown-gated redesign had, just different
+        leaf names/semantics. See TestLossPositionsTotal's
+        test_rate_leaves_gated_on_theoretical_total_loss_crossing for
+        the nested shape itself."""
         a = _agent("loss-positions-total")
         conds = a.get("conditions")
         assert "any" in conds, "loss-positions-total must have 'any' key"
@@ -594,7 +615,7 @@ class TestConditionTreeStructure:
         assert isinstance(items, list), "conditions['any'] must be a list"
         assert len(items) == 3, (
             f"loss-positions-total should have exactly 3 top-level "
-            f"conditions (day_val, day_pct, nested rate-gate branch), "
+            f"conditions (leaf1, leaf3, nested leaf2-gate branch), "
             f"got {len(items)}"
         )
         assert sum(1 for i in items if "all" in i) == 1, (
