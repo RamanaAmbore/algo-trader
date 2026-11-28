@@ -1009,8 +1009,7 @@
     if (basketLegs.length > 0 || _activeTab === 'chain') return 'Submit';
     const liveSide = _ticketState.side || _modalSide;
     const liveQty  = _ticketState.qty || Number(_ticketProps?.qty ?? qty) || 0;
-    const cq = Number(_ticketProps?.currentQty ?? currentQty) || 0;
-    return formatSubmitLabel({ side: liveSide, currentQty: cq, qty: liveQty, basketCount: 0 });
+    return formatSubmitLabel({ side: liveSide, currentQty: _effTicketCurrentQty, qty: liveQty, basketCount: 0 });
   });
   // D4 fix (2026-09): the common-action Submit button's `onclick` only
   // routes to OrderTicket's own `submit()` (via `_modalFireSubmit` →
@@ -1045,7 +1044,7 @@
   // (mixed sides possible).
   const _submitFlavor = $derived.by(() => {
     if (basketLegs.length > 0) return 'basket';
-    const cq = Number(_ticketProps?.currentQty ?? currentQty) || 0;
+    const cq = _effTicketCurrentQty;
     if (cq === 0) return _modalSide === 'BUY' ? 'buy' : 'sell';
     // Long position: BUY is add (green), SELL is close (red).
     if (cq > 0)   return _modalSide === 'BUY' ? 'buy' : 'sell';
@@ -1075,9 +1074,23 @@
   // showsWing/isUsingNone) this payload used to carry are gone —
   // T3.3, bracket-removal.
   let _ticketState = $state(
-    /** @type {{side: 'BUY'|'SELL'|null, qty: number, submitting: boolean, pending: boolean, depthPending: boolean, mktOpen: boolean, mktExch: string, showDraftToggle: boolean, resolvedSymbol: string|null}} */
+    /** @type {{side: 'BUY'|'SELL'|null, qty: number, submitting: boolean, pending: boolean, depthPending: boolean, mktOpen: boolean, mktExch: string, showDraftToggle: boolean, resolvedSymbol: string|null, currentQty: number|null}} */
     ({ side: null, qty: 0, submitting: false, pending: false, depthPending: false,
-       mktOpen: false, mktExch: '', showDraftToggle: false, resolvedSymbol: '' })
+       mktOpen: false, mktExch: '', showDraftToggle: false, resolvedSymbol: '', currentQty: null })
+  );
+  // Effective currentQty for the Ticket tab's OWN (non-leg) ADD/CLOSE
+  // labelling (2026-11 audit fix — see CLAUDE.md's "currentQty defaults
+  // to 0 on non-position-row ticket openers" entry). Prefers OrderTicket's
+  // own resolved `_effCurrentQty`, mirrored up via `onTicketStateChange`
+  // — this is the value that's correctly populated regardless of which
+  // surface opened the ticket (watchlist, chart, header "Order" button,
+  // a mid-ticket symbol change…), unlike the raw `currentQty` prop below.
+  // `?? null` keeps `_ticketState.currentQty`'s own real 0 (a confirmed
+  // flat position) from being treated as "not yet reported" — only the
+  // initial `null` sentinel falls through to the old raw-prop chain,
+  // which covers the brief window before OrderTicket's first effect run.
+  const _effTicketCurrentQty = $derived.by(() =>
+    Number(_ticketState.currentQty ?? _ticketProps?.currentQty ?? currentQty) || 0
   );
   function _modalFireSubmit() {
     if (_activeTab !== 'ticket') {
@@ -1387,7 +1400,7 @@
   // "CLOSE SELL" depending on whether the side adds to or closes the
   // existing direction.
   function _sideBtnLabel(/** @type {'BUY'|'SELL'} */ side) {
-    const cq = Number(_ticketProps?.currentQty ?? currentQty) || 0;
+    const cq = _effTicketCurrentQty;
     if (cq === 0) return side;
     // long: BUY adds, SELL closes
     // short: BUY closes, SELL adds

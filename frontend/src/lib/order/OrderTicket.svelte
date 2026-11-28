@@ -63,6 +63,8 @@
   import { rootOf } from '$lib/data/rootOf.js';
   import { payoffDrafts } from '$lib/data/payoffDrafts.svelte.js';
   import RefreshButton from '$lib/RefreshButton.svelte';
+  import { portfolioStore } from '$lib/data/portfolioStore.svelte.js';
+  import { heldQtyFor } from '$lib/data/spreadGate.js';
 
   // Demo-mode detection — used to suppress margin preflight (403) and
   // account self-fetch (401) for anonymous prod visitors.
@@ -100,7 +102,7 @@
    *   hostManagesEsc?: boolean,
    *   onMarginUpdate?: ((preview:any, loading:boolean, meta?: {isCashMode:boolean, cash:number|null, availMargin:number|null, usedMargin:number|null, fundsAccount:string, kind:string, side:string}) => void) | null,
    *   onValidationChange?: ((err: string) => void) | null,
-   *   onTicketStateChange?: ((state: {side: 'BUY'|'SELL'|null, qty: number, submitting: boolean, pending: boolean, depthPending: boolean, mktOpen: boolean, mktExch: string, showDraftToggle: boolean, resolvedSymbol: string|null}) => void) | null,
+   *   onTicketStateChange?: ((state: {side: 'BUY'|'SELL'|null, qty: number, submitting: boolean, pending: boolean, depthPending: boolean, mktOpen: boolean, mktExch: string, showDraftToggle: boolean, resolvedSymbol: string|null, currentQty: number}) => void) | null,
    *   fundsHidden?: boolean,
    *   symbolHidden?: boolean,
    *   symType?: 'ALL' | 'EQ' | 'FUT' | 'OPT',
@@ -144,6 +146,17 @@
     //   currentQty > 0  → existing LONG  ⇒ BUY pill = ADD,  SELL = CLOSE
     //   currentQty < 0  → existing SHORT ⇒ SELL pill = ADD, BUY  = CLOSE
     //   currentQty == 0 → no existing position ⇒ plain BUY / SELL labels
+    //
+    // 2026-11 audit fix — this prop is ONLY ever correctly populated by
+    // a caller that explicitly resolved it (a position-row click). Every
+    // other opener (watchlist, chart, header "Order" button, Chain→Ticket
+    // handoff, a mid-ticket symbol change) leaves it at this 0 default
+    // even when the symbol genuinely has a real held position — which
+    // silently misclassifies a close as a fresh open for the
+    // margin/cash chip AND the 5-lot close exemption. `_effCurrentQty`
+    // below is the SSOT every classification in this file now reads
+    // instead of this raw prop (two lot-sizing effects deliberately keep
+    // reading this raw prop — see their own comments for why).
     currentQty = 0,
     // B5: position context — shown in the header when action='close'
     // so the operator sees average cost + unrealized P&L before deciding
@@ -349,11 +362,17 @@
   // Derived label map for the side toggle. Keeps the actual _side
   // state as 'BUY' / 'SELL' (the broker payload never changes); only
   // the display label flips between BUY/SELL and ADD/CLOSE.
+  //
+  // Reads `_effCurrentQty` (2026-11 audit fix), not the raw `currentQty`
+  // prop — see that derived's own comment near `_chipMeta` below. Note
+  // `_effCurrentQty` is declared further down the file; this is safe —
+  // `$derived.by` bodies are evaluated lazily, after the whole <script>
+  // block has run, same as every other forward-reference in this file.
   const sideLabels = $derived.by(() => {
-    if (!currentQty || currentQty === 0) {
+    if (!_effCurrentQty || _effCurrentQty === 0) {
       return { BUY: 'BUY', SELL: 'SELL' };
     }
-    if (currentQty > 0) {
+    if (_effCurrentQty > 0) {
       // Long position: buying more = ADD, selling = CLOSE.
       return { BUY: 'ADD/BUY', SELL: 'CLOSE/SELL' };
     }
@@ -1630,7 +1649,11 @@
     // Submit is attempted.
     // Close orders are exempt — the operator must be able to exit a
     // position larger than 5 lots without the safety cap blocking them.
-    if (lotSize > 1 && lots > 5 && classifyIntent(currentQty, _side) !== 'close') {
+    // Reads `_effCurrentQty` (2026-11 audit fix), not the raw `currentQty`
+    // prop — a close placed from a non-position-row opener (watchlist,
+    // chart, header "Order" button, Chain→Ticket handoff) must still be
+    // recognised as a close, not spuriously capped at 5 lots.
+    if (lotSize > 1 && lots > 5 && classifyIntent(_effCurrentQty, _side) !== 'close') {
       return `Refusing ${lots} lots — the 5-lot safety cap prevents fat-finger errors. Reduce lots to ≤5.`;
     }
     return null;
@@ -1770,6 +1793,13 @@
       mktExch: _mktBadgeExch,
       showDraftToggle,
       resolvedSymbol: _resolvedSymbol,
+      // 2026-11 audit fix — the resolved currentQty (see `_effCurrentQty`'s
+      // own comment above). Hosts rendering their OWN ADD/CLOSE submit
+      // label off `side`/`qty` from this same payload (e.g. SymbolPanel's
+      // shared common-action footer) must read THIS field, not their own
+      // raw `currentQty` prop — that prop is the exact one this whole fix
+      // exists to stop trusting blindly.
+      currentQty: _effCurrentQty,
     });
   });
 
@@ -1878,6 +1908,52 @@
   /** @type {ReturnType<typeof setTimeout> | null} */
   let _marginTimer = null;
 
+  // ── currentQty real-held-position fallback (2026-11 audit fix) ─────
+  // See CLAUDE.md's "currentQty defaults to 0 on non-position-row ticket
+  // openers" entry. `currentQty` (the prop) is only ever correctly
+  // populated by a caller that explicitly resolved it from a
+  // position-row click — every other opener (watchlist, chart, header
+  // "Order" button, Chain→Ticket handoff, a mid-ticket symbol change)
+  // leaves it at the 0 default even when the symbol genuinely has a
+  // real held position, silently misclassifying a close as a fresh
+  // open for the margin/cash chip and the 5-lot close exemption.
+  //
+  // `_liveHeldQty` resolves the REAL signed position from the live book
+  // (`portfolioStore.positions.rows`) for whatever symbol+account is
+  // CURRENTLY being traded — recomputed reactively on every
+  // `_resolvedSymbol` / `_account` / positions-poll change, so (unlike
+  // the parent-owned `currentQty` prop) it can never go stale.
+  //
+  // F&O only, deliberately — equity is excluded. A same-day holdings
+  // sale appears as a negative CNC *position* row (see CLAUDE.md's
+  // "Holdings sold → P&L splits between holdings and positions"
+  // invariant), which would misread as a short and label a re-buy
+  // "CLOSE/BUY". Equity keeps relying on the host's own prop (flagged
+  // as a known residual — see handback report).
+  const _liveHeldQty = $derived.by(() => {
+    if (isEquity) return 0;
+    const sym = (_resolvedSymbol || symbol || '').toString();
+    if (!sym || !_account) return 0;
+    return heldQtyFor(sym, _account, portfolioStore.positions.rows);
+  });
+
+  // Effective currentQty — the SSOT every close/open classification in
+  // this file reads instead of the raw `currentQty` prop (the two
+  // lot-sizing effects near the top of the file deliberately keep
+  // reading the raw prop; see their own comments for why).
+  //
+  // Trusts the host's prop only when it's non-zero AND the ticket
+  // hasn't resolved to a DIFFERENT contract than the host's own
+  // `symbol` prop (bare-underlying picker divergence — a bare-root
+  // caller's `currentQty`, when set at all, was never computed against
+  // a specific not-yet-picked contract, so it must not leak into the
+  // picked contract's classification). Otherwise falls back to the live
+  // store lookup above, which is 0 when there's genuinely no position.
+  const _effCurrentQty = $derived.by(() => {
+    if (currentQty && _resolvedSymbol === symbol) return Number(currentQty);
+    return _liveHeldQty;
+  });
+
   // Chip-meta carries the leg-classification + the FULL funds row the
   // host (SymbolPanel) needs to render both:
   //   1. the per-order Cost/Cash vs Req/Avail chip (was already there)
@@ -1894,7 +1970,17 @@
     // so closing a short option (BUY to close, which actually RELEASES
     // margin) wrongly read as a plain cash debit. See marginChipMode's
     // own docstring for the corrected open/close × long/short model.
-    const cashFlowKind = marginChipMode({ isEquity, kind, side: _side, currentQty });
+    //
+    // `currentQty: _effCurrentQty` (2026-11 audit fix) — resolves the
+    // real held position regardless of which caller opened the ticket.
+    // `orderQty: _qty` (audit follow-up, fix #2) — the order's own
+    // contract count, so an oversized "close" (e.g. SELL 3 lots against
+    // a held long 1 lot) is classified by the resource its OPEN-side
+    // remainder touches, not a flat "released" label that overstates
+    // the credit and hides the margin requirement for the remainder.
+    const cashFlowKind = marginChipMode({
+      isEquity, kind, side: _side, currentQty: _effCurrentQty, orderQty: _qty,
+    });
     // isCashMode kept for backward compat — decides which "available"
     // figure the host reads (cash vs margin). Both cash_cost and
     // cash_released are cash-resource events; margin_required and
@@ -2034,7 +2120,14 @@
           validity: _validity,
           price: showLimit ? Number(_price) || 0 : 0,
           trigger_price: showTrigger ? Number(_trigger) || 0 : 0,
-          intent: classifyIntent(currentQty, _side),
+          // `_effCurrentQty` (2026-11 audit fix) — see `_chipMeta`'s own
+          // comment above. The backend independently re-verifies a
+          // claimed close via `_verify_close_intent` before it's ever
+          // treated as execution-affecting, so this preview-only intent
+          // being wrong in a non-position-row opener was display-only,
+          // not a real-money gap — still worth resolving correctly here
+          // so the preview number itself isn't misleading.
+          intent: classifyIntent(_effCurrentQty, _side),
         };
         _marginPreview = await previewOrderMargin(payload);
       } catch (e) {
@@ -2266,7 +2359,14 @@
           resolvedExchange: _resolvedExchange || '',
           lots: _lots,
           lotSize: _lotSize,
-          currentQty,
+          // `_effCurrentQty` (2026-11 audit fix) — feeds
+          // `buildPlacePayload`'s `intent: classifyIntent(ctx.currentQty,
+          // ctx.side)`. The backend independently re-verifies a claimed
+          // close via `_verify_close_intent` before it affects execution
+          // (see CLAUDE.md's "Verified-intent propagation" entry), so
+          // this is a correctness improvement for the submitted hint,
+          // not a new real-money gate.
+          currentQty: _effCurrentQty,
           strategyId: _strategyId,
           // Draft cleanup (2026-10 fix) — only when this submit is the
           // real-placement path for a ticket that was opened from an
@@ -2722,7 +2822,7 @@
            stays a single-pass horizontal sweep. -->
       <SideToggle
         bind:side={_side}
-        {currentQty}
+        currentQty={_effCurrentQty}
         disabled={_noSymbol}
         locked={action === 'modify'}
         onChange={(s) => onSideChange?.(s)}

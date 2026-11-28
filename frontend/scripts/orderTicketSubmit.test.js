@@ -106,13 +106,35 @@ describe('marginChipMode', () => {
     );
   });
 
-  test('equity is always cash_cost regardless of close/open', () => {
-    assert.strictEqual(
-      marginChipMode({ isEquity: true, kind: 'EQ', side: 'SELL', currentQty: 10 }),
-      'cash_cost',
-    );
+  // Fix #3 (2026-11 audit follow-up): equity now follows the same
+  // open-vs-close branching as options — selling an existing long
+  // position releases cash, it is no longer a flat cash_cost for every
+  // equity order regardless of direction.
+  test('equity BUY (open) stays cash_cost', () => {
     assert.strictEqual(
       marginChipMode({ isEquity: true, kind: 'EQ', side: 'BUY', currentQty: 0 }),
+      'cash_cost',
+    );
+  });
+
+  test('equity SELL to close an existing long → cash_released (fix #3)', () => {
+    assert.strictEqual(
+      marginChipMode({ isEquity: true, kind: 'EQ', side: 'SELL', currentQty: 10 }),
+      'cash_released',
+    );
+  });
+
+  test('equity SELL with no held position (no currentQty) stays cash_cost', () => {
+    assert.strictEqual(
+      marginChipMode({ isEquity: true, kind: 'EQ', side: 'SELL', currentQty: 0 }),
+      'cash_cost',
+    );
+  });
+
+  test('equity BUY never gets released framing even against a held long ' +
+       '(no short-sell/margin concept for equity in this app)', () => {
+    assert.strictEqual(
+      marginChipMode({ isEquity: true, kind: 'EQ', side: 'BUY', currentQty: 10 }),
       'cash_cost',
     );
   });
@@ -122,6 +144,58 @@ describe('marginChipMode', () => {
     assert.strictEqual(
       marginChipMode({ isEquity: false, kind: 'FUT', side: 'SELL', currentQty: 10 }),
       'margin_required',
+    );
+  });
+});
+
+// ── marginChipMode magnitude awareness (fix #2, 2026-11 audit follow-up) ─────
+// classifyIntent only checks sign; an oversized "close" also opens a new
+// position for the remainder — the resource that remainder touches is
+// what the chip should reflect.
+
+describe('marginChipMode — magnitude-aware over-close (fix #2)', () => {
+  test('long 1 lot, SELL exactly 1 lot (full close) → cash_released', () => {
+    assert.strictEqual(
+      marginChipMode({ isEquity: false, kind: 'CE', side: 'SELL', currentQty: 1, orderQty: 1 }),
+      'cash_released',
+    );
+  });
+
+  test('long 1 lot, SELL 3 lots (oversized close → opens a 2-lot short) ' +
+       '→ margin_required, not cash_released', () => {
+    assert.strictEqual(
+      marginChipMode({ isEquity: false, kind: 'CE', side: 'SELL', currentQty: 1, orderQty: 3 }),
+      'margin_required',
+    );
+  });
+
+  test('short 1 lot, BUY 3 lots (oversized close → opens a 2-lot long) ' +
+       '→ cash_cost, not margin_released', () => {
+    assert.strictEqual(
+      marginChipMode({ isEquity: false, kind: 'PE', side: 'BUY', currentQty: -1, orderQty: 3 }),
+      'cash_cost',
+    );
+  });
+
+  test('equity long 10, SELL 25 (oversized close) → cash_cost, not cash_released', () => {
+    assert.strictEqual(
+      marginChipMode({ isEquity: true, kind: 'EQ', side: 'SELL', currentQty: 10, orderQty: 25 }),
+      'cash_cost',
+    );
+  });
+
+  test('orderQty omitted preserves the pre-fix sign-only classification ' +
+       '(no behaviour change for a caller that has not resolved orderQty yet)', () => {
+    assert.strictEqual(
+      marginChipMode({ isEquity: false, kind: 'CE', side: 'SELL', currentQty: 1 }),
+      'cash_released',
+    );
+  });
+
+  test('orderQty exactly equal to currentQty magnitude counts as a full close', () => {
+    assert.strictEqual(
+      marginChipMode({ isEquity: false, kind: 'PE', side: 'BUY', currentQty: -5, orderQty: 5 }),
+      'margin_released',
     );
   });
 });

@@ -222,13 +222,71 @@ describe('marginChipMode (2026-11 real-money audit fix)', () => {
     expect(mode).not.toBe('cash_cost');
   });
 
-  it('equity never gets "released" framing regardless of close/open', () => {
+  // Fix #3 (2026-11 audit follow-up) — equity now follows the same
+  // open-vs-close branching as options: a SELL to close an existing long
+  // releases cash. It is no longer a flat cash_cost for every direction.
+  it('equity SELL to close an existing long → cash_released (fix #3)', () => {
     expect(marginChipMode({ isEquity: true, kind: 'EQ', side: 'SELL', currentQty: 100 }))
-      .toBe('cash_cost');
+      .toBe('cash_released');
+  });
+
+  it('equity still never gets "margin_released" framing — no short-sell ' +
+     'concept for equity in this app', () => {
+    const mode = marginChipMode({ isEquity: true, kind: 'EQ', side: 'BUY', currentQty: 100 });
+    expect(mode).toBe('cash_cost');
+    expect(mode).not.toBe('margin_released');
   });
 
   it('a future stays margin_required — close framing is out of scope here', () => {
     expect(marginChipMode({ isEquity: false, kind: 'FUT', side: 'BUY', currentQty: -1 }))
       .toBe('margin_required');
+  });
+});
+
+// marginChipMode magnitude awareness (2026-11 audit follow-up, fix #2) —
+// classifyIntent only checks sign; an oversized "close" also opens a new
+// position for the remainder, and the chip must reflect THAT resource,
+// not a flat "released" label that overstates the credit and hides the
+// margin requirement for the remainder.
+//
+// Five quality dimensions per feedback_test_dimensions.md:
+//  1. SSOT  — same module as scripts/orderTicketSubmit.test.js
+//  2. Perf  — pure unit, no I/O
+//  3. Stale — pins the real-money risk this fix closes: a 3-lot SELL
+//             against a 1-lot long must never read as a flat cash_released
+//  4. Reuse — same orderQty containment rule (`<=`) spreadGate.js's
+//             resolveLegHeldContext/isCloseIntentLeg already use
+//  5. UX    — covers F&O long/short overshoot, equity overshoot, the
+//             omitted-orderQty backward-compat path, and the exact-fit
+//             boundary
+describe('marginChipMode — magnitude-aware over-close (fix #2)', () => {
+  it('long 1 lot, SELL exactly 1 lot (full close) → cash_released', () => {
+    expect(marginChipMode({ isEquity: false, kind: 'CE', side: 'SELL', currentQty: 1, orderQty: 1 }))
+      .toBe('cash_released');
+  });
+
+  it('long 1 lot, SELL 3 lots (oversized close, opens a 2-lot short) → margin_required', () => {
+    expect(marginChipMode({ isEquity: false, kind: 'CE', side: 'SELL', currentQty: 1, orderQty: 3 }))
+      .toBe('margin_required');
+  });
+
+  it('short 1 lot, BUY 3 lots (oversized close, opens a 2-lot long) → cash_cost', () => {
+    expect(marginChipMode({ isEquity: false, kind: 'PE', side: 'BUY', currentQty: -1, orderQty: 3 }))
+      .toBe('cash_cost');
+  });
+
+  it('equity long 10, SELL 25 (oversized close) → cash_cost, not cash_released', () => {
+    expect(marginChipMode({ isEquity: true, kind: 'EQ', side: 'SELL', currentQty: 10, orderQty: 25 }))
+      .toBe('cash_cost');
+  });
+
+  it('omitted orderQty preserves pre-fix sign-only classification (backward compat)', () => {
+    expect(marginChipMode({ isEquity: false, kind: 'CE', side: 'SELL', currentQty: 1 }))
+      .toBe('cash_released');
+  });
+
+  it('orderQty exactly equal to |currentQty| counts as a full close', () => {
+    expect(marginChipMode({ isEquity: false, kind: 'PE', side: 'BUY', currentQty: -5, orderQty: 5 }))
+      .toBe('margin_released');
   });
 });

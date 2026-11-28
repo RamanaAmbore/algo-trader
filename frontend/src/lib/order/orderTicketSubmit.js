@@ -38,8 +38,8 @@ export function classifyIntent(currentQty, side) {
  * (close) — drives the margin/cash chip's label in OrderTicket +
  * SymbolPanel (2026-11 real-money audit fix, operator-corrected).
  *
- * Four cases, option legs only (equity is always 'cash_cost' — it has
- * no margin-blocked concept here):
+ * Four cases, option legs (equity has its own narrower close case —
+ * see below):
  *
  *   BUY  to open/add a LONG option   → 'cash_cost'       (pay premium)
  *   SELL to open/add a SHORT option  → 'margin_required' (margin blocked)
@@ -54,11 +54,52 @@ export function classifyIntent(currentQty, side) {
  * BUY as a cash event regardless of close/open; operator correction:
  * "when you are short and when you close it you release margin."
  *
- * @param {{isEquity: boolean, kind: string, side: 'BUY'|'SELL', currentQty: number}} args
+ * Magnitude awareness (2026-11 audit follow-up, fix #2) — `classifyIntent`
+ * only checks the SIGN of the order relative to the held position, not
+ * the MAGNITUDE. A SELL of 3 lots against a long 1-lot position does not
+ * fully close — it closes the 1 lot (cash released) and OPENS a new
+ * 2-lot short for the remainder (margin required). Showing a flat
+ * "cash released" label for the WHOLE order overstates the credit and
+ * hides the margin requirement for the remainder — the real-money risk
+ * this fix closes. `orderQty` (the new order's own contract count — NOT
+ * lots) is optional; when omitted, behaviour is byte-identical to
+ * before this fix (every existing caller that doesn't pass it keeps the
+ * sign-only classification). When supplied, an order is only treated as
+ * "closing" when its FULL quantity fits within the held position
+ * (`|orderQty| <= |currentQty|`, the same `<=` containment rule
+ * `resolveLegHeldContext`/`isCloseIntentLeg` already use) — an oversized
+ * close is reclassified as the OPEN-side remainder's resource instead
+ * (long + oversized SELL → 'margin_required'; short + oversized BUY →
+ * 'cash_cost'), which the existing 4-value enum already expresses with
+ * no new literal needed, and is the dominant/larger real exposure the
+ * operator needs to see before submitting.
+ *
+ * @param {{isEquity: boolean, kind: string, side: 'BUY'|'SELL', currentQty: number, orderQty?: number|null}} args
  * @returns {'cash_cost'|'margin_required'|'cash_released'|'margin_released'}
  */
-export function marginChipMode({ isEquity, kind, side, currentQty }) {
-  if (isEquity) return 'cash_cost';
+export function marginChipMode({ isEquity, kind, side, currentQty, orderQty = null }) {
+  // A full close requires the WHOLE order to fit inside the held
+  // position — an oversized "close" also opens a new position for the
+  // remainder, and the margin/cash resource that remainder touches is
+  // the one the operator most needs to see (fix #2). Omitted orderQty
+  // (not every caller resolves it yet) keeps the pre-fix sign-only rule.
+  const fitsWithinHeld = orderQty == null
+    || Math.abs(Number(orderQty)) <= Math.abs(Number(currentQty));
+
+  if (isEquity) {
+    // Equity close case (2026-11 audit follow-up, fix #3) — selling an
+    // existing long equity position releases cash (the sale proceeds),
+    // same framing as closing a long option. Every other equity case
+    // (opening a fresh buy, or any BUY at all — this app's equity model
+    // has no short-sell/margin concept) stays 'cash_cost', deliberately
+    // NOT a full mirror of the option branch below: holdings sold today
+    // appear as a negative CNC *position* row (see CLAUDE.md's
+    // "Holdings sold → P&L splits..." invariant), so symmetrically
+    // treating a BUY as "closing a short" here would misclassify a
+    // same-day re-buy as releasing margin, which equity never has.
+    const closingEquity = side === 'SELL' && Number(currentQty) > 0 && fitsWithinHeld;
+    return closingEquity ? 'cash_released' : 'cash_cost';
+  }
   const isOption = kind === 'CE' || kind === 'PE';
   if (!isOption) {
     // Futures / unresolved kind — margin-mode only, same as a naked
@@ -68,7 +109,7 @@ export function marginChipMode({ isEquity, kind, side, currentQty }) {
     // behaviour for this leg type exactly.
     return 'margin_required';
   }
-  const closing = classifyIntent(currentQty, side) === 'close';
+  const closing = classifyIntent(currentQty, side) === 'close' && fitsWithinHeld;
   const touchesLong = side === 'BUY' ? !closing : closing;
   if (touchesLong) return closing ? 'cash_released' : 'cash_cost';
   return closing ? 'margin_released' : 'margin_required';
