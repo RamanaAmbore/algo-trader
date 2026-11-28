@@ -206,7 +206,7 @@ import sys
 import time as _time_mod
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -2135,11 +2135,22 @@ def _pnl_value_token(value: object) -> str:
     not `==` to a naive string/repr comparison, and float reprs of the
     identical decimal value can differ across the two code paths.
     Routing both through `Decimal(str(value)).quantize(...)` first
-    normalizes away both gaps."""
+    normalizes away both gaps.
+
+    `rounding=ROUND_HALF_UP` is deliberate, not the `quantize()`
+    default (`ROUND_HALF_EVEN`) — Postgres's own `numeric(18, 4)`
+    column (this table's `realized_pnl` type) rounds a tie AWAY from
+    zero on storage, same as `ROUND_HALF_UP`'s "half away from zero"
+    semantics, not banker's rounding. A Console amount that happens to
+    carry a 5th decimal landing exactly on a tie (the ledger's own
+    confirmed real export carries 6 decimals, e.g. `27579.231718` — see
+    `parse_ledger_csv()`'s own docstring) would otherwise round
+    DIFFERENTLY in this function than it was stored, breaking the
+    cross-type match this whole signature exists to make reliable."""
     if value is None:
         return _PNL_SIG_NONE_TOKEN
     try:
-        return str(Decimal(str(value)).quantize(Decimal("0.0001")))
+        return str(Decimal(str(value)).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP))
     except (InvalidOperation, ValueError, TypeError):
         return str(value)
 

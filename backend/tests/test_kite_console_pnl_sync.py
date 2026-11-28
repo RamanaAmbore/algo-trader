@@ -2923,6 +2923,28 @@ class TestPnlContentSignature:
         b = mod._pnl_content_signature(_pnl_rows((" INDIGO26APR4150CE ", 34297.5)))
         assert a == b
 
+    def test_tie_rounds_half_up_to_match_postgres_numeric_storage(self):
+        """A freshly-parsed float landing exactly on a rounding tie at
+        the 5th decimal must round the SAME way `_pnl_value_token()`'s
+        own quantize does as Postgres's real `numeric(18, 4)` column
+        does on storage (half AWAY from zero, not `quantize()`'s own
+        default half-to-even) -- otherwise a genuinely identical value
+        would silently fail to match across the fresh-parse vs.
+        stored-Decimal comparison layer 2 depends on. Console amounts
+        are confirmed to carry up to 6 decimals in a real export (see
+        `parse_ledger_csv()`'s own docstring), so this tie is not a
+        contrived edge case."""
+        from decimal import Decimal
+
+        fresh = mod._pnl_content_signature(_pnl_rows(("INDIGO26APR4150CE", 100.00025)))
+        stored = mod._pnl_content_signature([
+            {"symbol": "INDIGO26APR4150CE", "realized_pnl": Decimal("100.0003")},
+        ])
+        assert fresh == stored
+        assert mod._pnl_value_token(100.00025) == "100.0003", (
+            "half-away-from-zero (ROUND_HALF_UP), not half-to-even, must win the tie"
+        )
+
 
 class TestMakePnlDupCheck:
     """Pure unit tests for layer 1's `_make_pnl_dup_check()` closure —
