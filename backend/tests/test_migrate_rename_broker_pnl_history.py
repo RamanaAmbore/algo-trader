@@ -44,6 +44,24 @@ class _FakeExistenceResult:
         return self._value
 
 
+class _FakeSavepointCtx:
+    """No-op stand-in for the real `AsyncConnection.begin_nested()` —
+    a real SAVEPOINT's whole purpose is to isolate ONE statement's
+    failure from the surrounding Postgres transaction's abort state,
+    which a bare Python try/except cannot do (catching the exception
+    does not clear the server-side aborted-transaction state). This
+    fake has no transaction to abort, so it only needs to let a raised
+    exception propagate normally out of the `async with` block, exactly
+    like the real SAVEPOINT's own `ROLLBACK TO SAVEPOINT` does for the
+    one statement without taking down the rest of the transaction."""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False  # never swallow — the caller's own try/except does that
+
+
 class _FakeExistenceConn:
     """Fake `AsyncConnection` — records every executed statement, and
     answers the two `information_schema.tables` EXISTS probes
@@ -61,6 +79,10 @@ class _FakeExistenceConn:
         if "information_schema.tables" in text and params and "t" in params:
             return _FakeExistenceResult(bool(self.table_exists.get(params["t"], False)))
         return _FakeExistenceResult(None)
+
+    def begin_nested(self):
+        self.begin_nested_calls = getattr(self, "begin_nested_calls", 0) + 1
+        return _FakeSavepointCtx()
 
 
 def _ddl_statements(conn: "_FakeExistenceConn") -> "list[str]":
@@ -118,6 +140,23 @@ class TestOldTableOnlyRenames:
             ("ix_kite_console_pnl_sync_broker", "ix_broker_pnl_history_broker"),
         ):
             assert f"ALTER INDEX IF EXISTS {old} RENAME TO {new}" in ddl, ddl
+
+    def test_every_cosmetic_rename_runs_inside_its_own_savepoint(self):
+        """Pins the real fix, not just the statement text: each of the 6
+        cosmetic rename statements (1 constraint + 5 indexes) must run
+        inside its OWN `conn.begin_nested()` SAVEPOINT, never a bare
+        try/except — a bare try/except catches the Python exception but
+        leaves the surrounding Postgres transaction in its server-side
+        'aborted' state, which would crash every later migration in the
+        same `engine.begin()` block and the table rename's own
+        already-committed-so-far work along with it."""
+        conn = _FakeExistenceConn({"kite_console_pnl_sync": True, "broker_pnl_history": False})
+        asyncio.run(dbmod._migrate_rename_kite_console_pnl_sync_to_broker_pnl_history(conn))
+
+        assert conn.begin_nested_calls == 6, (
+            "expected exactly 6 savepoints — 1 constraint rename + 5 "
+            "index renames — got %d" % conn.begin_nested_calls
+        )
 
     def test_constraint_rename_happens_after_table_rename(self):
         """The table RENAME TO must land before any index/constraint

@@ -134,12 +134,26 @@ async def _migrate_rename_kite_console_pnl_sync_to_broker_pnl_history(conn) -> N
 
     Index/constraint renames (`ALTER INDEX ... RENAME TO` /
     `ALTER TABLE ... RENAME CONSTRAINT ... TO ...`) run AFTER the table
-    rename succeeds, each in its own try/except — cosmetic-only (the
-    one UPSERT in this table, `ingest_rows()`'s `on_conflict_do_update`,
-    matches by `index_elements=[...]` column list, not by constraint
-    name, so a stale index/constraint name can never break that upsert),
-    so a failure here is logged and does not abort the table rename
-    itself, which is the part that actually matters for data safety.
+    rename succeeds, each inside its OWN SAVEPOINT (`conn.begin_nested()`)
+    — cosmetic-only (the one UPSERT in this table, `ingest_rows()`'s
+    `on_conflict_do_update`, matches by `index_elements=[...]` column
+    list, not by constraint name, so a stale index/constraint name can
+    never break that upsert), so a failure here is rolled back to its
+    own savepoint and does not abort the table rename itself (already
+    committed to the surrounding transaction's work so far) or any
+    later migration in `init_db()`'s same `engine.begin()` transaction.
+
+    A bare try/except around a statement with NO savepoint would NOT be
+    enough here — Postgres marks the WHOLE enclosing transaction
+    "aborted" the instant any one statement fails, and catching the
+    Python exception does not clear that server-side state. Every
+    subsequent statement in THIS function's loop, and every later
+    migration function called from the same `engine.begin()` block in
+    `init_db()`, would then also fail with "current transaction is
+    aborted", crashing startup on every restart. A SAVEPOINT scopes the
+    abort to just that one nested block; `ROLLBACK TO SAVEPOINT` (what
+    `begin_nested()`'s own `__aexit__` issues on an exception) clears it
+    and lets the OUTER transaction continue normally.
 
     `_migrate_kite_console_pnl_sync_columns`/`_migrate_kite_console_pnl_sync_broker`
     (further down this file) run AFTER `_migrate_create_tables` in
@@ -196,8 +210,15 @@ async def _migrate_rename_kite_console_pnl_sync_to_broker_pnl_history(conn) -> N
         "RENAME TO ix_broker_pnl_history_broker",
     ):
         try:
-            await conn.execute(text(stmt))
+            async with conn.begin_nested():
+                await conn.execute(text(stmt))
         except Exception as e:
+            # `begin_nested()`'s own __aexit__ already issued
+            # `ROLLBACK TO SAVEPOINT` on this exception, so the outer
+            # transaction (the table rename above, and every later
+            # migration in init_db()'s same engine.begin() block) is
+            # NOT left in Postgres's "aborted" state — only this one
+            # cosmetic statement is undone.
             logger.warning(
                 "[MIGRATION] cosmetic index/constraint rename skipped "
                 "(table rename itself already succeeded): %s — %s",
