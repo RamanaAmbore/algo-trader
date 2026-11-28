@@ -533,6 +533,240 @@ def test_scan_positions_and_classify_from_context_agree_on_genuine_hedge():
 
 
 # ---------------------------------------------------------------------------
+# 2026-11-27 fix (live P1) — `inst.get("expiry")` crosses the conn-service
+# JSON-RPC boundary as a plain ISO string ("YYYY-MM-DD"), not a real
+# `date`. `p.expiry == today` (scan_positions()'s own filter) and
+# `exp < today` (_mcx_front_month_symbol's filter) both broke on that —
+# the first silently (comparing `str == date` is always False), the
+# second loudly (`TypeError`, since `str < date` raises).
+#
+# Every test ABOVE this point hand-builds `OptionPosition(expiry=<real
+# date>)` or patches `_fetch_option_positions`/`_fetch_underlying_ltps`
+# directly, which is exactly why none of them caught this: they never
+# drive the real raw-instrument-dict construction path
+# (`_fetch_option_positions` -> `_get_instrument_info` ->
+# `_load_instruments` -> `all_brokers()[0].instruments()`). These tests
+# do, with instrument dicts produced by a REAL msgspec JSON round-trip
+# (the same encode/decode cycle conn_service's own
+# `BrokerDispatchController.call_broker` + `RemoteBroker._call()` do),
+# so the string `expiry` values are genuine wire artifacts, not
+# hand-typed literals.
+# ---------------------------------------------------------------------------
+
+def _json_roundtrip(obj):
+    """Round-trip `obj` through msgspec JSON encode/decode — mirrors
+    conn_service's real wire path for a broker-call result (Litestar's
+    default msgspec-based response encoding), so any `date` inside
+    `obj` comes back as a plain ISO string, exactly as it does for a
+    real `RemoteBroker.instruments()` call in conn-service mode."""
+    import msgspec
+    return msgspec.json.decode(msgspec.json.encode(obj))
+
+
+def test_scan_positions_handles_string_expiry_from_conn_service_json_roundtrip():
+    """THE regression test for the live incident: drives the real
+    `scan_positions()` -> `_fetch_option_positions()` ->
+    `_get_instrument_info()` -> `_load_instruments()` ->
+    `all_brokers()[0].instruments()` chain with instrument dicts whose
+    `expiry` has been through a real JSON round-trip (so it's a plain
+    ISO string on arrival, matching conn-service mode) — confirmed to
+    fail against the pre-fix code (see
+    `test_string_expiry_bug_reproduces_without_the_fix` below, which
+    monkeypatches the fix away and asserts the exact pre-fix symptom:
+    `scan_positions()` returns `[]` for a position genuinely expiring
+    today)."""
+    from datetime import date as _date, timedelta
+    from unittest.mock import MagicMock, patch
+    import pandas as pd
+    from backend.api.algo.expiry import ExpiryEngine
+
+    today = _date(2026, 11, 27)
+
+    positions_df = pd.DataFrame([{
+        "account": "ZG0790",
+        "tradingsymbol": "CRUDEOIL26NOV5500CE",
+        "exchange": "MCX",
+        "quantity": 1,
+        "product": "NRML",
+    }])
+
+    # Raw instrument rows exactly as the real Kite instruments master
+    # would carry them (expiry as a real `date`) — then pushed through
+    # the SAME JSON encode/decode cycle conn_service's own wire path
+    # uses, so `expiry` comes back as a plain ISO string, never a date.
+    raw_instruments = [
+        {
+            "tradingsymbol": "CRUDEOIL26NOV5500CE",
+            "instrument_type": "CE",
+            "name": "CRUDEOIL",
+            "strike": 5500.0,
+            "expiry": today,
+        },
+        # A FUT row for the same root, with a later string expiry —
+        # exercises `_mcx_front_month_symbol`'s `exp < today` compare
+        # (called from `_fetch_underlying_ltps`), which raises
+        # `TypeError` pre-fix when `exp` is a bare string.
+        {
+            "tradingsymbol": "CRUDEOIL26NOVFUT",
+            "instrument_type": "FUT",
+            "name": "CRUDEOIL",
+            "strike": 0.0,
+            "expiry": today + timedelta(days=5),
+        },
+    ]
+    wire_instruments = _json_roundtrip(raw_instruments)
+    assert isinstance(wire_instruments[0]["expiry"], str), (
+        "sanity check: the JSON round-trip must produce a plain string, "
+        "reproducing the real conn-service wire format"
+    )
+
+    mock_broker = MagicMock()
+    mock_broker.instruments.return_value = wire_instruments
+    mock_broker.ltp.return_value = {"MCX:CRUDEOIL26NOVFUT": {"last_price": 5700.0}}
+
+    engine = ExpiryEngine()
+    with patch("backend.api.algo.expiry.broker_apis.fetch_positions",
+               return_value=[positions_df]), \
+         patch("backend.brokers.registry.all_brokers",
+               return_value=[mock_broker]), \
+         patch("backend.api.algo.expiry.timestamp_indian") as mock_ts:
+        mock_ts.return_value.date.return_value = today
+        to_close = engine.scan_positions()
+
+    assert len(engine.state.positions) == 1, (
+        "scan_positions() must find the position expiring today even "
+        "when the instrument dict's expiry crossed the conn-service "
+        "JSON boundary as a plain ISO string"
+    )
+    pos = engine.state.positions[0]
+    assert isinstance(pos.expiry, _date), (
+        f"OptionPosition.expiry must be normalised to a real date, got {type(pos.expiry)!r}"
+    )
+    assert pos.expiry == today
+    assert pos.underlying_ltp == 5700.0, (
+        "_mcx_front_month_symbol must resolve the FUT row (string expiry, "
+        "still in the future) without raising, so the underlying LTP "
+        "lookup succeeds"
+    )
+    # `_compute_theta` must not raise on `pos.expiry` (it calls
+    # `mcx_non_agri_close_time(pos.expiry)`, which requires a real date —
+    # a residual string there raises `AttributeError`, swallowed by
+    # `_compute_theta`'s own try/except into a silent theta=0.0). This
+    # test doesn't mock `derivatives.days_to_expiry`'s own live clock,
+    # so theta can legitimately land at exactly 0.0 once the real
+    # wall-clock has passed this simulated day's close — that's
+    # `_compute_theta`'s normal, correct behaviour, not a coercion
+    # failure. `test_compute_theta_mcx_dispatches_black_76` above
+    # already pins theta against an explicit `ref`; nothing here
+    # re-litigates that. What this test proves is that `scan_positions()`
+    # completes without the `TypeError`/`AttributeError` a string
+    # `pos.expiry` would raise deep inside `mcx_non_agri_close_time()`.
+    assert isinstance(pos.theta, float)
+    # ITM call (strike 5500 vs resolved underlying LTP 5700, diff_pct
+    # 3.6% > the default 2.0% NTM buffer) with no netting partner →
+    # flagged for closing either way.
+    assert to_close and to_close[0].tradingsymbol == "CRUDEOIL26NOV5500CE"
+    assert pos.moneyness == "ITM"
+
+
+def test_string_expiry_bug_reproduces_without_the_fix():
+    """Discriminating control: with `_coerce_expiry_date` monkeypatched
+    to a bare passthrough (reproducing the pre-fix code exactly —
+    `expiry=inst.get("expiry")` with no coercion),
+    `scan_positions()` must return `[]` for the SAME book
+    `test_scan_positions_handles_string_expiry_from_conn_service_json_roundtrip`
+    found a match in — proving that test is not vacuously true."""
+    from datetime import date as _date
+    from unittest.mock import MagicMock, patch
+    import pandas as pd
+    from backend.api.algo.expiry import ExpiryEngine
+
+    today = _date(2026, 11, 27)
+
+    positions_df = pd.DataFrame([{
+        "account": "ZG0790",
+        "tradingsymbol": "CRUDEOIL26NOV5500CE",
+        "exchange": "MCX",
+        "quantity": 1,
+        "product": "NRML",
+    }])
+    raw_instruments = [{
+        "tradingsymbol": "CRUDEOIL26NOV5500CE",
+        "instrument_type": "CE",
+        "name": "CRUDEOIL",
+        "strike": 5500.0,
+        "expiry": today,
+    }]
+    wire_instruments = _json_roundtrip(raw_instruments)
+
+    mock_broker = MagicMock()
+    mock_broker.instruments.return_value = wire_instruments
+
+    engine = ExpiryEngine()
+    with patch("backend.api.algo.expiry.broker_apis.fetch_positions",
+               return_value=[positions_df]), \
+         patch("backend.brokers.registry.all_brokers",
+               return_value=[mock_broker]), \
+         patch("backend.api.algo.expiry._coerce_expiry_date",
+               new=lambda value: value), \
+         patch("backend.api.algo.expiry.timestamp_indian") as mock_ts:
+        mock_ts.return_value.date.return_value = today
+        to_close = engine.scan_positions()
+
+    assert to_close == [], (
+        "without the fix, a string expiry must silently fail the "
+        "`p.expiry == today` filter — reproducing the exact live "
+        "2026-11-26/27 incident (scan found 9-11 real positions but "
+        "logged 'Expiry: 0 positions expiring today')"
+    )
+
+
+def test_mcx_front_month_symbol_raises_pre_fix_on_string_expiry():
+    """Narrower unit check on the SECOND construction/comparison site:
+    `_mcx_front_month_symbol`'s own `exp < today` raises `TypeError`
+    when `exp` is a bare string (str < date is not supported in
+    Python) — confirms the fix's `_coerce_expiry_date` call is load-
+    bearing there too, not only at `_fetch_option_positions`."""
+    from datetime import date as _date
+    from unittest.mock import patch
+    from backend.api.algo.expiry import ExpiryEngine
+
+    today = _date(2026, 11, 27)
+    far_future_iso = _date(2027, 1, 15).isoformat()
+
+    engine = ExpiryEngine()
+    with patch.object(engine, "_load_instruments", return_value=[
+        {"instrument_type": "FUT", "name": "CRUDEOIL",
+         "tradingsymbol": "CRUDEOIL27JANFUT", "expiry": far_future_iso},
+    ]), patch("backend.api.algo.expiry.timestamp_indian") as mock_ts:
+        mock_ts.return_value.date.return_value = today
+        result = engine._mcx_front_month_symbol("CRUDEOIL")
+
+    assert result == "CRUDEOIL27JANFUT", (
+        "must resolve the front-month future even when its expiry "
+        "crosses the conn-service boundary as a plain ISO string"
+    )
+
+
+def test_coerce_expiry_date_unit():
+    """Direct unit coverage of every input shape `_coerce_expiry_date`
+    must handle."""
+    from datetime import date as _date, datetime as _datetime, timezone as _tz
+    from backend.api.algo.expiry import _coerce_expiry_date
+
+    d = _date(2026, 11, 27)
+    assert _coerce_expiry_date(d) is d, "a real date must pass through unchanged"
+    assert _coerce_expiry_date(_datetime(2026, 11, 27, 13, 0, tzinfo=_tz.utc)) == d
+    assert _coerce_expiry_date("2026-11-27") == d
+    assert _coerce_expiry_date("2026-11-27T00:00:00") == d, (
+        "a datetime-shaped ISO string must still resolve to the date component"
+    )
+    assert _coerce_expiry_date(None) is None
+    assert _coerce_expiry_date("") is None
+    assert _coerce_expiry_date("not-a-date") is None
+
+
+# ---------------------------------------------------------------------------
 # 2026-11-22 retime (operator: "unnetted in the money positions closed by
 # the agents one hour before market close... order will be held until I
 # release them") — end-to-end through the REAL action + REAL

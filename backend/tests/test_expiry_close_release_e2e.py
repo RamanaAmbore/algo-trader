@@ -265,6 +265,26 @@ async def _e2e_seed_agent_and_context(factory, _Agent):
     return real_agent_id, agent_like, option_symbol, frozen_now, lone_itm_call, real_context
 
 
+def _e2e_fake_datetime_class(frozen_now):
+    """A real `datetime` subclass whose `.now()` always returns
+    `frozen_now` — same idiom as `test_near_month_rollover.py`'s
+    `_FakeDatetime`. `close_positions()` itself stamps `held_at =
+    datetime.now(timezone.utc)` (expiry.py) with no patch seam of its
+    own; without freezing this too, `held_at` silently drifts to the
+    REAL wall clock while every other "now" in this test (the condition
+    window, `timestamp_indian`) stays pinned to the symbol's own 2026
+    expiry date — a growing gap as real time moves further past that
+    date, eventually large enough for `_resolve_hold_auto_release_at`'s
+    own close-imminent clamp to collapse the 30-minute policy window to
+    near-zero. Freezing `held_at` to the same instant as everything
+    else in this test removes that drift entirely."""
+    class _FakeDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):  # type: ignore[override]
+            return frozen_now if tz is not None else frozen_now.replace(tzinfo=None)
+    return _FakeDatetime
+
+
 async def _e2e_stage_held_row(factory, frozen_now, lone_itm_call, agent_like, real_context):
     """Steps 1-4: the real condition-window derivation (via the real,
     now-fixed shim) -> the real action -> the real scan_positions()
@@ -275,6 +295,7 @@ async def _e2e_stage_held_row(factory, frozen_now, lone_itm_call, agent_like, re
 
     with patch("backend.api.database.async_session", factory), \
          patch("backend.api.algo.expiry.timestamp_indian", return_value=frozen_now), \
+         patch("backend.api.algo.expiry.datetime", _e2e_fake_datetime_class(frozen_now)), \
          patch("backend.api.algo.expiry.ExpiryEngine._fetch_option_positions",
                return_value=[lone_itm_call]), \
          patch("backend.api.algo.expiry.ExpiryEngine._fetch_future_positions",
@@ -287,7 +308,7 @@ async def _e2e_stage_held_row(factory, frozen_now, lone_itm_call, agent_like, re
         await _action_live_expiry_auto_close(agent_like, real_context, {})
 
 
-async def _e2e_assert_held_row(factory, _AlgoOrder, real_agent_id):
+async def _e2e_assert_held_row(factory, _AlgoOrder, real_agent_id, frozen_now):
     """Verify step 4's own output: a real HELD row, with a real
     agent_id and a real, resolved auto_release_at — the Done-when
     criterion this whole plan exists to satisfy. Returns
@@ -323,7 +344,15 @@ async def _e2e_assert_held_row(factory, _AlgoOrder, real_agent_id):
     # Policy is {"after_min": 30, "floor_tier": "high"} — the deadline
     # should be roughly held_at + 30 minutes (clamped only if close is
     # imminent, which it isn't here — close is hours away).
-    assert auto_release_at > datetime.now(timezone.utc), (
+    #
+    # Compared against `frozen_now` (the test's own simulated "now" at
+    # staging time), never the real wall clock — `held_at`/`now` are
+    # frozen to `frozen_now` throughout close_positions() (see
+    # `_e2e_fake_datetime_class`'s own docstring), so a real-time
+    # comparison here drifts false the instant real time moves past
+    # frozen_now's calendar date, regardless of anything this test or
+    # production code does.
+    assert auto_release_at > frozen_now, (
         "the resolved deadline must be in the future immediately after staging"
     )
     return held_row, auto_release_at
@@ -418,7 +447,7 @@ async def test_full_chain_condition_to_hold_to_timepass_to_release_to_chase(
 
     await _e2e_stage_held_row(factory, frozen_now, lone_itm_call, agent_like, real_context)
 
-    held_row, auto_release_at = await _e2e_assert_held_row(factory, _AlgoOrder, real_agent_id)
+    held_row, auto_release_at = await _e2e_assert_held_row(factory, _AlgoOrder, real_agent_id, frozen_now)
 
     # ── Step 5: simulate time passage — the sweep runs with `now` at
     # (slightly past) the stored deadline, no real sleeping needed.

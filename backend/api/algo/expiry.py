@@ -53,6 +53,67 @@ _KITE_KEY_TO_UNDERLYING: dict[str, str] = {
 }
 
 
+# ── Raw-instrument `expiry` normalisation (2026-11-27 fix, live P1) ───────
+#
+# Both construction sites that build an `expiry` value straight from a
+# raw broker instrument dict (`_fetch_option_positions`,
+# `_mcx_front_month_symbol`) must coerce it through this helper before
+# any comparison against a real `date` (`p.expiry == today`,
+# `exp < today`). Without it, every such comparison is silently (or, for
+# `_mcx_front_month_symbol`'s `<` comparison, loudly — a `TypeError`)
+# broken in conn-service mode, which is how BOTH prod and dev actually
+# run (`RAMBOQ_USE_CONN_SERVICE=1`).
+#
+# Root cause: in DIRECT mode (no conn_service), `inst.get("expiry")` is
+# already a real `datetime.date` — pykiteconnect's own `instruments()`
+# CSV loader parses the column via
+# `dateutil.parser.parse(row["expiry"]).date()`
+# (`kiteconnect/connect.py`) before this module ever sees it. In
+# CONN-SERVICE mode, the SAME dict crosses a JSON-RPC boundary first:
+# `RemoteBroker.instruments()` → `RemoteBroker._call()` POSTs to
+# conn_service's `BrokerDispatchController.call_broker`
+# (`backend/brokers/service/routes.py`), which returns
+# `{"ok": True, "result": _to_jsonable(result)}` — `_to_jsonable()`
+# special-cases only `set`/`dict`/`list`/`tuple` and passes a bare
+# `date` through UNCHANGED (see that function's own body). Litestar's
+# default msgspec-based JSON encoder then serialises that `date` to a
+# plain ISO `"YYYY-MM-DD"` string on the wire (confirmed:
+# `msgspec.json.encode({"expiry": date(2026, 11, 26)})` →
+# `b'{"expiry":"2026-11-26"}'`, no time component). `RemoteBroker._call()`
+# on the client side returns `payload.get("result")` straight from
+# `resp.json()` — the ISO string is never re-parsed back into a `date`.
+# Confirmed live on prod `log_events`, 2026-11-26 and 2026-11-27:
+# `scan_positions()` found 9-11 real option positions both days but
+# logged "Expiry: 0 positions expiring today" — `p.expiry == today`
+# (str == date) is always False.
+#
+# Dhan's instrument rows carry no `expiry` key at all (confirmed via
+# grep — `backend/brokers/adapters/dhan.py` never sets one), so `None`
+# is a real, expected input here, not just a defensive catch-all.
+def _coerce_expiry_date(value) -> "date | None":
+    """Normalise a raw instrument dict's `expiry` value to a real
+    `datetime.date`, regardless of whether it arrived as an
+    already-correct `date`/`datetime` (direct-broker mode) or as a
+    plain ISO `"YYYY-MM-DD"` string (conn-service JSON round-trip —
+    see the module comment above). Returns `None` for a missing/empty
+    value or one that can't be parsed as a date — callers already
+    treat a falsy/`None` expiry as "not usable"
+    (`_fetch_option_positions`'s `if not inst: continue`,
+    `_mcx_front_month_symbol`'s `if not exp or exp < today: continue`)."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        try:
+            return date.fromisoformat(value.strip()[:10])
+        except ValueError:
+            return None
+    return None
+
+
 # ── Futures-partner contract identity (2026-11-23 fix, Part C) ────────────
 #
 # `_classify_mcx_group` used to accept ANY held future on the same
@@ -563,7 +624,7 @@ class ExpiryEngine:
                     instrument_type=inst_type,
                     underlying=inst.get("name", ""),
                     strike=float(inst.get("strike", 0)),
-                    expiry=inst.get("expiry"),
+                    expiry=_coerce_expiry_date(inst.get("expiry")),
                     quantity=qty,
                     product=row.get("product", "NRML"),
                 ))
@@ -620,7 +681,7 @@ class ExpiryEngine:
                 continue
             if (inst.get("name") or "").upper() != (root or "").upper():
                 continue
-            exp = inst.get("expiry")
+            exp = _coerce_expiry_date(inst.get("expiry"))
             if not exp or exp < today:
                 continue
             candidates.append((exp, inst.get("tradingsymbol")))
