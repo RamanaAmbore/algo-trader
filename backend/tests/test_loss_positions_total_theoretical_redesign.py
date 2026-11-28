@@ -317,22 +317,20 @@ class TestMissingAverageCostTreatedAsUnavailable:
         ctx = _ctx(rows, {'CRUDEOIL': 6005.0}, baseline)
         total = g._portfolio_theoretical_loss_since_entry(ctx)
         assert total is None, (
-            f"a missing average_price must make the WHOLE underlying "
+            f"a missing average_price must make the underlying "
             f"unavailable for leaf 1, never a fabricated value, got {total}"
         )
-        # Leaf 1 and leaf 3 share ONE per-leg walk
-        # (`_underlying_theo_legs_since_baseline_and_entry` ->
-        # `_theo_leg_since_baseline_and_entry`), which returns both
-        # outputs together or neither. A missing avg_cost therefore also
-        # makes leaf 3 unavailable for THIS leg's underlying — even
-        # though leaf 3 itself has no conceptual need for avg_cost. This
-        # is a deliberate, accepted tradeoff: failing BOTH leaves toward
-        # "unavailable" together is simpler and safer than risking a
-        # partially-inconsistent state across the two leaves for one leg.
+        # Leaf 1 and leaf 3 share one per-leg walk, but their two
+        # outputs are INDEPENDENTLY all-or-nothing (fixed on review —
+        # coupling them would blind leaf 3 on a problem it has no
+        # conceptual need to care about, cutting against the operator's
+        # "resolve toward still firing" priority for this guard). Leaf 3
+        # does not need avg_cost at all, so it stays available.
         daily = g._portfolio_theoretical_loss_daily(ctx)
-        assert daily is None, (
-            f"leaf 3 shares the all-or-nothing walk with leaf 1 for this "
-            f"leg, so a missing avg_cost makes BOTH unavailable, got {daily}"
+        assert daily is not None, (
+            f"leaf 3 must stay available even when leaf 1's avg_cost is "
+            f"bad for this leg — it has no conceptual need for avg_cost, "
+            f"got {daily}"
         )
 
     def test_nan_average_price_is_also_unavailable(self):
@@ -364,6 +362,49 @@ class TestMissingAverageCostTreatedAsUnavailable:
         ctx = _ctx(rows, {'CRUDEOIL': 6005.0}, baseline)
         total = g._portfolio_theoretical_loss_since_entry(ctx)
         assert total == pytest.approx(300 * (6005.0 - 6500.0))
+
+    def test_shared_walk_decouples_the_two_outputs_directly(self):
+        """Direct test of `_underlying_theo_legs_since_baseline_and_entry`
+        itself: a bad avg_cost returns `(real_value, None)`, not
+        `(None, None)` — `since_baseline` and `since_entry` fail
+        independently."""
+        qty = 300
+        S_base, S_now = 6000.0, 6005.0
+        baseline = {'CRUDEOIL26OCTFUT': _fut_baseline(S_base, qty)}
+        rows = [{'tradingsymbol': 'CRUDEOIL26OCTFUT', 'quantity': qty,
+                 'underlying': 'CRUDEOIL', 'average_price': None}]
+        ctx = _ctx(rows, {'CRUDEOIL': S_now}, baseline)
+        since_baseline, since_entry = g._underlying_theo_legs_since_baseline_and_entry(
+            ctx, 'CRUDEOIL')
+        assert since_baseline == pytest.approx(qty * (S_now - S_base)), (
+            f"since_baseline must still resolve to a real value, got {since_baseline}"
+        )
+        assert since_entry is None, f"since_entry must be None, got {since_entry}"
+
+    def test_one_bad_leg_still_blinds_the_whole_underlyings_since_entry(self):
+        """Per-underlying all-or-nothing for since_entry is preserved —
+        ONE leg's bad avg_cost blinds leaf 1 for the WHOLE underlying,
+        even though leaf 3 stays available (both for this leg and the
+        underlying as a whole)."""
+        qty_a, qty_b = 300, 200
+        baseline = {
+            'CRUDEOIL26OCTFUT': _fut_baseline(6000.0, qty_a),
+            'CRUDEOIL26NOVFUT': _fut_baseline(6000.0, qty_b),
+        }
+        rows = [
+            {'tradingsymbol': 'CRUDEOIL26OCTFUT', 'quantity': qty_a,
+             'underlying': 'CRUDEOIL', 'average_price': 6500.0},  # valid
+            {'tradingsymbol': 'CRUDEOIL26NOVFUT', 'quantity': qty_b,
+             'underlying': 'CRUDEOIL'},  # missing average_price
+        ]
+        ctx = _ctx(rows, {'CRUDEOIL': 6005.0}, baseline)
+        since_baseline, since_entry = g._underlying_theo_legs_since_baseline_and_entry(
+            ctx, 'CRUDEOIL')
+        assert since_baseline is not None, "leaf 3 must stay available for the underlying"
+        assert since_entry is None, (
+            "leaf 1 must be unavailable for the WHOLE underlying when even "
+            "one of its legs has a bad avg_cost"
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -605,6 +646,41 @@ class TestDedupExactDuplicateMatches:
               'threshold': -30000, 'value': -40000.0, 'account': 'ACC_B'}
         out = ae._v2_dedup_exact_matches([m1, m2])
         assert len(out) == 2, f"two different accounts must both survive, got {out}"
+
+    def test_dedup_does_not_collapse_two_distinct_rows_in_a_multirow_fanout(self):
+        """Blocking fix (second review round): the dedup key did NOT
+        originally include row identity. A custom agent gating
+        `is_itm == 1` on `positions.expiring_today` with a `$row`
+        `close_position` action can produce TWO real, distinct matches —
+        two different ITM legs of the SAME account/underlying — that
+        would otherwise share metric/scope/op/threshold/value/account/
+        underlying and collapse into one, silently skipping the second
+        leg's close. `row.get('tradingsymbol')` in the key keeps them
+        apart. This is a GENERIC regression — `_v2_dedup_exact_matches`
+        runs for every agent, not only loss-positions-total."""
+        m1 = {'metric': 'is_itm', 'scope': 'positions.expiring_today', 'op': '==',
+              'threshold': 1.0, 'value': 1.0, 'account': 'ZG0790', 'underlying': 'NIFTY',
+              'row': {'tradingsymbol': 'NIFTY26NOV24000CE', 'account': 'ZG0790'}}
+        m2 = {'metric': 'is_itm', 'scope': 'positions.expiring_today', 'op': '==',
+              'threshold': 1.0, 'value': 1.0, 'account': 'ZG0790', 'underlying': 'NIFTY',
+              'row': {'tradingsymbol': 'NIFTY26NOV24100CE', 'account': 'ZG0790'}}
+        out = ae._v2_dedup_exact_matches([m1, m2])
+        assert len(out) == 2, (
+            f"two distinct ITM legs of the same account/underlying must "
+            f"both survive dedup, got {len(out)}: {out}"
+        )
+
+    def test_dedup_never_collapses_matches_with_no_metric(self):
+        """A `not` synthetic match, or a bare log-leaf match, carries no
+        `metric` key at all — every such match would share the identical
+        key `(None, ...)` and silently collapse to one if deduped the
+        same way. These must be passed through unconditionally."""
+        not_match_1 = {'not': {'metric': 'day_val', 'scope': 'positions.total'}}
+        not_match_2 = {'not': {'metric': 'day_pct', 'scope': 'positions.total'}}
+        out = ae._v2_dedup_exact_matches([not_match_1, not_match_2])
+        assert len(out) == 2, (
+            f"two distinct metric-less matches must both survive, got {out}"
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════

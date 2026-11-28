@@ -4004,15 +4004,34 @@ LEVEL — distinct from leaf 3 ("daily"), today's own theoretical P&L move, a DE
   a missing/zero avg on a SHORT leg (negative qty) fabricates `qty × (price_now − 0)`, the entire
   notional, as a "loss" out of thin air, firing a critical alert on missing data. This is exactly
   the risk for the operator's own short-premium book. Fixed: a missing, NaN, or non-positive
-  `average_price` makes the WHOLE leg unavailable (no `or 0` fallback at all), taking out its
-  underlying via the existing all-or-nothing policy — never a fabricated value, per CLAUDE.md's
-  missing-vs-zero convention. Confirmed both Dhan and Groww adapters populate `average_price` on
-  every position row (`broker_apis.py`/`dhan.py`/`groww.py`), so this is a real, reachable guard,
-  not dead code. One accepted consequence: because leaf 1 and leaf 3 share this ONE per-leg walk,
-  a bad `average_price` ALSO makes leaf 3 unavailable for that leg, even though leaf 3 itself has
-  no conceptual need for it — a deliberate simplicity/safety tradeoff over risking a
-  partially-inconsistent per-leg result. `TestMissingAverageCostTreatedAsUnavailable` pins the
-  missing/NaN/zero/valid cases and this leaf-3 side effect.
+  `average_price` makes `since_entry` (leaf 1's building block) unavailable for that leg (no
+  `or 0` fallback at all) — never a fabricated value, per CLAUDE.md's missing-vs-zero convention.
+  Verified by STATIC CODE READING (not a live SSH dump — flagged honestly, not overclaimed): all
+  three live brokers' own positions-row normalisers (Kite's native field;
+  `_dhan_normalise_one_position` in `dhan.py`; the positions builder in `groww.py`) explicitly
+  populate `average_price` on every row, and `broker_apis.py` itself has dozens of existing,
+  already-production call sites reading this exact column for P&L math — its universal presence
+  is an existing load-bearing assumption of the WHOLE positions pipeline, not a new one this
+  redesign introduces. `TestMissingAverageCostTreatedAsUnavailable` pins the missing/NaN/zero/
+  valid cases.
+  - **The all-or-nothing walk is now SPLIT per output, not one combined gate — fixed on a third
+    review round, "strongly recommended" and then confirmed necessary.** The first fix (above)
+    coupled leaf 1 and leaf 3 through one shared per-leg result: a bad `average_price` blinded
+    BOTH, even though leaf 3 has no conceptual need for `average_price` at all — cutting against
+    the operator's own standing "resolve toward still firing" priority for this exact guard class
+    (see the "Positions loss guard" entry above). `_theo_leg_since_baseline_and_entry()` now
+    returns `(since_baseline, since_entry)` where EITHER may independently be `None`:
+    `since_baseline` is `None` only when the reprice itself fails (no baseline, malformed
+    baseline, numeric BS/76 failure) — the SAME condition the existing `underlying_theoretical_
+    loss` metric already uses. `since_entry` is ADDITIONALLY `None` on a bad `average_price` or a
+    zero baseline qty. A leg can therefore contribute to leaf 3 while being unavailable for leaf
+    1, never the reverse. The per-underlying walk
+    (`_underlying_theo_legs_since_baseline_and_entry`) tracks two SEPARATE all-or-nothing flags —
+    one leg's bad avg still blinds leaf 1 for the WHOLE underlying (unchanged all-or-nothing
+    policy for `since_entry` itself), but leaf 3 for that same underlying stays available.
+    `TestMissingAverageCostTreatedAsUnavailable::test_shared_walk_decouples_the_two_outputs_directly`
+    and `::test_one_bad_leg_still_blinds_the_whole_underlyings_since_entry` pin both the
+    decoupling and the still-all-or-nothing-per-output policy.
 - **Leaf 2 (`theo_total_rate_abs`/`theo_total_rate_pct`) is gated on leaf 1 itself having crossed
   its own threshold** — `all[theoretical_total_loss<=-100000, any[theo_total_rate_abs<=-6000,
   theo_total_rate_pct<=-0.25]]`, directly implementing "only... when the total theoretical loss
@@ -4047,7 +4066,13 @@ LEVEL — distinct from leaf 3 ("daily"), today's own theoretical P&L move, a DE
   pnl_math.account_margin_base(df_margins, 'TOTAL') * 100` — the SAME margin-base denominator
   `day_pct`/`pnl_pct` already use for Positions-scope percentages — so the token isn't structurally
   inert the way `_update_underlying_pnl_history`'s own pct slot deliberately is (no per-underlying
-  margin denominator exists). `None`, never `0`, when margin data is unavailable.
+  margin denominator exists). `None`, never `0`, when margin data is unavailable. Verified this
+  resolves on a real prod row, not merely in a hand-built test fixture: the REAL 2026-10-30
+  prod fire captured in `test_alert_row_grouping.py`'s own fixture data carries a real
+  `day_change_pct_margin` value on its TOTAL row, which `metric_day_pct.py` can only have produced
+  from a successful `account_margin_base(df_margins, 'TOTAL')` resolution — direct evidence that
+  `df_margins` genuinely carries a `'TOTAL'` row on the live path, not merely an inference from a
+  sibling metric's code.
 - **Render fix: the theoretical metrics show their OWN value, not the row's market `pnl`.**
   `_v2_extract_pnl_fields`'s generic Positions fallback (`day_val` reads `day_change_val`, every
   OTHER Positions metric reads lifetime `pnl` — see the "grouped alert body" entry elsewhere in
@@ -4066,13 +4091,26 @@ LEVEL — distinct from leaf 3 ("daily"), today's own theoretical P&L move, a DE
   agent_evaluator.py) legitimately re-includes a satisfied gate leaf's match in its own output, so
   when leaf 2 fires, `evaluate()`'s raw output genuinely contains leaf 1's match TWICE. A new
   `_v2_dedup_exact_matches()`, applied at `_cycle_evaluate_agent`'s own single production call
-  site (so every agent benefits, not just this one), collapses byte-for-byte duplicate matches
-  (same metric/scope/op/threshold/value/account/underlying) before anything downstream
-  (buffering, latching, rendering) sees them — keeps the first occurrence, never drops a
-  genuinely distinct match (two different accounts/underlyings with coincidentally equal values
-  survive). `TestRenderSuppressesMarketEnrichmentForTheoreticalMetrics` and
-  `TestDedupExactDuplicateMatches` pin both fixes, including a test that first confirms the raw
-  (pre-dedup) duplicate genuinely exists before testing the fix.
+  site (so every agent benefits, not just this one), collapses an exact duplicate before anything
+  downstream (buffering, latching, rendering) sees it.
+  - **Scope correction, caught by a third review round (SCOPE DISCIPLINE — this fix touches every
+    agent, not just this one).** The first version keyed the dedup on
+    `(metric, scope, op, threshold, value, account, underlying)` only — no per-row identity. A
+    GENUINE multi-row fan-out — e.g. a custom agent gating `is_itm == 1` on `positions.
+    expiring_today` with a `$row`-targeted `close_position`, where TWO different ITM legs of the
+    same account/underlying both produce `value=1.0` — would have shared that exact key and
+    collapsed to one match, silently skipping the second leg's close. Fixed: `row.get(
+    'tradingsymbol')` is now part of the key. The TOTAL-scoped matches this fix was built for
+    carry no per-symbol row at all, so every member still keys on `None` there and collapses
+    correctly; a genuine per-symbol fan-out does not. A match with NO `'metric'` key at all (a
+    `not` synthetic match, or a bare `log`-leaf match — neither carries one) is now passed through
+    UNCONDITIONALLY, never deduped — every such match would otherwise share one key and collapse
+    to a single survivor. `TestDedupExactDuplicateMatches::test_dedup_does_not_collapse_two_
+    distinct_rows_in_a_multirow_fanout` and `::test_dedup_never_collapses_matches_with_no_metric`
+    pin both. `TestRenderSuppressesMarketEnrichmentForTheoreticalMetrics` and the rest of
+    `TestDedupExactDuplicateMatches` pin the render-suppression fix and the original duplicate
+    case, including a test that first confirms the raw (pre-dedup) duplicate genuinely exists
+    before testing the fix.
 - **Migration also syncs the stale description, slug-scoped.** `_ae_sync_loss_positions_total_
   description()` fires INSIDE the SAME one-time old-shape-match branch
   `_ae_apply_content_matched_cond_migration` already gates on (never re-derived against the

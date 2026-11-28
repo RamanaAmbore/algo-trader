@@ -632,12 +632,17 @@ def _underlying_theo_legs_since_baseline_and_entry(ctx, underlying):
     wrong. Using the frozen basis keeps both sides in the future's own
     price terms.
 
-    Qty is read from the BASELINE's own frozen `qty` (`b['qty']`), not
-    the row's live `quantity` — this keeps the two summed terms
-    dimensionally consistent (both `qty × (...)` with the SAME qty), at
-    the cost of inheriting leaf 3's existing "qty can go stale if size
-    changes intraday after baseline capture" quirk for leaf 1 too — a
-    deliberate, documented tradeoff, not an oversight.
+    Qty is read from the BASELINE's own frozen `qty` (`b['qty']`) for
+    `since_baseline` (leaf 3's own unchanged quirk), but from the row's
+    LIVE `quantity` for `since_entry` (leaf 1) — see `_theo_leg_since_
+    baseline_and_entry`'s own docstring for why these two outputs are
+    independently all-or-nothing, not one combined gate: leaf 3 has no
+    conceptual need for `average_price`, so a bad `average_price` on one
+    leg (missing, NaN, non-positive) blinds ONLY `since_entry_total` for
+    this underlying, never `since_baseline_total` — a REPRICE failure
+    (no baseline yet, a malformed baseline entry, a numeric BS/76
+    failure) is the only thing that blinds BOTH, since `since_baseline`
+    itself depends on it.
     """
     if not underlying:
         return None, None
@@ -657,20 +662,23 @@ def _underlying_theo_legs_since_baseline_and_entry(ctx, underlying):
     since_baseline_total = 0.0
     since_entry_total = 0.0
     any_leg = False
+    since_entry_ok = True
     for row in rows:
         if not _theo_leg_is_non_flat(row):
             continue  # flat leg — Kite may keep the row; skip it, don't fail the underlying
         any_leg = True
         b = baseline.get(row.get('tradingsymbol') or '')
-        leg = _theo_leg_since_baseline_and_entry(row, b, S_now, now)
-        if leg is None:
-            return None, None  # not yet baselined / reprice failed — retry next tick
-        leg_since_baseline, leg_since_entry = leg
+        leg_since_baseline, leg_since_entry = _theo_leg_since_baseline_and_entry(row, b, S_now, now)
+        if leg_since_baseline is None:
+            return None, None  # reprice itself failed — retry next tick, blinds BOTH outputs
         since_baseline_total += leg_since_baseline
-        since_entry_total += leg_since_entry
+        if leg_since_entry is None:
+            since_entry_ok = False  # this leg's avg_cost was bad — only blinds since_entry
+        else:
+            since_entry_total += leg_since_entry
     if not any_leg:
         return None, None
-    return since_baseline_total, since_entry_total
+    return since_baseline_total, (since_entry_total if since_entry_ok else None)
 
 
 def _theo_safe_qty(row: dict) -> int:
@@ -697,21 +705,38 @@ def _theo_leg_is_non_flat(row: dict) -> bool:
 
 
 def _theo_leg_since_baseline_and_entry(row: dict, b: "dict | None", S_now: float, now):
-    """One leg's `(since_baseline, since_entry)` contribution, or `None`
-    on any failure (no baseline yet, a malformed baseline entry, a
-    numeric reprice failure, a missing/NaN/non-positive `average_price`,
-    or a zero baseline qty). Extracted from `_underlying_theo_legs_
-    since_baseline_and_entry` to keep it under the radon complexity
-    gate — see that function's own docstring for the algebraic identity
-    this applies.
+    """One leg's `(since_baseline, since_entry)` contribution. Each of
+    the two return values is independently `None` on its OWN failure
+    condition — they are NOT one combined gate:
+
+    - `since_baseline` is `None` only when the reprice itself fails (no
+      baseline yet, a malformed baseline entry, a numeric BS/76
+      failure). This is the SAME all-or-nothing condition the existing
+      `underlying_theoretical_loss` metric (leaf 3's conceptual sibling)
+      already uses — it has no need for `average_price` at all.
+    - `since_entry` is ADDITIONALLY `None` when `average_price` itself
+      is missing/NaN/non-positive, or the baseline's own `qty` is 0 —
+      conditions `since_baseline` does not depend on. A leg can
+      therefore contribute to leaf 3 while being unavailable for leaf 1,
+      but never the reverse (since_entry always needs since_baseline to
+      have succeeded first).
+
+    Extracted from `_underlying_theo_legs_since_baseline_and_entry` to
+    keep it under the radon complexity gate — see that function's own
+    docstring for the algebraic identity this applies, and for why the
+    two outputs are deliberately decoupled (found by review: coupling
+    them would let one leg's bad `average_price` silently blind leaf 3
+    too, even though leaf 3 has no conceptual need for it — cutting
+    against the operator's standing "resolve toward still firing"
+    priority for this exact guard, see CLAUDE.md's "Positions loss
+    guard" entry).
 
     Missing-vs-zero convention (CLAUDE.md): a row with NO `average_price`
     at all must NOT silently read as `avg_cost=0` — for a SHORT leg
     (negative qty), that would fabricate a full-premium loss out of
     thin air (`qty × (price_now − 0)` is the entire notional, not a
     real loss) and fire a critical-tier alert on missing data. Treated
-    as "leg unavailable", taking out the WHOLE underlying via the
-    caller's all-or-nothing policy — never silently dropped, never
+    as "leg's since_entry unavailable", never silently dropped, never
     coerced to 0.
 
     Per-unit qty scaling (fix for a confirmed intraday-partial-close
@@ -723,32 +748,32 @@ def _theo_leg_since_baseline_and_entry(row: dict, b: "dict | None", S_now: float
     phantom loss. Instead, `leg_since_baseline / b_qty` recovers the
     PER-UNIT model-price delta (price_now − ltp_base), and the row's own
     LIVE `quantity` scales the since-entry term — correct regardless of
-    how qty has changed since the baseline was captured. Leaf 3 (the
-    `leg_since_baseline` return value) is NOT changed by this — it
-    keeps `_theo_reprice_leg`'s own existing baseline-qty quirk
-    unchanged and documented, per CLAUDE.md's "Positions loss guard"
-    precedent for this exact tradeoff class."""
+    how qty has changed since the baseline was captured. `since_baseline`
+    is NOT changed by this — it keeps `_theo_reprice_leg`'s own existing
+    baseline-qty quirk unchanged and documented, per CLAUDE.md's
+    "Positions loss guard" precedent for this exact tradeoff class."""
     if b is None:
-        return None
+        return None, None
     leg_since_baseline = _theo_reprice_leg(b, S_now, now)
     if leg_since_baseline is None:
-        return None
-    try:
-        avg_cost = float(row.get('average_price'))
-    except (TypeError, ValueError):
-        return None
-    if avg_cost != avg_cost or avg_cost <= 0:  # NaN or non-positive — unusable
-        return None
+        return None, None
+
+    leg_since_entry = None
     try:
         b_qty = int(b.get('qty', 0) or 0)
-        live_qty = _theo_safe_qty(row)
         ltp_base = float(b['ltp_base'])
     except (TypeError, ValueError, KeyError):
-        return None
-    if b_qty == 0:
-        return None
-    price_now_per_unit = leg_since_baseline / b_qty + ltp_base
-    leg_since_entry = live_qty * (price_now_per_unit - avg_cost)
+        b_qty = 0
+        ltp_base = None
+    if b_qty != 0 and ltp_base is not None:
+        try:
+            avg_cost = float(row.get('average_price'))
+        except (TypeError, ValueError):
+            avg_cost = None
+        if avg_cost is not None and avg_cost == avg_cost and avg_cost > 0:  # not NaN, not <=0
+            live_qty = _theo_safe_qty(row)
+            price_now_per_unit = leg_since_baseline / b_qty + ltp_base
+            leg_since_entry = live_qty * (price_now_per_unit - avg_cost)
     return leg_since_baseline, leg_since_entry
 
 

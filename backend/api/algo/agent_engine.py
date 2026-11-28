@@ -4434,6 +4434,7 @@ def _ae_sync_existing_builtin(existing, agent_def: dict) -> None:
     _ae_apply_content_matched_cond_migration(existing, agent_def)
     _ae_sync_expiry_risk_alert_split(existing, agent_def)
     _ae_sync_expiry_risk_alert_preclose_ref(existing, agent_def)
+    _ae_sync_expiry_risk_alert_cooldown(existing, agent_def)
     _ae_sync_divergence_cooldown(existing, agent_def)
     # NOTE: `_ae_sync_expiry_awareness_cooldown()` (the 2026-11-22
     # 180->30 cooldown migration for the OLD combined `expiry-day-
@@ -4443,6 +4444,69 @@ def _ae_sync_existing_builtin(existing, agent_def: dict) -> None:
     # could never match again regardless (seed_agents iterates the
     # CURRENT BUILTIN_AGENTS list; the old slugs are gone from it, and
     # `_ae_prune_retired_builtins` deletes the stale DB rows separately).
+
+
+def _ae_sync_expiry_risk_alert_cooldown(existing, agent_def: dict) -> None:
+    """One-time cooldown migration for `expiry-nfo-risk-alert` /
+    `expiry-mcx-risk-alert` — `cooldown_minutes` is never force-synced
+    on an ordinary restart (see `_ae_sync_existing_builtin`'s own
+    docstring), so the 2026-11-26 60->240 bump in
+    `_EXPIRY_RISK_AGENT_DEFAULTS` (see that dict's own comment: "At the
+    old 60-min cooldown that's up to ~8-14 re-fires across a full
+    previous-day trading session for ONE leg... 240 min (4h) cuts that
+    to ~2-4 re-fires/day") never reached either already-seeded row.
+
+    Confirmed live (2026-11-28 investigation, prod `agent_events`):
+    `expiry-mcx-risk-alert` was created 2026-11-26 08:39:45 UTC — the
+    SAME DAY as the 240-min bump — at `cooldown_minutes=60`, meaning
+    the row was inserted BEFORE that same day's later commit raised the
+    code default (the comment on `_ae_sync_expiry_risk_alert_split`
+    claiming this slug "needs no entry here: it's a fresh insert...
+    `_ae_build_agent_row()` sets its fields correctly from BUILTIN_
+    AGENTS on first insert" was true for `name`/`topic` but turned out
+    not to cover `cooldown_minutes`, because the insert predated the
+    bump). `expiry-nfo-risk-alert` has carried `cooldown_minutes=60`
+    since 2026-07-23, long before either change. Neither row was a
+    genuinely fresh insert AFTER the bump landed, so both are stuck at
+    the stale value.
+
+    14 real fires for `expiry-mcx-risk-alert` on 2026-11-27, spaced
+    ~60-70 minutes apart across the WHOLE trading day (09:04 IST to
+    22:24 IST) — not a 65-minute pre-close window, and not a per-leaf
+    fan-out bug at the DISPATCH level (each individual fire already
+    lists every currently-matching leg, grouped by account, via
+    `_v2_expiry_risk_alert_enrichment()` — confirmed by reading the
+    real `agent_events.detail` JSON for that day: e.g. the 2026-11-27
+    03:34 UTC fire's own `matches`/`latched_matches` both already carry
+    all 11 then-unhedged legs in one record) — are fully explained by
+    the stale 60-min AGENT-level cooldown driving an hourly re-fire of
+    an all-day-persistent condition. Raising this value to 240 is the
+    fix; the per-leaf latch/escalation gate mechanism itself
+    (`_v2_leaf_should_fire`/`_v2_apply_escalation_gate`) is unchanged.
+
+    Value-gated to the exact stale value (60) — same safety contract as
+    `_ae_sync_divergence_cooldown` below — so an operator who already
+    customized either agent's cooldown is left alone.
+
+    Accepted tradeoff, same shape `_ae_sync_divergence_cooldown`'s own
+    docstring documents for its sibling agent (there, the tradeoff was
+    REJECTED via `cooldown_minutes=0`; here it is explicitly ACCEPTED,
+    per `_EXPIRY_RISK_AGENT_DEFAULTS`'s own comment): because `_cycle_
+    in_cooldown` gates at the AGENT level, a 240-minute cooldown can
+    silence a genuinely NEW leg's first breach for up to 4 hours if a
+    DIFFERENT leg on the same agent fired more recently. This is
+    accepted here (unlike the divergence agent) because (a) this is a
+    non-urgent day-before-expiry reminder, not an isolated-underlying
+    alert where silencing one underlying's breach behind another's
+    cooldown is the specific bug being guarded against, and (b) the
+    genuinely urgent final hour before close is covered by the separate
+    `expiry-day-{mcx,nse}-itm-auto-close` / `expiry-day-{mcx,nse}-
+    preclose-alert` agents, which carry their own independent 30-minute
+    cooldown and are untouched by this value."""
+    if (agent_def.get("slug") in ("expiry-nfo-risk-alert", "expiry-mcx-risk-alert")
+            and existing.cooldown_minutes == 60):
+        existing.cooldown_minutes = agent_def.get(
+            "cooldown_minutes", existing.cooldown_minutes)
 
 
 def _ae_sync_divergence_cooldown(existing, agent_def: dict) -> None:
@@ -6114,18 +6178,38 @@ def _v2_dedup_exact_matches(matches: list) -> list:
     logic itself, but it means the SAME breach would otherwise render
     twice, double-count in `_ae_group_alert_rows`'s grouping, and
     duplicate the per-leaf latch-key list `_v2_apply_escalation_gate`
-    sees. Keeps the first occurrence, preserves order. Never drops a
-    genuinely distinct match — the dedup key includes account/underlying,
-    so two different rows that happen to share the same metric/op/
-    threshold/value are NOT collapsed; only an EXACT duplicate (same
-    metric, scope, op, threshold, value, AND row identity) is."""
+    sees. Keeps the first occurrence, preserves order.
+
+    This runs for EVERY agent at the shared `_cycle_evaluate_agent` call
+    site, not only `loss-positions-total` — so the dedup key must be
+    safe for a genuine multi-row fan-out, e.g. two different ITM legs of
+    the SAME account/underlying on `positions.expiring_today`, each
+    producing `is_itm == 1.0`. Without a per-row identity component,
+    those two REAL, DISTINCT matches would collapse into one and a
+    `$row`-targeted close action would silently skip the second leg.
+    `row.get('tradingsymbol')` is included in the key for exactly this
+    reason — the TOTAL-scoped matches this fix was built for (no
+    per-symbol row at all) key on `None` there for every member, so they
+    still collapse correctly; a genuine per-symbol fan-out does not.
+
+    A match with no `'metric'` key at all (a `not` synthetic match, or a
+    bare `log`-leaf match — neither carries one) is NEVER deduped — it
+    is passed through unconditionally, since there is no leaf identity
+    to safely key on, and every such match would otherwise share the
+    single key `(None, None, ..., None)` and collapse into one."""
     seen = set()
     out = []
     for m in matches:
+        metric = m.get('metric')
+        if metric is None:
+            out.append(m)
+            continue
+        row = m.get('row') or {}
         key = (
-            m.get('metric'), m.get('scope'), m.get('op'),
+            metric, m.get('scope'), m.get('op'),
             m.get('threshold'), m.get('value'),
             m.get('account'), m.get('underlying'),
+            row.get('tradingsymbol'),
         )
         if key in seen:
             continue
