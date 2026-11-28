@@ -421,6 +421,249 @@ class TestNtfyWrappingMidnight:
             assert req is not None and req.headers.get("Priority") == "high"
 
 
+class TestNtfyUrgentRepeatCountParameter:
+    """`urgent_repeat_count` is a new, purely additive kwarg (default=3) exposing
+    the previously-hardcoded `send_count = 3 if priority == "urgent" else 1`
+    literal as a tunable parameter. These tests prove:
+      (a) the default (no explicit arg passed) is byte-identical to the old
+          hardcoded behavior — urgent still sends 3x, non-urgent still sends 1x;
+      (b) passing an explicit value genuinely changes the urgent send count,
+          proving the parameter is wired through, not just present in the
+          signature;
+      (c) the parameter has NO effect whatsoever when priority isn't "urgent"
+          (non-urgent always sends exactly once, regardless of the value passed).
+    """
+
+    # --- (a) default-unchanged: no urgent_repeat_count passed at all ---
+
+    def test_default_urgent_still_sends_three_times(self):
+        """No urgent_repeat_count passed, priority=urgent (night) → still 3 sends."""
+        dt = datetime(2026, 7, 14, 23, 30, 0, tzinfo=ZoneInfo("America/New_York"))
+
+        with patch("backend.shared.helpers.alert_utils.secrets", BASE_SECRETS), \
+             patch("datetime.datetime") as mock_dt, \
+             patch("urllib.request.urlopen") as mock_urlopen:
+
+            mock_dt.now.return_value = dt
+            mock_urlopen.return_value.status = 200
+
+            from backend.shared.helpers.alert_utils import send_ntfy_alert
+            send_ntfy_alert("Test Alert", "Default urgent behavior")
+
+            assert mock_urlopen.call_count == 3, (
+                f"Default (no urgent_repeat_count passed) must preserve the "
+                f"pre-existing hardcoded 3x-send for urgent priority, got "
+                f"{mock_urlopen.call_count}"
+            )
+
+    def test_default_explicit_urgent_priority_still_sends_three_times(self):
+        """No urgent_repeat_count passed, explicit priority='urgent' → still 3 sends."""
+        dt = datetime(2026, 7, 14, 14, 0, 0, tzinfo=ZoneInfo("America/New_York"))  # daytime, high by clock
+
+        with patch("backend.shared.helpers.alert_utils.secrets", BASE_SECRETS), \
+             patch("datetime.datetime") as mock_dt, \
+             patch("urllib.request.urlopen") as mock_urlopen:
+
+            mock_dt.now.return_value = dt
+            mock_urlopen.return_value.status = 200
+
+            from backend.shared.helpers.alert_utils import send_ntfy_alert
+            send_ntfy_alert("Test Alert", "Explicit urgent override", priority="urgent")
+
+            assert mock_urlopen.call_count == 3, (
+                f"Default urgent_repeat_count must still be 3 even when priority "
+                f"is explicitly forced to 'urgent' by the caller, got "
+                f"{mock_urlopen.call_count}"
+            )
+
+    def test_default_non_urgent_still_sends_once(self):
+        """No urgent_repeat_count passed, priority=high (day) → still 1 send."""
+        dt = datetime(2026, 7, 14, 14, 0, 0, tzinfo=ZoneInfo("America/New_York"))
+
+        with patch("backend.shared.helpers.alert_utils.secrets", BASE_SECRETS), \
+             patch("datetime.datetime") as mock_dt, \
+             patch("urllib.request.urlopen") as mock_urlopen:
+
+            mock_dt.now.return_value = dt
+            mock_urlopen.return_value.status = 200
+
+            from backend.shared.helpers.alert_utils import send_ntfy_alert
+            send_ntfy_alert("Test Alert", "Default non-urgent behavior")
+
+            assert mock_urlopen.call_count == 1, (
+                f"Default (no urgent_repeat_count passed) must preserve the "
+                f"pre-existing single-send for non-urgent priority, got "
+                f"{mock_urlopen.call_count}"
+            )
+
+    # --- (b) explicit override genuinely changes the urgent send count ---
+
+    def test_explicit_urgent_repeat_count_five_sends_five_times(self):
+        """urgent_repeat_count=5, priority=urgent (night) → 5 sends."""
+        dt = datetime(2026, 7, 14, 23, 30, 0, tzinfo=ZoneInfo("America/New_York"))
+
+        with patch("backend.shared.helpers.alert_utils.secrets", BASE_SECRETS), \
+             patch("datetime.datetime") as mock_dt, \
+             patch("urllib.request.urlopen") as mock_urlopen:
+
+            mock_dt.now.return_value = dt
+            mock_urlopen.return_value.status = 200
+
+            from backend.shared.helpers.alert_utils import send_ntfy_alert
+            send_ntfy_alert("Test Alert", "Overridden repeat count", urgent_repeat_count=5)
+
+            assert mock_urlopen.call_count == 5, (
+                f"Explicit urgent_repeat_count=5 must produce 5 sends for urgent "
+                f"priority, got {mock_urlopen.call_count}"
+            )
+
+    def test_explicit_urgent_repeat_count_one_sends_once(self):
+        """urgent_repeat_count=1, priority=urgent (night) → only 1 send (de-escalated)."""
+        dt = datetime(2026, 7, 15, 3, 15, 0, tzinfo=ZoneInfo("America/New_York"))
+
+        with patch("backend.shared.helpers.alert_utils.secrets", BASE_SECRETS), \
+             patch("datetime.datetime") as mock_dt, \
+             patch("urllib.request.urlopen") as mock_urlopen:
+
+            mock_dt.now.return_value = dt
+            mock_urlopen.return_value.status = 200
+
+            from backend.shared.helpers.alert_utils import send_ntfy_alert
+            send_ntfy_alert("Test Alert", "De-escalated repeat count", urgent_repeat_count=1)
+
+            assert mock_urlopen.call_count == 1, (
+                f"Explicit urgent_repeat_count=1 must produce exactly 1 send even "
+                f"for urgent priority, got {mock_urlopen.call_count}"
+            )
+
+    def test_explicit_urgent_repeat_count_zero_sends_zero_times(self):
+        """urgent_repeat_count=0, priority=urgent → 0 sends (fully suppressed)."""
+        dt = datetime(2026, 7, 14, 22, 0, 0, tzinfo=ZoneInfo("America/New_York"))
+
+        with patch("backend.shared.helpers.alert_utils.secrets", BASE_SECRETS), \
+             patch("datetime.datetime") as mock_dt, \
+             patch("urllib.request.urlopen") as mock_urlopen:
+
+            mock_dt.now.return_value = dt
+            mock_urlopen.return_value.status = 200
+
+            from backend.shared.helpers.alert_utils import send_ntfy_alert
+            send_ntfy_alert("Test Alert", "Fully suppressed", urgent_repeat_count=0)
+
+            assert mock_urlopen.call_count == 0, (
+                f"Explicit urgent_repeat_count=0 must produce zero sends for "
+                f"urgent priority, got {mock_urlopen.call_count}"
+            )
+
+    def test_explicit_urgent_repeat_count_ten_sends_ten_times(self):
+        """urgent_repeat_count=10, explicit priority='urgent' → 10 sends."""
+        dt = datetime(2026, 7, 14, 14, 0, 0, tzinfo=ZoneInfo("America/New_York"))  # daytime clock, overridden by explicit priority
+
+        with patch("backend.shared.helpers.alert_utils.secrets", BASE_SECRETS), \
+             patch("datetime.datetime") as mock_dt, \
+             patch("urllib.request.urlopen") as mock_urlopen:
+
+            mock_dt.now.return_value = dt
+            mock_urlopen.return_value.status = 200
+
+            from backend.shared.helpers.alert_utils import send_ntfy_alert
+            send_ntfy_alert(
+                "Test Alert", "High repeat count", priority="urgent", urgent_repeat_count=10
+            )
+
+            assert mock_urlopen.call_count == 10, (
+                f"Explicit urgent_repeat_count=10 with explicit priority='urgent' "
+                f"must produce 10 sends, got {mock_urlopen.call_count}"
+            )
+
+    # --- (c) override has NO effect when priority is not "urgent" ---
+
+    def test_urgent_repeat_count_ignored_for_high_priority_clock_based(self):
+        """urgent_repeat_count=7 but clock resolves to priority='high' (day) → still 1 send."""
+        dt = datetime(2026, 7, 14, 14, 0, 0, tzinfo=ZoneInfo("America/New_York"))
+
+        with patch("backend.shared.helpers.alert_utils.secrets", BASE_SECRETS), \
+             patch("datetime.datetime") as mock_dt, \
+             patch("urllib.request.urlopen") as mock_urlopen:
+
+            mock_dt.now.return_value = dt
+            mock_urlopen.return_value.status = 200
+
+            from backend.shared.helpers.alert_utils import send_ntfy_alert
+            send_ntfy_alert("Test Alert", "Ignored override", urgent_repeat_count=7)
+
+            assert mock_urlopen.call_count == 1, (
+                f"urgent_repeat_count must have NO effect when priority is not "
+                f"'urgent' — expected 1 send for 'high' priority regardless of "
+                f"the passed value, got {mock_urlopen.call_count}"
+            )
+
+    def test_urgent_repeat_count_ignored_for_explicit_non_urgent_priority(self):
+        """urgent_repeat_count=9 with explicit priority='default' → still 1 send."""
+        dt = datetime(2026, 7, 14, 23, 30, 0, tzinfo=ZoneInfo("America/New_York"))  # night clock, overridden by explicit priority
+
+        with patch("backend.shared.helpers.alert_utils.secrets", BASE_SECRETS), \
+             patch("datetime.datetime") as mock_dt, \
+             patch("urllib.request.urlopen") as mock_urlopen:
+
+            mock_dt.now.return_value = dt
+            mock_urlopen.return_value.status = 200
+
+            from backend.shared.helpers.alert_utils import send_ntfy_alert
+            send_ntfy_alert(
+                "Test Alert", "Explicit non-urgent ignored",
+                priority="default", urgent_repeat_count=9,
+            )
+
+            assert mock_urlopen.call_count == 1, (
+                f"urgent_repeat_count must have NO effect for an explicit "
+                f"non-urgent priority ('default') even at night, got "
+                f"{mock_urlopen.call_count}"
+            )
+
+    def test_urgent_repeat_count_ignored_for_explicit_low_priority(self):
+        """urgent_repeat_count=4 with explicit priority='low' → still 1 send."""
+        dt = datetime(2026, 7, 15, 3, 0, 0, tzinfo=ZoneInfo("America/New_York"))  # night clock
+
+        with patch("backend.shared.helpers.alert_utils.secrets", BASE_SECRETS), \
+             patch("datetime.datetime") as mock_dt, \
+             patch("urllib.request.urlopen") as mock_urlopen:
+
+            mock_dt.now.return_value = dt
+            mock_urlopen.return_value.status = 200
+
+            from backend.shared.helpers.alert_utils import send_ntfy_alert
+            send_ntfy_alert(
+                "Test Alert", "Low priority ignored",
+                priority="low", urgent_repeat_count=4,
+            )
+
+            assert mock_urlopen.call_count == 1, (
+                f"urgent_repeat_count must have NO effect for priority='low', "
+                f"got {mock_urlopen.call_count}"
+            )
+
+    def test_urgent_repeat_count_still_applies_at_all_sends_headers_consistent(self):
+        """With an overridden count, every one of the N sends carries the same headers."""
+        dt = datetime(2026, 7, 14, 23, 0, 0, tzinfo=ZoneInfo("America/New_York"))
+
+        with patch("backend.shared.helpers.alert_utils.secrets", BASE_SECRETS), \
+             patch("datetime.datetime") as mock_dt, \
+             patch("urllib.request.urlopen") as mock_urlopen:
+
+            mock_dt.now.return_value = dt
+            mock_urlopen.return_value.status = 200
+
+            from backend.shared.helpers.alert_utils import send_ntfy_alert
+            send_ntfy_alert("Repeat Headers", "Body", urgent_repeat_count=4)
+
+            assert mock_urlopen.call_count == 4
+            for call in mock_urlopen.call_args_list:
+                req = call[0][0]
+                assert req.headers.get("Priority") == "urgent"
+                assert req.headers.get("Title") == "Repeat Headers"
+
+
 class TestNtfyUrllibUsage:
     """Verify ntfy uses urllib.request for IPv4-safe delivery."""
 

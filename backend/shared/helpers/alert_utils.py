@@ -1768,12 +1768,22 @@ _TIER_TO_NTFY_PRIORITY = {
 }
 
 
-def send_ntfy_alert(title: str, message: str, priority: str | None = None) -> None:
+def send_ntfy_alert(
+    title: str,
+    message: str,
+    priority: str | None = None,
+    urgent_repeat_count: int = 3,
+) -> None:
     """Deliver via ntfy.sh (or self-hosted ntfy). Priority is ET clock-based:
       22:00–07:00 ET → urgent  (operator night / Indian market hours)
       07:00–22:00 ET → high    (operator day)
     Configurable via ntfy_night_start / ntfy_night_end in secrets (24h hours ET).
     A caller-supplied `priority` value takes precedence over the clock-based default.
+
+    `urgent_repeat_count` controls how many times an "urgent" priority alert is
+    resent (a non-urgent priority always sends exactly once, unaffected by this
+    param). Defaults to 3 — the pre-existing, hardcoded behavior — so every
+    existing caller is unaffected unless it explicitly passes a different value.
     """
     import zoneinfo
     from datetime import datetime
@@ -1799,7 +1809,7 @@ def send_ntfy_alert(title: str, message: str, priority: str | None = None) -> No
     try:
         import urllib.request as _urlreq
         url = f"{base_url.rstrip('/')}/{topic}"
-        send_count = 3 if priority == "urgent" else 1
+        send_count = urgent_repeat_count if priority == "urgent" else 1
 
         # HTTP headers must be latin-1 safe; replace Unicode punctuation that
         # appears in agent titles (em dash u2014, en dash u2013, etc.) with ASCII.
