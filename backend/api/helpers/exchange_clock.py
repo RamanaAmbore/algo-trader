@@ -245,8 +245,27 @@ async def _force_refresh() -> None:
 
         async with async_session() as session:
             result = await session.execute(select(ExchangeSchedule))
-            rows = result.scalars().all()
-        _CACHE = list(rows)
+            rows = list(result.scalars().all())
+            # 2026-11-27 fix (live P1) — explicitly expunge before the
+            # `async with` block closes this session. `ExchangeSchedule`
+            # carries only plain, non-deferred scalar `mapped_column`s and
+            # no relationships (confirmed via `models.py`), so every
+            # attribute `_is_within_session()`/`_effective_gate_rows()`
+            # read is already eagerly loaded into each row's `__dict__` by
+            # this one `select(ExchangeSchedule)` — a lazy-load-triggered
+            # `DetachedInstanceError` should be structurally impossible
+            # against today's model. `expunge_all()` is still the
+            # SQLAlchemy-documented idiom for "load now, cache beyond this
+            # session's lifetime" (what `_CACHE` does for up to
+            # `_CACHE_TTL_S`): it formally detaches these rows from the
+            # about-to-close session right away instead of relying on
+            # implicit close-time detachment, and it guards against ANY
+            # future schema change (a new deferred column or relationship
+            # on `ExchangeSchedule`) silently reintroducing exactly this
+            # crash class for a cached row accessed long after its own
+            # session has closed.
+            session.expunge_all()
+        _CACHE = rows
         _cache_loaded_at = _time.monotonic()
         logger.debug("exchange_clock: cache refreshed — %d rows", len(_CACHE))
     except Exception as exc:

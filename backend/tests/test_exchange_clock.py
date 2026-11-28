@@ -348,3 +348,101 @@ class TestOverridePrecedenceExplicit:
         with patch.object(ec, '_now_ist', return_value=mock_time):
             # Override should be checked first — date match wins
             assert ec.is_exchange_open("NSE") is False
+
+
+# ---------------------------------------------------------------------------
+# 2026-11-27 fix (live P1, part of the snapshot_gate fail-closed fix) —
+# `_force_refresh()` must explicitly `expunge_all()` the loaded rows before
+# its own `async with async_session()` block closes the session, and the
+# resulting `_CACHE` rows must stay fully readable afterward (every
+# `ExchangeSchedule` column is a plain eager-loaded scalar, so this must
+# never require a DB round-trip post-detach).
+# ---------------------------------------------------------------------------
+
+class _FakeScalarsResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def all(self):
+        return self._rows
+
+
+class _FakeExecResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def scalars(self):
+        return _FakeScalarsResult(self._rows)
+
+
+class _FakeRefreshSession:
+    """Minimal async-context-manager fake DB session for `_force_refresh()`.
+    Tracks whether `expunge_all()` was called, mirroring
+    `test_mcx_dst_close_time_sync.py`'s `_FakeSyncSession` fake."""
+
+    def __init__(self, rows):
+        self._rows = rows
+        self.expunge_all_called = False
+
+    def __call__(self):
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def execute(self, stmt):
+        return _FakeExecResult(self._rows)
+
+    def expunge_all(self):
+        self.expunge_all_called = True
+
+
+class TestForceRefreshExpungesSession:
+    """`_force_refresh()` must detach cached rows from the closing session
+    and leave every attribute `_is_within_session`/`_effective_gate_rows`
+    reads fully accessible afterward."""
+
+    @pytest.mark.asyncio
+    async def test_force_refresh_calls_expunge_all(self, sample_default_row,
+                                                     sample_mcx_default_row):
+        import backend.api.helpers.exchange_clock as ec
+
+        rows = [sample_default_row, sample_mcx_default_row]
+        fake_session = _FakeRefreshSession(rows)
+
+        with patch("backend.api.database.async_session", new=fake_session):
+            await ec._force_refresh()
+
+        assert fake_session.expunge_all_called is True, (
+            "_force_refresh() must call session.expunge_all() before the "
+            "session context closes, so cached rows are cleanly detached "
+            "rather than relying on implicit close-time behaviour"
+        )
+        assert ec._CACHE == rows
+
+    @pytest.mark.asyncio
+    async def test_cached_row_attributes_readable_after_force_refresh(
+        self, sample_default_row, sample_mcx_default_row,
+    ):
+        """Every attribute the public accessors read off a cached row
+        (gate, exchanges, date, weekdays, open_time, close_time) must be
+        readable with no DB round-trip after `_force_refresh()` returns —
+        this is the exact access pattern `_is_within_session()` and
+        `_effective_gate_rows()` use on every call."""
+        import backend.api.helpers.exchange_clock as ec
+
+        rows = [sample_default_row, sample_mcx_default_row]
+        fake_session = _FakeRefreshSession(rows)
+
+        with patch("backend.api.database.async_session", new=fake_session):
+            await ec._force_refresh()
+
+        mock_time = datetime(2025, 1, 15, 10, 0, 0, tzinfo=_IST)  # Wednesday
+        with patch.object(ec, "_now_ist", return_value=mock_time):
+            # Drives real attribute access on the now-detached cached rows.
+            assert ec.is_exchange_open("NSE") is True
+            assert ec.is_exchange_open("MCX") is True
+            assert ec.is_any_segment_open() is True

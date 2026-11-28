@@ -385,10 +385,41 @@ def _any_segment_open(exchanges: "list[str] | None" = None) -> bool:
     try:
         from backend.api.helpers import exchange_clock
         return exchange_clock.is_any_segment_open(exchanges)
-    except Exception:
-        # fail-open: if we cannot determine market state, assume open so
-        # the live broker path runs and the operator sees fresh data.
-        return True
+    except Exception as exc:  # noqa: BLE001
+        # Fail CLOSED (2026-11-27 fix, live P1): `exchange_clock.
+        # is_any_segment_open()` is documented and designed to fail
+        # closed on any uncertainty ("empty cache means schedule not
+        # loaded, not market open"). The old `except: return True` here
+        # directly contradicted that contract — any exception raised
+        # while evaluating market state (confirmed live, 2026-11-27,
+        # 23:55:30-23:56:30 IST: isolated single requests reached the
+        # live broker path sandwiched between correctly-closed responses
+        # in the same ~40s window, with MCX's `close_time` row confirmed
+        # unchanged all evening — the signature of a rare per-call
+        # exception, most likely a `DetachedInstanceError` on a cached
+        # ORM row once `exchange_clock._force_refresh()`'s own session
+        # has already closed) silently made the live broker path run
+        # instead of serving the last-known-good snapshot. Logged at
+        # WARNING so this is visible for the first time; failing closed
+        # matches `closed_hours_or_broker()`'s own stated invariant that
+        # `broker_fn` is NEVER called when the market is genuinely
+        # closed — an uncertain state must resolve the same way a
+        # confirmed-closed state does, not the opposite.
+        #
+        # The suspected DetachedInstanceError mechanism above is NOT
+        # confirmed — `exchange_clock.py`'s own `_force_refresh()` shows
+        # `ExchangeSchedule` carries only plain, non-deferred scalar
+        # columns and no relationships, so a lazy-load-triggered
+        # DetachedInstanceError should be structurally impossible against
+        # today's model. `exc_info=True` captures the real traceback so
+        # the FIRST real occurrence after this fix ships identifies the
+        # actual exception, rather than leaving it a guess.
+        logger.warning(
+            f"_any_segment_open: exchange_clock check failed, failing "
+            f"closed (serving snapshot): {exc!r}",
+            exc_info=True,
+        )
+        return False
 
 
 async def closed_hours_or_broker(

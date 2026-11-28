@@ -585,6 +585,55 @@ async def test_any_segment_open_nse_filter_returns_true_when_nse_open():
     )
 
 
+# ---------------------------------------------------------------------------
+# 2026-11-27 fix (live P1) — _any_segment_open must fail CLOSED, not open,
+# on any exception from exchange_clock.is_any_segment_open(). The old
+# `except: return True` silently let an isolated per-call exception (e.g. a
+# DetachedInstanceError on a cached ORM row) route an operator-visible
+# request straight to the live broker, even while the market was genuinely
+# closed — the signature confirmed live on prod, 2026-11-27 23:55:30-
+# 23:56:30 IST: sparse single-request blips sandwiched between correctly
+# "snapshot"-sourced responses, with MCX's close_time row confirmed
+# unchanged all evening (ruling out a real market-state flip).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_any_segment_open_fails_closed_on_exception():
+    """A raised exception inside exchange_clock.is_any_segment_open() must
+    make _any_segment_open() return False (serve the snapshot), not True
+    (call the live broker) — this directly contradicts the old fail-open
+    behaviour and matches exchange_clock.is_any_segment_open()'s own
+    documented fail-closed contract."""
+    from backend.api.helpers.snapshot_gate import _any_segment_open
+
+    with patch(
+        "backend.api.helpers.exchange_clock.is_any_segment_open",
+        side_effect=RuntimeError("simulated DetachedInstanceError"),
+    ):
+        result = await asyncio.to_thread(_any_segment_open, None)
+
+    assert result is False, (
+        "_any_segment_open() must fail CLOSED (return False) when the "
+        "underlying exchange_clock check raises — an uncertain market "
+        "state must never route a request to the live broker"
+    )
+
+
+@pytest.mark.asyncio
+async def test_any_segment_open_fails_closed_on_exception_with_exchange_filter():
+    """Same fail-closed guarantee when an exchanges filter is supplied —
+    the exception path must not special-case the filtered call."""
+    from backend.api.helpers.snapshot_gate import _any_segment_open
+
+    with patch(
+        "backend.api.helpers.exchange_clock.is_any_segment_open",
+        side_effect=RuntimeError("simulated transient failure"),
+    ):
+        result = await asyncio.to_thread(_any_segment_open, ["NSE"])
+
+    assert result is False
+
+
 @pytest.mark.asyncio
 async def test_closed_hours_or_broker_nse_filter_fires_at_nse_close():
     """closed_hours_or_broker with segment_exchanges=['NSE'] must use the
