@@ -570,18 +570,28 @@ def _rebuild_positions_summary(raw: "pd.DataFrame") -> "pd.DataFrame":
             raw['day_change_val'] = baseline_diff_day_pnl_series(
                 raw['realised'], raw['unrealised'], _base
             )
-        # baseline_stale (2026-11 Day P&L audit) — a daily_book snapshot-
-        # writer gap row must contribute 0 here too, for the SAME reason
-        # positions.py:_with_baseline_diff_day_change does — this rollup
-        # feeds the performance-refresh `sum_positions` summary, in turn
-        # read by NavStrip's P slot AND the `day_val`/`day_pct` grammar
-        # metrics (`loss-positions-total` and every other agent condition
-        # keyed on Positions scope). Without this, that critical-tier
-        # alert could fire (or fail to fire) off a position's full
-        # lifetime pnl rather than its real, unknown-but-flagged day move.
+        # baseline_stale (2026-11 Day P&L audit; corrected in the 6D
+        # follow-up audit) — a daily_book snapshot-writer gap row must
+        # contribute its own lifetime `pnl` here, NOT a hard 0.0, for
+        # the SAME reason positions.py:_with_baseline_diff_day_change
+        # does — this rollup feeds the performance-refresh
+        # `sum_positions` summary, in turn read by NavStrip's P slot AND
+        # the `day_val`/`day_pct` grammar metrics (`loss-positions-
+        # total` and every other agent condition keyed on Positions
+        # scope). A hard 0.0 here silently reads a position that is
+        # genuinely losing real money today as flat in the one feed the
+        # critical-tier loss guard reads — see
+        # pnl_math.baseline_gap_day_pnl_substitute's own docstring.
         if 'baseline_stale' in raw.columns:
+            from backend.api.algo.pnl_math import baseline_gap_day_pnl_substitute
+            _gap_fallback = (
+                pd.to_numeric(raw['pnl'], errors='coerce').apply(
+                    baseline_gap_day_pnl_substitute
+                ) if 'pnl' in raw.columns
+                else pd.Series(0.0, index=raw.index)
+            )
             raw['day_change_val'] = raw['day_change_val'].where(
-                ~raw['baseline_stale'].fillna(False).astype(bool), 0.0
+                ~raw['baseline_stale'].fillna(False).astype(bool), _gap_fallback
             )
     sum_cols = [c for c in ('pnl', 'day_change_val') if c in raw.columns]
     grouped = raw.groupby('account')[sum_cols].sum().reset_index() if sum_cols \

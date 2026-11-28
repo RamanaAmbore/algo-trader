@@ -378,20 +378,25 @@ class TestFetchBaselinePnlMapUnchanged:
 
 
 # ---------------------------------------------------------------------------
-# 6. Aggregate rollups must not re-introduce the lifetime-pnl leak
-#    (`_row_baseline_diff_day_pnl` / `build_summary_from_rows` /
-#    `_build_polars_summary` / `_with_baseline_diff_day_change`)
+# 6. Aggregate rollups must never silently read a `baseline_stale` row's
+#    Day P&L contribution as a hard 0 (`_row_baseline_diff_day_pnl` /
+#    `build_summary_from_rows` / `_build_polars_summary` /
+#    `_with_baseline_diff_day_change` / `_rebuild_positions_summary`)
 # ---------------------------------------------------------------------------
 #
-# A per-row `baseline_stale` flag alone is not enough: `PositionsResponse
-# .summary` (closed-hours path, and the live-fetch polars account/symbol
-# rollup) is built independently of the frontend's row-level
-# `baseDayPnlForPosition` and would otherwise STILL sum the row's full
-# `current_total_profit - 0` into the account/TOTAL Day P&L, silently
-# disagreeing with the (now-correct) per-row display.
+# 2026-11 6D-audit correction: an earlier revision of this fix made a
+# `baseline_stale` row contribute a hard 0.0 to every account/TOTAL Day
+# P&L rollup — including the one `loss-positions-total` (critical tier)
+# reads via background.py's `sum_positions`. That silently read a
+# position genuinely losing real money today as flat, in exactly the
+# direction CLAUDE.md's "Staleness indicator freeze rule" forbids. The
+# corrected behaviour: a flagged row contributes its own LIFETIME `pnl`
+# (never a hard 0.0) — see `pnl_math.baseline_gap_day_pnl_substitute`'s
+# own docstring for the full reasoning, including the accepted tradeoff
+# (not a perfect Day P&L figure, but never silently "no loss" either).
 
-class TestAggregateRollupsExcludeGapRowContribution:
-    def test_row_baseline_diff_day_pnl_short_circuits_to_zero(self):
+class TestAggregateRollupsSubstituteLifetimePnlNotZero:
+    def test_row_baseline_diff_day_pnl_substitutes_lifetime_pnl(self):
         from backend.api.routes.positions_helpers import _row_baseline_diff_day_pnl
         from backend.api.schemas import PositionRow
 
@@ -401,7 +406,10 @@ class TestAggregateRollupsExcludeGapRowContribution:
             pnl=48250.0, realised=0.0, unrealised=48250.0,
             prev_settlement_pnl=None, baseline_stale=True,
         )
-        assert _row_baseline_diff_day_pnl(row) == 0.0
+        assert _row_baseline_diff_day_pnl(row) == 48250.0, (
+            "a baseline_stale row must contribute its own lifetime pnl, "
+            "never a hard 0.0 that silently reads it as flat"
+        )
 
     def test_row_baseline_diff_day_pnl_unchanged_for_new_position(self):
         from backend.api.routes.positions_helpers import _row_baseline_diff_day_pnl
@@ -415,10 +423,11 @@ class TestAggregateRollupsExcludeGapRowContribution:
         )
         assert _row_baseline_diff_day_pnl(row) == 1000.0
 
-    def test_build_summary_from_rows_excludes_gap_row_lifetime_pnl(self):
-        """The account + TOTAL summary's day_change_val must reflect only
-        the genuinely-new row's contribution — never the gap row's
-        48250.0 lifetime gain."""
+    def test_build_summary_from_rows_includes_gap_row_lifetime_pnl(self):
+        """The account + TOTAL summary's day_change_val must include the
+        gap row's own lifetime pnl (48250.0) — never silently drop it to
+        0, which would mask a genuinely large loss/gain on that row from
+        the critical-tier loss-guard agent's feed."""
         from backend.api.routes.positions_helpers import build_summary_from_rows
         from backend.api.schemas import PositionRow
 
@@ -438,13 +447,13 @@ class TestAggregateRollupsExcludeGapRowContribution:
         acct_row = next(s for s in summary if s.account == "ZG0790")
         total_row = next(s for s in summary if s.account == "TOTAL")
 
-        assert acct_row.day_change_val == 1000.0, (
-            "the gap row's lifetime pnl (48250.0) must NOT be summed into "
-            "the account Day P&L rollup"
+        assert acct_row.day_change_val == 49250.0, (
+            "the gap row's lifetime pnl (48250.0) must be summed into "
+            "the account Day P&L rollup, not silently zeroed"
         )
-        assert total_row.day_change_val == 1000.0
+        assert total_row.day_change_val == 49250.0
 
-    def test_with_baseline_diff_day_change_polars_short_circuits_gap_rows(self):
+    def test_with_baseline_diff_day_change_polars_substitutes_lifetime_pnl(self):
         """The live-fetch polars summary path
         (_with_baseline_diff_day_change → _build_polars_summary) must agree
         with the row-level path above on the same underlying data."""
@@ -462,10 +471,26 @@ class TestAggregateRollupsExcludeGapRowContribution:
         })
         out = _with_baseline_diff_day_change(df)
         values = out["day_change_val"].to_list()
-        assert values == [0.0, 1000.0], (
-            "the gap row (baseline_stale=True) must contribute 0.0, not "
-            "its full lifetime pnl (48250.0), to day_change_val"
+        assert values == [48250.0, 1000.0], (
+            "the gap row (baseline_stale=True) must contribute its own "
+            "lifetime pnl (48250.0), never a hard 0.0, to day_change_val"
         )
+
+    def test_with_baseline_diff_day_change_no_pnl_column_falls_back_to_zero(self):
+        """When `pnl` itself isn't on the frame, there's no real-pnl
+        signal to substitute either way — falls back to 0.0, same as
+        before this fix, rather than raising or inventing a value."""
+        import polars as pl
+        from backend.api.routes.positions import _with_baseline_diff_day_change
+
+        df = pl.DataFrame({
+            "realised": [0.0],
+            "unrealised": [48250.0],
+            "prev_settlement_pnl": [None],
+            "baseline_stale": [True],
+        })
+        out = _with_baseline_diff_day_change(df)
+        assert out["day_change_val"].to_list() == [0.0]
 
     def test_with_baseline_diff_day_change_no_baseline_stale_column_unchanged(self):
         """Callers/fixtures without a baseline_stale column (e.g. paper
@@ -482,12 +507,12 @@ class TestAggregateRollupsExcludeGapRowContribution:
         out = _with_baseline_diff_day_change(df)
         assert out["day_change_val"].to_list() == [500.0]
 
-    def test_rebuild_positions_summary_excludes_gap_row_lifetime_pnl(self):
+    def test_rebuild_positions_summary_includes_gap_row_lifetime_pnl(self):
         """`background.py:_rebuild_positions_summary` feeds the performance-
         refresh `sum_positions` table — in turn read by NavStrip's P slot
         AND the `day_val`/`day_pct` grammar metrics that drive
         `loss-positions-total` (critical tier). A gap row's lifetime pnl
-        must not leak into that account/TOTAL rollup either."""
+        must be included in that account/TOTAL rollup, never zeroed."""
         from backend.api.background import _rebuild_positions_summary
 
         raw = pd.DataFrame([
@@ -504,9 +529,31 @@ class TestAggregateRollupsExcludeGapRowContribution:
         ])
         summary = _rebuild_positions_summary(raw)
         acct_total = summary.loc[summary["account"] == "ZG0790", "day_change_val"].iloc[0]
-        assert acct_total == 1000.0, (
-            "the gap row's lifetime pnl (48250.0) must not be summed into "
-            "the performance-refresh day_change_val rollup"
+        assert acct_total == 49250.0, (
+            "the gap row's lifetime pnl (48250.0) must be summed into "
+            "the performance-refresh day_change_val rollup, not zeroed"
+        )
+
+    def test_rebuild_positions_summary_large_loss_on_gap_row_still_surfaces(self):
+        """The exact scenario the 6D audit flagged: a baseline_stale row
+        carrying a large, real, NEGATIVE lifetime pnl must still reach
+        the account/TOTAL rollup as a real loss — never read as 0, which
+        would silently pass the critical-tier loss-guard agent's own
+        day_val/day_pct leaves."""
+        from backend.api.background import _rebuild_positions_summary
+
+        raw = pd.DataFrame([
+            {
+                "account": "ZG0790", "realised": 0.0, "unrealised": -250000.0,
+                "pnl": -250000.0, "prev_settlement_pnl": None,
+                "baseline_stale": True, "prev_close": 8700.0, "quantity": 10,
+            },
+        ])
+        summary = _rebuild_positions_summary(raw)
+        acct_total = summary.loc[summary["account"] == "ZG0790", "day_change_val"].iloc[0]
+        assert acct_total == -250000.0, (
+            "a baseline_stale row's real negative lifetime pnl must "
+            "reach the rollup, not silently read as 0 (no loss)"
         )
 
     def test_rebuild_positions_summary_no_baseline_stale_column_unchanged(self):

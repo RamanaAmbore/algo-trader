@@ -1246,8 +1246,12 @@ def _with_baseline_diff_day_change(df: "pl.DataFrame") -> "pl.DataFrame":
     on the same underlying data. Falls back to the plain (no-pnl-fallback)
     expression when `pnl` is absent.
 
-    When a `baseline_stale` column is present (2026-11 Day P&L audit),
-    overrides the computed value to 0.0 on any row flagged True — mirrors
+    When a `baseline_stale` column is present (2026-11 Day P&L audit;
+    corrected in the 6D follow-up audit), overrides the computed value
+    on any row flagged True to its own lifetime `pnl` (never a hard
+    0.0 — see `pnl_math.baseline_gap_day_pnl_substitute`'s docstring
+    for why a flagged row must never silently read as "no loss" in the
+    critical-tier `loss-positions-total` agent's own feed) — mirrors
     `_row_baseline_diff_day_pnl`'s own short-circuit, so this polars path
     (the live-fetch account/symbol summary) can never disagree with the
     row-level path about a daily_book snapshot-writer gap row's
@@ -1269,9 +1273,17 @@ def _with_baseline_diff_day_change(df: "pl.DataFrame") -> "pl.DataFrame":
     else:
         _expr = baseline_diff_day_pnl_expr('realised', 'unrealised', _base_col)
     if 'baseline_stale' in df.columns:
+        # A flagged row substitutes its own lifetime `pnl` (never a hard
+        # 0.0) — see pnl_math.baseline_gap_day_pnl_substitute. Falls
+        # back to 0.0 only when `pnl` itself isn't present on this frame
+        # (no real-pnl signal available either way in that case).
+        _gap_fallback = (
+            pl.col('pnl').cast(pl.Float64, strict=False).fill_null(0.0)
+            if 'pnl' in df.columns else pl.lit(0.0)
+        )
         _expr = (
             pl.when(pl.col('baseline_stale').fill_null(False))
-            .then(pl.lit(0.0))
+            .then(_gap_fallback)
             .otherwise(_expr)
         )
     return df.with_columns(_expr.alias('day_change_val'))

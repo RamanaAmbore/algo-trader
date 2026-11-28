@@ -283,6 +283,36 @@ def is_baseline_gap(base_pnl: "float | None", overnight_qty: "float | None") -> 
         return False
 
 
+def baseline_gap_day_pnl_substitute(pnl: "float | None") -> float:
+    """Day P&L contribution for a `baseline_stale` row — i.e. one where
+    `is_baseline_gap` is True, so the real base_pnl is genuinely unknown
+    (not a confirmed 0).
+
+    2026-11 6D audit fix: a prior revision short-circuited a flagged
+    row's Day P&L contribution to a HARD 0.0 in every aggregate
+    (`_row_baseline_diff_day_pnl`, `positions.py:_with_baseline_diff_
+    day_change`, `background.py`'s pandas rollup). That silently
+    collapsed a position that is genuinely losing real money today to
+    "no loss" in the very aggregate the critical-tier `loss-positions-
+    total` agent's `day_val`/`day_pct`/rate-of-change leaves read — the
+    exact direction CLAUDE.md's "Staleness indicator freeze rule"
+    forbids ("any degraded/failed fetch must freeze to last-known-good
+    ... never silently collapse to 0/blank").
+
+    There is no genuine last-known-good DAY P&L figure for a baseline
+    gap (that is precisely what's missing) — so this uses the row's own
+    lifetime `pnl` (realised + unrealised) as a conservative, always-
+    available substitute. It is not a perfect Day P&L value (a position
+    with large prior-day gains can mask a smaller loss today), but it
+    is never silently read as "flat" the way 0.0 was, and a genuinely
+    large move — the scenario this fix exists for — still reaches the
+    agent. `pnl` is never None-coerced to a wrong zero either: a missing
+    `pnl` still needs an explicit 0.0 fallback here, since the row's
+    real total profit is unknown either way in that case.
+    """
+    return float(pnl or 0.0)
+
+
 def _recompute_day_change_pct(
     df: pd.DataFrame, sel_mask: "pd.Index", qty: "pd.Series"
 ) -> None:

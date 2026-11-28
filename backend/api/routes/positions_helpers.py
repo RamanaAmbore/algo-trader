@@ -175,16 +175,22 @@ def _row_baseline_diff_day_pnl(row: PositionRow) -> float:
     row-level path can never disagree with the vectorised ones on the same
     data.
 
-    `row.baseline_stale` (2026-11 Day P&L audit) short-circuits to 0.0
-    BEFORE the base_pnl=0 default is ever applied — mirrors the frontend's
-    `baseDayPnlForPosition`'s own `isBaselineGap` guard (nav.js), so a
-    daily_book snapshot-writer gap never contributes its full lifetime
-    pnl to `build_summary_from_rows` / `build_symbol_summary_from_rows`
-    (the account/symbol/TOTAL rollups) the way the un-guarded formula
-    would (`current_total_profit - 0`).
+    `row.baseline_stale` (2026-11 Day P&L audit; corrected in the 6D
+    follow-up audit) short-circuits BEFORE the base_pnl=0 default is
+    ever applied, so a daily_book snapshot-writer gap never contributes
+    its full lifetime pnl to `build_summary_from_rows` /
+    `build_symbol_summary_from_rows` (the account/symbol/TOTAL rollups)
+    the way the un-guarded formula would (`current_total_profit - 0`).
+
+    This no longer substitutes a hard 0.0 — that silently read a
+    genuinely losing position as flat in the exact aggregate the
+    critical-tier `loss-positions-total` agent reads (see
+    `pnl_math.baseline_gap_day_pnl_substitute`'s own docstring). Uses
+    the row's own lifetime `pnl` as a conservative substitute instead.
     """
     if getattr(row, "baseline_stale", False):
-        return 0.0
+        from backend.api.algo.pnl_math import baseline_gap_day_pnl_substitute
+        return baseline_gap_day_pnl_substitute(row.pnl)
     from backend.api.algo.pnl_math import baseline_diff_day_pnl_with_fallback
     _base = row.prev_settlement_pnl or 0.0
     return baseline_diff_day_pnl_with_fallback(row.realised, row.unrealised, row.pnl, _base)

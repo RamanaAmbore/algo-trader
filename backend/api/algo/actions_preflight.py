@@ -641,10 +641,9 @@ async def _preflight_emit_margin_blocker(
 def _preflight_collect_leg_errors(bm_result: object) -> list[str]:
     """Collect per-leg `error` strings from a basket-margin result whose
     `required` could not be parsed (None) — used to route a genuine
-    Dhan/Groww-side margin failure into the same keyword-matching
-    classification the raised-exception branch already applies, instead
-    of silently treating every unparseable result as "margin check not
-    needed"."""
+    Dhan/Groww-side margin failure into the same inconclusive handling
+    `_dlf_inconclusive_message` already applies, instead of silently
+    treating every unparseable result as "margin check not needed"."""
     errors: list[str] = []
     if isinstance(bm_result, list):
         errors = [str(r.get("error")) for r in bm_result
@@ -652,6 +651,20 @@ def _preflight_collect_leg_errors(bm_result: object) -> list[str]:
     elif isinstance(bm_result, dict) and bm_result.get("error"):
         errors = [str(bm_result.get("error"))]
     return errors
+
+
+def _preflight_format_leg_errors(
+    leg_errors: list[str], *, limit: int = 160,
+) -> str:
+    """Join and truncate per-leg error strings for display/log text —
+    the one shared formatting shape both `_dlf_inconclusive_message`
+    and `_preflight_check_margin`'s inconclusive branch use, so the two
+    never drift into two differently-worded renderings of the same
+    underlying leg-error list."""
+    return (
+        " | ".join(leg_errors)[:limit] if leg_errors
+        else "no error detail returned"
+    )
 
 
 async def _preflight_dhan_groww_close_note(
@@ -855,8 +868,8 @@ async def _preflight_check_margin(
         required = _preflight_parse_basket_margin(bm_result)
         _leg_errors = _preflight_collect_leg_errors(bm_result)
 
-        # ── Unknown-margin / leg-error gate (item 4/5; extended 2026-11
-        # real-money audit follow-up) ─────────────────────────────────
+        # ── Unknown-margin / leg-error gate (item 4/5; corrected 2026-11
+        # 6D audit follow-up — see below) ───────────────────────────────
         # `required` is None when no leg's margin could be parsed at
         # all (missing/unparseable fields on every leg — a genuinely
         # different situation from Kite's "negative required" credit
@@ -866,42 +879,64 @@ async def _preflight_check_margin(
         # parsed numeric total of 0.0 (confirmed live, pre-fix Groww
         # signature-mismatch payload: `[{"total": 0.0, "error":
         # "...unexpected keyword argument 'trading_symbol'", "raw":
-        # None}]` — see the identical shape `diagnose_live_failure`'s
-        # own `_dlf_inconclusive_message` fix, same file/session, was
-        # built to stop misreading). `required is None` alone does NOT
-        # catch that shape: `required` here parses to a real `0.0`, not
-        # `None`, so without this check the `elif required < 0` /
-        # `else` branches below would read it as "required == 0, no
-        # margin needed" and silently pass the order through a GENUINE
-        # broker-side margin-check FAILURE — this is the live, real-
-        # money order GATE (unlike `diagnose_live_failure`, which only
-        # produces after-the-fact diagnostic text), so that silent pass
-        # is the actual bug.
+        # None}]`). `required is None` alone does NOT catch that shape:
+        # `required` here parses to a real `0.0`, not `None`, so
+        # without this check the `elif required < 0` / `else` branches
+        # below would read it as "required == 0, no margin needed" and
+        # silently pass the order through a GENUINE broker-side
+        # margin-check FAILURE — this is the live, real-money order
+        # GATE, so that silent pass is a real bug and `_leg_errors` must
+        # still void the parsed total below.
         #
-        # Fail OPEN on the WHOLE basket rather than silently treating an
-        # unknown or failed amount as a confirmed zero: ANY leg carrying
-        # an `error` — regardless of what its own `total` parsed to —
-        # routes through the SAME keyword-matching classification the
-        # raised-exception branch below already applies (re-raising
-        # reuses that logic rather than inventing a third behaviour), so
-        # a genuine Dhan/Groww-side margin failure still surfaces as
-        # MARGIN_SHORTFALL (subject to the same enforce-vs-log-only
-        # `preflight.enforce_margin_dhan`/`enforce_margin_groww` toggle
-        # every other margin blocker on this gate already respects);
-        # otherwise (no leg error, required genuinely unparseable) log
-        # and skip — broker's own place_order remains the real backstop.
+        # 2026-11 6D-audit correction: an EARLIER version of this branch
+        # `raise RuntimeError(leg_errors)`'d straight into the
+        # raised-exception keyword classifier below (:948), which
+        # confirmed MARGIN_SHORTFALL whenever the leg's error text
+        # happened to contain "margin"/"fund"/"shortfall"/"balance" —
+        # including purely because the FAILING SDK METHOD's own name
+        # contains that word (e.g. `get_margin_calculator`,
+        # `get_order_margin_details`). That conflated "we could not
+        # determine margin" with "we confirmed a shortfall" — the exact
+        # distinction `_dlf_inconclusive_message` (above) exists to
+        # preserve, and which that function's own docstring names this
+        # identical hazard for. A transient SDK/transport failure must
+        # never block a real, placeable order as a confirmed shortfall.
+        #
+        # Fixed: a leg `error` is now treated as INCONCLUSIVE, exactly
+        # like a genuinely-unparseable `required` (no leg error) below —
+        # no blocker, no `margin_would_block` entry (this is not a
+        # would-have-blocked outcome), diagnostics explicitly record the
+        # inconclusive leg-error text, and the broker's own place_order
+        # remains the real backstop. The ONLY path that still confirms a
+        # real MARGIN_SHORTFALL for Dhan/Groww is the numeric
+        # `required > available` comparison in
+        # `_preflight_handle_positive_margin` below — never error-text
+        # keyword matching. The raised-exception keyword classifier at
+        # :948 is unchanged (a true Kite-side `basket_order_margins`
+        # exception, a different, pre-existing code path this fix does
+        # not touch — it carries the same method-name hazard but is out
+        # of scope for this fix).
         if required is None or _leg_errors:
             diag["basket_margin_used"] = None
             diag["available_margin"]   = None
             diag["margin_shortfall"]   = None
             if _leg_errors:
-                raise RuntimeError(" | ".join(_leg_errors)[:240])
-            logger.info(
-                f"[PREFLIGHT] margin required could not be determined for "
-                f"{account}/{symbol} (no parseable total on any leg, no "
-                f"leg error) — skipping margin-shortfall gate; broker's "
-                f"own place_order remains the real backstop."
-            )
+                err_text = _preflight_format_leg_errors(_leg_errors, limit=240)
+                diag["margin_check_inconclusive"] = err_text
+                logger.warning(
+                    f"[PREFLIGHT] margin check inconclusive for "
+                    f"{account}/{symbol} (leg error: {err_text}) — NOT "
+                    f"treated as a confirmed shortfall; skipping "
+                    f"margin-shortfall gate, broker's own place_order "
+                    f"remains the real backstop."
+                )
+            else:
+                logger.info(
+                    f"[PREFLIGHT] margin required could not be determined for "
+                    f"{account}/{symbol} (no parseable total on any leg, no "
+                    f"leg error) — skipping margin-shortfall gate; broker's "
+                    f"own place_order remains the real backstop."
+                )
 
         # ── Negative-margin sanity check ────────────────────────────────
         # Kite's basket_order_margins can return a negative `required` value
@@ -1351,7 +1386,7 @@ def _dlf_inconclusive_message(bm_result: object, close_note: str, orig: str) -> 
     instead, same convention as the original kite_error preservation.
     """
     leg_errors = _preflight_collect_leg_errors(bm_result)
-    err_text = " | ".join(leg_errors)[:160] if leg_errors else "no error detail returned"
+    err_text = _preflight_format_leg_errors(leg_errors)
     return (
         "margin re-check inconclusive — the broker's margin call returned "
         f"no usable total ({err_text}); this does NOT mean margin is "
