@@ -21,8 +21,22 @@ from unittest.mock import MagicMock, create_autospec, patch
 
 import dhanhq
 
+import backend.brokers.adapters.dhan as dhan_module
 from backend.brokers.adapters.dhan import DhanBroker, _DHAN_RATE_LIMITER
 from backend.brokers.errors import BrokerCapabilityError, BrokerNetworkError
+
+
+@pytest.fixture(autouse=True)
+def _no_real_instruments_fetch(monkeypatch):
+    """`trade_history()` (revised 2026-11-27, same day as added) now
+    calls `_ensure_dhan_instruments()` unconditionally at the top — this
+    would otherwise make every test in this file attempt a real network
+    fetch of Dhan's public instruments CSV. Each test that cares about
+    lot-cache state populates `_DHAN_LOT_BY_SECURITY` /
+    `_DHAN_LOT_BY_MCX_ROOT` directly (see test_broker_qty_normalization.py
+    for the dedicated lot-resolution tests), so the warm-up call itself
+    can be a pure no-op here."""
+    monkeypatch.setattr(dhan_module, "_ensure_dhan_instruments", lambda: None)
 
 
 def _make_broker():
@@ -120,18 +134,153 @@ class TestDhanBrokerTradeHistory:
                        "tradedPrice": 10.0, "exchangeTime": "2026-04-05 10:00:00"}],
         }
         mock_conn.get_dhan_conn.return_value = sdk
-        with pytest.raises(BrokerNetworkError, match="pagination loop"):
-            broker.trade_history("2026-04-01", "2026-04-30")
+        # The "backfill" bucket (1 call/s, 2026-11-27 Fix 2) would make
+        # this 200-call stress test take real wall-clock minutes if the
+        # rate limiter weren't bypassed — this test's own concern is the
+        # pagination cap, not rate-limiting (covered separately above).
+        with patch.object(_DHAN_RATE_LIMITER, "throttle"):
+            with pytest.raises(BrokerNetworkError, match="pagination loop"):
+                broker.trade_history("2026-04-01", "2026-04-30")
         assert sdk.get_trade_history.call_count == broker._TRADE_HISTORY_MAX_PAGES
 
-    def test_uses_history_rate_limit_bucket(self):
+    def test_uses_dedicated_backfill_rate_limit_bucket_not_history(self):
+        """2026-11-27 fix (Fix 2): trade_history() must use the dedicated
+        'backfill' bucket, NOT the shared 'history' bucket a live ltp()
+        poll also uses — sharing it let an in-progress backfill starve
+        live callers of their rate budget."""
         broker, mock_conn = _make_broker()
         sdk = _spec_sdk()
         sdk.get_trade_history.return_value = {"status": "success", "data": []}
         mock_conn.get_dhan_conn.return_value = sdk
         with patch.object(_DHAN_RATE_LIMITER, "throttle") as mock_throttle:
             broker.trade_history("2026-04-01", "2026-04-30")
-        mock_throttle.assert_called_once_with("history")
+        mock_throttle.assert_called_once_with("backfill")
+
+    def test_calls_ensure_dhan_instruments_up_front(self):
+        """Must warm the lot caches itself — never rely solely on the
+        caller script's own best-effort (debug-level, swallowed) warm-up."""
+        broker, mock_conn = _make_broker()
+        sdk = _spec_sdk()
+        sdk.get_trade_history.return_value = {"status": "success", "data": []}
+        mock_conn.get_dhan_conn.return_value = sdk
+        with patch.object(dhan_module, "_ensure_dhan_instruments") as mock_ensure:
+            broker.trade_history("2026-04-01", "2026-04-30")
+        mock_ensure.assert_called_once_with()
+
+    def test_pagination_terminates_on_raw_page_not_filtered_rows(self):
+        """A page where EVERY row is an unresolved MCX trade must NOT be
+        mistaken for 'end of history' — termination is decided on the
+        raw unwrapped page, never the post-filter row list. Page 0 is
+        entirely unresolved MCX (filters to []), page 1 is a genuine
+        valid trade, page 2 is a truly empty raw page (real end)."""
+        broker, mock_conn = _make_broker()
+        sdk = _spec_sdk()
+        unresolved_mcx_page = {
+            "status": "success",
+            "data": [{
+                "tradeId": "T0", "orderId": "O0",
+                "tradingSymbol": "SOMENEWCOMMODITY-17DEC2026-FUT",
+                "exchange": "MCX", "exchangeSegment": "MCX_COMM",
+                "securityId": "GHOST_SID", "transactionType": "BUY",
+                "tradedQuantity": 2, "tradedPrice": 100.0,
+                "exchangeTime": "2026-04-05 10:00:00",
+            }],
+        }
+        valid_page = {
+            "status": "success",
+            "data": [{
+                "tradeId": "T1", "orderId": "O1", "tradingSymbol": "TCS",
+                "exchange": "NSE", "exchangeSegment": "NSE_EQ",
+                "transactionType": "SELL", "tradedQuantity": 1,
+                "tradedPrice": 3000.0, "exchangeTime": "2026-04-05 11:00:00",
+            }],
+        }
+        empty_page = {"status": "success", "data": []}
+        sdk.get_trade_history.side_effect = [unresolved_mcx_page, valid_page, empty_page]
+        mock_conn.get_dhan_conn.return_value = sdk
+
+        with patch.object(_DHAN_RATE_LIMITER, "throttle"):
+            out = broker.trade_history("2026-04-01", "2026-04-30")
+
+        # Page 1's genuine row must survive — the old bug would have
+        # stopped at page 0 (whose filtered rows are []) and silently
+        # dropped page 1 and beyond entirely.
+        assert [r["trade_id"] for r in out] == ["T1"]
+        assert sdk.get_trade_history.call_count == 3
+
+    def test_unresolved_mcx_rows_logged_as_one_aggregated_critical(self):
+        """An unresolved MCX row is never silently dropped — it is
+        skipped from the returned data AND reported via one aggregated
+        CRITICAL log line naming the unresolved (security_id, symbol,
+        time), not one log line per trade."""
+        broker, mock_conn = _make_broker()
+        sdk = _spec_sdk()
+        sdk.get_trade_history.side_effect = [
+            {
+                "status": "success",
+                "data": [{
+                    "tradeId": "T0", "orderId": "O0",
+                    "tradingSymbol": "SOMENEWCOMMODITY-17DEC2026-FUT",
+                    "exchange": "MCX", "exchangeSegment": "MCX_COMM",
+                    "securityId": "GHOST_SID", "transactionType": "BUY",
+                    "tradedQuantity": 2, "tradedPrice": 100.0,
+                    "exchangeTime": "2026-04-05 10:00:00",
+                }],
+            },
+            {"status": "success", "data": []},
+        ]
+        mock_conn.get_dhan_conn.return_value = sdk
+
+        with patch.object(_DHAN_RATE_LIMITER, "throttle"), \
+                patch.object(dhan_module.logger, "critical") as mock_critical:
+            out = broker.trade_history("2026-04-01", "2026-04-30")
+
+        assert out == []  # the unresolved row never reaches the returned data
+        mock_critical.assert_called_once()
+        args = mock_critical.call_args.args
+        # First format arg after the message template is the account repr.
+        assert "GHOST_SID" in str(args)
+        assert "SOMENEWCOMMODITY26DECFUT" in str(args)
+
+    def test_resolved_rows_coexist_with_unresolved_in_same_page(self):
+        """A page mixing one resolved MCX row and one unresolved MCX row
+        must keep the resolved row and skip only the unresolved one."""
+        broker, mock_conn = _make_broker()
+        sdk = _spec_sdk()
+        dhan_module._DHAN_LOT_BY_SECURITY["RESOLVED_SID"] = 100
+        try:
+            sdk.get_trade_history.side_effect = [
+                {
+                    "status": "success",
+                    "data": [
+                        {
+                            "tradeId": "TR", "orderId": "OR",
+                            "tradingSymbol": "CRUDEOIL-17DEC2026-FUT",
+                            "exchange": "MCX", "exchangeSegment": "MCX_COMM",
+                            "securityId": "RESOLVED_SID", "transactionType": "BUY",
+                            "tradedQuantity": 1, "tradedPrice": 5800.0,
+                            "exchangeTime": "2026-04-05 10:00:00",
+                        },
+                        {
+                            "tradeId": "TU", "orderId": "OU",
+                            "tradingSymbol": "SOMENEWCOMMODITY-17DEC2026-FUT",
+                            "exchange": "MCX", "exchangeSegment": "MCX_COMM",
+                            "securityId": "GHOST_SID", "transactionType": "BUY",
+                            "tradedQuantity": 2, "tradedPrice": 100.0,
+                            "exchangeTime": "2026-04-05 10:05:00",
+                        },
+                    ],
+                },
+                {"status": "success", "data": []},
+            ]
+            mock_conn.get_dhan_conn.return_value = sdk
+            with patch.object(_DHAN_RATE_LIMITER, "throttle"):
+                out = broker.trade_history("2026-04-01", "2026-04-30")
+        finally:
+            dhan_module._DHAN_LOT_BY_SECURITY.clear()
+
+        assert [r["trade_id"] for r in out] == ["TR"]
+        assert out[0]["quantity"] == 100
 
 
 # ---------------------------------------------------------------------------
@@ -190,14 +339,44 @@ class TestDhanBrokerLedgerEntriesRaw:
         with pytest.raises(RuntimeError, match="boom"):
             broker.ledger_entries_raw("2026-07-01", "2026-07-31")
 
-    def test_uses_history_rate_limit_bucket(self):
+    def test_uses_dedicated_backfill_rate_limit_bucket_not_history(self):
+        """2026-11-27 fix (Fix 2) — see the matching trade_history() test
+        above for the full rationale."""
         broker, mock_conn = _make_broker()
         sdk = _spec_sdk()
         sdk.ledger_report.return_value = {"status": "success", "data": []}
         mock_conn.get_dhan_conn.return_value = sdk
         with patch.object(_DHAN_RATE_LIMITER, "throttle") as mock_throttle:
             broker.ledger_entries_raw("2026-07-01", "2026-07-31")
-        mock_throttle.assert_called_once_with("history")
+        mock_throttle.assert_called_once_with("backfill")
+
+
+class TestBackfillBucketIsGenuinelyIndependentFromHistory:
+    """Behaviour test, not just a name check — exhausting the new
+    'backfill' bucket (1 call/s) must never cause a live 'history'
+    caller (e.g. ltp()) to block, proving the two buckets are
+    independent token-bucket state, not merely different string keys
+    pointing at shared state."""
+
+    def setup_method(self):
+        # Reset both buckets to a known-full state so this test doesn't
+        # depend on leftover token counts from a previous test in the
+        # same process.
+        with _DHAN_RATE_LIMITER._lock:
+            for _name in ("backfill", "history"):
+                _b = _DHAN_RATE_LIMITER._buckets[_name]
+                _b["tokens"] = _b["capacity"]
+
+    def test_exhausting_backfill_bucket_never_sleeps_history_bucket(self):
+        import time as _time
+
+        # Exhaust "backfill" (capacity 1) down to its single token.
+        _DHAN_RATE_LIMITER.throttle("backfill")
+        with patch.object(_time, "sleep") as mock_sleep:
+            # "history" (capacity 3) still has 3 tokens untouched —
+            # must consume one instantly, with NO sleep at all.
+            _DHAN_RATE_LIMITER.throttle("history")
+        mock_sleep.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -214,14 +393,52 @@ class TestConnServiceWiring:
         assert "ledger_entries_raw" in _ALLOWED_BROKER_METHODS
 
     def test_remote_broker_trade_history_forwards_with_kwargs(self):
-        from backend.brokers.client.remote_broker import RemoteBroker
+        from backend.brokers.client.remote_broker import RemoteBroker, _TRADE_HISTORY_TIMEOUT
         rb = RemoteBroker("DH3747", broker_id="dhan")
         with patch.object(rb, "_call", return_value=[{"trade_id": "T1"}]) as mock_call:
             out = rb.trade_history("2026-04-01", "2026-04-30")
         mock_call.assert_called_once_with(
             "trade_history", from_date="2026-04-01", to_date="2026-04-30",
+            _rpc_timeout=_TRADE_HISTORY_TIMEOUT,
         )
         assert out == [{"trade_id": "T1"}]
+
+    def test_remote_broker_trade_history_timeout_covers_worst_case_paging(self):
+        """Fix 3 — the client-side timeout for THIS one RPC must exceed
+        the documented worst case: `DhanBroker._TRADE_HISTORY_MAX_PAGES`
+        pages, each throttled by the dedicated 'backfill' bucket. Derived
+        from the real constants so a future change to either the page
+        cap or the bucket's rate fails this test instead of silently
+        reopening the timeout/paging mismatch."""
+        from backend.brokers.client.remote_broker import _TRADE_HISTORY_TIMEOUT
+        from backend.brokers.adapters.dhan import DhanBroker, _DHAN_RATE_LIMITER
+
+        backfill_capacity, backfill_period = (
+            _DHAN_RATE_LIMITER._buckets["backfill"]["capacity"],
+            1.0 / _DHAN_RATE_LIMITER._buckets["backfill"]["refill_rate"],
+        )
+        seconds_per_call = backfill_period / backfill_capacity
+        worst_case_seconds = DhanBroker._TRADE_HISTORY_MAX_PAGES * seconds_per_call
+
+        assert _TRADE_HISTORY_TIMEOUT.read > worst_case_seconds
+        # Also strictly longer than the shared 30s default — this must
+        # be a deliberately widened timeout, not the ordinary one.
+        from backend.brokers.client.remote_broker import _TIMEOUT
+        assert _TRADE_HISTORY_TIMEOUT.read > _TIMEOUT.read
+
+    def test_remote_broker_ledger_entries_raw_uses_default_timeout(self):
+        """A single ledger_report call (no pagination) stays on the
+        shared 30s default — only trade_history() needs the widened
+        timeout."""
+        from backend.brokers.client.remote_broker import RemoteBroker
+        rb = RemoteBroker("DH3747", broker_id="dhan")
+        with patch.object(rb, "_call", return_value=[{"runbal": "1"}]) as mock_call:
+            rb.ledger_entries_raw("2026-07-01", "2026-07-31")
+        mock_call.assert_called_once_with(
+            "ledger_entries_raw", from_date="2026-07-01", to_date="2026-07-31",
+        )
+        # No `_rpc_timeout` kwarg at all — call_args has no such key.
+        assert "_rpc_timeout" not in mock_call.call_args.kwargs
 
     def test_remote_broker_ledger_entries_raw_forwards_with_kwargs(self):
         from backend.brokers.client.remote_broker import RemoteBroker

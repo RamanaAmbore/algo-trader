@@ -47,6 +47,21 @@ logger = logging.getLogger(__name__)
 
 _TIMEOUT = httpx.Timeout(30.0, connect=5.0)
 
+# `DhanBroker.trade_history()` (backend/brokers/adapters/dhan.py) pages
+# through up to `_TRADE_HISTORY_MAX_PAGES` (200) pages inside ONE
+# conn_service RPC call, throttled by the dedicated "backfill" rate
+# bucket (1 call/s — see `_DHAN_RATE_LIMITER` in that module). Worst
+# case that's ~200s on the Dhan-call side alone before any per-call
+# network latency, well past the shared 30s default (`_TIMEOUT`) above.
+# A client-side timeout there would abort this call while conn_service
+# keeps paging server-side — the backfill script then records a failed
+# chunk even though the data may land moments later, too late for this
+# call to see it (2026-11-27 fix). Sized with margin above the
+# documented worst case; kept as its own named timeout, not a bump to
+# the shared `_TIMEOUT`, so every other (fast, interactive) broker call
+# keeps its normal 30s failure detection.
+_TRADE_HISTORY_TIMEOUT = httpx.Timeout(300.0, connect=5.0)
+
 
 def _deploy_branch() -> str:
     from backend.shared.helpers.utils import config
@@ -84,13 +99,26 @@ class RemoteBroker(Broker):
 
     # ── Dispatch primitive ────────────────────────────────────────────
 
-    def _call(self, method: str, *args: Any, **kwargs: Any) -> Any:
+    def _call(
+        self,
+        method: str,
+        *args: Any,
+        _rpc_timeout: "httpx.Timeout | None" = None,
+        **kwargs: Any,
+    ) -> Any:
+        """`_rpc_timeout`, when passed, overrides the shared `_TIMEOUT`
+        for THIS call only (e.g. `trade_history()`'s `_TRADE_HISTORY_TIMEOUT`
+        — see its own comment above). Deliberately not named `timeout` —
+        that would collide with a genuine `timeout` kwarg a broker method
+        itself might take, which this function forwards verbatim into the
+        RPC body's own `kwargs`."""
         path = f"/internal/broker/{self._account}/call/{method}"
         try:
             resp = _get_client().post(
                 path,
                 json={"args": list(args), "kwargs": kwargs},
                 headers={"X-Ramboq-Branch": _deploy_branch()},
+                timeout=_rpc_timeout if _rpc_timeout is not None else _TIMEOUT,
             )
             if not resp.is_success:
                 # Extract JSON error body before raise_for_status() so callers
@@ -169,13 +197,25 @@ class RemoteBroker(Broker):
         trade_history()` inside conn_service — see that method's own
         docstring for the pagination contract. Raises `NotFoundException`
         -> mapped `BrokerError` (via `_call`) if the account's real
-        broker_id has no such method (e.g. Kite/Groww)."""
-        return self._call("trade_history", from_date=from_date, to_date=to_date)
+        broker_id has no such method (e.g. Kite/Groww).
+
+        Uses `_TRADE_HISTORY_TIMEOUT` (300s), not the shared 30s
+        default — see that constant's own comment (2026-11-27 fix) for
+        why this one call can legitimately run far longer than every
+        other (fast, interactive) broker call."""
+        return self._call(
+            "trade_history", from_date=from_date, to_date=to_date,
+            _rpc_timeout=_TRADE_HISTORY_TIMEOUT,
+        )
 
     def ledger_entries_raw(self, from_date: str, to_date: str) -> list[dict]:
         """Dhan-only raw (unaggregated) ledger pull (added 2026-11-27 for
         `scripts/dhan_pnl_sync.py`). Forwards to the real `DhanBroker.
-        ledger_entries_raw()` inside conn_service."""
+        ledger_entries_raw()` inside conn_service.
+
+        Kept on the shared 30s default, unlike `trade_history()` — this
+        is a single `ledger_report` call (no pagination loop), so it
+        doesn't carry the same worst-case duration."""
         return self._call("ledger_entries_raw", from_date=from_date, to_date=to_date)
 
     # ── Market data ───────────────────────────────────────────────────

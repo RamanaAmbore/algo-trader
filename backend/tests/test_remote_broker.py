@@ -145,6 +145,48 @@ class TestRemoteBrokerCall:
             result = broker._call("profile")
             assert result == {"account_id": "ZG0790", "name": "Test"}
 
+    def test_call_uses_shared_default_timeout_when_no_override(self):
+        """_call() with no `_rpc_timeout` passes the shared `_TIMEOUT`
+        default to the httpx client — unchanged behaviour for every
+        existing (fast, interactive) broker call."""
+        from backend.brokers.client.remote_broker import _TIMEOUT
+        broker = RemoteBroker("ZG0790")
+
+        with patch("backend.brokers.client.remote_broker._get_client") as mock_get_client:
+            mock_client = MagicMock()
+            mock_get_client.return_value = mock_client
+            mock_client.post.return_value = MagicMock(
+                status_code=200,
+                json=lambda: {"ok": True, "result": []},
+            )
+            broker._call("holdings")
+            call_kwargs = mock_client.post.call_args[1]
+            assert call_kwargs["timeout"] is _TIMEOUT
+
+    def test_call_rpc_timeout_override_reaches_httpx_post(self):
+        """2026-11-27 fix (Fix 3) — an explicit `_rpc_timeout=` kwarg on
+        `_call()` must override the shared default on the ACTUAL
+        httpx `.post()` call, not merely be accepted and dropped."""
+        broker = RemoteBroker("DH3747", broker_id="dhan")
+        custom_timeout = httpx.Timeout(300.0, connect=5.0)
+
+        with patch("backend.brokers.client.remote_broker._get_client") as mock_get_client:
+            mock_client = MagicMock()
+            mock_get_client.return_value = mock_client
+            mock_client.post.return_value = MagicMock(
+                status_code=200,
+                json=lambda: {"ok": True, "result": []},
+            )
+            broker._call(
+                "trade_history", from_date="2026-04-01", to_date="2026-04-30",
+                _rpc_timeout=custom_timeout,
+            )
+            call_kwargs = mock_client.post.call_args[1]
+            assert call_kwargs["timeout"] is custom_timeout
+            # `_rpc_timeout` itself must never leak into the RPC body's
+            # own forwarded kwargs — it's a local-only override.
+            assert "_rpc_timeout" not in call_kwargs["json"]["kwargs"]
+
 
 class TestRemoteBrokerHistoricalData:
     """RemoteBroker.historical_data() — datetime formatting and parsing."""

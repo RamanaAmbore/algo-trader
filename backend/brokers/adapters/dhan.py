@@ -78,10 +78,23 @@ def _dhan_exc(e: Exception, code: str | None = None,
 # Dhan API v2 rate limits — https://dhanhq.co/docs/v2/ — review on SDK upgrade
 _DHAN_RATE_LIMIT_ENABLED: bool = True
 _DHAN_RATE_LIMITER = TokenBucketLimiter({
-    "orders":  (10, 1.0),   # 10 calls/s for order operations (Dhan v2 published)
-    "history": (3, 1.0),    # 3 calls/s for historical data
-    "margins": (5, 1.0),    # 5 calls/s for margin checks
-    "auth":    (1, 300.0),  # 1 call per 5 min for token generation (Dhan v2 published)
+    "orders":   (10, 1.0),  # 10 calls/s for order operations (Dhan v2 published)
+    "history":  (3, 1.0),   # 3 calls/s for historical data — LIVE callers only
+                            # (ltp()'s ohlc_data batch — see `_sdk_history`).
+                            # `historical_data()` (chart candles) is not wired
+                            # and never calls this bucket.
+    "margins":  (5, 1.0),   # 5 calls/s for margin checks
+    "auth":     (1, 300.0), # 1 call per 5 min for token generation (Dhan v2 published)
+    # Deliberately separate from "history" (2026-11-27 fix) — a running
+    # multi-month `trade_history()`/`ledger_entries_raw()` backfill
+    # (scripts/dhan_pnl_sync.py) issues MANY more calls than a live
+    # `ltp()` poll ever would. Sharing "history" let an in-progress
+    # backfill starve the live bucket's share of the 3/s budget, risking
+    # delayed LTP for real operator-facing surfaces (trail-stop, the
+    # PriceBroker fallback chain) while a backfill is running. 1 call/s
+    # is intentionally more conservative than "history" — a backfill has
+    # no live operator waiting on it.
+    "backfill": (1, 1.0),
 })
 
 from backend.brokers.conn_event_shim import _emit_conn_event
@@ -211,6 +224,24 @@ _DHAN_BY_EXCHANGE: dict[str, list[dict]] = {}   # kite_exchange → [instrument 
 _DHAN_BY_SYMBOL: dict[tuple, str] = {}          # (kite_exchange, tradingsymbol) → security_id
 _DHAN_INSTRUMENTS_FAIL_UNTIL: float = 0.0       # epoch seconds; retry blocked until this time
 _DHAN_LOT_BY_SECURITY: dict[str, int] = {}  # securityId → lot_size for MCX/NCO instruments
+# Kite-form MCX root symbol (e.g. "CRUDEOIL", "GOLDM") → lot_size.
+# Fallback used ONLY when `_DHAN_LOT_BY_SECURITY` misses — a security_id
+# miss means the contract isn't in TODAY's live instrument master (the
+# overwhelming common case for a historical backfill, since the vast
+# majority of a multi-month pull is EXPIRED contracts). An MCX commodity's
+# lot size belongs to the ROOT (e.g. every CRUDEOIL expiry month is 100
+# barrels/lot), not the specific expiry, so a still-live sibling contract
+# under the same root resolves an expired one correctly. Populated from
+# the SAME live master fetch as `_DHAN_LOT_BY_SECURITY` (2026-11-27 fix) —
+# deliberately NOT Kite's own `_MCX_LOT_OVERRIDES`
+# (backend/api/routes/instruments.py): that table is keyed by Kite's
+# `name` field (which a Dhan trade record never carries) and records
+# Kite's lot-size convention, not Dhan's `SEM_LOT_UNITS` — mixing sources
+# risks exactly the qty-vs-lot unit-mismatch class this fix exists to
+# close. A root with CONFLICTING lot sizes across its own live rows is
+# left out of this dict entirely (never guessed) — see
+# `_apply_dhan_instruments`.
+_DHAN_LOT_BY_MCX_ROOT: dict[str, int] = {}
 
 
 def _ist_today() -> str:
@@ -257,6 +288,22 @@ _DHAN_OPT_RE_NDAY = _re.compile(
 _DHAN_FUT_RE = _re.compile(r"^([A-Z]+)-(\d{1,2})([A-Z]{3})(\d{4})-FUT$")
 # Futures without day prefix (defensive; not observed but safe to handle)
 _DHAN_FUT_RE_NDAY = _re.compile(r"^([A-Z]+)-([A-Z]{3})(\d{4})-FUT$")
+
+# Matches the ROOT prefix of an already-Kite-form F&O symbol
+# ("CRUDEOIL26DECFUT", "GOLDM26DEC72000CE") — everything before the
+# 2-digit year. Used only for `_DHAN_LOT_BY_MCX_ROOT` resolution; see
+# that dict's own comment for why this is the root-fallback key, not
+# `_MCX_LOT_OVERRIDES`.
+_MCX_ROOT_RE = _re.compile(r"^([A-Z]+)\d")
+
+
+def _mcx_root_symbol(kite_tradingsymbol: str) -> str:
+    """Extract the MCX commodity root from an already-Kite-form F&O
+    tradingsymbol. Returns "" when the string doesn't match the
+    expected ROOT+digit shape (e.g. empty, or a non-F&O symbol) —
+    callers must treat an empty root as unresolved, never a wildcard."""
+    m = _MCX_ROOT_RE.match((kite_tradingsymbol or "").upper())
+    return m.group(1) if m else ""
 
 
 def _dhan_format_strike(strike: str) -> str:
@@ -469,6 +516,8 @@ def _apply_dhan_instruments(data: dict) -> None:
         _DHAN_BY_SYMBOL = data["by_symbol"]
         _DHAN_INSTRUMENTS_DATE = data["date"]
         _DHAN_LOT_BY_SECURITY.clear()
+        _DHAN_LOT_BY_MCX_ROOT.clear()
+        _root_candidates: dict[str, set[int]] = {}
         for _exch, _rows in data["by_exchange"].items():
             if _exch in ("MCX", "NCO"):
                 for _row in _rows:
@@ -476,6 +525,16 @@ def _apply_dhan_instruments(data: dict) -> None:
                     _ls  = int(_row.get("lot_size") or 0)
                     if _sid and _ls > 1:
                         _DHAN_LOT_BY_SECURITY[_sid] = _ls
+                    _root = _mcx_root_symbol(_row.get("tradingsymbol") or "")
+                    if _root and _ls > 1:
+                        _root_candidates.setdefault(_root, set()).add(_ls)
+        # A root with one agreed lot_size across every live row resolves.
+        # A root with conflicting lot sizes (e.g. a mid-flight MCX contract
+        # revision straddling the current instrument set) is left OUT of
+        # the dict entirely — never guessed, see the dict's own comment.
+        for _root, _sizes in _root_candidates.items():
+            if len(_sizes) == 1:
+                _DHAN_LOT_BY_MCX_ROOT[_root] = next(iter(_sizes))
 
 
 def _load_dhan_instruments() -> None:
@@ -536,7 +595,7 @@ def _resolve_security_id(tradingsymbol: str, kite_exchange: str) -> str:
 # every broker method that touches the SDK runs its call through
 # _DhanSDKProxy.__getattr__ (transparent proxy; one instance per call
 # via the self._sdk / self._sdk_orders / self._sdk_margins /
-# self._sdk_history properties on DhanBroker).
+# self._sdk_history / self._sdk_backfill properties on DhanBroker).
 #
 # The proxy intercepts each SDK method call and inspects the raw
 # response BEFORE normalisation. If the response carries an auth-error
@@ -882,6 +941,15 @@ class DhanBroker(Broker):
         return _DhanSDKProxy(self, "history")
 
     @property
+    def _sdk_backfill(self) -> "_DhanSDKProxy":
+        """Dedicated bucket for the historical backfill calls
+        (`trade_history()`, `ledger_entries_raw()`) — see the
+        `"backfill"` bucket's own comment in `_DHAN_RATE_LIMITER` for
+        why these must not share `_sdk_history`'s bucket with the live
+        `ltp()` caller."""
+        return _DhanSDKProxy(self, "backfill")
+
+    @property
     def _sdk_orders(self) -> "_DhanSDKProxy":
         return _DhanSDKProxy(self, "orders")
 
@@ -1057,10 +1125,14 @@ class DhanBroker(Broker):
         Reuses the exact `ledger_report` SDK-existence-check /
         `_call_dhan_ledger_raw` plumbing `funds_ledger()` uses (confirmed
         live against the installed dhanhq SDK — see that method's own
-        2026-11-27 fix note), through the dedicated `_sdk_history`
-        rate-limit bucket rather than the unbucketed `_sdk` property
-        `funds_ledger()` uses — a multi-month backfill issues many more
-        calls than a single live `daily_book` seed ever would.
+        2026-11-27 fix note), through the dedicated `_sdk_backfill`
+        rate-limit bucket (revised same day — was `_sdk_history`, which
+        is shared with the LIVE `ltp()` caller; see that bucket's own
+        comment in `_DHAN_RATE_LIMITER`) rather than the unbucketed
+        `_sdk` property `funds_ledger()` uses — a multi-month backfill
+        issues many more calls than a single live `daily_book` seed
+        ever would, and must never compete with a live caller for the
+        same rate budget.
 
         Unlike `funds_ledger()`, a `status=failure` SDK response RAISES
         here (via `_unwrap()`'s own `RuntimeError`) rather than
@@ -1077,7 +1149,7 @@ class DhanBroker(Broker):
                 f"pull historical ledger entries for {self.account!r}"
             )
         resp = _call_dhan_ledger_raw(
-            self._sdk_history, ledger_method_name, from_date, to_date,
+            self._sdk_backfill, ledger_method_name, from_date, to_date,
         )
         return _unwrap(resp)
 
@@ -1088,6 +1160,13 @@ class DhanBroker(Broker):
     # month (chunk_by_calendar_month()), so this many pages is far more
     # than any genuine month of trades should ever need.
     _TRADE_HISTORY_MAX_PAGES = 200
+
+    # Cap on how many distinct unresolved (security_id, symbol, time)
+    # entries the aggregated CRITICAL log line (below) will list — keeps
+    # the log line readable even when the instruments cache is cold for
+    # the whole pull. The CRITICAL itself still fires regardless of how
+    # many rows this cap drops from the printed list.
+    _UNRESOLVED_LOT_LOG_CAP = 20
 
     def trade_history(self, from_date: str, to_date: str) -> list[dict]:
         """Historical trades for a date range, via Dhan's paginated
@@ -1103,36 +1182,80 @@ class DhanBroker(Broker):
         endpoint returns is ASSUMED identical to `get_trade_book()`'s own
         shape (Dhan's v2 API documents both as returning the same Trade
         object, scoped to a date range + page instead of "today only"),
-        so this reuses `_normalise_trades()` unchanged rather than a
-        second, independently-guessed normaliser — including its
-        existing MCX lot→contract conversion via `_DHAN_LOT_BY_SECURITY`
-        and its Dhan→Kite tradingsymbol translation. If the real
-        response carries different field names, `_normalise_trades()`'s
-        own `.get(...)` calls degrade to empty-string/zero defaults
-        rather than raising — this must be confirmed against a real
-        account before being relied on for anything beyond a smoke test.
+        so this reuses `_normalise_trades()`'s shared parsing — including
+        its Dhan→Kite tradingsymbol translation — rather than a second,
+        independently-guessed normaliser. If the real response carries
+        different field names, `_normalise_trades()`'s own `.get(...)`
+        calls degrade to empty-string/zero defaults rather than raising
+        — this must be confirmed against a real account before being
+        relied on for anything beyond a smoke test.
 
-        Pages until the SDK returns a genuinely empty page (end of
+        MCX lot→contract conversion (2026-11-27, revised same day): a
+        historical pull is overwhelmingly EXPIRED contracts, which are
+        absent from `_DHAN_LOT_BY_SECURITY` (built from TODAY's live
+        instrument master only) — that security_id miss used to fall
+        back to storing the RAW (possibly lots-not-contracts) quantity
+        with only a WARNING, silently corrupting the bulk of a backfill
+        by the lot size (e.g. ~100× too small for CRUDEOIL). Resolution
+        order, applied inside `_normalise_trades(strict_mcx_lot=True)`:
+        (1) exact `security_id` match; (2) the commodity ROOT fallback
+        (`_DHAN_LOT_BY_MCX_ROOT` — a still-live sibling contract under
+        the same root confirms the lot size, since it doesn't vary by
+        expiry month); (3) if neither resolves, the row is SKIPPED
+        entirely (never stored with a known-possibly-wrong quantity) and
+        reported in one aggregated CRITICAL below, naming the specific
+        (security_id, symbol, time) that couldn't be resolved — never a
+        silent, plausible-looking wrong number. `trades()` (today's
+        fills only) is UNCHANGED: it still stores the raw quantity with
+        a WARNING on a cache miss, since a live cache is almost never
+        cold for a same-day contract and a same-day fill must never be
+        silently dropped.
+
+        `_ensure_dhan_instruments()` is called up front so the lot caches
+        are warm for this pull specifically — does not rely solely on
+        the caller script's own best-effort warm-up (which swallows a
+        failure at debug level).
+
+        Pages until the SDK returns a genuinely empty RAW page (end of
         history) or `_TRADE_HISTORY_MAX_PAGES` is exhausted, whichever
-        comes first. A `status=failure` response on ANY page propagates
-        as a `RuntimeError` (via `_normalise_trades()` → `_unwrap()`) —
-        it is never treated as "end of history". Swallowing a genuine
-        API failure as if it were simply the last page would silently
-        truncate the backfill with no signal to the operator."""
+        comes first. Termination is decided on the raw unwrapped page,
+        never on the post-filter row list — a page where EVERY row is an
+        unresolved MCX trade would otherwise look empty after filtering
+        and silently truncate every later page too. A `status=failure`
+        response on ANY page propagates as a `RuntimeError` (via
+        `_unwrap()`) — it is never treated as "end of history". Swallowing
+        a genuine API failure as if it were simply the last page would
+        silently truncate the backfill with no signal to the operator."""
+        _ensure_dhan_instruments()
         out: list[dict] = []
+        unresolved: list[tuple[str, str, str]] = []
         for page in range(self._TRADE_HISTORY_MAX_PAGES):
-            resp = self._sdk_history.get_trade_history(
+            resp = self._sdk_backfill.get_trade_history(
                 from_date=from_date, to_date=to_date, page_number=page,
             )
-            page_rows = _normalise_trades(resp)
-            if not page_rows:
+            raw_page = _unwrap(resp)
+            if not raw_page:
                 break
+            page_rows = _normalise_trades(
+                resp, strict_mcx_lot=True, unresolved=unresolved,
+            )
             out.extend(page_rows)
         else:
             raise BrokerNetworkError(
                 f"Dhan trade_history for {self.account!r} did not "
                 f"terminate within {self._TRADE_HISTORY_MAX_PAGES} pages "
                 f"({from_date}..{to_date}) — possible pagination loop"
+            )
+        if unresolved:
+            _distinct = sorted(set(unresolved))
+            logger.critical(
+                "[DHAN-TRADE-QTY] trade_history(%r, %s..%s): %d MCX trade "
+                "row(s) SKIPPED — security_id not resolvable via live "
+                "instrument master or commodity-root fallback. First %d of "
+                "%d distinct (security_id, symbol, exchange_time): %s",
+                self.account, from_date, to_date, len(unresolved),
+                min(self._UNRESOLVED_LOT_LOG_CAP, len(_distinct)), len(_distinct),
+                _distinct[: self._UNRESOLVED_LOT_LOG_CAP],
             )
         return out
 
@@ -2139,10 +2262,38 @@ def _normalise_orders(resp: Any) -> list[dict]:
     return [_dhan_normalise_one_order(o) for o in _unwrap(resp)]
 
 
-def _normalise_trades(resp: Any) -> list[dict]:
+def _normalise_trades(
+    resp: Any,
+    *,
+    strict_mcx_lot: bool = False,
+    unresolved: "list[tuple[str, str, str]] | None" = None,
+) -> list[dict]:
+    """Normalise Dhan's raw trade-book response to Kite shape.
+
+    `strict_mcx_lot` governs what happens on an MCX/NCO trade whose
+    security_id is missing from BOTH `_DHAN_LOT_BY_SECURITY` (today's
+    live instrument master) AND `_DHAN_LOT_BY_MCX_ROOT` (the same
+    master's per-commodity-root fallback — see that dict's own comment):
+
+      - False (default; the live `trades()` path, today's fills only):
+        stores the raw, possibly-wrong-unit quantity with a WARNING —
+        UNCHANGED from the pre-2026-11-27 behaviour. `trades()` must
+        never silently drop a genuine, hours-old fill just because the
+        instruments cache happened to be cold; downstream already
+        tolerates an occasional raw-lots quantity here (see the
+        [DHAN-TRADE-QTY] log this has always emitted).
+
+      - True (the `trade_history()` backfill path only): the row is
+        SKIPPED entirely (never stored with a known-possibly-wrong
+        quantity) and, when `unresolved` is passed, its
+        (security_id, Kite-form symbol, exchange_timestamp) is appended
+        for the caller to emit ONE aggregated CRITICAL per backfill call
+        rather than one log line per skipped trade.
+    """
     out: list[dict] = []
     for t in _unwrap(resp):
         _raw_ts_t = str(t.get("tradingSymbol") or "")
+        _kite_ts = _dhan_to_kite_symbol(_raw_ts_t)
         _tq  = int(t.get("tradedQuantity", 0) or 0)
         _seg = str(t.get("exchangeSegment") or "")
         if _seg == "MCX_COMM" and _tq > 0:
@@ -2151,14 +2302,31 @@ def _normalise_trades(resp: Any) -> list[dict]:
             if _ls > 1:
                 _tq *= _ls
             else:
-                logger.warning(
-                    "[DHAN-TRADE-QTY] MCX securityId=%s not in lot cache — storing raw qty=%d",
-                    _sid, _tq,
-                )
+                _root = _mcx_root_symbol(_kite_ts)
+                _root_ls = _DHAN_LOT_BY_MCX_ROOT.get(_root, 0) if _root else 0
+                if _root_ls > 1:
+                    # securityId is a cache miss (likely an expired
+                    # contract absent from today's master) but a live
+                    # sibling contract under the SAME commodity root
+                    # confirms the lot size — a root's lot size doesn't
+                    # vary by expiry month.
+                    _tq *= _root_ls
+                elif strict_mcx_lot:
+                    if unresolved is not None:
+                        unresolved.append(
+                            (_sid, _kite_ts, str(t.get("exchangeTime") or ""))
+                        )
+                    continue  # never store a known-possibly-wrong backfill qty
+                else:
+                    logger.warning(
+                        "[DHAN-TRADE-QTY] MCX securityId=%s not in lot cache "
+                        "(incl. root fallback) — storing raw qty=%d",
+                        _sid, _tq,
+                    )
         out.append({
             "trade_id":         str(t.get("tradeId")   or ""),
             "order_id":         str(t.get("orderId")   or ""),
-            "tradingsymbol":    _dhan_to_kite_symbol(_raw_ts_t),
+            "tradingsymbol":    _kite_ts,
             "exchange":         t.get("exchange")      or "",
             "transaction_type": t.get("transactionType") or "BUY",
             "quantity":         _tq,

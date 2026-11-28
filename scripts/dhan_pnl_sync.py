@@ -474,14 +474,16 @@ async def sync_account(row, *, start: date, end: date, ledger_only: bool = False
         return DhanSyncOutcome(account=masked, ok=False, reason=f"get_broker failed: {e}")
 
     # Best-effort MCX lot-size cache warm-up (see module docstring's
-    # "UNVERIFIED" section) — `trade_history()`'s own
-    # `_normalise_trades()` call falls back to a raw (possibly lots, not
-    # contracts) quantity with only a WARNING log when a security's lot
-    # size isn't cached. Warming the instruments cache first makes that
-    # fallback far less likely to fire for a fresh conn_service process,
-    # but does not eliminate the risk entirely (e.g. an expired contract
-    # genuinely absent from the current scrip master) — never treated as
-    # fatal if it fails.
+    # "UNVERIFIED" section). `trade_history()` (2026-11-27, revised same
+    # day) already calls `_ensure_dhan_instruments()` itself and never
+    # stores a known-possibly-wrong MCX quantity — an unresolved
+    # security_id (not in the live master AND not resolvable via the
+    # commodity-root fallback) is SKIPPED and reported via one
+    # aggregated CRITICAL log per `trade_history()` call, never a
+    # silently-wrong stored number. This call is therefore now a
+    # belt-and-suspenders warm-up only, not the thing standing between a
+    # cold cache and a wrong quantity — never treated as fatal if it
+    # fails.
     try:
         await asyncio.to_thread(broker.instruments, "MCX")
     except Exception as e:
