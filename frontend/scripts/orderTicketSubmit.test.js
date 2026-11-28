@@ -17,6 +17,7 @@ import assert from 'node:assert/strict';
 import {
   classifyIntent,
   marginChipMode,
+  resolveChipCashFlowKind,
   buildModifyPayload,
   buildOnSubmitPayload,
   buildPlacePayload,
@@ -662,5 +663,40 @@ describe('formatSubmitLabel', () => {
     const s = formatSubmitLabel({ side: 'SELL', currentQty: 75, qty: 75, basketCount: 0 });
     assert.notStrictEqual(s, 'Submit');
     assert.strictEqual(s, 'Submit · CLOSE · SELL 75');
+  });
+});
+
+// ── resolveChipCashFlowKind (2026-11 duplicated-logic audit fix) ───────────
+// SymbolPanel.svelte's two inline `isCashMode ? 'cash_cost' :
+// 'margin_required'` fallbacks are replaced by this resolver, which always
+// routes through the real marginChipMode classifier instead of a second,
+// independent guess.
+describe('resolveChipCashFlowKind', () => {
+  test('meta.cashFlowKind present → returned verbatim', () => {
+    const meta = { cashFlowKind: 'margin_released', kind: 'PE', side: 'BUY' };
+    assert.strictEqual(resolveChipCashFlowKind(meta, { currentQty: -1, orderQty: 1 }), 'margin_released');
+  });
+
+  test('meta present, cashFlowKind missing, close-short → margin_released (not the old ' +
+       'crude isCashMode-based margin_required guess)', () => {
+    const meta = { isCashMode: false, kind: 'PE', side: 'BUY' };
+    const resolved = resolveChipCashFlowKind(meta, { currentQty: -5, orderQty: 5 });
+    assert.strictEqual(resolved, 'margin_released');
+    assert.notStrictEqual(resolved, 'margin_required');
+  });
+
+  test('meta present, cashFlowKind missing, close-long → cash_released', () => {
+    const meta = { isCashMode: true, kind: 'CE', side: 'SELL' };
+    assert.strictEqual(resolveChipCashFlowKind(meta, { currentQty: 10, orderQty: 10 }), 'cash_released');
+  });
+
+  test('meta entirely absent → margin_required (pre-fix default preserved)', () => {
+    assert.strictEqual(resolveChipCashFlowKind(null, { currentQty: 0 }), 'margin_required');
+    assert.strictEqual(resolveChipCashFlowKind(undefined, { currentQty: 0 }), 'margin_required');
+  });
+
+  test('equity leg, cashFlowKind missing → fallback is still equity-aware', () => {
+    const meta = { kind: 'EQ', side: 'SELL' };
+    assert.strictEqual(resolveChipCashFlowKind(meta, { currentQty: 100, orderQty: 100 }), 'cash_released');
   });
 });

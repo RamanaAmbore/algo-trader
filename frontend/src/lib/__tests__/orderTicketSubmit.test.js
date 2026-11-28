@@ -23,6 +23,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   nextTriggerState, formatSubmitLabel, buildPlacePayload, marginChipMode,
+  resolveChipCashFlowKind,
 } from '$lib/order/orderTicketSubmit.js';
 
 describe('nextTriggerState (D4 — atomic submit-trigger guard)', () => {
@@ -288,5 +289,62 @@ describe('marginChipMode — magnitude-aware over-close (fix #2)', () => {
   it('orderQty exactly equal to |currentQty| counts as a full close', () => {
     expect(marginChipMode({ isEquity: false, kind: 'PE', side: 'BUY', currentQty: -5, orderQty: 5 }))
       .toBe('margin_released');
+  });
+});
+
+// resolveChipCashFlowKind (2026-11 duplicated-logic audit fix) —
+// SymbolPanel.svelte used to fall back to a crude `isCashMode ? 'cash_cost'
+// : 'margin_required'` guess (in TWO places) whenever OrderTicket's
+// `_chipMeta.cashFlowKind` wasn't present yet. This resolver replaces both
+// with a call to the SAME canonical marginChipMode classifier.
+//
+// Five quality dimensions per feedback_test_dimensions.md:
+//  1. SSOT  — never a second, independent classification; always routes
+//             through marginChipMode when meta.cashFlowKind is absent
+//  2. Perf  — pure unit, no I/O
+//  3. Stale — pins the exact disagreement class the crude fallback could
+//             not express: a close-short (BUY, currentQty<0) must resolve
+//             to margin_released, never the old fallback's margin_required
+//  4. Reuse — same marginChipMode import SymbolPanel/OrderTicket both use
+//  5. UX    — covers meta present (verbatim passthrough), meta present but
+//             missing cashFlowKind (real fallback classification), and
+//             meta entirely absent (pre-fix default preserved)
+describe('resolveChipCashFlowKind (2026-11 duplicated-logic audit fix)', () => {
+  it('meta.cashFlowKind present → returned verbatim, no recomputation', () => {
+    /** @type {{cashFlowKind: 'cash_cost'|'margin_required'|'cash_released'|'margin_released', isCashMode: boolean, kind: string, side: 'BUY'|'SELL'}} */
+    const meta = { cashFlowKind: 'margin_released', isCashMode: false, kind: 'PE', side: 'BUY' };
+    expect(resolveChipCashFlowKind(meta, { currentQty: -1, orderQty: 1 })).toBe('margin_released');
+  });
+
+  it('meta present but missing cashFlowKind → falls back to a real marginChipMode call, ' +
+     'not the old crude isCashMode guess (close-short case)', () => {
+    // Old fallback: isCashMode=false → 'margin_required'. Real classifier
+    // (BUY closing a short option): 'margin_released'. These must differ —
+    // that disagreement is exactly the bug this fix closes.
+    /** @type {{isCashMode: boolean, kind: string, side: 'BUY'|'SELL'}} */
+    const meta = { isCashMode: false, kind: 'PE', side: 'BUY' };
+    const resolved = resolveChipCashFlowKind(meta, { currentQty: -5, orderQty: 5 });
+    expect(resolved).toBe('margin_released');
+    expect(resolved).not.toBe('margin_required');
+  });
+
+  it('meta present but missing cashFlowKind → falls back correctly for a close-long too', () => {
+    /** @type {{isCashMode: boolean, kind: string, side: 'BUY'|'SELL'}} */
+    const meta = { isCashMode: true, kind: 'CE', side: 'SELL' };
+    expect(resolveChipCashFlowKind(meta, { currentQty: 10, orderQty: 10 })).toBe('cash_released');
+  });
+
+  it('meta entirely absent (null) → margin_required, matching the pre-fix default', () => {
+    expect(resolveChipCashFlowKind(null, { currentQty: 0 })).toBe('margin_required');
+  });
+
+  it('meta entirely absent (undefined) → margin_required', () => {
+    expect(resolveChipCashFlowKind(undefined, { currentQty: 0 })).toBe('margin_required');
+  });
+
+  it('equity leg, meta missing cashFlowKind, fallback still equity-aware', () => {
+    /** @type {{kind: string, side: 'BUY'|'SELL'}} */
+    const meta = { kind: 'EQ', side: 'SELL' };
+    expect(resolveChipCashFlowKind(meta, { currentQty: 100, orderQty: 100 })).toBe('cash_released');
   });
 });

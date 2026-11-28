@@ -116,6 +116,49 @@ export function marginChipMode({ isEquity, kind, side, currentQty, orderQty = nu
 }
 
 /**
+ * Resolve the chip-label `cashFlowKind` a HOST component (SymbolPanel)
+ * should render, given the `meta` object OrderTicket's own `_chipMeta`
+ * emits via `onMarginUpdate`.
+ *
+ * Audit fix (2026-11, duplicated-logic audit) — SymbolPanel.svelte used to
+ * fall back to a crude two-value `isCashMode ? 'cash_cost' : 'margin_required'`
+ * expression (in TWO places) whenever `meta.cashFlowKind` wasn't present
+ * yet — a subset of `marginChipMode`'s real 4-value, close/open-aware
+ * decision that could disagree with the canonical classifier on a close
+ * order (e.g. a BUY closing a short option releases margin, not "cash" —
+ * the crude fallback has no way to express that). `meta.cashFlowKind` is
+ * ALWAYS populated by OrderTicket's own `_chipMeta` derived once it has
+ * fired at least once; this fallback therefore only matters in the brief
+ * window before that first emission (or if `meta` itself is entirely
+ * absent). Rather than guessing with the crude mapping, it now calls the
+ * SAME canonical `marginChipMode()` with whatever inputs are actually
+ * available — never a second, independent classification.
+ *
+ * @param {{isCashMode?: boolean, cashFlowKind?: 'cash_cost'|'margin_required'|'cash_released'|'margin_released', kind?: string, side?: 'BUY'|'SELL'}|null|undefined} meta
+ * @param {{currentQty: number, orderQty?: number|null}} ctx
+ *   The SAME resolved currentQty/orderQty OrderTicket itself would use
+ *   for this symbol/account/order (SymbolPanel mirrors these via
+ *   `_ticketState`, the `onTicketStateChange` payload — see
+ *   `_effTicketCurrentQty` / `_ticketState.qty` in SymbolPanel.svelte).
+ * @returns {'cash_cost'|'margin_required'|'cash_released'|'margin_released'}
+ */
+export function resolveChipCashFlowKind(meta, { currentQty, orderQty = null }) {
+  if (meta && meta.cashFlowKind) return meta.cashFlowKind;
+  // Side genuinely unknown (no chipMeta emitted yet) — pass through as-is
+  // rather than guessing BUY/SELL; marginChipMode's own branches already
+  // degrade safely (treats it as "not closing") for a side that matches
+  // neither literal, same as the pre-fix fallback's side-agnostic default.
+  const side = /** @type {'BUY'|'SELL'} */ (meta?.side ?? null);
+  return marginChipMode({
+    isEquity: meta?.kind === 'EQ',
+    kind: meta?.kind ?? '',
+    side,
+    currentQty,
+    orderQty,
+  });
+}
+
+/**
  * Build the request body for action='modify' (PUT /api/orders/{id}).
  *
  * Defense-in-depth (audit C1, 2026-09): `ctx.qty` is the ticket's resolved

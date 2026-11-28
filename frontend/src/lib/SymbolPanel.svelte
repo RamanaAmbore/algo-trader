@@ -28,7 +28,7 @@
   import { get as _storeGet } from 'svelte/store';
   import { portal } from '$lib/portal';
   import { ORDER_TABS } from '$lib/order/tabs.js';
-  import { formatSubmitLabel } from '$lib/order/orderTicketSubmit.js';
+  import { formatSubmitLabel, resolveChipCashFlowKind } from '$lib/order/orderTicketSubmit.js';
   import { SYM_TYPE_OPTS } from '$lib/data/symbolTypes';
   import { placeBasket, fetchBasketMargin, fetchLiveStatus } from '$lib/api';
   import { portfolioStore } from '$lib/data/portfolioStore.svelte.js';
@@ -1179,28 +1179,44 @@
     if (!_modalMargin && !_modalMarginLoading) return null;
     if (_modalMargin?.error) return { error: _modalMargin.error };
     if (!_modalMargin) {
+      // cashFlowKind (2026-11 duplicated-logic audit fix) — resolved via
+      // the SAME canonical `marginChipMode` classifier OrderTicket itself
+      // uses (through `resolveChipCashFlowKind`), not a crude hand-rolled
+      // 2-value fallback — see that function's own docstring in
+      // orderTicketSubmit.js for why this matters (a close order can
+      // disagree with a plain isCashMode-based guess).
+      const cashFlowKind = resolveChipCashFlowKind(_chipMeta, {
+        currentQty: _effTicketCurrentQty,
+        orderQty: _ticketState.qty,
+      });
       return {
         loading: true,
-        isCashMode: !!_chipMeta?.isCashMode,
-        cashFlowKind: _chipMeta?.cashFlowKind ?? null,
+        isCashMode: cashFlowKind === 'cash_cost' || cashFlowKind === 'cash_released',
+        cashFlowKind,
         estCredit: typeof _chipMeta?.estCredit === 'number' ? _chipMeta.estCredit : null,
       };
     }
     const d = _modalMargin.diagnostics ?? {};
     const required  = Number(d.basket_margin_used) || 0;
+    // cashFlowKind (2026-11 real-money audit fix, duplicated-logic audit
+    // follow-up) — one of 'cash_cost' | 'margin_required' |
+    // 'cash_released' | 'margin_released'. Resolved via the same
+    // canonical `marginChipMode` classifier OrderTicket itself uses
+    // (`resolveChipCashFlowKind`, orderTicketSubmit.js) — prefers
+    // `_chipMeta.cashFlowKind` when OrderTicket has already emitted it,
+    // and only falls back to a real `marginChipMode()` call (never the
+    // old crude `isCashMode ? 'cash_cost' : 'margin_required'` guess) for
+    // the brief window before that first emission.
+    const cashFlowKind = resolveChipCashFlowKind(_chipMeta, {
+      currentQty: _effTicketCurrentQty,
+      orderQty: _ticketState.qty,
+    });
     // Pick the "available" figure based on whether the leg consumes
     // cash (equity buy/sell, long option premium) or margin (short
     // option, futures). Cash comes from /api/funds (passed via meta);
     // margin comes from broker.margins().net. Same shape downstream so
     // the chip + colour bands work the same way.
-    const isCashMode = !!_chipMeta?.isCashMode;
-    // cashFlowKind (2026-11 real-money audit fix) — one of 'cash_cost'
-    // | 'margin_required' | 'cash_released' | 'margin_released'. Falls
-    // back to the old two-way isCashMode mapping so this derived never
-    // breaks if `_chipMeta` hasn't emitted the new field yet (e.g. a
-    // stale cached meta object from before a reload).
-    const cashFlowKind = _chipMeta?.cashFlowKind
-      ?? (isCashMode ? 'cash_cost' : 'margin_required');
+    const isCashMode = cashFlowKind === 'cash_cost' || cashFlowKind === 'cash_released';
     const available = isCashMode
       ? (typeof _chipMeta?.cash === 'number' ? _chipMeta.cash : null)
       : d.available_margin;
@@ -2956,12 +2972,18 @@
                  basket-aggregate rows rendered above the basket bar
                  are the operator's single source of truth. -->
 
-            <!-- cashFlowKind (2026-11 real-money audit fix, operator-
-                 corrected) — one of 'cash_cost' | 'margin_required' |
-                 'cash_released' | 'margin_released'. Falls back to the
-                 old two-way isCashMode mapping for safety. -->
-            {@const _cfKind = _marginInfo.cashFlowKind
-              ?? (_marginInfo.isCashMode ? 'cash_cost' : 'margin_required')}
+            <!-- cashFlowKind (2026-11 real-money audit fix; duplicated-
+                 logic audit follow-up) — one of 'cash_cost' |
+                 'margin_required' | 'cash_released' | 'margin_released'.
+                 `_marginInfo.cashFlowKind` is now ALWAYS populated
+                 upstream (both the loading and resolved branches of the
+                 `_marginInfo` derived resolve it via the canonical
+                 `resolveChipCashFlowKind`/`marginChipMode` classifier —
+                 see that derived's own comments) — the old crude
+                 `isCashMode ? 'cash_cost' : 'margin_required'` fallback
+                 here was a SECOND, duplicate guess that could disagree
+                 with it and is no longer reachable. -->
+            {@const _cfKind = _marginInfo.cashFlowKind}
             {@const _isCash = _cfKind === 'cash_cost' || _cfKind === 'cash_released'}
             {@const _reqNeg = !!_marginInfo.requiredNegative}
             {@const _estCredit = _marginInfo.estCredit}
