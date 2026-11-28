@@ -33,6 +33,7 @@ from datetime import date, datetime, time as dtime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import pytest_asyncio
 
 from zoneinfo import ZoneInfo
 
@@ -838,6 +839,192 @@ class TestEdbDbReadFunctions:
         with patch.object(ds, "async_session", return_value=mock_session):
             result = await ds._edb_existing_captured_at_for_account(_TARGET_DATE, "ZG0790")
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# _edb_existing_captured_at_for_account — Round 3 audit fix: the helper's
+# own SQL filter must agree with `positions.py`'s `latest_batch` CTE /
+# `_BASELINE_PNL_CTE_SQL` (`ltp IS NOT NULL AND ltp > 0`). The tests above
+# mock the session entirely, so they never exercise the real SQL WHERE
+# clause — these use a REAL (sqlite, async) session instead, same
+# StaticPool-backed in-memory-DB convention as
+# `test_snapshot_market_open.py:db_session` / `test_daily_snapshot.py:db_session`.
+# ---------------------------------------------------------------------------
+
+
+@pytest_asyncio.fixture
+async def _edb_real_session_factory():
+    """A real async sqlite session factory sharing ONE in-memory DB
+    (StaticPool) across every session it opens — required because the
+    function under test opens its OWN session via `async_session()`
+    independently of whatever session the test used to seed rows."""
+    from sqlalchemy import Column, Date, DateTime, Integer, MetaData, Numeric, String, Table, Text, UniqueConstraint
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import StaticPool
+
+    meta = MetaData()
+    Table(
+        "daily_book", meta,
+        Column("id", Integer, primary_key=True, autoincrement=True),
+        Column("date", Date, nullable=False),
+        Column("account", String(32), nullable=False),
+        Column("segment", String(16), nullable=False),
+        Column("kind", String(16), nullable=False),
+        Column("symbol", String(64), nullable=False),
+        Column("exchange", String(8), nullable=True),
+        Column("qty", Integer, nullable=False, default=0),
+        Column("lots", Integer, nullable=False, default=1),
+        Column("lot_size", Integer, nullable=False, default=1),
+        Column("avg_cost", Numeric, nullable=True),
+        Column("ltp", Numeric, nullable=True),
+        Column("day_pnl", Numeric, nullable=True),
+        Column("total_pnl", Numeric, nullable=True),
+        Column("payload_json", Text, nullable=True),
+        Column("captured_at", DateTime(timezone=True), nullable=False),
+        UniqueConstraint("date", "account", "kind", "symbol",
+                         name="uq_daily_book_day_acct_kind_sym"),
+    )
+
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        echo=False,
+        poolclass=StaticPool,
+        connect_args={"check_same_thread": False},
+    )
+    async with engine.begin() as conn:
+        await conn.run_sync(meta.create_all)
+
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    yield session_factory
+    await engine.dispose()
+
+
+async def _edb_seed_positions_row(session_factory, *, account, symbol, ltp, captured_at,
+                                   target_date=_TARGET_DATE):
+    """Insert one `kind='positions'` daily_book row via raw SQL, bound
+    against the same real `DailyBook.date` (a `date` object, matching the
+    ORM column's `Date` type) that `_edb_existing_captured_at_for_account`
+    itself filters on."""
+    from sqlalchemy import text as _sql_text
+
+    async with session_factory() as session:
+        await session.execute(
+            _sql_text(
+                """
+                INSERT INTO daily_book
+                    (date, account, segment, kind, symbol, exchange, qty,
+                     lots, lot_size, avg_cost, ltp, day_pnl, total_pnl,
+                     payload_json, captured_at)
+                VALUES
+                    (:date, :account, 'commodity', 'positions', :symbol,
+                     'MCX', 1, 1, 1, 70000.0, :ltp, 0, 0, '{}', :captured_at)
+                """
+            ),
+            {
+                "date": target_date,
+                "account": account,
+                "symbol": symbol,
+                "ltp": ltp,
+                "captured_at": captured_at,
+            },
+        )
+        await session.commit()
+
+
+class TestEdbExistingCapturedAtRealSqlNullLtpFiltered:
+    """Round 3 audit finding: without the `ltp IS NOT NULL AND ltp > 0`
+    filter, a newer NULL-ltp daily_book batch (e.g. a mid-session EOD
+    write that correctly nulled ltp/day_pnl because the market was still
+    open — the 2026-11-26 `market_lifecycle.py` DST incident) would win
+    `MAX(captured_at)` over an older VALID (ltp>0) batch, promoting the
+    null batch to 'latest' in `positions.py`'s own eyes."""
+
+    async def test_newer_null_ltp_batch_does_not_win_over_older_valid_batch(
+        self, _edb_real_session_factory,
+    ):
+        from backend.api.algo import daily_snapshot as ds
+
+        older_valid_at = datetime(2026, 11, 27, 16, 0, tzinfo=timezone.utc)
+        newer_null_at = datetime(2026, 11, 27, 18, 15, tzinfo=timezone.utc)
+
+        await _edb_seed_positions_row(
+            _edb_real_session_factory, account="ZG0790", symbol=_ZG_OPTION,
+            ltp=70000.0, captured_at=older_valid_at,
+        )
+        await _edb_seed_positions_row(
+            _edb_real_session_factory, account="ZG0790", symbol=_ZG_DEVOLVED_FUTURE,
+            ltp=None, captured_at=newer_null_at,
+        )
+
+        with patch.object(ds, "async_session", _edb_real_session_factory):
+            result = await ds._edb_existing_captured_at_for_account(_TARGET_DATE, "ZG0790")
+
+        assert result is not None
+        # sqlite round-trips DateTime(timezone=True) as naive — compare
+        # on naive wall-clock value.
+        assert result.replace(tzinfo=None) == older_valid_at.replace(tzinfo=None)
+
+    async def test_newer_zero_ltp_batch_also_does_not_win(self, _edb_real_session_factory):
+        """`ltp == 0` must be excluded too — the filter is `> 0`, not
+        merely `isnot(None)`."""
+        from backend.api.algo import daily_snapshot as ds
+
+        older_valid_at = datetime(2026, 11, 27, 16, 0, tzinfo=timezone.utc)
+        newer_zero_at = datetime(2026, 11, 27, 18, 15, tzinfo=timezone.utc)
+
+        await _edb_seed_positions_row(
+            _edb_real_session_factory, account="ZG0790", symbol=_ZG_OPTION,
+            ltp=70000.0, captured_at=older_valid_at,
+        )
+        await _edb_seed_positions_row(
+            _edb_real_session_factory, account="ZG0790", symbol=_ZG_DEVOLVED_FUTURE,
+            ltp=0.0, captured_at=newer_zero_at,
+        )
+
+        with patch.object(ds, "async_session", _edb_real_session_factory):
+            result = await ds._edb_existing_captured_at_for_account(_TARGET_DATE, "ZG0790")
+
+        assert result is not None
+        assert result.replace(tzinfo=None) == older_valid_at.replace(tzinfo=None)
+
+    async def test_all_rows_null_ltp_returns_none_not_a_fabricated_stamp(
+        self, _edb_real_session_factory,
+    ):
+        """When every positions row for this account+date is null/zero
+        ltp, there is no valid batch to join — the helper must return
+        `None` (caller already treats this as 'do not write' and logs a
+        visible WARNING), never fabricate a stamp from the null batch."""
+        from backend.api.algo import daily_snapshot as ds
+
+        await _edb_seed_positions_row(
+            _edb_real_session_factory, account="ZG0790", symbol=_ZG_DEVOLVED_FUTURE,
+            ltp=None, captured_at=datetime(2026, 11, 27, 18, 15, tzinfo=timezone.utc),
+        )
+
+        with patch.object(ds, "async_session", _edb_real_session_factory):
+            result = await ds._edb_existing_captured_at_for_account(_TARGET_DATE, "ZG0790")
+
+        assert result is None
+
+    async def test_real_valid_batch_still_resolves_when_it_is_the_only_row(
+        self, _edb_real_session_factory,
+    ):
+        """Non-regression: a single, ordinary valid batch (the common
+        case — no null-out row at all) must still resolve correctly
+        through the real SQL path once the filter is applied."""
+        from backend.api.algo import daily_snapshot as ds
+
+        valid_at = datetime(2026, 11, 27, 18, 0, tzinfo=timezone.utc)
+        await _edb_seed_positions_row(
+            _edb_real_session_factory, account="ZG0790", symbol=_ZG_OPTION,
+            ltp=70000.0, captured_at=valid_at,
+        )
+
+        with patch.object(ds, "async_session", _edb_real_session_factory):
+            result = await ds._edb_existing_captured_at_for_account(_TARGET_DATE, "ZG0790")
+
+        assert result is not None
+        assert result.replace(tzinfo=None) == valid_at.replace(tzinfo=None)
 
 
 class TestRunExpiryDevolveBackfillUpsertFailure:

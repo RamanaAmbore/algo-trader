@@ -1808,6 +1808,23 @@ async def _edb_existing_captured_at_for_account(
     (see `_edb_mcx_expiring_accounts`) — but the caller must treat `None`
     as "do not write" rather than silently falling back to `_upsert_rows`'s
     own `now()` default.
+
+    `ltp IS NOT NULL AND ltp > 0` filter (Round 3 audit fix, 2026-11-28):
+    without this, a day whose NEWEST `daily_book` positions batch for this
+    account happens to be a mid-session null-out batch (e.g. a stray/late
+    EOD write that correctly nulled `ltp`/`day_pnl` because the market was
+    still detected open — see the 2026-11-26 `market_lifecycle.py` DST
+    incident in CLAUDE.md) would have this helper return THAT null batch's
+    `captured_at`. The backfilled row would then be stamped with that same
+    timestamp, promoting the whole null batch to "latest" in the eyes of
+    `positions.py`'s `latest_batch` CTE and `_BASELINE_PNL_CTE_SQL` — both
+    of which already restrict their own "latest batch" selection to
+    `ltp IS NOT NULL AND ltp > 0` rows. This filter makes this helper agree
+    with what those readers will actually select, closing that mismatch.
+    As a consequence, `None` is now also reachable when every positions
+    row for this account+date is null/zero-ltp (no valid batch to join) —
+    the caller already treats `None` as "do not write" and logs a visible
+    WARNING, so this degrades safely rather than silently.
     """
     from sqlalchemy import func, select
     from backend.api.models import DailyBook
@@ -1818,6 +1835,8 @@ async def _edb_existing_captured_at_for_account(
                 DailyBook.date == target_date,
                 DailyBook.account == account,
                 DailyBook.kind == "positions",
+                DailyBook.ltp.isnot(None),
+                DailyBook.ltp > 0,
             )
         )
         return result.scalar()
