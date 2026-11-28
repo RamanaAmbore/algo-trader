@@ -495,7 +495,7 @@ export const fetchHistoryFunds  = (params = {}) =>
 export const backfillHistoryFunds = (/** @type {{account:string, from_date:string, to_date:string}} */ body) =>
   _post('/admin/history/funds/backfill', body, { auth: true });
 /** Realized P&L by expiry cycle — sourced from the Kite Console P&L-
- *  statement sync (kite_console_pnl_sync table). Params: account,
+ *  statement sync / Dhan REST backfill (broker_pnl_history table). Params: account,
  *  segment, instrument_type, symbol_root, expiry_from, expiry_to (all
  *  optional). See $lib/data/realizedPnlHistory.js for the param builder
  *  + response normalizer this is paired with. */

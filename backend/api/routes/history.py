@@ -5,10 +5,10 @@ full Kite Console backfill (raw tradebook, P&L, and funds ledger).
 GET /api/admin/history/orders       — AlgoOrder table, date + account + symbol + status filters
 GET /api/admin/history/trades       — daily_book where kind='trades'
 GET /api/admin/history/funds        — daily_book where kind='funds' (per-account ledger)
-GET /api/admin/history/realized-pnl — Kite Console P&L reconciliation ground truth
-GET /api/admin/history/tradebook    — kite_console_pnl_sync where report_type='tradebook'
-GET /api/admin/history/ledger       — kite_console_pnl_sync where report_type='ledger'
-GET /api/admin/history/pnl-summary  — kite_console_pnl_sync pnl rows, grouped by
+GET /api/admin/history/realized-pnl — Kite/Dhan broker P&L reconciliation ground truth
+GET /api/admin/history/tradebook    — broker_pnl_history where report_type='tradebook'
+GET /api/admin/history/ledger       — broker_pnl_history where report_type='ledger'
+GET /api/admin/history/pnl-summary  — broker_pnl_history pnl rows, grouped by
                                        (symbol_root, segment) win/loss aggregate
 
 All seven are cap-gated by `view_audit` — same gate as the audit log;
@@ -19,13 +19,14 @@ read-only surface).
 Operator workflow: pick a date range + accounts + status pill, scan
 the table, drill via the Audit log for the request_id of any row that
 looks suspicious. `realized-pnl`/`tradebook`/`ledger`/`pnl-summary` are
-lookup surfaces over the Kite Console backfill/sync's own accumulated
-ground truth (see `scripts/kite_console_pnl_sync.py`) — a genuine
+lookup surfaces over the broker backfill/sync's own accumulated
+ground truth (`broker_pnl_history` — see `scripts/kite_console_pnl_sync.py`
+for Kite and `scripts/dhan_pnl_sync.py` for Dhan) — a genuine
 reconciliation disagreement reaches the operator separately, through
 the standard alert pipeline (`event_agents.PNL_RECONCILIATION_AGENT`),
 not through these endpoints.
 
-`tradebook` is the raw per-fill record (one row per Kite trade_id) —
+`tradebook` is the raw per-fill record (one row per broker trade_id) —
 distinct from `trades` above, which is a daily_book settlement
 snapshot (one row per account+symbol+day), not the Console tradebook.
 `ledger` is the raw Funds Statement voucher feed (margin block/
@@ -36,18 +37,15 @@ underlying data, intended as a first-pass input for pattern analysis
 (which symbols/segments have been consistently profitable) — it does
 NOT do any backtesting or pattern mining itself.
 
-`broker` filter, all four Console-backed endpoints: `kite_console_pnl_sync`
-does not yet carry a `broker` column (it is being added concurrently,
-by a different change, default 'kite' for existing rows) — see each
-endpoint's own docstring for exactly how `broker` degrades until that
-column lands. `tradebook`/`ledger` query the table directly and use
-`getattr()` so the filter engages for real the moment the column
-exists, with no second pass needed here. `realized-pnl`/`pnl-summary`
-go through `scripts.kite_console_pnl_sync.get_accumulated_pnl()`,
-which has no broker dimension in its grouped output — `broker='kite'`
-(or omitted) is a no-op there (every row today is Kite-sourced), and
-any other value returns an empty result, until that function itself
-gains a `broker` kwarg.
+`broker` filter, all four `broker_pnl_history`-backed endpoints
+(added 2026-11-28; Kite and Dhan only — Groww is deliberately out of
+scope, see `backend.api.algo.pnl_history`'s own module docstring):
+`tradebook`/`ledger` query the table directly via
+`_hist_console_broker_condition()`. `realized-pnl`/`pnl-summary` go
+through `backend.api.algo.pnl_history.get_accumulated_pnl()`'s own
+`broker` kwarg — an exact, lowercase-normalised match against the
+stored `broker` column. Omitting `broker` on any of the four returns
+every broker's rows combined, exactly as before this parameter existed.
 """
 
 from __future__ import annotations
@@ -62,7 +60,7 @@ from litestar.exceptions import HTTPException
 from sqlalchemy import select, and_, or_ as _sa_or, desc, false as _sa_false, func as _func
 
 from backend.api.database import async_session
-from backend.api.models import AlgoOrder, DailyBook, KiteConsolePnlSync
+from backend.api.models import AlgoOrder, DailyBook, BrokerPnlHistory
 from backend.api.auth_guard import admin_guard
 from backend.api.rbac import cap_guard
 from backend.shared.helpers.settings import get_int
@@ -172,10 +170,10 @@ class _RealizedPnlRow(msgspec.Struct):
 
 
 class _TradebookRow(msgspec.Struct):
-    """One raw Kite Console tradebook fill — `kite_console_pnl_sync`
+    """One raw Kite Console tradebook fill — `broker_pnl_history`
     where report_type='tradebook'. `expiry` is the typed column (a
     last-Thursday-of-month approximation for MCX options — see
-    `KiteConsolePnlSync`'s own model docstring); `console_expiry` is
+    `BrokerPnlHistory`'s own model docstring); `console_expiry` is
     the raw Console-reported `expiry_date`, which is the more accurate
     value for MCX (confirmed live: CRUDEOIL/SILVERM options' own
     `expiry_date` lands several days before the typed approximation).
@@ -183,7 +181,7 @@ class _TradebookRow(msgspec.Struct):
     not typed columns, surfaced here because pattern analysis over
     individual fills needs them."""
     account:               str               # masked form, e.g. 'Z1####'
-    broker:                str               # 'kite' until the broker column lands
+    broker:                str               # 'kite' | 'dhan' — the stored broker column
     segment:               str               # 'equity' | 'derivatives' | 'commodities'
     symbol:                Optional[str]
     exchange:              Optional[str]
@@ -212,7 +210,7 @@ class TradebookListResponse(msgspec.Struct):
 
 class _LedgerRow(msgspec.Struct):
     """One raw Kite Console Funds Statement voucher —
-    `kite_console_pnl_sync` where report_type='ledger'. The typed
+    `broker_pnl_history` where report_type='ledger'. The typed
     `segment` DB column is always the literal 'all' for ledger rows
     (Zerodha's Funds Statement has no per-row segment of its own —
     one shared margin pool across every segment) — `segment` on THIS
@@ -227,7 +225,7 @@ class _LedgerRow(msgspec.Struct):
     excluded. This is not computed differently per filter; it is the
     raw Console-reported number either way."""
     account:       str               # masked form, e.g. 'Z1####'
-    broker:        str               # 'kite' until the broker column lands
+    broker:        str               # 'kite' | 'dhan' — the stored broker column
     posting_date:  Optional[str]     # == trade_date column; Console's voucher/posting date
     cost_center:   Optional[str]     # raw, e.g. 'MCX-F&O - Z'
     segment:       Optional[str]     # derived from cost_center — see docstring
@@ -542,7 +540,7 @@ def _hist_realized_pnl_account_candidates(account: Optional[str]) -> "Optional[s
     """Returns the set of strings that should be treated as matching a
     caller-supplied `account` filter, or `None` for "no filter".
 
-    Double-mask guard: `KiteConsolePnlSync.account` (and therefore every
+    Double-mask guard: `BrokerPnlHistory.account` (and therefore every
     key `get_accumulated_pnl()` returns) stores the MASKED form — but
     this endpoint has no way to know whether the caller passed a raw
     broker account code or the already-masked form it itself returns in
@@ -605,7 +603,7 @@ def _hist_realized_pnl_rows(
     expiry_to: Optional[_date] = None,
 ) -> "list[_RealizedPnlRow]":
     """Pure flattener/filter — reshapes
-    `scripts.kite_console_pnl_sync.get_accumulated_pnl()`'s own
+    `backend.api.algo.pnl_history.get_accumulated_pnl()`'s own
     `groups: {(account, segment, instrument_type, symbol_root, expiry): pnl}`
     dict into this endpoint's flat row-list contract, sorted by
     `expiry` descending (most recent cycle first; a null expiry, i.e.
@@ -700,15 +698,6 @@ def _hist_pnl_summary_rows(
     return rows
 
 
-def _hist_broker_param_matches_all(broker: Optional[str]) -> bool:
-    """True when `broker` doesn't need to narrow a `get_accumulated_pnl()`-
-    backed result — that function's grouped output carries no per-row
-    broker dimension (see this module's own docstring). Until it gains
-    a `broker` kwarg, 'kite' (or omitted) matches every row (every row
-    ingested so far is Kite-sourced); any other value matches none."""
-    return not broker or broker.strip().lower() == "kite"
-
-
 def _safe_float(v) -> Optional[float]:
     """Parses a `raw_row` JSONB numeric-looking string (e.g.
     '1416190.500000') into a float. An absent/empty/unparseable value
@@ -724,7 +713,7 @@ def _safe_float(v) -> Optional[float]:
 
 def _hist_console_account_condition(column, account: Optional[str]):
     """SQLAlchemy WHERE condition for an `account` filter against a
-    masked `KiteConsolePnlSync.account`-shaped column — reuses the same
+    masked `BrokerPnlHistory.account`-shaped column — reuses the same
     double-mask-safe candidate matching as
     `_hist_realized_pnl_account_candidates()`. Returns `None` for "no
     filter" (never an always-true condition, so callers can `if cond
@@ -736,33 +725,32 @@ def _hist_console_account_condition(column, account: Optional[str]):
 
 
 def _hist_console_broker_value(r) -> str:
-    """Per-row broker identifier for a `KiteConsolePnlSync` row. The
-    `broker` column is being added concurrently (see this module's own
-    docstring) — `getattr()` degrades to the literal 'kite' default,
-    correct for every row ingested before that column exists (the Kite
-    Console scraper is the only producer so far). Once the column
-    lands, the real stored value is read with no code change here."""
+    """Per-row broker identifier for a `BrokerPnlHistory` row.
+    `getattr()` (rather than a bare `r.broker`) is defensive only —
+    every real row has had a non-null `broker` column since
+    2026-11-27 (DDL-level `server_default='kite'`); this degrades to
+    the literal 'kite' only for a hand-built test double with no
+    `broker` attribute at all."""
     return getattr(r, "broker", None) or "kite"
 
 
 def _hist_console_broker_condition(broker: Optional[str]):
     """SQLAlchemy WHERE condition for an optional `broker` filter
-    against `KiteConsolePnlSync` directly (the `/tradebook` and
+    against `BrokerPnlHistory` directly (the `/tradebook` and
     `/ledger` routes, which query the table themselves rather than
     going through `get_accumulated_pnl()`).
 
-    While the `broker` column doesn't exist yet (`getattr()` returns
-    `None`): 'kite' (or omitted) is a no-op — every existing row is
-    Kite-sourced — any other value returns a condition matching
-    nothing, via `sqlalchemy.false()` (never silently ignored as if it
-    matched everything). Once the column lands, this filters on it for
-    real with no code change needed here.
+    `getattr()` is defensive only (see `_hist_console_broker_value()`
+    above) — in real use the column always exists, so a genuine
+    'kite'/'dhan' filters for real and any unrecognised value
+    returns a condition matching nothing, via `sqlalchemy.false()`
+    (never silently ignored as if it matched everything).
 
     Returns `None` for "no filter" (the same convention as
     `_hist_console_account_condition()`)."""
     if not broker:
         return None
-    col = getattr(KiteConsolePnlSync, "broker", None)
+    col = getattr(BrokerPnlHistory, "broker", None)
     if col is None:
         return None if broker.strip().lower() == "kite" else _sa_false()
     return col == broker.strip().lower()
@@ -783,7 +771,7 @@ def _ledger_segment_from_cost_center(cost_center: Optional[str]) -> Optional[str
     Confirmed-live values on prod: 'NSE-EQ - Z', 'NSE-F&O - Z',
     'MCX-F&O - Z' (the ' - Z' suffix is a fixed Zerodha-side label,
     not account-specific — observed identical across both of the two
-    live accounts). The typed `KiteConsolePnlSync.segment` DB column is
+    live accounts). The typed `BrokerPnlHistory.segment` DB column is
     always the literal 'all' for ledger rows, so a `segment` filter on
     the `/ledger` endpoint is resolved against THIS derived value, not
     the stored column. An unrecognised or missing cost_center returns
@@ -816,7 +804,7 @@ def _hist_ledger_segment_condition(segment: Optional[str]):
     a plain `column == value` equality the way `/tradebook`'s own
     `segment` filter is).
 
-    `KiteConsolePnlSync.raw_row['cost_center'].astext` compiles to the
+    `BrokerPnlHistory.raw_row['cost_center'].astext` compiles to the
     dialect's native JSON path-extraction operator (`->>'` on both
     Postgres/JSONB and SQLite 3.38+'s JSON1 extension — confirmed
     working against both dialects, including the hand-built sqlite
@@ -840,12 +828,12 @@ def _hist_ledger_segment_condition(segment: Optional[str]):
     prefixes = _hist_ledger_segment_prefixes(segment)
     if not prefixes:
         return _sa_false()
-    extracted = KiteConsolePnlSync.raw_row["cost_center"].astext
+    extracted = BrokerPnlHistory.raw_row["cost_center"].astext
     return _sa_or(*[extracted.ilike(f"{p} - %") for p in prefixes])
 
 
-def _hist_tradebook_row(r: "KiteConsolePnlSync") -> "_TradebookRow":
-    """Builds a `_TradebookRow` from a `KiteConsolePnlSync` ORM row
+def _hist_tradebook_row(r: "BrokerPnlHistory") -> "_TradebookRow":
+    """Builds a `_TradebookRow` from a `BrokerPnlHistory` ORM row
     (report_type='tradebook'). `raw_row` fields are surfaced for the
     ones no typed column carries — see `_TradebookRow`'s own
     docstring for why `console_expiry` differs from `expiry`."""
@@ -874,11 +862,11 @@ def _hist_tradebook_row(r: "KiteConsolePnlSync") -> "_TradebookRow":
     )
 
 
-def _hist_ledger_row(r: "KiteConsolePnlSync") -> "_LedgerRow":
-    """Builds a `_LedgerRow` from a `KiteConsolePnlSync` ORM row
+def _hist_ledger_row(r: "BrokerPnlHistory") -> "_LedgerRow":
+    """Builds a `_LedgerRow` from a `BrokerPnlHistory` ORM row
     (report_type='ledger'). Every displayed field but `account`/
     `broker`/`posting_date` comes from `raw_row` — see that model's
-    own docstring (`KiteConsolePnlSync`, 2026-11-26 ledger addition)
+    own docstring (`BrokerPnlHistory`, 2026-11-26 ledger addition)
     for why ledger rows carry no typed symbol/exchange/qty columns."""
     raw = r.raw_row or {}
     cost_center = raw.get("cost_center")
@@ -908,12 +896,12 @@ def _hist_build_console_conditions(
     default window — this is a full-history surface, unlike `/trades`/
     `/orders`/`/funds`, which default to a recent window), an optional
     masked-account match, and an optional broker match."""
-    conditions: list = [KiteConsolePnlSync.report_type == report_type]
+    conditions: list = [BrokerPnlHistory.report_type == report_type]
     if from_date:
-        conditions.append(KiteConsolePnlSync.trade_date >= from_date)
+        conditions.append(BrokerPnlHistory.trade_date >= from_date)
     if to_date:
-        conditions.append(KiteConsolePnlSync.trade_date <= to_date)
-    acct_cond = _hist_console_account_condition(KiteConsolePnlSync.account, account)
+        conditions.append(BrokerPnlHistory.trade_date <= to_date)
+    acct_cond = _hist_console_account_condition(BrokerPnlHistory.account, account)
     if acct_cond is not None:
         conditions.append(acct_cond)
     broker_cond = _hist_console_broker_condition(broker)
@@ -1111,8 +1099,8 @@ class HistoryController(Controller):
         expiry_to:       Optional[str] = None,
         broker:          Optional[str] = None,
     ) -> "list[_RealizedPnlRow]":
-        """Kite Console P&L reconciliation ground truth — wraps
-        `scripts.kite_console_pnl_sync.get_accumulated_pnl()`. A bare
+        """Broker P&L reconciliation ground truth (Kite and Dhan — wraps
+        `backend.api.algo.pnl_history.get_accumulated_pnl()`. A bare
         list of rows (not the `{rows, total, ...}` wrapper shape the
         other three endpoints in this file use) — this surface has no
         pagination need today (the underlying table is grouped/summed
@@ -1128,12 +1116,13 @@ class HistoryController(Controller):
         already-masked caller value); it's matched post-hoc against
         both the raw and `mask_account()`-translated form instead.
 
-        `broker`: `get_accumulated_pnl()`'s grouped output carries no
-        broker dimension today (see this module's own docstring) —
-        'kite' (or omitted) is a no-op (every row is Kite-sourced so
-        far); any other value returns an empty list. This param exists
-        now so no second pass is needed once that function gains real
-        broker support.
+        `broker`: forwarded directly to `get_accumulated_pnl()`'s own
+        `broker` kwarg (exact match, lowercase-normalised, against the
+        stored `broker` column — 'kite' | 'dhan'). Omitted (the
+        default) returns every broker's rows combined, exactly as
+        before this parameter existed. The returned rows carry no
+        per-row `broker` field — this narrows WHICH rows get summed,
+        it is not an output dimension.
 
         Sorted by `expiry` descending by default (most recent cycle
         first); a null expiry (equity) sorts last.
@@ -1142,14 +1131,13 @@ class HistoryController(Controller):
         operator separately, through the Alerts tab
         (`event_agents.PNL_RECONCILIATION_AGENT`), not through this
         endpoint."""
-        if broker is not None and not _hist_broker_param_matches_all(broker):
-            return []
         from scripts.kite_console_pnl_sync import get_accumulated_pnl
 
         ef = _parse_date(expiry_from)
         et = _parse_date(expiry_to)
         result = await get_accumulated_pnl(
             instrument_type=instrument_type, symbol_root=symbol_root,
+            broker=broker,
         )
         return _hist_realized_pnl_rows(
             result, account=account, segment=segment, expiry_from=ef, expiry_to=et,
@@ -1169,7 +1157,7 @@ class HistoryController(Controller):
         limit:       int = 50,
         offset:      int = 0,
     ) -> TradebookListResponse:
-        """Raw Kite Console tradebook — `kite_console_pnl_sync` where
+        """Raw Kite/Dhan tradebook — `broker_pnl_history` where
         report_type='tradebook'. One row per broker trade_id — the
         actual per-fill record, NOT `/trades` (a daily_book settlement
         snapshot, one row per account+symbol+day).
@@ -1185,10 +1173,8 @@ class HistoryController(Controller):
         'commodities', 'equity'/'future'/'option'); `symbol_root`/
         `exchange` are exact-match against the stored uppercase form.
 
-        `broker`: see this module's own docstring for how this
-        degrades until `kite_console_pnl_sync.broker` lands — on this
-        endpoint it filters FOR REAL the moment that column exists, no
-        second pass needed.
+        `broker`: exact-match against the stored `broker` column
+        ('kite' | 'dhan'), via `_hist_console_broker_condition()`.
 
         Sorted by `trade_date` descending, `id` descending as a
         deterministic tiebreak."""
@@ -1200,23 +1186,23 @@ class HistoryController(Controller):
             account=account, broker=broker,
         )
         if segment:
-            conditions.append(KiteConsolePnlSync.segment == segment.strip().lower())
+            conditions.append(BrokerPnlHistory.segment == segment.strip().lower())
         if instrument_type:
             conditions.append(
-                KiteConsolePnlSync.instrument_type == instrument_type.strip().lower()
+                BrokerPnlHistory.instrument_type == instrument_type.strip().lower()
             )
         if symbol_root:
-            conditions.append(KiteConsolePnlSync.symbol_root == symbol_root.strip().upper())
+            conditions.append(BrokerPnlHistory.symbol_root == symbol_root.strip().upper())
         if exchange:
-            conditions.append(KiteConsolePnlSync.exchange == exchange.strip().upper())
+            conditions.append(BrokerPnlHistory.exchange == exchange.strip().upper())
 
         async with async_session() as s:
             total = (await s.execute(
-                select(_func.count(KiteConsolePnlSync.id)).where(and_(*conditions))
+                select(_func.count(BrokerPnlHistory.id)).where(and_(*conditions))
             )).scalar_one()
             rows = (await s.execute(
-                select(KiteConsolePnlSync).where(and_(*conditions))
-                  .order_by(desc(KiteConsolePnlSync.trade_date), desc(KiteConsolePnlSync.id))
+                select(BrokerPnlHistory).where(and_(*conditions))
+                  .order_by(desc(BrokerPnlHistory.trade_date), desc(BrokerPnlHistory.id))
                   .limit(limit).offset(offset)
             )).scalars().all()
 
@@ -1237,7 +1223,7 @@ class HistoryController(Controller):
         offset:    int = 0,
     ) -> LedgerListResponse:
         """Raw Kite Console Funds Statement ledger —
-        `kite_console_pnl_sync` where report_type='ledger'. One row
+        `broker_pnl_history` where report_type='ledger'. One row
         per voucher (margin block/reversal, net-obligation, etc.) —
         distinct from `/funds` (a daily_book cash SNAPSHOT, one row
         per account+segment+day, not a voucher-level feed).
@@ -1248,7 +1234,7 @@ class HistoryController(Controller):
 
         `segment` filters on a DERIVED value (`raw_row.cost_center`
         mapped via `_ledger_segment_from_cost_center()`) — the typed
-        `KiteConsolePnlSync.segment` column is always 'all' for ledger
+        `BrokerPnlHistory.segment` column is always 'all' for ledger
         rows, so it is never used for this filter. The derivation lives
         in JSONB, not an indexed column, so this is pushed into the SQL
         WHERE clause via `_hist_ledger_segment_condition()` (a dialect-
@@ -1277,11 +1263,11 @@ class HistoryController(Controller):
 
         async with async_session() as s:
             total = (await s.execute(
-                select(_func.count(KiteConsolePnlSync.id)).where(and_(*conditions))
+                select(_func.count(BrokerPnlHistory.id)).where(and_(*conditions))
             )).scalar_one()
             rows = (await s.execute(
-                select(KiteConsolePnlSync).where(and_(*conditions))
-                  .order_by(desc(KiteConsolePnlSync.trade_date), desc(KiteConsolePnlSync.id))
+                select(BrokerPnlHistory).where(and_(*conditions))
+                  .order_by(desc(BrokerPnlHistory.trade_date), desc(BrokerPnlHistory.id))
                   .limit(limit).offset(offset)
             )).scalars().all()
 
@@ -1314,18 +1300,15 @@ class HistoryController(Controller):
         per-symbol-per-pull aggregate, not a single dated event).
 
         `account`/`segment`/`expiry_from`/`expiry_to` behave exactly
-        as on `/realized-pnl`. `symbol_root` is forwarded to
-        `get_accumulated_pnl()` itself (its own exact-match kwarg).
-        `broker`: see this module's own docstring — a no-op for 'kite'
-        (or omitted), an empty result for any other value, until
-        `get_accumulated_pnl()` gains real broker support."""
-        if broker is not None and not _hist_broker_param_matches_all(broker):
-            return PnlSummaryResponse(rows=[], total=0)
+        as on `/realized-pnl`. `symbol_root` and `broker` are both
+        forwarded to `get_accumulated_pnl()` itself (its own
+        exact-match kwargs) — see `/realized-pnl`'s own docstring for
+        `broker`'s exact semantics."""
         from scripts.kite_console_pnl_sync import get_accumulated_pnl
 
         ef = _parse_date(expiry_from)
         et = _parse_date(expiry_to)
-        result = await get_accumulated_pnl(symbol_root=symbol_root)
+        result = await get_accumulated_pnl(symbol_root=symbol_root, broker=broker)
         rows = _hist_pnl_summary_rows(
             result, account=account, segment=segment, expiry_from=ef, expiry_to=et,
         )

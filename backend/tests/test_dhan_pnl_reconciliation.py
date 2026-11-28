@@ -47,7 +47,7 @@ from scripts import kite_console_pnl_sync as kmod
 
 
 # ---------------------------------------------------------------------------
-# Shared fixtures — real in-memory SQLite, including `kite_console_pnl_sync
+# Shared fixtures — real in-memory SQLite, including `broker_pnl_history
 # .broker` (deliberately present here, unlike test_kite_console_pnl_sync.py's
 # own `recon_engine` fixture, which predates the broker column and has no
 # reason to need it for Kite-only tests).
@@ -60,7 +60,7 @@ _RECON_DB_URL = "sqlite+aiosqlite:///:memory:"
 async def dhan_recon_engine():
     meta = MetaData()
     Table(
-        "kite_console_pnl_sync", meta,
+        "broker_pnl_history", meta,
         Column("id", Integer, primary_key=True, autoincrement=True),
         Column("broker", String(16), nullable=False, server_default="kite"),
         Column("account", String(16), nullable=False),
@@ -86,7 +86,7 @@ async def dhan_recon_engine():
         Column("synced_at", DateTime(timezone=True)),
         Column("updated_at", DateTime(timezone=True)),
         UniqueConstraint("account", "report_type", "dedup_key",
-                          name="uq_kite_console_pnl_sync_account_type_key"),
+                          name="uq_broker_pnl_history_account_type_key"),
     )
     Table(
         "daily_book", meta,
@@ -170,7 +170,7 @@ def _recon_fresh_account_registry():
 
 
 _DHAN_TRADE_INSERT_SQL = _sqltext("""
-    INSERT INTO kite_console_pnl_sync
+    INSERT INTO broker_pnl_history
         (broker, account, segment, report_type, dedup_key, symbol, exchange,
          instrument_type, symbol_root, expiry, trade_date, trade_id, order_id,
          buy_qty, sell_qty, buy_value, sell_value, raw_row, updated_at)
@@ -181,7 +181,7 @@ _DHAN_TRADE_INSERT_SQL = _sqltext("""
 """)
 
 _KITE_PNL_INSERT_SQL = _sqltext("""
-    INSERT INTO kite_console_pnl_sync
+    INSERT INTO broker_pnl_history
         (broker, account, segment, report_type, dedup_key, symbol, exchange,
          instrument_type, symbol_root, expiry, pull_range_start,
          pull_range_end, realized_pnl, raw_row, updated_at)
@@ -759,7 +759,7 @@ class TestMcxUnitsAlreadyConverted:
                     broker="dhan",
                 )
                 await session.execute(_sqltext("""
-                    INSERT INTO kite_console_pnl_sync
+                    INSERT INTO broker_pnl_history
                         (broker, account, segment, report_type, dedup_key, symbol,
                          exchange, instrument_type, symbol_root, expiry, trade_date,
                          trade_id, order_id, buy_qty, sell_qty, buy_value, sell_value,

@@ -1110,10 +1110,8 @@ async def get_realized_pnl_history(
         expiry_from:     'YYYY-MM-DD', inclusive. Filters by contract
             expiry date, not trade date.
         expiry_to:       'YYYY-MM-DD', inclusive.
-        broker:          'kite' (or omitted) matches everything — every
-            row ingested so far is Kite-sourced. Any other value
-            returns an empty result until the underlying data gains a
-            real per-row broker dimension.
+        broker:          'kite' or 'dhan'. Omit for every broker's rows
+            combined.
 
     Returns:
         dict with `rows` list — each row carries account (masked,
@@ -1165,8 +1163,8 @@ async def get_historical_tradebook(
         instrument_type: 'equity' / 'future' / 'option'.
         symbol_root:     Underlying root, e.g. "GOLDM", "CRUDEOIL".
         exchange:        e.g. "MCX", "NFO", "NSE".
-        broker:          'kite' (or omitted) matches everything until
-            the data gains a real per-row broker dimension.
+        broker:          'kite' or 'dhan'. Omit for every broker's rows
+            combined.
         limit:     Max rows (default 50, max 500).
         offset:    Pagination offset.
 
@@ -1225,8 +1223,8 @@ async def get_historical_ledger(
             column (Zerodha's Funds Statement has no per-row segment
             of its own). An unrecognised/missing cost_center is
             excluded whenever this filter is set.
-        broker:    'kite' (or omitted) matches everything until the
-            data gains a real per-row broker dimension.
+        broker:    'kite' or 'dhan'. Omit for every broker's rows
+            combined.
         limit:     Max rows (default 50, max 500).
         offset:    Pagination offset.
 
@@ -1276,8 +1274,8 @@ async def get_pnl_summary(
             form. Omit for all accounts.
         segment:     'equity' / 'derivatives' / 'commodities'.
         symbol_root: Underlying root, e.g. "GOLDM", "CRUDEOIL".
-        broker:      'kite' (or omitted) matches everything until the
-            underlying data gains a real per-row broker dimension.
+        broker:      'kite' or 'dhan'. Omit for every broker's rows
+            combined.
         expiry_from: 'YYYY-MM-DD', inclusive. Filters by contract
             expiry date (every pnl row has a null trade date, so this
             is the only date dimension available).

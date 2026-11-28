@@ -2,10 +2,11 @@
  * realizedPnlHistory.js — pure helpers for the "Realized P&L by Expiry"
  * section on /admin/history (new 4th tab, alongside Orders/Trades/Funds).
  *
- * Backend: GET /api/admin/history/realized-pnl, sourced from the new
- * kite_console_pnl_sync table (Kite Console P&L-statement export — see
- * backend/api/models.py:KiteConsolePnlSync and
- * scripts/kite_console_pnl_sync.py). Built against the AGREED contract
+ * Backend: GET /api/admin/history/realized-pnl, sourced from the
+ * broker_pnl_history table (Kite Console P&L-statement export, and
+ * Dhan's REST backfill — see backend/api/models.py:BrokerPnlHistory,
+ * scripts/kite_console_pnl_sync.py and scripts/dhan_pnl_sync.py). Built
+ * against the AGREED contract
  * while the backend route lands in a parallel pass — see the module
  * header comment in +page.svelte for the exact field list and the
  * reconciliation note if the real route ships differently.

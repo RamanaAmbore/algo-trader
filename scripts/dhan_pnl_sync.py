@@ -1,4 +1,4 @@
-"""Dhan historical trade / ledger backfill into `kite_console_pnl_sync`.
+"""Dhan historical trade / ledger backfill into `broker_pnl_history`.
 
 WHY THIS IS A SEPARATE, MUCH SIMPLER SCRIPT THAN
 `scripts/kite_console_pnl_sync.py` — Zerodha's sanctioned Kite Connect API
@@ -87,12 +87,15 @@ silently including) any symbol that isn't. Run once, best-effort, at the
 end of a successful `main()` call (unless `--ledger-only`).
 
 ROW SHAPE — every row this script writes lands in the SAME
-`kite_console_pnl_sync` table Kite's own rows use, with `broker='dhan'`
-(see that model's own column comment). This script reuses the Kite
-script's shared, pure helpers (`chunk_by_calendar_month`,
-`classify_instrument`, `build_sync_row`, `ingest_rows`,
-`build_ledger_sync_row`, `ingest_ledger_rows`, `validate_ledger_rows`,
-`alert_critical`) by IMPORTING them, never copying them — each Dhan raw
+`broker_pnl_history` table Kite's own rows use, with `broker='dhan'`
+(see that model's own column comment). `classify_instrument`,
+`build_sync_row` and `ingest_rows` are imported directly from the
+broker-agnostic `backend.api.algo.pnl_history` module (2026-11-28 —
+no longer from the Kite script); `build_ledger_sync_row`,
+`ingest_ledger_rows`, `validate_ledger_rows`, `alert_critical` and
+`chunk_by_calendar_month` stay genuinely Kite-Console-scraper-authored
+helpers and are still imported from `scripts.kite_console_pnl_sync`.
+Either way, this script reuses them by IMPORTING, never copying — each Dhan raw
 response is first mapped into the exact same Kite-CSV-shaped intermediate
 dict (`symbol`/`trade_date`/`exchange`/`trade_type`/`quantity`/`price`/
 `trade_id`/`order_id` for a trade; `particulars`/`posting_date`/`debit`/
@@ -137,15 +140,20 @@ from backend.shared.helpers.ramboq_logger import get_logger  # noqa: E402
 
 logger = get_logger(__name__)
 
-# Reused, never copied — see module docstring.
+# Reused, never copied — see module docstring. `ingest_rows`/`build_sync_row`
+# come from the broker-agnostic module directly (2026-11-28) — no longer a
+# Kite-script import for these two. The rest stay genuinely
+# Kite-Console-scraper-authored and are still imported from that script.
+from backend.api.algo.pnl_history import (  # noqa: E402
+    build_sync_row,
+    ingest_rows,
+)
 from scripts.kite_console_pnl_sync import (  # noqa: E402
     alert_critical,
     alert_pnl_reconciliation_disagreement,
     build_ledger_sync_row,
-    build_sync_row,
     chunk_by_calendar_month,
     ingest_ledger_rows,
-    ingest_rows,
     validate_ledger_rows,
 )
 
@@ -161,7 +169,7 @@ _DEFAULT_BACKFILL_START = date(2026, 4, 1)
 # `_DHAN_SEGMENT_MAP` — those map to `daily_book`'s vocabulary
 # ('equity' / 'commodity', F&O folded into 'equity'), a DIFFERENT
 # vocabulary from this table's own ('equity' / 'derivatives' /
-# 'commodities', matching `kite_console_pnl_sync.segment`'s existing
+# 'commodities', matching `broker_pnl_history.segment`'s existing
 # values and `scripts/kite_console_pnl_sync.py:_SEGMENT_FOR_EXCHANGE`).
 _SEGMENT_FOR_DHAN_EXCHANGE: dict[str, str] = {
     "NSE": "equity", "BSE": "equity",
@@ -250,7 +258,7 @@ def dhan_trade_to_kite_shape(t: dict) -> dict:
     trade_history()` returns: `trade_id`, `order_id`, `tradingsymbol`,
     `exchange`, `transaction_type`, `quantity`, `average_price`,
     `exchange_timestamp`, `_raw`) into the Kite-CSV-shaped dict
-    `scripts.kite_console_pnl_sync.build_sync_row()` expects (`symbol`,
+    `backend.api.algo.pnl_history.build_sync_row()` expects (`symbol`,
     `trade_date`, `exchange`, `trade_type`, `quantity`, `price`,
     `trade_id`, `order_id`).
 
@@ -548,7 +556,7 @@ async def get_dhan_tradebook_realized_pnl(
     account: "str | None" = None, start: "date | None" = None, end: "date | None" = None,
 ) -> dict:
     """Derives an APPROXIMATE realized-P&L ground truth for Dhan from
-    THIS SCRIPT'S OWN already-ingested `kite_console_pnl_sync` tradebook
+    THIS SCRIPT'S OWN already-ingested `broker_pnl_history` tradebook
     rows (`broker='dhan'`, `report_type='tradebook'`) — NOT full
     FIFO-matched realized P&L (that remains explicitly out of scope; see
     module docstring's "REPORT TYPES" section), but
@@ -562,9 +570,9 @@ async def get_dhan_tradebook_realized_pnl(
 
     MCX LOT->CONTRACT CONVERSION — CONFIRMED, NOT ASSUMED: `buy_value`/
     `sell_value` are `qty * price`
-    (`scripts.kite_console_pnl_sync._fill_fields_for_row()`), where `qty`
+    (`backend.api.algo.pnl_history._fill_fields_for_row()`), where `qty`
     is `build_sync_row()`'s own `row["quantity"]`
-    (`scripts.kite_console_pnl_sync.build_sync_row()`, via
+    (`backend.api.algo.pnl_history.build_sync_row()`, via
     `_parse_float_cell(row.get("quantity"))`). For a Dhan MCX trade, that
     `row["quantity"]` is `dhan_trade_to_kite_shape()`'s passthrough of
     the ALREADY-NORMALISED Dhan trade's own `t["quantity"]`
@@ -603,7 +611,7 @@ async def get_dhan_tradebook_realized_pnl(
     of `start` — a second query shape this function doesn't otherwise
     need, deliberately left for a future task.
 
-    Returns the same shape `scripts.kite_console_pnl_sync.
+    Returns the same shape `backend.api.algo.pnl_history.
     get_accumulated_pnl()`'s `by_account_root_expiry` dict, plus an
     explicit exclusion count (no equivalent exists on the Kite side,
     since its ground truth has no such exclusion step):
@@ -612,11 +620,11 @@ async def get_dhan_tradebook_realized_pnl(
          "excluded_count": int, "excluded_symbols": [(account, symbol), ...]}
     """
     from sqlalchemy import select, and_
-    from backend.api.models import KiteConsolePnlSync
+    from backend.api.models import BrokerPnlHistory
     from backend.api.database import async_session
     from backend.shared.helpers.utils import mask_account
 
-    T = KiteConsolePnlSync
+    T = BrokerPnlHistory
     filters = [T.broker == "dhan", T.report_type == "tradebook"]
     if account:
         filters.append(T.account == mask_account(account))

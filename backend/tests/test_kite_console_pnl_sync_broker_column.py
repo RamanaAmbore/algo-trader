@@ -1,4 +1,4 @@
-"""Tests for the `kite_console_pnl_sync.broker` column (added 2026-11-27
+"""Tests for the `broker_pnl_history.broker` column (added 2026-11-27
 for the Dhan historical trade/ledger backfill) — the migration, the ORM
 model's own default, and the shared `scripts/kite_console_pnl_sync.py`
 functions threading a `broker` kwarg through to the stored row payload.
@@ -44,10 +44,10 @@ class TestKiteConsolePnlSyncBrokerMigration:
         await dbmod._migrate_kite_console_pnl_sync_broker(conn)
         joined = "\n".join(conn.executed)
         assert (
-            "ALTER TABLE kite_console_pnl_sync ADD COLUMN IF NOT EXISTS "
+            "ALTER TABLE broker_pnl_history ADD COLUMN IF NOT EXISTS "
             "broker VARCHAR(16) DEFAULT 'kite'" in joined
         )
-        assert "UPDATE kite_console_pnl_sync SET broker = 'kite' WHERE broker IS NULL" in joined
+        assert "UPDATE broker_pnl_history SET broker = 'kite' WHERE broker IS NULL" in joined
         assert any("lock_timeout" in s for s in conn.executed)
 
     def test_migration_is_registered_in_init_db_after_the_columns_migration(self):
@@ -95,26 +95,26 @@ class TestKiteConsolePnlSyncBrokerMigration:
 
 class TestKiteConsolePnlSyncModelBrokerColumn:
     def test_column_exists_with_server_default_kite(self):
-        from backend.api.models import KiteConsolePnlSync
-        col = KiteConsolePnlSync.__table__.c.broker
+        from backend.api.models import BrokerPnlHistory
+        col = BrokerPnlHistory.__table__.c.broker
         assert col.nullable is False
         assert col.server_default is not None
         assert "kite" in str(col.server_default.arg)
 
     def test_broker_index_exists(self):
-        from backend.api.models import KiteConsolePnlSync
-        index_names = {ix.name for ix in KiteConsolePnlSync.__table__.indexes}
-        assert "ix_kite_console_pnl_sync_broker" in index_names
+        from backend.api.models import BrokerPnlHistory
+        index_names = {ix.name for ix in BrokerPnlHistory.__table__.indexes}
+        assert "ix_broker_pnl_history_broker" in index_names
 
     def test_unique_constraint_unchanged_does_not_include_broker(self):
         """Confirmed deliberate — see the model's own column comment:
         the masked `account` form already differs by broker-letter
         prefix, so a Kite and Dhan row can never collide on
         (account, report_type, dedup_key)."""
-        from backend.api.models import KiteConsolePnlSync
+        from backend.api.models import BrokerPnlHistory
         uq = next(
-            c for c in KiteConsolePnlSync.__table__.constraints
-            if getattr(c, "name", "") == "uq_kite_console_pnl_sync_account_type_key"
+            c for c in BrokerPnlHistory.__table__.constraints
+            if getattr(c, "name", "") == "uq_broker_pnl_history_account_type_key"
         )
         cols = {c.name for c in uq.columns}
         assert cols == {"account", "report_type", "dedup_key"}
@@ -173,7 +173,7 @@ class TestBrokerKwargThreading:
         from scripts.kite_console_pnl_sync import ingest_rows
 
         session = AsyncMock()
-        with patch("scripts.kite_console_pnl_sync.build_sync_row") as mock_build:
+        with patch("backend.api.algo.pnl_history.build_sync_row") as mock_build:
             mock_build.return_value = {
                 "broker": "dhan", "account": "D1####", "segment": "equity",
                 "report_type": "tradebook", "dedup_key": "k",

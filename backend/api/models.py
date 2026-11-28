@@ -2635,10 +2635,24 @@ class LogEvent(Base):
     extra: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
 
 
-class KiteConsolePnlSync(Base):
-    """Rows ingested from Zerodha Kite Console's web Tradebook / P&L
-    report, via the Playwright-driven scraper
-    (`scripts/kite_console_pnl_sync.py`). Separate from `daily_book` —
+class BrokerPnlHistory(Base):
+    """Rows ingested from a broker's own historical trade/P&L/ledger
+    report — Kite (via Zerodha Kite Console's web Tradebook/P&L report,
+    the Playwright-driven scraper `scripts/kite_console_pnl_sync.py`) and
+    Dhan (via the REST `Statement` endpoints, `scripts/dhan_pnl_sync.py`).
+
+    Renamed from `KiteConsolePnlSync`/`kite_console_pnl_sync`
+    (2026-11-28) — the table has carried a `broker` column since
+    2026-11-27 and has never been Kite-exclusive in practice; the old
+    name was misleading. See `_migrate_rename_kite_console_pnl_sync_to_broker_pnl_history`
+    in `backend/api/database.py` for the in-place rename migration (live
+    prod/dev data preserved, not a drop-and-recreate). SCOPE: Kite and
+    Dhan only, per explicit operator confirmation — Groww is deliberately
+    excluded from this change; `broker` stays a plain string (not a
+    `Literal["kite", "dhan"]`) so a future Groww addition needs no
+    second migration, but no Groww value is special-cased today.
+
+    Separate from `daily_book` —
     `daily_book` is the snapshot/settlement table every live route reads
     from and has its own strict semantics (see CLAUDE.md's "close_price
     / ltp invariant"); this table is a secondary, broker-reported
@@ -2709,9 +2723,9 @@ class KiteConsolePnlSync(Base):
     or BAJFINANCE as an option). `instrument_type` is 'equity' | 'future'
     | 'option'; `symbol_root` is the parsed root for F&O symbols (e.g.
     'GOLDM', 'NIFTY') or the bare symbol itself for equity. See
-    `scripts/kite_console_pnl_sync.py:classify_instrument()`.
+    `backend.api.algo.pnl_history.classify_instrument()`.
 
-    Accumulation (`get_accumulated_pnl()`, same script) picks, per
+    Accumulation (`backend.api.algo.pnl_history.get_accumulated_pnl()`) picks, per
     (account, segment, symbol, expiry, `pull_range_start`), only the row
     with the LATEST `pull_range_end` — then SUMS across the resulting
     per-month "latest" rows, grouped by (account, segment,
@@ -2746,7 +2760,7 @@ class KiteConsolePnlSync(Base):
     one calendar month), is correct once each month's own latest-pull
     value has been picked — those are genuinely non-overlapping facts.
     """
-    __tablename__ = "kite_console_pnl_sync"
+    __tablename__ = "broker_pnl_history"
 
     id:               Mapped[int]            = mapped_column(primary_key=True, autoincrement=True)
     # `broker` (added 2026-11-27) — 'kite' | 'dhan'. Every pre-existing row
@@ -2757,14 +2771,8 @@ class KiteConsolePnlSync(Base):
     # in database.py) AND is the correct value for every row this table
     # has ever actually held before Dhan's own ingestion
     # (`scripts/dhan_pnl_sync.py`) started writing `broker='dhan'` rows.
-    # The table/model/script names are NOT renamed in this change — that
-    # broader rename is still deliberately deferred (see
-    # project_token_unification_scope_expansion-style notes elsewhere);
-    # this column is the narrow, explicitly-scoped generalization the
-    # operator asked for ("naming with kite is not correct... it is not
-    # for just kite").
     #
-    # Deliberately NOT part of `uq_kite_console_pnl_sync_account_type_key`
+    # Deliberately NOT part of `uq_broker_pnl_history_account_type_key`
     # (the account+report_type+dedup_key unique constraint, unchanged) —
     # `account` is always the MASKED form, and the mask shape differs by
     # broker-letter prefix (Kite 'Z#####', Dhan 'D#####', Groww 'G#####' —
@@ -2805,17 +2813,23 @@ class KiteConsolePnlSync(Base):
     __table_args__ = (
         UniqueConstraint(
             "account", "report_type", "dedup_key",
-            name="uq_kite_console_pnl_sync_account_type_key",
+            name="uq_broker_pnl_history_account_type_key",
         ),
-        Index("ix_kite_console_pnl_sync_account_segment", "account", "segment"),
-        Index("ix_kite_console_pnl_sync_symbol", "symbol"),
-        Index("ix_kite_console_pnl_sync_expiry", "expiry"),
+        Index("ix_broker_pnl_history_account_segment", "account", "segment"),
+        Index("ix_broker_pnl_history_symbol", "symbol"),
+        Index("ix_broker_pnl_history_expiry", "expiry"),
         Index(
-            "ix_kite_console_pnl_sync_root",
+            "ix_broker_pnl_history_root",
             "account", "symbol_root", "instrument_type",
         ),
         # Added alongside `broker` (2026-11-27) — the read-side history
-        # routes/MCP tools (a separate agent's task) will most commonly
-        # filter "every Dhan row" / "every Kite row" across accounts.
-        Index("ix_kite_console_pnl_sync_broker", "broker"),
+        # routes/MCP tools filter "every Dhan row" / "every Kite row"
+        # across accounts.
+        Index("ix_broker_pnl_history_broker", "broker"),
     )
+
+
+# Backward-compat alias — `KiteConsolePnlSync` is the pre-2026-11-28 name.
+# Kept only so an out-of-tree reference (if any) doesn't hard-crash on
+# import; every in-tree reference uses `BrokerPnlHistory` directly.
+KiteConsolePnlSync = BrokerPnlHistory

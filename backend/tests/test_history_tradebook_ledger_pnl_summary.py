@@ -12,18 +12,18 @@ change.
 
 Fixture shapes (ORM row attrs, raw_row JSON contents) are copied
 verbatim from a read-only query against the real prod
-`kite_console_pnl_sync` table, not invented — see the plan this test
+`broker_pnl_history` table, not invented — see the plan this test
 file implements for the exact `psql` output.
 
 DB-backed controller tests follow this project's own established
-pattern for testing an ORM query against `KiteConsolePnlSync` (a
+pattern for testing an ORM query against `BrokerPnlHistory` (a
 Postgres-only JSONB column) without a real Postgres instance: a
 hand-built sqlite Core `Table` with a generic `JSON` column standing
 in for `raw_row`, created on an in-memory `aiosqlite` engine, with
 `backend.api.database.async_session` monkeypatched to a real
 `async_sessionmaker` bound to it (same mechanism as
 `test_kite_console_pnl_sync.py`'s `recon_engine`/
-`recon_session_factory` fixtures). `select(KiteConsolePnlSync)` reads
+`recon_session_factory` fixtures). `select(BrokerPnlHistory)` reads
 from this table by name/column match, not by object identity, so the
 real ORM class and route handlers run unmodified against it.
 """
@@ -42,14 +42,13 @@ from sqlalchemy import (
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from backend.api.models import KiteConsolePnlSync
+from backend.api.models import BrokerPnlHistory
 from backend.api.routes import history
 from backend.api.routes.history import (
     HistoryController,
     LedgerListResponse,
     PnlSummaryResponse,
     TradebookListResponse,
-    _hist_broker_param_matches_all,
     _hist_build_console_conditions,
     _hist_console_account_condition,
     _hist_console_broker_condition,
@@ -153,28 +152,15 @@ class TestLedgerSegmentCondition:
             assert prefix in _hist_ledger_segment_prefixes(seg)
 
 
-class TestBrokerParamMatchesAll:
-    def test_none_matches_all(self):
-        assert _hist_broker_param_matches_all(None) is True
-
-    def test_kite_matches_all(self):
-        assert _hist_broker_param_matches_all("kite") is True
-        assert _hist_broker_param_matches_all("KITE") is True
-        assert _hist_broker_param_matches_all(" kite ") is True
-
-    def test_dhan_does_not_match(self):
-        assert _hist_broker_param_matches_all("dhan") is False
-
-
 class TestConsoleAccountCondition:
     def test_no_account_returns_none(self):
-        assert _hist_console_account_condition(KiteConsolePnlSync.account, None) is None
+        assert _hist_console_account_condition(BrokerPnlHistory.account, None) is None
 
     def test_raw_account_resolves_both_forms(self):
         from backend.shared.helpers.utils import register_accounts, mask_account
         register_accounts(["ZG0790"])
         masked = mask_account("ZG0790")
-        cond = _hist_console_account_condition(KiteConsolePnlSync.account, "ZG0790")
+        cond = _hist_console_account_condition(BrokerPnlHistory.account, "ZG0790")
         compiled = str(cond.compile(
             dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True},
         ))
@@ -184,10 +170,10 @@ class TestConsoleAccountCondition:
 
 class TestConsoleBrokerCondition:
     """Exercises both the degraded (column-absent) path and the
-    real-column path. The real `KiteConsolePnlSync` model gained a
+    real-column path. The real `BrokerPnlHistory` model gained a
     `broker` column (2026-11-27, concurrent change) BEFORE this test
     file was written — the degraded path is simulated explicitly here
-    (monkeypatching `history.KiteConsolePnlSync` to a stand-in with no
+    (monkeypatching `history.BrokerPnlHistory` to a stand-in with no
     `broker` attribute) so it stays covered regardless of the real
     model's current shape."""
 
@@ -204,7 +190,7 @@ class TestConsoleBrokerCondition:
         compiled = str(cond.compile(
             dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True},
         ))
-        assert "kite_console_pnl_sync.broker" in compiled
+        assert "broker_pnl_history.broker" in compiled
         assert "kite" in compiled
 
     def test_other_broker_filters_on_real_column_when_present(self):
@@ -213,14 +199,14 @@ class TestConsoleBrokerCondition:
         compiled = str(cond.compile(
             dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True},
         ))
-        assert "kite_console_pnl_sync.broker" in compiled
+        assert "broker_pnl_history.broker" in compiled
         assert "dhan" in compiled
 
     def test_degraded_kite_is_noop_when_column_absent(self, monkeypatch):
         class _NoBrokerColumn:
             pass
 
-        monkeypatch.setattr(history, "KiteConsolePnlSync", _NoBrokerColumn)
+        monkeypatch.setattr(history, "BrokerPnlHistory", _NoBrokerColumn)
         assert _hist_console_broker_condition("kite") is None
         assert _hist_console_broker_condition(None) is None
 
@@ -228,7 +214,7 @@ class TestConsoleBrokerCondition:
         class _NoBrokerColumn:
             pass
 
-        monkeypatch.setattr(history, "KiteConsolePnlSync", _NoBrokerColumn)
+        monkeypatch.setattr(history, "BrokerPnlHistory", _NoBrokerColumn)
         cond = _hist_console_broker_condition("dhan")
         assert cond is not None
         # sqlalchemy.false() compiles to a literal falsy clause.
@@ -583,12 +569,24 @@ class TestListRealizedPnlBrokerExtension:
         assert len(result) == 1
 
     @pytest.mark.asyncio
-    async def test_non_kite_broker_short_circuits_to_empty_without_calling_through(self):
-        mock_fn = AsyncMock(return_value={"groups": {}, "by_account_root_expiry": {}, "overall_total": 0.0})
+    async def test_dhan_broker_is_forwarded_through_to_get_accumulated_pnl(self):
+        """2026-11-28 — `get_accumulated_pnl()` gained a real `broker`
+        kwarg; the old short-circuit (which never called through for
+        any non-'kite' value) is gone. A 'dhan' broker param now reaches
+        the underlying function for real."""
+        canned = {
+            "groups": {
+                ("D1####", "commodities", "future", "GOLDM", date(2026, 12, 31)): 50000.0,
+            },
+            "by_account_root_expiry": {}, "overall_total": 50000.0,
+        }
+        mock_fn = AsyncMock(return_value=canned)
         with patch("scripts.kite_console_pnl_sync.get_accumulated_pnl", mock_fn):
             result = await HistoryController.list_realized_pnl.fn(None, broker="dhan")
-        assert result == []
-        mock_fn.assert_not_awaited()
+        mock_fn.assert_awaited_once_with(
+            instrument_type=None, symbol_root=None, broker="dhan",
+        )
+        assert len(result) == 1
 
     @pytest.mark.asyncio
     async def test_omitted_broker_behaves_as_before(self):
@@ -598,9 +596,12 @@ class TestListRealizedPnlBrokerExtension:
             },
             "by_account_root_expiry": {}, "overall_total": 120000.0,
         }
-        with patch("scripts.kite_console_pnl_sync.get_accumulated_pnl",
-                   AsyncMock(return_value=canned)):
+        mock_fn = AsyncMock(return_value=canned)
+        with patch("scripts.kite_console_pnl_sync.get_accumulated_pnl", mock_fn):
             result = await HistoryController.list_realized_pnl.fn(None)
+        mock_fn.assert_awaited_once_with(
+            instrument_type=None, symbol_root=None, broker=None,
+        )
         assert len(result) == 1
 
     def test_guarded_by_view_audit_cap(self):
@@ -625,19 +626,28 @@ class TestPnlSummaryEndpoint:
         assert result.rows[0].symbol_root == "GOLDM"
 
     @pytest.mark.asyncio
-    async def test_non_kite_broker_short_circuits_without_calling_through(self):
-        mock_fn = AsyncMock(return_value={"groups": {}, "by_account_root_expiry": {}, "overall_total": 0.0})
+    async def test_dhan_broker_is_forwarded_through_to_get_accumulated_pnl(self):
+        """2026-11-28 — same fix as `/realized-pnl`: a 'dhan' broker
+        param now reaches the underlying function for real instead of
+        short-circuiting to an empty result."""
+        canned = {
+            "groups": {
+                ("D1####", "commodities", "future", "GOLDM", date(2026, 12, 31)): 50000.0,
+            },
+            "by_account_root_expiry": {}, "overall_total": 50000.0,
+        }
+        mock_fn = AsyncMock(return_value=canned)
         with patch("scripts.kite_console_pnl_sync.get_accumulated_pnl", mock_fn):
             result = await HistoryController.pnl_summary.fn(None, broker="dhan")
-        assert result == PnlSummaryResponse(rows=[], total=0)
-        mock_fn.assert_not_awaited()
+        mock_fn.assert_awaited_once_with(symbol_root=None, broker="dhan")
+        assert result.total == 1
 
     @pytest.mark.asyncio
-    async def test_symbol_root_forwarded_to_underlying_function(self):
+    async def test_symbol_root_and_broker_forwarded_to_underlying_function(self):
         mock_fn = AsyncMock(return_value={"groups": {}, "by_account_root_expiry": {}, "overall_total": 0.0})
         with patch("scripts.kite_console_pnl_sync.get_accumulated_pnl", mock_fn):
             await HistoryController.pnl_summary.fn(None, symbol_root="GOLDM")
-        mock_fn.assert_awaited_once_with(symbol_root="GOLDM")
+        mock_fn.assert_awaited_once_with(symbol_root="GOLDM", broker=None)
 
     @pytest.mark.asyncio
     async def test_expiry_range_applied(self):
@@ -660,7 +670,7 @@ class TestPnlSummaryEndpoint:
 async def console_engine():
     meta = MetaData()
     Table(
-        "kite_console_pnl_sync", meta,
+        "broker_pnl_history", meta,
         Column("id", Integer, primary_key=True, autoincrement=True),
         Column("broker", String(16), nullable=False, server_default="kite"),
         Column("account", String(16), nullable=False),
@@ -686,7 +696,7 @@ async def console_engine():
         Column("synced_at", DateTime(timezone=True)),
         Column("updated_at", DateTime(timezone=True)),
         UniqueConstraint("account", "report_type", "dedup_key",
-                          name="uq_kite_console_pnl_sync_account_type_key"),
+                          name="uq_broker_pnl_history_account_type_key"),
     )
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
@@ -708,7 +718,7 @@ async def console_session_factory(console_engine, monkeypatch):
 
 
 _TRADEBOOK_INSERT_SQL = sqltext("""
-    INSERT INTO kite_console_pnl_sync
+    INSERT INTO broker_pnl_history
         (broker, account, segment, report_type, dedup_key, symbol, exchange,
          instrument_type, symbol_root, expiry, trade_date, trade_id, order_id,
          buy_qty, sell_qty, buy_value, sell_value, raw_row, updated_at)
@@ -719,7 +729,7 @@ _TRADEBOOK_INSERT_SQL = sqltext("""
 """)
 
 _LEDGER_INSERT_SQL = sqltext("""
-    INSERT INTO kite_console_pnl_sync
+    INSERT INTO broker_pnl_history
         (broker, account, segment, report_type, dedup_key, trade_date, raw_row, updated_at)
     VALUES
         (:broker, :account, :segment, :report_type, :dedup_key, :trade_date, :raw_row, :updated_at)

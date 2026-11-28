@@ -566,7 +566,7 @@ class TestIngestRowsSqlShape:
         from sqlalchemy.dialects import postgresql
         compiled = str(stmt.compile(dialect=postgresql.dialect()))
         assert "ON CONFLICT" in compiled, f"expected an upsert statement, got: {compiled}"
-        assert "kite_console_pnl_sync" in compiled
+        assert "broker_pnl_history" in compiled
 
     @pytest.mark.asyncio
     async def test_account_in_stored_payload_is_masked_form(self):
@@ -908,7 +908,7 @@ class TestIngestLedgerRowsSqlShape:
         from sqlalchemy.dialects import postgresql
         compiled = str(stmt.compile(dialect=postgresql.dialect()))
         assert "DELETE" in compiled.upper()
-        assert "kite_console_pnl_sync" in compiled
+        assert "broker_pnl_history" in compiled
 
     @pytest.mark.asyncio
     async def test_deletes_then_inserts_when_rows_are_present(self):
@@ -3494,7 +3494,7 @@ class TestPnlCrossRunDuplicateDetection:
             # not float -- otherwise this test would not actually be
             # exercising the cross-type comparison it claims to.
             from sqlalchemy import select
-            from backend.api.models import KiteConsolePnlSync as _T
+            from backend.api.models import BrokerPnlHistory as _T
             result = await session.execute(
                 select(_T.realized_pnl).where(_T.account == "ZXRUN7###")
             )
@@ -3761,8 +3761,9 @@ _RECON_DB_URL = "sqlite+aiosqlite:///:memory:"
 async def recon_engine():
     meta = MetaData()
     Table(
-        "kite_console_pnl_sync", meta,
+        "broker_pnl_history", meta,
         Column("id", Integer, primary_key=True, autoincrement=True),
+        Column("broker", String(16), nullable=False, server_default="kite"),
         Column("account", String(16), nullable=False),
         Column("segment", String(16), nullable=False),
         Column("report_type", String(16), nullable=False),
@@ -3786,7 +3787,7 @@ async def recon_engine():
         Column("synced_at", DateTime(timezone=True)),
         Column("updated_at", DateTime(timezone=True)),
         UniqueConstraint("account", "report_type", "dedup_key",
-                          name="uq_kite_console_pnl_sync_account_type_key"),
+                          name="uq_broker_pnl_history_account_type_key"),
     )
     Table(
         "daily_book", meta,
@@ -3822,12 +3823,12 @@ async def recon_session_factory(recon_engine, monkeypatch):
 
 
 _PNL_INSERT_SQL = _sqltext("""
-    INSERT INTO kite_console_pnl_sync
-        (account, segment, report_type, dedup_key, symbol, exchange,
+    INSERT INTO broker_pnl_history
+        (broker, account, segment, report_type, dedup_key, symbol, exchange,
          instrument_type, symbol_root, expiry, pull_range_start,
          pull_range_end, realized_pnl, raw_row, updated_at)
     VALUES
-        (:account, :segment, :report_type, :dedup_key, :symbol, :exchange,
+        (:broker, :account, :segment, :report_type, :dedup_key, :symbol, :exchange,
          :instrument_type, :symbol_root, :expiry, :pull_range_start,
          :pull_range_end, :realized_pnl, :raw_row, :updated_at)
 """)
@@ -3856,6 +3857,7 @@ _RECON_MASKED_ACCOUNT = _recon_mask_account("ZG0790")
 
 async def _insert_pnl_row(session, **kwargs):
     defaults = dict(
+        broker="kite",
         account=_RECON_MASKED_ACCOUNT, segment="commodities", report_type="pnl",
         symbol="GOLDM26DECFUT", exchange="MCX", instrument_type="future",
         symbol_root="GOLDM", expiry=date(2026, 12, 31),
@@ -4006,6 +4008,95 @@ class TestGetAccumulatedPnlCalendarMonthChunking:
         result = await mod.get_accumulated_pnl(symbol_root="NIFTY")
         assert result["overall_total"] == pytest.approx(6000.0)
         assert result["by_account_root_expiry"][(_RECON_MASKED_ACCOUNT, "NIFTY", date(2025, 12, 24))] == pytest.approx(6000.0)
+
+
+class TestGetAccumulatedPnlBrokerFilter:
+    """2026-11-28 — `get_accumulated_pnl()` gained a `broker` kwarg
+    (Kite/Dhan only, see `backend.api.algo.pnl_history`'s own module
+    docstring for the Groww-exclusion scope decision). These use real
+    synthetic Dhan rows against the in-memory sqlite `broker_pnl_history`
+    fixture — prod carries zero real Dhan rows today, so this cannot be
+    exercised against real data yet."""
+
+    @pytest.mark.asyncio
+    async def test_no_broker_kwarg_combines_every_broker_unchanged(self, recon_session_factory):
+        """`broker=None` (the default, every pre-2026-11-28 caller) must
+        behave byte-identically to before this kwarg existed — every
+        broker's rows summed together, with no filter applied at all."""
+        async with recon_session_factory() as session:
+            await _insert_pnl_row(
+                session, broker="kite", account=_RECON_MASKED_ACCOUNT,
+                realized_pnl=50000.0,
+            )
+            await _insert_pnl_row(
+                session, broker="dhan", account="D1####",
+                realized_pnl=30000.0,
+            )
+            await session.commit()
+
+        result = await mod.get_accumulated_pnl(symbol_root="GOLDM")
+        assert result["overall_total"] == pytest.approx(80000.0), (
+            "omitting broker= must combine every broker's rows, exactly "
+            "as every existing caller already relies on"
+        )
+
+    @pytest.mark.asyncio
+    async def test_broker_dhan_returns_only_dhan_rows(self, recon_session_factory):
+        async with recon_session_factory() as session:
+            await _insert_pnl_row(
+                session, broker="kite", account=_RECON_MASKED_ACCOUNT,
+                realized_pnl=50000.0,
+            )
+            await _insert_pnl_row(
+                session, broker="dhan", account="D1####",
+                realized_pnl=30000.0,
+            )
+            await session.commit()
+
+        result = await mod.get_accumulated_pnl(symbol_root="GOLDM", broker="dhan")
+        assert result["overall_total"] == pytest.approx(30000.0)
+        assert ("D1####", "GOLDM", date(2026, 12, 31)) in result["by_account_root_expiry"]
+        assert (_RECON_MASKED_ACCOUNT, "GOLDM", date(2026, 12, 31)) not in result["by_account_root_expiry"]
+
+    @pytest.mark.asyncio
+    async def test_broker_kite_returns_only_kite_rows(self, recon_session_factory):
+        async with recon_session_factory() as session:
+            await _insert_pnl_row(
+                session, broker="kite", account=_RECON_MASKED_ACCOUNT,
+                realized_pnl=50000.0,
+            )
+            await _insert_pnl_row(
+                session, broker="dhan", account="D1####",
+                realized_pnl=30000.0,
+            )
+            await session.commit()
+
+        result = await mod.get_accumulated_pnl(symbol_root="GOLDM", broker="kite")
+        assert result["overall_total"] == pytest.approx(50000.0)
+
+    @pytest.mark.asyncio
+    async def test_broker_filter_is_case_and_whitespace_insensitive(self, recon_session_factory):
+        async with recon_session_factory() as session:
+            await _insert_pnl_row(
+                session, broker="dhan", account="D1####", realized_pnl=30000.0,
+            )
+            await session.commit()
+
+        result = await mod.get_accumulated_pnl(symbol_root="GOLDM", broker=" DHAN ")
+        assert result["overall_total"] == pytest.approx(30000.0)
+
+    @pytest.mark.asyncio
+    async def test_unknown_broker_returns_empty_not_an_error(self, recon_session_factory):
+        async with recon_session_factory() as session:
+            await _insert_pnl_row(
+                session, broker="kite", account=_RECON_MASKED_ACCOUNT,
+                realized_pnl=50000.0,
+            )
+            await session.commit()
+
+        result = await mod.get_accumulated_pnl(symbol_root="GOLDM", broker="groww")
+        assert result["overall_total"] == pytest.approx(0.0)
+        assert result["groups"] == {}
 
 
 class TestReconcileAgainstDailyBook:

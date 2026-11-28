@@ -196,7 +196,7 @@ class TestListRealizedPnlEndpoint:
             await HistoryController.list_realized_pnl.fn(
                 None, account="ZG0790", instrument_type="future", symbol_root="GOLDM",
             )
-        mock_fn.assert_awaited_once_with(instrument_type="future", symbol_root="GOLDM")
+        mock_fn.assert_awaited_once_with(instrument_type="future", symbol_root="GOLDM", broker=None)
 
     @pytest.mark.asyncio
     async def test_expiry_from_to_strings_parsed_and_applied(self):

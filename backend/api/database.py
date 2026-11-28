@@ -100,6 +100,111 @@ class Base(DeclarativeBase):
     pass
 
 
+async def _migrate_rename_kite_console_pnl_sync_to_broker_pnl_history(conn) -> None:
+    """Renames `kite_console_pnl_sync` -> `broker_pnl_history` IN PLACE
+    (2026-11-28), preserving every existing row (prod carries real Kite
+    Console P&L/tradebook/ledger history — this is a live-data table
+    rename, never a drop-and-recreate).
+
+    MUST run BEFORE `_migrate_create_tables()`'s `Base.metadata.
+    create_all()`, and therefore is called first, standalone, before
+    `init_db()`'s normal `_migrate_create_tables(conn)` call — not added
+    to the ordered list further down this file. The model's
+    `__tablename__` is now `broker_pnl_history`. If `create_all` ran
+    first, it would see no table named `broker_pnl_history` yet and
+    CREATE A BRAND NEW EMPTY ONE under that name, while every historical
+    row sat orphaned forever under the old name — `create_all`'s own
+    `checkfirst=True` only skips a table it already finds BY NAME; it
+    never renames or merges an existing table with different content.
+
+    Four states, explicitly:
+      - old table only            -> rename it (the normal/expected case
+                                      on an already-deployed prod/dev DB).
+      - new table only            -> no-op (already renamed on a prior
+                                      boot, or a genuinely fresh DB where
+                                      `create_all` will create it next).
+      - neither exists            -> no-op (fresh DB; `create_all` creates
+                                      `broker_pnl_history` next).
+      - BOTH exist                -> logs CRITICAL and touches NOTHING.
+                                      This should never happen in normal
+                                      operation; a human must resolve it.
+                                      Silently dropping/merging either
+                                      table here would risk destroying
+                                      real P&L/tradebook/ledger history.
+
+    Index/constraint renames (`ALTER INDEX ... RENAME TO` /
+    `ALTER TABLE ... RENAME CONSTRAINT ... TO ...`) run AFTER the table
+    rename succeeds, each in its own try/except — cosmetic-only (the
+    one UPSERT in this table, `ingest_rows()`'s `on_conflict_do_update`,
+    matches by `index_elements=[...]` column list, not by constraint
+    name, so a stale index/constraint name can never break that upsert),
+    so a failure here is logged and does not abort the table rename
+    itself, which is the part that actually matters for data safety.
+
+    `_migrate_kite_console_pnl_sync_columns`/`_migrate_kite_console_pnl_sync_broker`
+    (further down this file) run AFTER `_migrate_create_tables` in
+    `init_db()`'s normal ordered list, i.e. AFTER this function has
+    already renamed the table — their own `ALTER TABLE` targets were
+    updated to `broker_pnl_history` in the same change that added this
+    function, so they are not stale."""
+    from sqlalchemy import text
+
+    old_name, new_name = "kite_console_pnl_sync", "broker_pnl_history"
+
+    async def _table_exists(name: str) -> bool:
+        result = await conn.execute(text(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
+            "WHERE table_schema = current_schema() AND table_name = :t)"
+        ), {"t": name})
+        return bool(result.scalar())
+
+    old_exists = await _table_exists(old_name)
+    new_exists = await _table_exists(new_name)
+
+    if old_exists and new_exists:
+        logger.critical(
+            "[MIGRATION] both %s and %s exist — refusing to rename or "
+            "merge them automatically. This table holds real broker "
+            "P&L/tradebook/ledger history; a human must reconcile these "
+            "two tables manually before this migration can proceed.",
+            old_name, new_name,
+        )
+        return
+    if not old_exists:
+        # Either already renamed on a prior boot, or a genuinely fresh
+        # DB where create_all() will create `new_name` next. Nothing to do.
+        return
+
+    # old_exists and not new_exists -> the normal, expected rename.
+    await conn.execute(text("SET LOCAL lock_timeout = '5s'"))
+    await conn.execute(text(f"ALTER TABLE {old_name} RENAME TO {new_name}"))
+    logger.info("[MIGRATION] renamed %s -> %s", old_name, new_name)
+
+    for stmt in (
+        f"ALTER TABLE {new_name} RENAME CONSTRAINT "
+        "uq_kite_console_pnl_sync_account_type_key "
+        "TO uq_broker_pnl_history_account_type_key",
+        "ALTER INDEX IF EXISTS ix_kite_console_pnl_sync_account_segment "
+        "RENAME TO ix_broker_pnl_history_account_segment",
+        "ALTER INDEX IF EXISTS ix_kite_console_pnl_sync_symbol "
+        "RENAME TO ix_broker_pnl_history_symbol",
+        "ALTER INDEX IF EXISTS ix_kite_console_pnl_sync_expiry "
+        "RENAME TO ix_broker_pnl_history_expiry",
+        "ALTER INDEX IF EXISTS ix_kite_console_pnl_sync_root "
+        "RENAME TO ix_broker_pnl_history_root",
+        "ALTER INDEX IF EXISTS ix_kite_console_pnl_sync_broker "
+        "RENAME TO ix_broker_pnl_history_broker",
+    ):
+        try:
+            await conn.execute(text(stmt))
+        except Exception as e:
+            logger.warning(
+                "[MIGRATION] cosmetic index/constraint rename skipped "
+                "(table rename itself already succeeded): %s — %s",
+                stmt, e,
+            )
+
+
 async def _migrate_create_tables(conn) -> None:
     """Create all branch-local tables via metadata.create_all (idempotent)."""
     from backend.api.models import (  # noqa: F401 — ensure model registered
@@ -107,7 +212,7 @@ async def _migrate_create_tables(conn) -> None:
         GrammarToken, Setting, DailyBook, Watchlist, WatchlistItem, VisitorLog,
         CodeMetricsSnapshot, MarketLifecycleEvent, MarketHoliday,
         MarketSpecialSession, BrokerAccount, PerfSnapshot, AppMessage,
-        ExchangeSchedule, TickerCalendarVerdict, KiteConsolePnlSync,
+        ExchangeSchedule, TickerCalendarVerdict, BrokerPnlHistory,
     )
     from sqlalchemy import text
     _branch_local_tables = [
@@ -860,7 +965,13 @@ async def _migrate_market_special_sessions_source(conn) -> None:
 
 async def _migrate_kite_console_pnl_sync_columns(conn) -> None:
     """Add `instrument_type` / `symbol_root` columns + a supporting index
-    to `kite_console_pnl_sync` (idempotent, additive — 2026-11-26).
+    to `broker_pnl_history` (idempotent, additive — 2026-11-26).
+
+    Function name kept as-is (historical — this migration predates the
+    2026-11-28 table rename, which runs BEFORE this function in
+    `init_db()`'s ordered list, so by the time this runs the table is
+    already named `broker_pnl_history`; its SQL targets were updated to
+    match in the same change that added the rename migration).
 
     The table itself was created very recently (via `_migrate_create_tables`,
     so no separate migration existed for the table itself), and these two
@@ -875,23 +986,27 @@ async def _migrate_kite_console_pnl_sync_columns(conn) -> None:
     """
     from sqlalchemy import text
     await conn.execute(text(
-        "ALTER TABLE kite_console_pnl_sync ADD COLUMN IF NOT EXISTS "
+        "ALTER TABLE broker_pnl_history ADD COLUMN IF NOT EXISTS "
         "instrument_type VARCHAR(16)"
     ))
     await conn.execute(text(
-        "ALTER TABLE kite_console_pnl_sync ADD COLUMN IF NOT EXISTS "
+        "ALTER TABLE broker_pnl_history ADD COLUMN IF NOT EXISTS "
         "symbol_root VARCHAR(64)"
     ))
     await conn.execute(text(
-        "CREATE INDEX IF NOT EXISTS ix_kite_console_pnl_sync_root "
-        "ON kite_console_pnl_sync (account, symbol_root, instrument_type)"
+        "CREATE INDEX IF NOT EXISTS ix_broker_pnl_history_root "
+        "ON broker_pnl_history (account, symbol_root, instrument_type)"
     ))
 
 
 async def _migrate_kite_console_pnl_sync_broker(conn) -> None:
-    """Additive migration — `kite_console_pnl_sync.broker` (2026-11-27,
+    """Additive migration — `broker_pnl_history.broker` (2026-11-27,
     Dhan historical trade/ledger backfill). Same `SET LOCAL lock_timeout`
     pattern as every other migration here.
+
+    Function name kept as-is (historical — see
+    `_migrate_kite_console_pnl_sync_columns`'s own docstring for why; the
+    same reasoning applies here).
 
     `broker VARCHAR(16) DEFAULT 'kite'` — every row this table has ever
     held before this change came from the Kite Console scraper, so
@@ -911,15 +1026,15 @@ async def _migrate_kite_console_pnl_sync_broker(conn) -> None:
     from sqlalchemy import text
     await conn.execute(text("SET LOCAL lock_timeout = '5s'"))
     await conn.execute(text(
-        "ALTER TABLE kite_console_pnl_sync ADD COLUMN IF NOT EXISTS "
+        "ALTER TABLE broker_pnl_history ADD COLUMN IF NOT EXISTS "
         "broker VARCHAR(16) DEFAULT 'kite'"
     ))
     await conn.execute(text(
-        "UPDATE kite_console_pnl_sync SET broker = 'kite' WHERE broker IS NULL"
+        "UPDATE broker_pnl_history SET broker = 'kite' WHERE broker IS NULL"
     ))
     await conn.execute(text(
-        "CREATE INDEX IF NOT EXISTS ix_kite_console_pnl_sync_broker "
-        "ON kite_console_pnl_sync (broker)"
+        "CREATE INDEX IF NOT EXISTS ix_broker_pnl_history_broker "
+        "ON broker_pnl_history (broker)"
     ))
 
 
@@ -1535,6 +1650,11 @@ async def init_db() -> None:
     in a separate call below.
     """
     async with engine.begin() as conn:
+        # MUST run BEFORE `_migrate_create_tables()` — see this
+        # function's own docstring for why (create_all would otherwise
+        # create a brand-new empty `broker_pnl_history` table while the
+        # real historical data sits orphaned under the old name).
+        await _migrate_rename_kite_console_pnl_sync_to_broker_pnl_history(conn)
         await _migrate_create_tables(conn)
         await _migrate_algo_orders_base(conn)
         await _migrate_agent_events_rename(conn)
