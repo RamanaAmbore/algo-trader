@@ -7,7 +7,9 @@ import {
   isCloseIntentLeg,
   buildSpreadGatePlan,
   resolveHedgeStrike,
+  resolveHedgeParentChange,
   resolveLegHeldContext,
+  heldQtyFor,
 } from '../../data/spreadGate.js';
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -345,6 +347,68 @@ describe('createSpreadGate', () => {
     const calls = checkLegs.mock.calls.length;
     await vi.advanceTimersByTimeAsync(10_000);
     expect(checkLegs).toHaveBeenCalledTimes(calls);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// heldQtyFor — 2026-11 OrderTicket currentQty-resolution audit fix.
+// Extracted from isCloseIntentLeg's own matching loop so OrderTicket.svelte
+// can resolve "what's my real held position for this symbol+account right
+// now" without needing a leg-shaped object.
+// ─────────────────────────────────────────────────────────────────────────
+describe('heldQtyFor', () => {
+  const positionRows = [
+    { account: 'ACC1', tradingsymbol: 'NIFTY26JUN24000CE', quantity: 10 }, // held LONG 10
+    { account: 'ACC1', tradingsymbol: 'NIFTY26JUN24500PE', quantity: -5 }, // held SHORT 5
+  ];
+
+  it('returns the signed held quantity for a matching symbol+account', () => {
+    expect(heldQtyFor('NIFTY26JUN24000CE', 'ACC1', positionRows)).toBe(10);
+    expect(heldQtyFor('NIFTY26JUN24500PE', 'ACC1', positionRows)).toBe(-5);
+  });
+
+  it('is case-insensitive on the symbol', () => {
+    expect(heldQtyFor('nifty26jun24000ce', 'ACC1', positionRows)).toBe(10);
+  });
+
+  it('sums multiple matching rows (e.g. NRML + MIS)', () => {
+    const rows = [
+      { account: 'ACC1', tradingsymbol: 'NIFTY26JUN24000CE', quantity: 6 },
+      { account: 'ACC1', tradingsymbol: 'NIFTY26JUN24000CE', quantity: 4 },
+    ];
+    expect(heldQtyFor('NIFTY26JUN24000CE', 'ACC1', rows)).toBe(10);
+  });
+
+  it('falls back to a `symbol`/`qty` shaped row', () => {
+    const rows = [{ account: 'ACC1', symbol: 'NIFTY26JUN24000CE', qty: 7 }];
+    expect(heldQtyFor('NIFTY26JUN24000CE', 'ACC1', rows)).toBe(7);
+  });
+
+  it('returns 0 for no matching symbol', () => {
+    expect(heldQtyFor('BANKNIFTY26JUN45000PE', 'ACC1', positionRows)).toBe(0);
+  });
+
+  it('returns 0 for a different account (account-scoped, never leaks across accounts)', () => {
+    expect(heldQtyFor('NIFTY26JUN24000CE', 'ACC2', positionRows)).toBe(0);
+  });
+
+  it('returns 0 when positionRows is empty/undefined/not an array', () => {
+    expect(heldQtyFor('NIFTY26JUN24000CE', 'ACC1', [])).toBe(0);
+    expect(heldQtyFor('NIFTY26JUN24000CE', 'ACC1', undefined)).toBe(0);
+    expect(heldQtyFor('NIFTY26JUN24000CE', 'ACC1', null)).toBe(0);
+  });
+
+  it('returns 0 when sym or account is empty', () => {
+    expect(heldQtyFor('', 'ACC1', positionRows)).toBe(0);
+    expect(heldQtyFor('NIFTY26JUN24000CE', '', positionRows)).toBe(0);
+  });
+
+  it('returns 0 when matching rows net to zero (closed-out-for-the-day rows)', () => {
+    const rows = [
+      { account: 'ACC1', tradingsymbol: 'NIFTY26JUN24000CE', quantity: 10 },
+      { account: 'ACC1', tradingsymbol: 'NIFTY26JUN24000CE', quantity: -10 },
+    ];
+    expect(heldQtyFor('NIFTY26JUN24000CE', 'ACC1', rows)).toBe(0);
   });
 });
 
@@ -768,5 +832,76 @@ describe('buildSpreadGatePlan', () => {
     // this symbol, the leg's OWN account must be the one actually checked.
     const items = buildSpreadGatePlan(basket, 'ACC1', positionRows, 0.5);
     expect(items).toHaveLength(1);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// resolveHedgeParentChange — hedge leg keep/resize/remove decision
+// (2026-11-27 audit fix: a parent lot-size change used to silently
+// DELETE its paired hedge leg instead of resizing it 1:1)
+// ─────────────────────────────────────────────────────────────────────────
+describe('resolveHedgeParentChange', () => {
+  it('parent removed entirely → remove, with a "removed" reason', () => {
+    const sig = 'NIFTY26JUN24000CE|BUY|2|ACC1';
+    const r = resolveHedgeParentChange(sig, null);
+    expect(r).toEqual({ action: 'remove', reason: 'parent leg removed' });
+  });
+
+  it('no change at all → keep', () => {
+    const sig = 'NIFTY26JUN24000CE|BUY|2|ACC1';
+    const parent = { sym: 'NIFTY26JUN24000CE', side: 'BUY', lots: 2, account: 'ACC1' };
+    expect(resolveHedgeParentChange(sig, parent)).toEqual({ action: 'keep' });
+  });
+
+  it('lots-only change → resize, carrying the new lots and a refreshed sig', () => {
+    const sig = 'NIFTY26JUN24000CE|BUY|2|ACC1';
+    const parent = { sym: 'NIFTY26JUN24000CE', side: 'BUY', lots: 3, account: 'ACC1' };
+    const r = resolveHedgeParentChange(sig, parent);
+    expect(r).toEqual({
+      action: 'resize',
+      lots: 3,
+      sig: 'NIFTY26JUN24000CE|BUY|3|ACC1',
+    });
+  });
+
+  it('the real-world "+1 lot" merge path — lots 1 → 2 resizes, never removes', () => {
+    // Mirrors _mergeIntoBasket's own +1-lot merge onto an already-staged
+    // parent leg — the single most common trigger for this bug in practice.
+    const sig = 'BANKNIFTY26JUN45000PE|SELL|1|ACC1';
+    const parent = { sym: 'BANKNIFTY26JUN45000PE', side: 'SELL', lots: 2, account: 'ACC1' };
+    const r = resolveHedgeParentChange(sig, parent);
+    expect(r.action).toBe('resize');
+    if (r.action !== 'resize') throw new Error('expected resize');
+    expect(r.lots).toBe(2);
+  });
+
+  it('symbol change → remove, with a "symbol" reason (not patchable in place)', () => {
+    const sig = 'NIFTY26JUN24000CE|BUY|2|ACC1';
+    const parent = { sym: 'NIFTY26JUL24000CE', side: 'BUY', lots: 2, account: 'ACC1' };
+    const r = resolveHedgeParentChange(sig, parent);
+    expect(r).toEqual({ action: 'remove', reason: 'parent symbol changed' });
+  });
+
+  it('side change → remove, with a "side" reason', () => {
+    const sig = 'NIFTY26JUN24000CE|BUY|2|ACC1';
+    const parent = { sym: 'NIFTY26JUN24000CE', side: 'SELL', lots: 2, account: 'ACC1' };
+    const r = resolveHedgeParentChange(sig, parent);
+    expect(r).toEqual({ action: 'remove', reason: 'parent side changed' });
+  });
+
+  it('account change → remove, with an "account" reason', () => {
+    const sig = 'NIFTY26JUN24000CE|BUY|2|ACC1';
+    const parent = { sym: 'NIFTY26JUN24000CE', side: 'BUY', lots: 2, account: 'ACC2' };
+    const r = resolveHedgeParentChange(sig, parent);
+    expect(r).toEqual({ action: 'remove', reason: 'parent account changed' });
+  });
+
+  it('symbol check takes priority over a simultaneous lots change', () => {
+    const sig = 'NIFTY26JUN24000CE|BUY|2|ACC1';
+    const parent = { sym: 'NIFTY26JUL24000CE', side: 'BUY', lots: 3, account: 'ACC1' };
+    const r = resolveHedgeParentChange(sig, parent);
+    expect(r.action).toBe('remove');
+    if (r.action !== 'remove') throw new Error('expected remove');
+    expect(r.reason).toBe('parent symbol changed');
   });
 });

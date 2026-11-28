@@ -41,7 +41,9 @@ import {
   mcxNonAgriCloseTime,
   mcxNonAgriCloseMinuteOfDay,
   resolveExpiryCloseDateTime,
+  MCX_AGRI_CLOSE_TIME,
 } from '../../data/mcxCloseTime.js';
+import { MCX_AGRI_COMMODITIES, MCX_COMMODITIES } from '../../data/resolveUnderlying.js';
 
 /** Independent reference oracle for a given UTC-noon-anchored date,
  *  using the SAME offset-comparison primitive the module under test
@@ -238,6 +240,70 @@ describe('resolveExpiryCloseDateTime', () => {
     const summer = resolveExpiryCloseDateTime('2026-06-26', true); // DST window -> 23:30
     expect(summer.getUTCHours()).toBe(18); // 23:30 IST == 18:00 UTC
     expect(summer.getUTCMinutes()).toBe(0);
+  });
+
+  // 2026-11-27 audit fix — MCX agri roots (COTTON, MENTHAOIL, CPO) trade
+  // a single 09:00-17:00 IST session with no evening extension and no
+  // US-DST dependency, unlike the non-agri roots in MCX_COMMODITIES.
+  describe('agri commodities (3rd param)', () => {
+    it('MCX agri close resolves to 17:00 IST regardless of season', () => {
+      const winter = resolveExpiryCloseDateTime('2026-11-27', true, true);
+      expect(winter.getUTCHours()).toBe(11); // 17:00 IST == 11:30 UTC
+      expect(winter.getUTCMinutes()).toBe(30);
+
+      const summer = resolveExpiryCloseDateTime('2026-06-26', true, true);
+      expect(summer.getUTCHours()).toBe(11);
+      expect(summer.getUTCMinutes()).toBe(30);
+    });
+
+    it('defaults isAgri to false — every pre-existing 2-arg call keeps the non-agri DST-aware path', () => {
+      const twoArg  = resolveExpiryCloseDateTime('2026-11-27', true);
+      const explicitNonAgri = resolveExpiryCloseDateTime('2026-11-27', true, false);
+      expect(twoArg.getTime()).toBe(explicitNonAgri.getTime());
+    });
+
+    it('isAgri is ignored for a non-MCX contract — still 15:30 IST', () => {
+      const d = resolveExpiryCloseDateTime('2026-11-27', false, true);
+      expect(d.getUTCHours()).toBe(10);
+      expect(d.getUTCMinutes()).toBe(0);
+    });
+
+    it('applying the non-agri close to an agri root would over-count the real trading day (regression guard)', () => {
+      // At 17:30 IST on expiry day, an agri contract has already closed
+      // (17:00). The non-agri path would wrongly say ~6.5h remain.
+      const now = new Date('2026-11-27T17:30:00+05:30').getTime();
+      const origNow = Date.now;
+      Date.now = () => now;
+      try {
+        const agriClose    = resolveExpiryCloseDateTime('2026-11-27', true, true);
+        const nonAgriClose = resolveExpiryCloseDateTime('2026-11-27', true, false);
+        expect(agriClose.getTime()).toBeLessThan(Date.now());       // agri: already past close
+        expect(nonAgriClose.getTime()).toBeGreaterThan(Date.now()); // non-agri: wrongly still "open"
+      } finally {
+        Date.now = origNow;
+      }
+    });
+
+    it('MCX_AGRI_CLOSE_TIME is exactly {17, 0} and is the single source resolveExpiryCloseDateTime reads', () => {
+      expect(MCX_AGRI_CLOSE_TIME).toEqual({ hour: 17, minute: 0 });
+    });
+  });
+});
+
+describe('MCX_AGRI_COMMODITIES (resolveUnderlying.js)', () => {
+  it('is a subset of MCX_COMMODITIES', () => {
+    for (const root of MCX_AGRI_COMMODITIES) {
+      expect(MCX_COMMODITIES.has(root)).toBe(true);
+    }
+  });
+
+  it('contains exactly the three named agri roots', () => {
+    expect([...MCX_AGRI_COMMODITIES].sort()).toEqual(['COTTON', 'CPO', 'MENTHAOIL']);
+  });
+
+  it('does not contain a non-agri MCX commodity', () => {
+    expect(MCX_AGRI_COMMODITIES.has('CRUDEOIL')).toBe(false);
+    expect(MCX_AGRI_COMMODITIES.has('GOLD')).toBe(false);
   });
 });
 

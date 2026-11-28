@@ -52,8 +52,25 @@
     onKilled = null,
     // Bindable outward count — lets the parent gate its container's
     // visibility on whether any chase is active without needing to
-    // mount a second poller.
+    // mount a second poller. Ghost-inclusive (see `realActiveCount`
+    // below for the real-only sibling) — this is deliberate: a host
+    // that gates its own section visibility on this count (/orders'
+    // `_showChases`, this component's own drawer empty-state) wants to
+    // stay visible for a ghost's whole ~3s fade-out window, not collapse
+    // the instant the last real chase disappears.
     activeCount = $bindable(0),
+    // Bindable outward count — REAL chases only, excludes ghost rows
+    // (2026-11-27 audit fix). The header badge/dot in (algo)/+layout.svelte
+    // bound to the ghost-inclusive `activeCount` above, so it stayed lit
+    // for ~3s after the last real chase actually ended — "is a chase
+    // currently active" should mean exactly that, not "...or finished
+    // moments ago and is still fading out in the card's own display".
+    // Written in the SAME `_loadedOnce`-guarded, `untrack()`ed effect as
+    // `activeCount` below, for the identical reason that guard exists
+    // (see its own 2026-10-23 runaway-refetch-loop comment) — a second,
+    // separately-timed effect writing a second bindable would reopen
+    // that exact race.
+    realActiveCount = $bindable(0),
     // Bindable outward set of broker_order_ids currently active in
     // the chase engine. The orders page uses this to exclude those
     // orders from the pendingOrders list (they already appear as chase rows).
@@ -139,9 +156,12 @@
   // keeps that host's section visible long enough to show it.
   $effect(() => {
     const n = _chases.length + _ghosts.length;
+    const nReal = _chases.length;
     if (!_loadedOnce) return;
     const curActiveCount = untrack(() => activeCount);
     if (n !== curActiveCount) activeCount = n;
+    const curRealActiveCount = untrack(() => realActiveCount);
+    if (nReal !== curRealActiveCount) realActiveCount = nReal;
     chaseOrderIds = new Set(_chases.map(c => String(c.broker_order_id || '')).filter(Boolean));
     const errOrNull = _err || null;
     const curLoadError = untrack(() => loadError);
@@ -1155,10 +1175,14 @@
   .cc-ghost-rejected  { color: var(--c-short); }
   .cc-ghost-cancelled { color: var(--algo-muted); }
   .cc-ghost-pending   { color: var(--c-action); }
-  /* Visual separator between chase rows and terminal-outcome ghost rows */
+  /* Visual separator between chase rows and terminal-outcome ghost rows.
+     2026-11-27 token cleanup — rgba(148,163,184,...) is --algo-dim
+     (#94a3b8) at reduced alpha; color-mix preserves the exact 0.18
+     alpha while actually "reusing existing tokens", per the comment
+     above this block that already claimed it (it hadn't, until now). */
   .cc-ghost-divider {
     height: 1px;
-    background: rgba(148, 163, 184, 0.18);
+    background: color-mix(in srgb, var(--algo-dim) 18%, transparent);
     margin: 0.25rem 0;
   }
 </style>

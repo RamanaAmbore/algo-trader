@@ -131,6 +131,17 @@
   // the heavier 08:00-IST `tradingSessionDateIST()`. Both sides are parsed
   // with the same `T00:00:00Z` anchor so the day-count subtraction stays
   // on one consistent basis.
+  // 2026-11-27 audit note — the "rolls in N days" chip these two
+  // derived feed (`anchorRollingSoon`) was removed from the legend per
+  // operator request (see "Spot anchor chip / rolls-in-N-days chip
+  // removed from the legend" below, near the legend markup). Neither
+  // value has a rendered consumer any more; `anchorRollingSoon` is read
+  // nowhere in this file. Left in place rather than deleted, since a
+  // future reintroduction of that chip (or an equivalent) would want
+  // this exact math back — this is flagged dead code, not a rounding
+  // convention an operator currently sees, so there's no third visible
+  // DTE display to reconcile with the OptionChainTab chip / the DTE
+  // stat row below.
   const anchorDaysToExpiry = $derived.by(() => {
     if (!spotAnchor?.expiryISO) return null;
     try {
@@ -1087,9 +1098,9 @@
                 onclick={() => { _psHintOpen.dte = !_psHintOpen.dte; }}
                 onkeydown={(e) => _psHintKeydown(e, () => _psHintOpen.dte = !_psHintOpen.dte)}>DTE
             <InfoHint popup hideButton id="ps-hint-dte" anchor={_psHintAnchor.dte} bind:open={_psHintOpen.dte}
-              panel title="DTE" text="Days to expiry (calendar days remaining)" />
+              panel title="DTE" text="Fractional time remaining until the contract's own exchange close (NSE/NFO/BSE/CDS 15:30 IST; MCX 23:30/23:55 DST-aware) — not a flat calendar-day count. Decreases continuously through the trading day and reaches 0 only at the close itself, so on expiry day this reads a fraction of a day, not a full one." />
           </span>
-          <span class="ps-v">{Math.round(dte)}</span>
+          <span class="ps-v">{dte.toFixed(2)}</span>
         </div>
       {/if}
       {#if ivProxy != null}
@@ -1390,11 +1401,11 @@
            real figure. -->
       {#if dayPnlY != null && spot >= sMin && spot <= sMax}
         <circle cx={spotX} cy={dayPnlY} r="6" class="payoff-dart-actual"
-                fill="none" stroke="#c084fc" stroke-width="1.25"
+                fill="none" stroke="var(--algo-violet, #c084fc)" stroke-width="1.25"
                 stroke-opacity="0.55"
                 pointer-events="none"/>
         <circle cx={spotX} cy={dayPnlY} r="3" class="payoff-dart-actual"
-                fill="#c084fc" fill-opacity="0.85"
+                fill="var(--algo-violet, #c084fc)" fill-opacity="0.85"
                 stroke="#0c1830" stroke-width="1"
                 pointer-events="none"/>
       {/if}
@@ -1540,11 +1551,11 @@
            layer for the same reason as the two darts above. -->
       {#if dayPnlY != null && spot >= sMin && spot <= sMax}
         <circle cx={spotX} cy={dayPnlY} r="6" class="payoff-dart-actual"
-                fill="none" stroke="#c084fc" stroke-width="1.25"
+                fill="none" stroke="var(--algo-violet, #c084fc)" stroke-width="1.25"
                 stroke-opacity="0.55"
                 pointer-events="none"/>
         <circle cx={spotX} cy={dayPnlY} r="3" class="payoff-dart-actual"
-                fill="#c084fc" fill-opacity="0.85"
+                fill="var(--algo-violet, #c084fc)" fill-opacity="0.85"
                 stroke="#0c1830" stroke-width="1"
                 pointer-events="none"/>
       {/if}
@@ -1619,11 +1630,11 @@
               x={spotX - spotChipW / 2} y={spotChipY}
               width={spotChipW} height={spotChipH} rx="4"
               fill="var(--algo-cyan-bg-strong, rgba(34,211,238,0.22))"
-              stroke="#22d3ee" stroke-width="1.5"
+              stroke="var(--algo-cyan, #22d3ee)" stroke-width="1.5"
               vector-effect="non-scaling-stroke"/>
         <text class="payoff-spot-pill-text" x={spotX} y={spotChipY + spotChipH / 2 + 4}
               text-anchor="middle"
-              fill="#22d3ee"
+              fill="var(--algo-cyan, #22d3ee)"
               font-size="12" font-weight="800"
               style="font-family: var(--font-numeric); font-variant-numeric: tabular-nums">
           {spotLabel}
@@ -1761,17 +1772,41 @@
            small CSS pseudo-element pair, colour-matched via
            `currentColor` to the SAME hex literal each dart already
            uses: amber (today/theoretical), sky (expiry), violet
-           (actual/market, `dayPnl`-driven). "Market P&L" is gated on
+           (today's intraday move, `dayPnl`-driven). The key is gated on
            `dayPnl != null`, identical to its dart's own guard, so the
-           legend never advertises a marker the chart isn't drawing. -->
+           legend never advertises a marker the chart isn't drawing.
+
+           Relabelled "Market P&L" → "Day P&L" (2026-11-27 audit fix) —
+           the old name sat one letter away from the stat overlay's
+           "Mark P&L" row (a DIFFERENT, lifetime-P&L-since-entry basis,
+           see that row's own InfoHint text), which read as the same
+           figure under two names. "Day P&L" now matches the DAY P&L
+           stat row above, which shows this exact `dayPnl` value.
+
+           This violet dart's Y-position is still read off the curves'
+           own lifetime-P&L axis (`yOf(dayPnl)`, see `dayPnlY` above) —
+           ₹ levels on that axis are correct regardless of basis, but
+           the dart's position relative to the TODAY/EXPIRY curves
+           themselves is NOT "this leg's point on either curve" the way
+           the amber/sky darts are. Re-basing the dart itself to the
+           curves' own lifetime-P&L figure was considered and rejected:
+           `realizedPnl` (`candidatesActualPnl - chartTheoreticalAtSpot`,
+           +page.svelte) is specifically designed so the TODAY curve's
+           value AT SPOT already equals that real lifetime figure — a
+           re-based dart would just land back on the TODAY curve itself,
+           and the one piece of information this dart exists to show
+           (today's own move, distinct from the lifetime curves) would
+           be gone. Flagged via `title=` below instead, same convention
+           as the HOLDINGS toggle's own `title=` a few lines down. -->
       <span class="legend-item">
         <span class="legend-dart legend-dart-today"></span>
         Theoretical P&L
       </span>
       {#if dayPnl != null}
-        <span class="legend-item">
+        <span class="legend-item"
+              title="Today's ₹ move, plotted at its level on the P&L axis — not a point on either curve.">
           <span class="legend-dart legend-dart-actual"></span>
-          Market P&L
+          Day P&L
         </span>
       {/if}
       {#each intermediatePaths as ip (ip.elapsed)}

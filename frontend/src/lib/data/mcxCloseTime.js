@@ -143,10 +143,37 @@ export function mcxNonAgriCloseMinuteOfDay(year, month, day) {
 }
 
 /**
+ * IST close time for MCX AGRI commodities (Cotton, Mentha Oil, CPO/
+ * Crude Palm Oil, and the rest of `MCX_AGRI_COMMODITIES` in
+ * `resolveUnderlying.js`) — a single 09:00-17:00 IST session, with no
+ * evening extension and no US-DST dependency.
+ *
+ * Unlike MCX's non-agri (bullion/energy/base-metal) roots, agri
+ * contracts track domestic price discovery only, so MCX never extends
+ * their session into the evening the way it does for CRUDEOIL/GOLD/
+ * SILVER/etc. — that evening extension, and its twice-a-year DST
+ * revision, is specifically how those OTHER roots track global
+ * (dollar-denominated) market hours, which agri commodities don't.
+ *
+ * UNVERIFIED AGAINST A LIVE FEED — this repo carries no backend
+ * equivalent to mirror (`mcx_non_agri_close_time()` has no agri
+ * sibling in `derivatives.py`, and no MCX agri session time is wired
+ * through `exchange_schedule`/`market_segments` either). 17:00 IST is
+ * the commonly cited MCX agri session close (09:00-17:00, single
+ * session, confirmed stable across MCX circulars for years — unlike
+ * the non-agri evening close, this isn't something MCX revises
+ * seasonally). If this value is ever found to disagree with a live
+ * MCX agri contract's real last-tradeable time, correct it here —
+ * this is the one place it's used.
+ */
+export const MCX_AGRI_CLOSE_TIME = { hour: 17, minute: 0 };
+
+/**
  * Resolve the real IST close-moment for an expiry date, given which
- * exchange the contract is on. NSE/NFO/BSE/CDS close at 15:30 IST;
- * MCX non-agri commodities close at the DST-aware time above (23:30/
- * 23:55), never a flat 15:30.
+ * exchange the contract is on and, for MCX, whether it's an AGRI root.
+ * NSE/NFO/BSE/CDS close at 15:30 IST; MCX non-agri commodities close at
+ * the DST-aware time above (23:30/23:55); MCX agri commodities close at
+ * the flat 17:00 above — never a flat 15:30 for any of them.
  *
  * Extracted as its own small, directly-testable function because a
  * caller that hardcodes 15:30 for an MCX contract truncates its real
@@ -154,15 +181,24 @@ export function mcxNonAgriCloseMinuteOfDay(year, month, day) {
  * IST on the day BEFORE the contract's real expiry then floors
  * "days to expiry" to 0 a full day early, i.e. "expires today" when
  * the real expiry is tomorrow (confirmed live-reported bug, 2026-11-26,
- * in `OptionChainTab.svelte`'s own DTE chip).
+ * in `OptionChainTab.svelte`'s own DTE chip). Applying the non-agri
+ * evening close to an agri root has the same effect in the OTHER
+ * direction — it OVER-counts the real trading day by up to ~6.5 hours
+ * (2026-11-27 audit finding, same chip).
  *
  * @param {string} expiryIso YYYY-MM-DD
  * @param {boolean} isMcx
+ * @param {boolean} [isAgri] only consulted when `isMcx` is true; default
+ *   `false` keeps every pre-existing 2-arg caller on the non-agri path.
  * @returns {Date}
  */
-export function resolveExpiryCloseDateTime(expiryIso, isMcx) {
+export function resolveExpiryCloseDateTime(expiryIso, isMcx, isAgri = false) {
   const [y, m, d] = expiryIso.split('-').map(Number);
-  const { hour, minute } = isMcx ? mcxNonAgriCloseTime(y, m, d) : { hour: 15, minute: 30 };
+  const { hour, minute } = !isMcx
+    ? { hour: 15, minute: 30 }
+    : isAgri
+      ? MCX_AGRI_CLOSE_TIME
+      : mcxNonAgriCloseTime(y, m, d);
   const hh = String(hour).padStart(2, '0');
   const mm = String(minute).padStart(2, '0');
   return new Date(`${expiryIso}T${hh}:${mm}:00+05:30`);

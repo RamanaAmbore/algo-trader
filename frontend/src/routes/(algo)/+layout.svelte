@@ -744,14 +744,23 @@
   // persistent ChaseCard instance mounted below (see the drawer markup
   // near PositionStrip) keeps these live even while the drawer itself is
   // closed, via its `headless` prop (polling continues; template render
-  // is suppressed). `_chaseCardActiveCount` is mirrored into the shared
-  // `chaseActiveCount` store below so PageHeaderActions can read it;
+  // is suppressed). `_chaseCardActiveCount` (ghost-inclusive) drives
+  // ONLY this file's own drawer empty-state check below — a ghost row
+  // fading out in the drawer's body is still "something to show", so
+  // "No active chases" should stay suppressed for its ~3s life.
   // `_chaseCardLoadError` stays local — only this file's own drawer body
   // renders it.
   let _chaseCardActiveCount = $state(0);
   let _chaseCardLoadError   = $state(/** @type {string | null} */ (null));
+  // Real-only count (2026-11-27 audit fix) — mirrored into the shared
+  // `chaseActiveCount` store below so PageHeaderActions' header badge/
+  // dot reflects ONLY genuinely active chases, never a ghost still
+  // fading out in the drawer above. The badge/dot used to bind to the
+  // ghost-inclusive count, so it stayed lit for ~3s after the last real
+  // chase had actually ended.
+  let _chaseCardRealActiveCount = $state(0);
   $effect(() => {
-    chaseActiveCount.set(_chaseCardActiveCount);
+    chaseActiveCount.set(_chaseCardRealActiveCount);
   });
 
   // Escape-stack coordinator (layerStack.js) — same convention as
@@ -1528,6 +1537,7 @@
           {/if}
           <ChaseCard compact={false} headless={!$chaseDrawerOpen}
                      bind:activeCount={_chaseCardActiveCount}
+                     bind:realActiveCount={_chaseCardRealActiveCount}
                      bind:loadError={_chaseCardLoadError} />
         </div>
       </div>

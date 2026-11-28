@@ -226,6 +226,100 @@ export function resolveHedgeStrike({ parentOptType, parentStrike, parentSide, pa
 }
 
 /**
+ * Decide what should happen to a staged hedge leg once its parent's
+ * CURRENT shape no longer matches the signature snapshotted at staging
+ * time (`_hedgeParentSig`, `${sym}|${side}|${lots}|${account}` — see
+ * `_maybeStageHedgeLeg` in OptionChainTab.svelte).
+ *
+ * `resolveHedgeStrike()`'s own strike search is keyed on the parent's
+ * PREMIUM RATIO (price ÷ price — a per-contract quantity), never on the
+ * parent's lot count, so a lots-ONLY change never invalidates the
+ * hedge's already-resolved strike. Resizing the hedge's own `lots` to
+ * track the parent 1:1 (the same ratio `_maybeStageHedgeLeg` stages it
+ * at) is therefore correct, and keeps the hedge alive instead of it
+ * silently vanishing on every "+1 lot" merge onto the parent — the most
+ * common real-world trigger for this (`_mergeIntoBasket`'s own +1-lot
+ * path onto an already-staged leg). Audit finding: before this, ANY
+ * parent lot-size change deleted the hedge with no notice at all.
+ *
+ * A symbol, side, or account change invalidates the hedge outright —
+ * none of those can be patched in place (the resolved strike/side pair
+ * no longer means the same thing), so the hedge is removed. This keeps
+ * the pre-existing v1 policy: "offset leg should disappear, operator
+ * must remove+re-add the parent for a fresh hedge at the updated
+ * ratio" — unchanged for every case except a bare lots change.
+ *
+ * Pure + exported (no Svelte imports) so this decision is unit-testable
+ * without mounting OptionChainTab.svelte.
+ *
+ * @param {string} sig snapshotted `_hedgeParentSig`
+ * @param {{sym?: string, side?: string, lots?: number, account?: string} | null | undefined} parent
+ *   current state of the parent leg, or `null`/`undefined` when it's no
+ *   longer in the basket at all.
+ * @returns {{action: 'keep'}
+ *         | {action: 'resize', lots: number, sig: string}
+ *         | {action: 'remove', reason: string}}
+ */
+export function resolveHedgeParentChange(sig, parent) {
+  if (!parent) return { action: 'remove', reason: 'parent leg removed' };
+  const [oldSym, oldSide, oldLotsStr, oldAccount] = String(sig || '').split('|');
+  const newSym     = String(parent.sym ?? '');
+  const newSide    = String(parent.side ?? '');
+  const newAccount = String(parent.account ?? '');
+  if (oldSym !== undefined && newSym !== oldSym) return { action: 'remove', reason: 'parent symbol changed' };
+  if (oldSide !== undefined && newSide !== oldSide) return { action: 'remove', reason: 'parent side changed' };
+  if (oldAccount !== undefined && newAccount !== oldAccount) return { action: 'remove', reason: 'parent account changed' };
+  const newLots = Number(parent.lots);
+  const oldLots  = Number(oldLotsStr);
+  if (Number.isFinite(newLots) && newLots !== oldLots) {
+    return {
+      action: 'resize',
+      lots: newLots,
+      sig: `${newSym}|${newSide}|${newLots}|${newAccount}`,
+    };
+  }
+  return { action: 'keep' };
+}
+
+/**
+ * Sum a symbol+account's signed held quantity across every matching
+ * position row (every product summed together).
+ *
+ * Extracted out of `isCloseIntentLeg`'s own matching loop (2026-11
+ * `OrderTicket.svelte` currentQty-resolution audit fix) so a ticket can
+ * resolve "what's my real held position for this symbol+account right
+ * now" the same way the Chain tab's spread-gate exemption already does,
+ * without needing a `leg`-shaped object (lots/lotSize/side) — `isCloseIntentLeg`
+ * now calls this helper internally; behaviour there is unchanged.
+ *
+ * Deliberately a cross-product sum, same rationale as `isCloseIntentLeg`'s
+ * own docstring: "a symbol+account can legitimately carry two broker-side
+ * rows (e.g. NRML + MIS) that together make up 'the held position'" — correct
+ * for a generic "am I long/short/flat" classification (ADD/CLOSE labels,
+ * cash/margin chip, 5-lot cap bypass), never for execution-time product
+ * resolution (see `resolveLegHeldContext` below, a deliberately separate
+ * function for that different purpose).
+ *
+ * @param {string} sym
+ * @param {string} account
+ * @param {any[]} positionRows - {account, tradingsymbol|symbol, quantity|qty} rows
+ * @returns {number} signed contracts; 0 when no matching row exists
+ */
+export function heldQtyFor(sym, account, positionRows) {
+  const s = String(sym || '').toUpperCase();
+  const acct = String(account || '');
+  if (!s || !acct || !Array.isArray(positionRows) || positionRows.length === 0) return 0;
+  let heldQty = 0;
+  for (const p of positionRows) {
+    if (String(p?.account || '') !== acct) continue;
+    const psym = String(p?.tradingsymbol || p?.symbol || '').toUpperCase();
+    if (psym !== s) continue;
+    heldQty += Number(p?.quantity ?? p?.qty ?? 0) || 0;
+  }
+  return heldQty;
+}
+
+/**
  * Is `leg` genuinely CLOSING/reducing an existing live position, rather
  * than opening or adding to one?
  *
@@ -270,16 +364,11 @@ export function isCloseIntentLeg(leg, account, positionRows) {
   // Sum every matching row's qty (not just the first) — a symbol+account
   // can legitimately carry two broker-side rows (e.g. NRML + MIS) that
   // together make up "the held position" for close-intent purposes.
-  let heldQty = 0;
-  let found = false;
-  for (const p of positionRows) {
-    if (String(p?.account || '') !== acct) continue;
-    const psym = String(p?.tradingsymbol || p?.symbol || '').toUpperCase();
-    if (psym !== sym) continue;
-    found = true;
-    heldQty += Number(p?.quantity ?? p?.qty ?? 0) || 0;
-  }
-  if (!found || heldQty === 0) return false;
+  // (2026-11 extraction — see `heldQtyFor`'s own docstring above; no
+  // behaviour change, "no match at all" and "matched rows net to zero"
+  // both resolve to heldQty===0, which is handled identically below.)
+  const heldQty = heldQtyFor(sym, acct, positionRows);
+  if (heldQty === 0) return false;
 
   const contracts = (Number(leg?.lots) || 0) * (Number(leg?.lotSize) || 0);
   if (!(contracts > 0)) return false;

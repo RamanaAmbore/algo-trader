@@ -1,12 +1,29 @@
 // IST-aware date helpers — canonical SSOT for date formatting across all pages.
 // All functions use Asia/Kolkata timezone.
 
+// Module-level cached formatters (2026-11-27 perf fix) — `todayIST()`,
+// `tradingSessionDateIST()`, `_firstWeekdayIsoAfter()` and
+// `lastWeekdayIsoBefore()` each used to construct a brand-new
+// `Intl.DateTimeFormat` on EVERY call. These are real hot paths: a
+// position/tick-driven caller (`portfolioStore.svelte.js`'s
+// `isExpiredHeldContract` check, per position per poll) and an
+// MCX-row-driven caller (`rootOf.js`/`instruments.js`) both reach one
+// of these functions per row, per tick. `Intl.DateTimeFormat`
+// construction (locale/timezone data resolution) is non-trivial work
+// that doesn't change across calls — the locale, timeZone and format
+// options below are fixed constants, never parameterised by a caller.
+// Constructed once here and reused everywhere below.
+const _IST_YMD_FMT = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Asia/Kolkata',
+  year: 'numeric', month: '2-digit', day: '2-digit',
+});
+const _IST_WEEKDAY_FMT = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'Asia/Kolkata', weekday: 'short',
+});
+
 /** @returns {string} Today's date in IST as YYYY-MM-DD */
 export function todayIST() {
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Kolkata',
-    year: 'numeric', month: '2-digit', day: '2-digit',
-  }).format(new Date());
+  return _IST_YMD_FMT.format(new Date());
 }
 
 /**
@@ -45,10 +62,7 @@ export function startOfTodayIST() {
  */
 export function tradingSessionDateIST(nowMs = Date.now()) {
   const shifted = new Date(nowMs - 8 * 60 * 60 * 1000);
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Kolkata',
-    year: 'numeric', month: '2-digit', day: '2-digit',
-  }).format(shifted);
+  return _IST_YMD_FMT.format(shifted);
 }
 
 /**
@@ -80,18 +94,14 @@ export function isCurrentTradingSession(ms) {
  */
 function _firstWeekdayIsoAfter(dateIso) {
   let d = new Date(`${dateIso}T00:00:00+05:30`);
-  const dateFmt = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit',
-  });
-  const wdFmt = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', weekday: 'short' });
   // Bounded loop (7 iterations always finds a weekday) — defensive against
   // an unexpected Intl/Date edge case rather than looping forever.
   for (let i = 0; i < 7; i++) {
     d = new Date(d.getTime() + 24 * 60 * 60 * 1000);
-    const wd = wdFmt.format(d);
-    if (wd !== 'Sat' && wd !== 'Sun') return dateFmt.format(d);
+    const wd = _IST_WEEKDAY_FMT.format(d);
+    if (wd !== 'Sat' && wd !== 'Sun') return _IST_YMD_FMT.format(d);
   }
-  return dateFmt.format(d);
+  return _IST_YMD_FMT.format(d);
 }
 
 /**
@@ -109,16 +119,12 @@ function _firstWeekdayIsoAfter(dateIso) {
  */
 export function lastWeekdayIsoBefore(dateIso) {
   let d = new Date(`${dateIso}T00:00:00+05:30`);
-  const dateFmt = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit',
-  });
-  const wdFmt = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', weekday: 'short' });
   for (let i = 0; i < 7; i++) {
     d = new Date(d.getTime() - 24 * 60 * 60 * 1000);
-    const wd = wdFmt.format(d);
-    if (wd !== 'Sat' && wd !== 'Sun') return dateFmt.format(d);
+    const wd = _IST_WEEKDAY_FMT.format(d);
+    if (wd !== 'Sat' && wd !== 'Sun') return _IST_YMD_FMT.format(d);
   }
-  return dateFmt.format(d);
+  return _IST_YMD_FMT.format(d);
 }
 
 /**

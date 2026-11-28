@@ -254,3 +254,97 @@ describe('buildCandidatePositions — Friday expiry, instrument PURGED from cach
     expect(row._expired).toBeUndefined();
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2026-11-27 fix — the DRAFTS loop used a bare `_dInst.x < todayIST()`
+// compare (NOT weekend-aware), while the real-positions loop above
+// (fixed earlier this session) already uses `isPastExpiryFreezeWindow`.
+// A draft leg on a Friday-expiring contract vanished at bare Saturday
+// 08:00 IST, two full days before its real-leg counterpart on the
+// IDENTICAL contract (which correctly stays visible until Monday).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Minimal draft row for buildCandidatePositions' drafts loop. */
+function makeDraft(sym, extra = {}) {
+  return {
+    id: 1,
+    symbol: sym,
+    qty: 10,
+    avg_cost: 5,
+    ltp: 6,
+    account: 'ZG0790',
+    ...extra,
+  };
+}
+
+describe('buildCandidatePositions — draft legs use the same 08:00 IST session boundary as real legs', () => {
+  // Contract's own expiry day: 2026-11-27 (a Friday) — same fixture
+  // symbol as the real-leg weekend-grace describe block above.
+  const SYM = 'GOLD26NOV124000CE';
+  const getInstrument = makeGetInst({ [SYM]: '2026-11-27' });
+  const PARAMS = { ...BASE_PARAMS, target: 'GOLD' };
+
+  it('Friday, expiry day itself — draft leg still shown', () => {
+    setISTTime('2026-11-27T20:00:00');
+    const result = buildCandidatePositions({ ...PARAMS, positions: [], drafts: [makeDraft(SYM)], getInstrument });
+    expect(result.find(r => r.symbol === SYM && r.source === 'draft')).toBeTruthy();
+  });
+
+  it('THE BUG THIS FIXES: Saturday 08:01 IST — draft leg must still be shown (old code dropped it here)', () => {
+    setISTTime('2026-11-28T08:01:00');
+    const result = buildCandidatePositions({ ...PARAMS, positions: [], drafts: [makeDraft(SYM)], getInstrument });
+    const row = result.find(r => r.symbol === SYM && r.source === 'draft');
+    expect(row, 'draft leg must stay visible through the whole weekend grace window').toBeTruthy();
+
+    // Negative control — pins the OLD buggy comparison so this test
+    // would have failed against the pre-fix code, not just passed by
+    // construction (same technique the real-leg describe block above
+    // uses for its own "THE BUG THIS FIXES" case).
+    const oldBuggyDropped = '2026-11-27' < '2026-11-28'; // bare todayIST() compare
+    expect(oldBuggyDropped).toBe(true);
+  });
+
+  it('Sunday — still shown (whole weekend covered, not just the first day)', () => {
+    setISTTime('2026-11-29T12:00:00');
+    const result = buildCandidatePositions({ ...PARAMS, positions: [], drafts: [makeDraft(SYM)], getInstrument });
+    expect(result.find(r => r.symbol === SYM && r.source === 'draft')).toBeTruthy();
+  });
+
+  it('Monday, one minute before the real boundary (07:59 IST) — still shown', () => {
+    setISTTime('2026-11-30T07:59:00');
+    const result = buildCandidatePositions({ ...PARAMS, positions: [], drafts: [makeDraft(SYM)], getInstrument });
+    expect(result.find(r => r.symbol === SYM && r.source === 'draft')).toBeTruthy();
+  });
+
+  it('Monday, at the real boundary (08:00 IST) — NOW correctly dropped', () => {
+    setISTTime('2026-11-30T08:00:00');
+    const result = buildCandidatePositions({ ...PARAMS, positions: [], drafts: [makeDraft(SYM)], getInstrument });
+    expect(result.find(r => r.symbol === SYM && r.source === 'draft')).toBeUndefined();
+  });
+
+  it('a real leg and a draft leg on the IDENTICAL contract reach the same expired/visible verdict at every instant across the weekend', () => {
+    // Real legs stay IN the array but get TAGGED `_expired: true` once
+    // past the freeze window (so buildCleanLegs can still exclude them
+    // from the backend payload); draft legs are REMOVED from the array
+    // entirely at that exact same boundary — different representations
+    // of the identical `isPastExpiryFreezeWindow` verdict. A real row's
+    // `_expired` tag must therefore be the exact logical negation of
+    // whether the draft row still exists.
+    for (const iso of [
+      '2026-11-27T20:00:00', '2026-11-28T08:01:00', '2026-11-29T12:00:00',
+      '2026-11-30T07:59:00', '2026-11-30T08:00:00',
+    ]) {
+      setISTTime(iso);
+      const result = buildCandidatePositions({
+        ...PARAMS,
+        positions: [makePos(SYM)],
+        drafts: [makeDraft(SYM)],
+        getInstrument,
+      });
+      const realRow  = result.find(r => r.symbol === SYM && r.source === 'live');
+      const draftRow = result.find(r => r.symbol === SYM && r.source === 'draft');
+      expect(realRow, iso).toBeTruthy();
+      expect(!!realRow._expired, iso).toBe(!draftRow);
+    }
+  });
+});

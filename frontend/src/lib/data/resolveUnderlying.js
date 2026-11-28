@@ -303,6 +303,15 @@ export const MCX_COMMODITIES = new Set([
   'MENTHAOIL', 'COTTON', 'CPO',
 ]);
 
+// AGRI subset of MCX_COMMODITIES — trades a single 09:00-17:00 IST
+// session with no evening extension (see mcxCloseTime.js's
+// MCX_AGRI_CLOSE_TIME). Unlike the bullion/energy/base-metal roots in
+// the same MCX_COMMODITIES set, these don't track a global dollar-
+// denominated market, so MCX never extends their session into the
+// evening the way it does for CRUDEOIL/GOLD/SILVER/etc. — and their
+// close time therefore has no US-DST dependency either.
+export const MCX_AGRI_COMMODITIES = new Set(['MENTHAOIL', 'COTTON', 'CPO']);
+
 export const CDS_CURRENCIES = new Set(['USDINR', 'EURINR', 'GBPINR', 'JPYINR']);
 
 // Kite spot-index quote-keys → tradeable F&O underlying root. The chart

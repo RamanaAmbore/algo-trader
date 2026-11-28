@@ -19,7 +19,6 @@
   import {
     fetchSimStatus, fetchStrategyAnalytics,
     fetchAccounts,
-    placeTicketOrder, fetchLiveStatus,
     fetchWatchlists, fetchWatchlist, addWatchlistItem,
   } from '$lib/api';
   import { positionsStore, pulsePositionsStore, pulseHoldingsStore } from '$lib/data/marketDataStores.svelte.js';
@@ -3790,91 +3789,20 @@
    *   chaseAgg: 'low'|'med'|'high',
    * }>} */
   let chainBasket    = $state([]);
-  let basketPlacing  = $state(false);
   let basketError    = $state('');
-  let basketProgress = $state(0);
-  let basketJustDone = $state(false);
-  /** Submit every basket leg sequentially as a paper MARKET order via
-   *  the same `placeTicketOrder` path used by the OrderTicket modal.
-   *  Sequential (not Promise.all) so the broker isn't hammered with
-   *  parallel writes that could trip rate-limits — matters more in
-   *  prod where these resolve to live broker calls. */
-  async function placeBasket() {
-    if (basketPlacing || !chainBasket.length) return;
-    const acct = _ticketAccountDefault();
-    if (!acct) { basketError = 'No routable account selected.'; return; }
-
-    // Mode follows the master execution toggle, mirroring the OrderTicket
-    // path so the basket isn't a footgun (was hardcoded to 'paper' which
-    // silently routed every leg through the paper engine even when the
-    // operator had flipped to LIVE on /admin/execution).
-    //
-    // 2026-11-05 fix (CRITICAL money-safety audit finding, same bug
-    // class fixed in SymbolPanel.svelte's `_resolveBasketMode` for the
-    // Chain-tab basket) — this never read `$executionMode` at all, so
-    // SIM/REPLAY/SHADOW resolved to 'live' here whenever the server
-    // reported paper_trading_mode off on the main branch, regardless of
-    // what the navbar pill actually showed. Only the literal navbar
-    // value 'live' may even attempt to go live — same convention as
-    // OptionChainTab's own `_resolveBasketMode()`.
-    const navbarMode = String($executionMode || 'paper').toLowerCase();
-    let basketMode = 'paper';
-    if (navbarMode === 'live') {
-      try {
-        const live = await fetchLiveStatus();
-        if (live && live.paper_trading_mode === false && live.branch === 'main') {
-          basketMode = 'live';
-        }
-      } catch {
-        basketError = 'Could not determine execution mode. Try again.';
-        basketPlacing = false;
-        return;
-      }
-    }
-
-    basketPlacing  = true;
-    basketError    = '';
-    basketProgress = 0;
-    /** @type {string[]} */ const failures = [];
-    for (const leg of chainBasket) {
-      try {
-        const hasLimit = Number(leg.limit) > 0;
-        await placeTicketOrder({
-          mode:          basketMode,
-          side:          leg.side,
-          tradingsymbol: leg.sym,
-          quantity:      leg.lots * leg.lotSize,
-          exchange:      leg.exchange,
-          product:       leg.product || 'NRML',
-          order_type:    hasLimit ? 'LIMIT' : 'MARKET',
-          price:         hasLimit ? Number(leg.limit) : 0,
-          variety:       'regular',
-          account:       acct,
-          // Chase is ON for every limit-bearing leg; per-leg
-          // aggressiveness comes from the pill's C[L|M|H] picker
-          // (defaults to 'low' on quick-add). MARKET legs ignore
-          // these on the backend.
-          chase:                hasLimit,
-          chase_aggressiveness: hasLimit ? (leg.chaseAgg || 'low') : 'low',
-        });
-      } catch (e) {
-        const msg = String(/** @type {any} */ (e)?.message || e || 'failed');
-        failures.push(`${leg.side} ${leg.sym}: ${msg}`);
-      }
-      basketProgress += 1;
-    }
-    basketPlacing = false;
-    if (failures.length === chainBasket.length) {
-      basketError = failures[0] || 'All legs failed';
-    } else if (failures.length) {
-      basketError = `${failures.length}/${chainBasket.length} failed: ${failures[0]}`;
-      chainBasket = [];
-    } else {
-      chainBasket    = [];
-      basketJustDone = true;
-      setTimeout(() => { basketJustDone = false; }, 2200);
-    }
-  }
+  // basketPlacing / basketProgress / basketJustDone — removed 2026-11-27
+  // (audit finding, dead code). They existed ONLY to support this
+  // page's own local `placeBasket()`, which had ZERO callers anywhere
+  // in this file (confirmed via grep — not exported, not referenced
+  // from any `onclick`/markup) and, separately, carried a real
+  // money-safety bug: `quantity: leg.lots * leg.lotSize` sent CONTRACTS
+  // to `/api/orders/ticket`, which expects LOTS for F&O — had this ever
+  // been wired to a button, every leg would have placed at `lotSize`×
+  // the intended size. Real basket submission on this page goes through
+  // `<SymbolPanel>`'s own submit flow (see `ticketProps`/`onSubmit`
+  // below); `chainBasket`/`basketError` stay — they're written by the
+  // SEPARATE `onAddToBasket` callback further down and read by the
+  // basket-pill rendering, both unrelated to the deleted function.
 
   /** Underlyings the chain picker offers, in priority order:
    *  1. The page's currently-selected underlying (the operator's

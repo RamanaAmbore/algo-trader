@@ -94,8 +94,14 @@ describe('OptionChainTab.svelte — hedge-leg wiring (Part A)', () => {
     expect(hedgeIdx).toBeGreaterThan(mergeIdx);
   });
 
-  it('a removal $effect watches chainBasket for stale hedge legs keyed on _hedgeParentKey/_hedgeParentSig', () => {
-    expect(src).toMatch(/const stale = legs\.filter\(l => \{/);
+  it('a resize/removal $effect watches chainBasket for stale hedge legs keyed on _hedgeParentKey/_hedgeParentSig', () => {
+    // 2026-11-27 audit fix: a parent lot-size change now RESIZES its
+    // paired hedge leg (via resolveHedgeParentChange) instead of
+    // silently deleting it outright. The effect tracks both outcomes
+    // via toResize/toRemove, not a single `stale` filter.
+    expect(src).toMatch(/const toResize = \[\];/);
+    expect(src).toMatch(/const toRemove = \[\];/);
+    expect(src).toMatch(/resolveHedgeParentChange\(l\._hedgeParentSig, parent\)/);
     expect(src).toMatch(/l\._hedgeParentKey/);
     expect(src).toMatch(/_hedgeParentSig/);
   });

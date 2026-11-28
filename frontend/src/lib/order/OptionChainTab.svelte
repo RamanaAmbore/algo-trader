@@ -17,7 +17,7 @@
     fetchAccounts,
     checkOrderSpread,
   } from '$lib/api';
-  import { createSpreadGate, buildSpreadGatePlan, isCloseIntentLeg, resolveHedgeStrike } from '$lib/data/spreadGate.js';
+  import { createSpreadGate, buildSpreadGatePlan, isCloseIntentLeg, resolveHedgeStrike, resolveHedgeParentChange } from '$lib/data/spreadGate.js';
   import { portfolioStore } from '$lib/data/portfolioStore.svelte.js';
   import { executionMode } from '$lib/stores';
   import { toast } from '$lib/data/toastStore.svelte.js';
@@ -33,7 +33,7 @@
   import { POPULAR_UNDERLYINGS } from '$lib/data/popularUnderlyings';
   import { parseChainQuoteRow } from '$lib/data/chainQuotes';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
-  import { KITE_INDEX_QUOTE_KEY_TO_ROOT as _KITE_IDX_TO_ROOT, MCX_COMMODITIES } from '$lib/data/resolveUnderlying.js';
+  import { KITE_INDEX_QUOTE_KEY_TO_ROOT as _KITE_IDX_TO_ROOT, MCX_COMMODITIES, MCX_AGRI_COMMODITIES } from '$lib/data/resolveUnderlying.js';
   import { resolveExpiryCloseDateTime } from '$lib/data/mcxCloseTime.js';
   import { priceFmt } from '$lib/format';
 
@@ -211,6 +211,31 @@
   /** @type {Array<'opt'|'fut'>} */
   let chainKinds       = $state(/** @type {Array<'opt'|'fut'>} */ (['opt']));
 
+  // HEDGE is unavailable for BFO underlyings (SENSEX/BANKEX) — the
+  // backend's instruments endpoint never fetches the BFO exchange at
+  // all (see `expiryPnl.js`'s own "every BFO-listed instrument" comment
+  // and `decomposeSymbol.js:189-190`), so `_maybeStageHedgeLeg`'s
+  // `parentLeg.exchange !== 'NFO'` guard already no-ops for it — but
+  // silently, with the toggle still visibly ON and no indication the
+  // operator's click did nothing (2026-11-27 audit finding). Disabling
+  // the toggle itself, rather than extending hedge support to BFO, is
+  // deliberate: BFO's own strike/premium instrument conventions have
+  // never been exercised against `resolveHedgeStrike()`, and silently
+  // extending an unverified code path onto a real-money surface is a
+  // worse outcome than a toggle the operator can plainly see is off.
+  // MCX/other non-NFO underlyings hit the identical silent no-op in
+  // `_maybeStageHedgeLeg` and are NOT covered here — out of scope for
+  // this fix (BFO only, per the reported finding); flagged, not fixed.
+  const _BFO_UNDERLYINGS = new Set(['SENSEX', 'BANKEX']);
+  const _hedgeUnsupportedBfo = $derived(_BFO_UNDERLYINGS.has(chainUnderlying.toUpperCase()));
+  // Mirrors the Draft-forces-Hedge-off effect above — a Hedge that was
+  // already ON when the operator switches the chain to a BFO underlying
+  // must not stay silently (and now invisibly, since the toggle is about
+  // to disable) armed for the NEXT NFO leg added after switching back.
+  $effect(() => {
+    if (_hedgeUnsupportedBfo) hedgeOn = false;
+  });
+
   // ── sessionStorage keys for root + per-root expiry memory ─────────
   const _SS_ROOT    = 'chain.lastRoot';
   const _ssExpKey   = (/** @type {string} */ root) => `chain.lastExpiry.${root}`;
@@ -313,6 +338,14 @@
   }
   // Days-to-expiry, rounded down. Drives the amber "rolls in N days"
   // chip in the toolbar so the operator sees the imminent roll.
+  // Deliberately whole-number, NOT the fractional `dte.toFixed(2)`
+  // convention OptionsPayoff.svelte's DTE stat row uses — this chip
+  // shares a cramped `flex-wrap: nowrap; overflow-x: auto` toolbar row
+  // with the Expiry picker and the Spread% field on a 320-375px mobile
+  // viewport, where a 2-decimal value would make the row wider than it
+  // needs to be for no operator benefit (the chip's only job is "is a
+  // roll imminent", not a precise countdown). This is a deliberate,
+  // space-constrained divergence, not an oversight (2026-11-27 audit).
   //
   // Close time must match the contract's OWN exchange, not a flat NSE
   // 15:30 for everyone. MCX commodities trade until ~23:30/23:55 IST
@@ -321,11 +354,22 @@
   // checking between 15:30 and midnight IST on the day BEFORE real
   // expiry floored this to "0 days / expires today" a full day early
   // (confirmed live-reported bug, 2026-11-26).
+  //
+  // MCX AGRI roots (COTTON, MENTHAOIL, CPO — MCX_AGRI_COMMODITIES)
+  // trade a single 09:00–17:00 IST session with no evening extension —
+  // unlike the non-agri (bullion/energy/metals) roots in the same
+  // MCX_COMMODITIES set, they don't track a global dollar-denominated
+  // market, so MCX never extends their session into the evening the
+  // way it does for CRUDEOIL/GOLD/SILVER/etc. Applying the non-agri
+  // DST-aware 23:30/23:55 close to an agri root floored its real
+  // trading day by up to ~6.5 hours (2026-11-27 audit finding).
   function _daysToExpiry(/** @type {string} */ iso) {
     if (!iso) return null;
     try {
-      const isMcx = MCX_COMMODITIES.has((chainUnderlying || '').toUpperCase());
-      const expiryDt = resolveExpiryCloseDateTime(iso, isMcx);
+      const root  = (chainUnderlying || '').toUpperCase();
+      const isMcx  = MCX_COMMODITIES.has(root);
+      const isAgri = MCX_AGRI_COMMODITIES.has(root);
+      const expiryDt = resolveExpiryCloseDateTime(iso, isMcx, isAgri);
       const diffMs = expiryDt.getTime() - Date.now();
       return Math.max(0, Math.floor(diffMs / 86_400_000));
     } catch { return null; }
@@ -890,36 +934,66 @@
     });
   });
 
-  // ── Remove a hedge leg once its parent changes or disappears ──────
-  // Literal reading of "offset leg should disappear" — this does NOT
-  // re-stage a fresh hedge; the operator must remove+re-add the
-  // parent leg to get one at the updated ratio (accepted v1 cost, see
-  // _maybeStageHedgeLeg's own header comment above). Watches every leg
-  // carrying `_hedgeParentKey`: removed when its parent is no longer in
-  // the basket, OR the parent's current `${sym}|${side}|${lots}
-  // |${account}` signature no longer matches what was snapshotted at
-  // staging time (`_hedgeParentSig`).
+  // ── Resize or remove a hedge leg once its parent changes ──────────
+  // Audit fix (2026-11-27) — a parent lot-size change (most commonly
+  // `_mergeIntoBasket`'s own "+1 lot" merge onto an already-staged leg)
+  // used to DELETE the paired hedge leg outright, silently, with no
+  // notice at all. `resolveHedgeStrike()`'s strike search is keyed on
+  // the parent's PREMIUM RATIO, never its lot count, so a lots-only
+  // change never invalidates the hedge's own already-resolved strike —
+  // it only needs its own `lots` resized to track the parent 1:1 (the
+  // same ratio it was staged at). `resolveHedgeParentChange()`
+  // (spreadGate.js) makes this decision per-leg; see its own doc
+  // comment for the full reasoning and the resize/remove boundary.
+  //
+  // A symbol, side, or account change still can't be patched in place
+  // — the original "offset leg should disappear, operator must
+  // remove+re-add the parent for a fresh hedge at the updated ratio"
+  // v1 policy holds for those, and the operator now gets a toast
+  // explaining why, instead of the hedge just vanishing.
   $effect(() => {
     const legs = chainBasket;
     const parents = new Map(legs.filter(l => !l._hedgeParentKey).map(l => [l.key, l]));
-    const stale = legs.filter(l => {
-      if (!l._hedgeParentKey) return false;
+    /** @type {Array<{leg: any, decision: {action:'resize', lots:number, sig:string}}>} */
+    const toResize = [];
+    /** @type {Array<{leg: any, decision: {action:'remove', reason:string}}>} */
+    const toRemove = [];
+    for (const l of legs) {
+      if (!l._hedgeParentKey) continue;
       const parent = parents.get(l._hedgeParentKey);
-      if (!parent) return true;
-      const sig = `${parent.sym}|${parent.side}|${parent.lots}|${parent.account}`;
-      return sig !== l._hedgeParentSig;
-    });
-    if (!stale.length) return;
+      const decision = resolveHedgeParentChange(l._hedgeParentSig, parent);
+      if (decision.action === 'resize') toResize.push({ leg: l, decision });
+      else if (decision.action === 'remove') toRemove.push({ leg: l, decision });
+    }
+    if (!toResize.length && !toRemove.length) return;
     untrack(() => {
-      if (_externalBasket && onRemoveLeg) {
-        for (const leg of stale) onRemoveLeg(leg);
-      } else if (_externalBasket && !onRemoveLeg) {
-        // Same guard as _netAgainstBasket's own no-onRemoveLeg branch —
-        // cannot safely mutate _localBasket (wrong array) in this mode.
-        console.warn('OptionChainTab: _externalBasket requires onRemoveLeg — stale hedge leg(s) not removed');
-      } else {
-        const staleKeys = new Set(stale.map(l => l.key));
-        _localBasket = _localBasket.filter(b => !staleKeys.has(b.key));
+      for (const { leg, decision } of toResize) {
+        if (_externalBasket && onUpdateLeg) {
+          onUpdateLeg(leg.key, (l) => ({ ...l, lots: decision.lots, _hedgeParentSig: decision.sig }));
+        } else if (_externalBasket && !onUpdateLeg) {
+          // Same guard as _mergeIntoBasket's own no-onUpdateLeg branch —
+          // cannot safely mutate _localBasket (wrong array) in this mode.
+          console.warn('OptionChainTab: _externalBasket requires onUpdateLeg — hedge leg(s) not resized');
+        } else {
+          _localBasket = _localBasket.map(b => b.key === leg.key
+            ? { ...b, lots: decision.lots, _hedgeParentSig: decision.sig }
+            : b);
+        }
+      }
+      if (toRemove.length) {
+        for (const { decision } of toRemove) {
+          toast.warning(`Hedge leg removed — ${decision.reason}.`, { timeoutMs: 5000 });
+        }
+        if (_externalBasket && onRemoveLeg) {
+          for (const { leg } of toRemove) onRemoveLeg(leg);
+        } else if (_externalBasket && !onRemoveLeg) {
+          // Same guard as _netAgainstBasket's own no-onRemoveLeg branch —
+          // cannot safely mutate _localBasket (wrong array) in this mode.
+          console.warn('OptionChainTab: _externalBasket requires onRemoveLeg — stale hedge leg(s) not removed');
+        } else {
+          const staleKeys = new Set(toRemove.map(c => c.leg.key));
+          _localBasket = _localBasket.filter(b => !staleKeys.has(b.key));
+        }
       }
     });
   });
@@ -1391,12 +1465,20 @@
            (2026-11-26, operator ask): Draft always wins — turning Draft
            ON forces Hedge off AND disables it (see the `$effect` below);
            Draft itself is NEVER disabled by Hedge and stays clickable
-           either way. -->
-      <label class="oct-hedge-toggle" class:oct-hedge-toggle-disabled={draftMode}
+           either way.
+
+           Also disabled for BFO underlyings (SENSEX/BANKEX, 2026-11-27
+           audit finding) — see `_hedgeUnsupportedBfo`'s own comment
+           above for why the toggle is disabled rather than silently
+           extending hedge support to an exchange never exercised
+           against `resolveHedgeStrike()`. -->
+      <label class="oct-hedge-toggle" class:oct-hedge-toggle-disabled={draftMode || _hedgeUnsupportedBfo}
              title={draftMode
                ? 'Hedge is disabled while Draft is on.'
-               : 'Auto-stage a hedge leg when adding an option (basket mode only).'}>
-        <input type="checkbox" bind:checked={hedgeOn} disabled={draftMode} />
+               : _hedgeUnsupportedBfo
+                 ? 'Hedge not available for BFO underlyings (SENSEX/BANKEX).'
+                 : 'Auto-stage a hedge leg when adding an option (basket mode only).'}>
+        <input type="checkbox" bind:checked={hedgeOn} disabled={draftMode || _hedgeUnsupportedBfo} />
         <span class="oct-hedge-label" class:on={hedgeOn}>HEDGE</span>
       </label>
       {#if hedgeOn}
@@ -1866,14 +1948,23 @@
     text-transform: uppercase;
     letter-spacing: 0.06em;
     font-weight: 700;
-    color: rgba(251, 191, 36, 0.85);
+    /* 2026-11-27 token cleanup — exact alpha preserved via color-mix
+       against the semantic --algo-amber token (same convention
+       OptionsPayoff.svelte already uses for exact-alpha SVG strokes),
+       rather than a bare rgba(251,191,36,...) literal. */
+    color: color-mix(in srgb, var(--algo-amber) 85%, transparent);
   }
   .oct-spread-field > input {
     width: 3.2rem;
     min-height: 1.4rem;
     padding: 0 0.3rem;
+    /* #1d2a44 flat input background intentionally left as a literal —
+       no matching semantic token exists anywhere in app.css; it's the
+       established raw-literal convention for this exact "small dark
+       numeric input" pattern across the app (QtyInput.svelte,
+       OrderTicket.svelte, and others), not a one-off inconsistency. */
     background: #1d2a44;
-    border: 1px solid rgba(251, 191, 36, 0.25);
+    border: 1px solid color-mix(in srgb, var(--algo-amber) 25%, transparent);
     border-radius: 3px;
     color: var(--algo-slate);
     font-family: var(--font-numeric);
@@ -1884,7 +1975,7 @@
     color-scheme: dark;
   }
   .oct-spread-field > input::placeholder {
-    color: rgba(251, 191, 36, 0.6);
+    color: color-mix(in srgb, var(--algo-amber) 60%, transparent);
     font-style: italic;
   }
   /* HEDGE toggle + percent fields (Part A) — sky/info palette tier,

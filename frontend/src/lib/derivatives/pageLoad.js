@@ -11,7 +11,7 @@
  *   loadPositions (cc=76), loadStrategy (cc=50), candidatePositions (cc=43).
  */
 
-import { todayIST, tradingSessionDateIST, isPastExpiryFreezeWindow } from '$lib/dateFormat.js';
+import { tradingSessionDateIST, isPastExpiryFreezeWindow } from '$lib/dateFormat.js';
 import { buildAcctMatcher, isFOSymbol } from '$lib/data/derivativesMath.js';
 import { decomposeSymbol } from '$lib/data/decomposeSymbol.js';
 import { buildPositionRowFromBroker, splitClosedReopened, isExpiredHeldContract, expiredLegFrozenPnl, expiryPnlWithRealised } from '$lib/data/expiryPnl.js';
@@ -427,6 +427,13 @@ export function buildCandidatePositions({
   // closes the last divergent copy.
   const matchAccount = buildAcctMatcher(selectedAccounts);
 
+  // Hoisted out of the positions loop below (was re-derived once per
+  // row, always the same value — `tradingSessionDateIST()` takes no
+  // args) so the drafts loop further down can reuse the SAME value
+  // instead of either re-deriving it or being left with no in-scope
+  // copy at all (2026-11-27 fix — see the drafts loop's own comment).
+  const sessionToday = tradingSessionDateIST();
+
   /** @type {any[]} */
   const real = [];
   /** @type {any[]} */
@@ -445,7 +452,6 @@ export function buildCandidatePositions({
     if (!isFut && !isOpt) continue;
     const qty = Number(p?.qty || 0);
     const _inst = getInstrument(sym);
-    const sessionToday = tradingSessionDateIST();
     // A HELD row (qty!==0) whose contract can't be resolved against the
     // live instruments master — either missing entirely (expired and
     // removed by Kite) or carrying an `x` (expiry) date that's already
@@ -573,7 +579,17 @@ export function buildCandidatePositions({
     if (!matchExpiry(sym)) continue;
     const _dInst = getInstrument(sym);
     if (!_dInst) continue;
-    if (_dInst.x && _dInst.x < todayIST()) continue;
+    // 2026-11-27 fix — a draft leg used to compare against bare-midnight
+    // `todayIST()`, NOT weekend-aware. A real (non-draft) leg on the
+    // IDENTICAL contract stays "not expired" through the whole freeze/
+    // grace window (23:31 expiry-day → next trading day's 08:00 IST)
+    // via `isPastExpiryFreezeWindow` (see the positions loop above and
+    // `expiryPnl.js:isExpiredHeldContract`) — a draft leg on a Friday-
+    // expiring contract vanished at bare Saturday 08:00 IST, two full
+    // days early, while its real-leg counterpart correctly stayed
+    // visible until Monday. `sessionToday` is hoisted above (positions
+    // loop) rather than re-derived here, same value either way.
+    if (_dInst.x && isPastExpiryFreezeWindow(_dInst.x, sessionToday)) continue;
     const qty  = d.qty      === '' || d.qty      == null ? 0    : Number(d.qty);
     const cost = d.avg_cost === '' || d.avg_cost == null ? null : Number(d.avg_cost);
     const ltp  = d.ltp      === '' || d.ltp      == null ? null : Number(d.ltp);
